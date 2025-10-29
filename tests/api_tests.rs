@@ -21,7 +21,10 @@ async fn setup_test_api() -> (TestServer, Arc<TelemetryServer>, u16) {
     let store = Arc::new(EventStore::new(&database_url).await.unwrap());
 
     // Clean database before each test to avoid pollution
-    let _ = store.cleanup_test_data().await;
+    store.cleanup_test_data().await.unwrap();
+
+    // Small delay to ensure cleanup completes
+    sleep(Duration::from_millis(50)).await;
 
     // Find available port for telemetry
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -75,7 +78,8 @@ async fn connect_test_node(port: u16, node_id: u8) -> TcpStream {
     let encoded = encode_message(&node_info).unwrap();
     stream.write_all(&encoded).await.unwrap();
 
-    sleep(Duration::from_millis(50)).await;
+    // Wait for node info to be processed and batched
+    sleep(Duration::from_millis(100)).await;
     stream
 }
 
@@ -114,8 +118,8 @@ async fn test_nodes_endpoint_with_connections() {
     let _stream1 = connect_test_node(telemetry_port, 1).await;
     let _stream2 = connect_test_node(telemetry_port, 2).await;
 
-    // Wait for batch writer to flush to database
-    sleep(Duration::from_millis(200)).await;
+    // Wait for batch writer to flush to database (generous timeout for CI)
+    sleep(Duration::from_millis(1000)).await;
 
     let response = server.get("/api/nodes").await;
 
@@ -145,8 +149,8 @@ async fn test_node_details_endpoint() {
     // Connect a node
     let _stream = connect_test_node(telemetry_port, 3).await;
 
-    // Wait for batch writer to flush to database
-    sleep(Duration::from_millis(200)).await;
+    // Wait for batch writer to flush to database (generous timeout for CI)
+    sleep(Duration::from_millis(1000)).await;
 
     // Get node ID (hex encoded peer_id)
     let node_id = hex::encode([3u8; 32]);
@@ -230,7 +234,8 @@ async fn test_events_endpoint_with_data() {
         stream.write_all(&encoded).await.unwrap();
     }
 
-    sleep(Duration::from_millis(500)).await;
+    // Wait for events to be processed, batched, and written to database
+    sleep(Duration::from_millis(1000)).await;
 
     let response = server.get("/api/events").await;
 
@@ -274,7 +279,8 @@ async fn test_events_pagination() {
         stream.write_all(&encoded).await.unwrap();
     }
 
-    sleep(Duration::from_millis(200)).await;
+    // Wait for events to be processed, batched, and written to database
+    sleep(Duration::from_millis(1000)).await;
 
     // Test limit
     let response = server.get("/api/events?limit=5").await;
@@ -335,7 +341,8 @@ async fn test_node_events_endpoint() {
         stream2.write_all(&encoded).await.unwrap();
     }
 
-    sleep(Duration::from_millis(200)).await;
+    // Wait for events to be processed, batched, and written to database
+    sleep(Duration::from_millis(1000)).await;
 
     // Get events for node 1
     let response = server.get(&format!("/api/nodes/{}/events", node1_id)).await;
@@ -391,8 +398,8 @@ async fn test_concurrent_api_requests() {
     // Connect a node
     let _stream = connect_test_node(telemetry_port, 9).await;
 
-    // Wait for batch writer to flush to database
-    sleep(Duration::from_millis(200)).await;
+    // Wait for batch writer to flush to database (generous timeout for CI)
+    sleep(Duration::from_millis(1000)).await;
 
     // Make multiple requests sequentially (TestServer doesn't support clone)
     for _ in 0..5 {

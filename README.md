@@ -1466,23 +1466,28 @@ tart-backend/
 ### Running Tests
 
 ```bash
-# All tests
-cargo test
+# Unit tests (no database required) - can run in parallel
+cargo test --lib --test types_tests --test events_tests --test error_tests --test encoding_tests
 
-# Specific test suite
-cargo test --test events_tests
-cargo test --test api_tests
+# Integration tests (requires PostgreSQL) - MUST run serially
+export TEST_DATABASE_URL="postgres://tart:tart_password@localhost:5432/tart_test"
+# Create test database first:
+# psql -U tart -h localhost -d postgres -c "CREATE DATABASE tart_test;"
+# cargo sqlx migrate run
+cargo test --test api_tests --test integration_tests --test optimized_server_tests -- --test-threads=1
 
-# Integration tests (requires PostgreSQL)
-export TEST_DATABASE_URL="postgres://localhost/tart_test"
-cargo test --test integration_tests
+# All tests together (serial execution for integration tests)
+cargo test --lib --test types_tests --test events_tests --test error_tests --test encoding_tests
+cargo test --test api_tests --test integration_tests --test optimized_server_tests -- --test-threads=1
 
 # With output
-cargo test -- --nocapture
+cargo test -- --nocapture --test-threads=1
 
-# Benchmarks
-cargo bench
+# Specific test
+cargo test test_health_endpoint -- --test-threads=1
 ```
+
+**Important:** Integration tests must run with `--test-threads=1` to avoid database conflicts between parallel test executions.
 
 ### Code Quality
 
