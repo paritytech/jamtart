@@ -17,6 +17,9 @@ async fn setup_optimized_test_server() -> (Arc<TelemetryServer>, u16) {
 
     let store = Arc::new(EventStore::new(&database_url).await.unwrap());
 
+    // Clean database before each test
+    let _ = store.cleanup_test_data().await;
+
     // Find available port
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();

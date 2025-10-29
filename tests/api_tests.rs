@@ -20,6 +20,9 @@ async fn setup_test_api() -> (TestServer, Arc<TelemetryServer>, u16) {
         .unwrap_or_else(|_| "postgres://tart:tart_password@localhost/tart_test".to_string());
     let store = Arc::new(EventStore::new(&database_url).await.unwrap());
 
+    // Clean database before each test to avoid pollution
+    let _ = store.cleanup_test_data().await;
+
     // Find available port for telemetry
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let telemetry_port = listener.local_addr().unwrap().port();

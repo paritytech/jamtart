@@ -17,6 +17,9 @@ async fn setup_test_server() -> (Arc<TelemetryServer>, u16) {
         .unwrap_or_else(|_| "postgres://test:test@localhost:5432/test_db".to_string());
     let store = Arc::new(EventStore::new(&test_db_url).await.unwrap());
 
+    // Clean database before each test
+    let _ = store.cleanup_test_data().await;
+
     // Find available port
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();

@@ -556,4 +556,12 @@ impl EventStore {
 
         Ok(metrics)
     }
+
+    /// Cleanup test data by truncating all tables (for testing only)
+    pub async fn cleanup_test_data(&self) -> Result<(), sqlx::Error> {
+        sqlx::query("TRUNCATE TABLE events, nodes, node_status, blocks, stats_cache CASCADE")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
 }
