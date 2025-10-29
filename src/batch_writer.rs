@@ -36,7 +36,7 @@ enum WriterCommand {
         event: Event,
     },
     Flush {
-        response: tokio::sync::oneshot::Sender<()>,
+        response: tokio::sync::oneshot::Sender<Result<()>>,
     },
     Shutdown,
 }
@@ -121,9 +121,10 @@ impl BatchWriter {
             .send(WriterCommand::Flush { response: tx })
             .await
             .map_err(|e| anyhow::anyhow!("Failed to send flush command: {}", e))?;
-        rx.await
-            .map_err(|e| anyhow::anyhow!("Flush response error: {}", e))?;
-        Ok(())
+        let result = rx
+            .await
+            .map_err(|e| anyhow::anyhow!("Flush response channel closed: {}", e))?;
+        result.map_err(|e| anyhow::anyhow!("Flush failed: {}", e))
     }
 }
 
@@ -163,7 +164,11 @@ async fn batch_writer_loop(
                         info!("Received NodeConnected command for {}", node_id);
                         node_updates.push((node_id, Some(info)));
                         // Force flush node updates immediately to avoid race conditions
-                        flush_batch(&store, &mut event_batch, &mut node_updates).await;
+                        if let Err(e) =
+                            flush_batch(&store, &mut event_batch, &mut node_updates).await
+                        {
+                            error!("Flush batch error: {}", e);
+                        }
                     }
                     WriterCommand::Event {
                         node_id,
@@ -172,19 +177,30 @@ async fn batch_writer_loop(
                     } => {
                         event_batch.push((node_id, event_id, event));
                         if event_batch.len() >= MAX_BATCH_SIZE {
-                            flush_batch(&store, &mut event_batch, &mut node_updates).await;
+                            if let Err(e) =
+                                flush_batch(&store, &mut event_batch, &mut node_updates).await
+                            {
+                                error!("Flush batch error: {}", e);
+                            }
                         }
                     }
                     WriterCommand::NodeDisconnected { node_id } => {
                         node_updates.push((node_id, None));
                     }
                     WriterCommand::Flush { response } => {
-                        flush_batch(&store, &mut event_batch, &mut node_updates).await;
-                        let _ = response.send(());
+                        let result = flush_batch(&store, &mut event_batch, &mut node_updates).await;
+                        if let Err(ref e) = result {
+                            error!("Flush batch error: {}", e);
+                        }
+                        let _ = response.send(result);
                     }
                     WriterCommand::Shutdown => {
                         info!("Batch writer shutting down");
-                        flush_batch(&store, &mut event_batch, &mut node_updates).await;
+                        if let Err(e) =
+                            flush_batch(&store, &mut event_batch, &mut node_updates).await
+                        {
+                            error!("Flush batch error: {}", e);
+                        }
                         return Ok(());
                     }
                 }
@@ -209,7 +225,9 @@ async fn batch_writer_loop(
             _ = interval.tick() => {
                 // Timeout reached, flush any pending events
                 if !event_batch.is_empty() || !node_updates.is_empty() {
-                    flush_batch(&store, &mut event_batch, &mut node_updates).await;
+                    if let Err(e) = flush_batch(&store, &mut event_batch, &mut node_updates).await {
+                        error!("Periodic flush error: {}", e);
+                    }
                 }
             }
             Some(command) = receiver.recv() => {
@@ -219,26 +237,35 @@ async fn batch_writer_loop(
 
                         // Flush if batch is full
                         if event_batch.len() >= MAX_BATCH_SIZE {
-                            flush_batch(&store, &mut event_batch, &mut node_updates).await;
+                            if let Err(e) = flush_batch(&store, &mut event_batch, &mut node_updates).await {
+                            error!("Flush batch error: {}", e);
+                        }
                         }
                     }
                     WriterCommand::NodeConnected { node_id, info } => {
                         info!("Received NodeConnected command for {}", node_id);
                         node_updates.push((node_id, Some(info)));
                         // Force flush node updates immediately to avoid race conditions
-                        flush_batch(&store, &mut event_batch, &mut node_updates).await;
+                        if let Err(e) = flush_batch(&store, &mut event_batch, &mut node_updates).await {
+                            error!("Flush batch error: {}", e);
+                        }
                     }
                     WriterCommand::NodeDisconnected { node_id } => {
                         node_updates.push((node_id, None));
                     }
                     WriterCommand::Flush { response } => {
-                        flush_batch(&store, &mut event_batch, &mut node_updates).await;
-                        let _ = response.send(());
+                        let result = flush_batch(&store, &mut event_batch, &mut node_updates).await;
+                        if let Err(ref e) = result {
+                            error!("Flush batch error: {}", e);
+                        }
+                        let _ = response.send(result);
                     }
                     WriterCommand::Shutdown => {
                         info!("Batch writer shutting down");
                         // Final flush
-                        flush_batch(&store, &mut event_batch, &mut node_updates).await;
+                        if let Err(e) = flush_batch(&store, &mut event_batch, &mut node_updates).await {
+                            error!("Flush batch error: {}", e);
+                        }
                         break;
                     }
                 }
@@ -253,12 +280,12 @@ async fn flush_batch(
     store: &EventStore,
     event_batch: &mut Vec<(String, u64, Event)>,
     node_updates: &mut Vec<(String, Option<NodeInformation>)>,
-) {
+) -> Result<()> {
     let event_count = event_batch.len();
     let node_count = node_updates.len();
 
     if event_count == 0 && node_count == 0 {
-        return;
+        return Ok(());
     }
 
     info!(
@@ -266,21 +293,26 @@ async fn flush_batch(
         event_count, node_count
     );
 
-    // Process node updates first
+    // Process node updates first (fail fast on errors)
     for (node_id, info) in node_updates.drain(..) {
         match info {
             Some(info) => {
                 info!("Storing node connection for {}", node_id);
-                match store.store_node_connected(&node_id, &info).await {
-                    Ok(_) => info!("Successfully stored node connection for {}", node_id),
-                    Err(e) => error!("Failed to store node connection {}: {}", node_id, e),
-                }
+                store
+                    .store_node_connected(&node_id, &info)
+                    .await
+                    .map_err(|e| {
+                        error!("Failed to store node connection {}: {}", node_id, e);
+                        anyhow::anyhow!("Node connection storage failed: {}", e)
+                    })?;
+                info!("Successfully stored node connection for {}", node_id);
             }
             None => {
                 debug!("Storing node disconnection for {}", node_id);
-                if let Err(e) = store.store_node_disconnected(&node_id).await {
+                store.store_node_disconnected(&node_id).await.map_err(|e| {
                     error!("Failed to store node disconnection {}: {}", node_id, e);
-                }
+                    anyhow::anyhow!("Node disconnection storage failed: {}", e)
+                })?;
             }
         }
     }
@@ -288,12 +320,15 @@ async fn flush_batch(
     // Process events using batch insert for optimal performance
     if !event_batch.is_empty() {
         let batch: Vec<(String, u64, Event)> = std::mem::take(event_batch);
-        if let Err(e) = store.store_events_batch(batch).await {
+        store.store_events_batch(batch).await.map_err(|e| {
             error!("Failed to store event batch: {}", e);
-        }
+            anyhow::anyhow!("Event batch storage failed: {}", e)
+        })?;
     }
 
     // Update metrics
     metrics::counter!("telemetry_events_flushed").increment(event_count as u64);
     metrics::counter!("telemetry_node_updates_flushed").increment(node_count as u64);
+
+    Ok(())
 }
