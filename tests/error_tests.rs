@@ -405,13 +405,31 @@ fn test_event_edge_cases() {
                     },
                     load_ns: 0,
                     host_call: AccumulateHostCallCost {
-                        state: ExecCost { gas_used: 0, elapsed_ns: 0 },
-                        lookup: ExecCost { gas_used: 0, elapsed_ns: 0 },
-                        preimage: ExecCost { gas_used: 0, elapsed_ns: 0 },
-                        service: ExecCost { gas_used: 0, elapsed_ns: 0 },
-                        transfer: ExecCost { gas_used: 0, elapsed_ns: 0 },
+                        state: ExecCost {
+                            gas_used: 0,
+                            elapsed_ns: 0,
+                        },
+                        lookup: ExecCost {
+                            gas_used: 0,
+                            elapsed_ns: 0,
+                        },
+                        preimage: ExecCost {
+                            gas_used: 0,
+                            elapsed_ns: 0,
+                        },
+                        service: ExecCost {
+                            gas_used: 0,
+                            elapsed_ns: 0,
+                        },
+                        transfer: ExecCost {
+                            gas_used: 0,
+                            elapsed_ns: 0,
+                        },
                         transfer_dest_gas: 0,
-                        other: ExecCost { gas_used: 0, elapsed_ns: 0 },
+                        other: ExecCost {
+                            gas_used: 0,
+                            elapsed_ns: 0,
+                        },
                     },
                 },
             )

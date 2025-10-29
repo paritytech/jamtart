@@ -62,6 +62,14 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-build-
 
+      - name: Install sqlx-cli
+        run: cargo install sqlx-cli --no-default-features --features postgres
+
+      - name: Run database migrations
+        env:
+          DATABASE_URL: postgres://tart:tart_password@localhost:5432/tart_test
+        run: cargo sqlx migrate run
+
       - name: Run tests
         env:
           DATABASE_URL: postgres://tart:tart_password@localhost:5432/tart_test

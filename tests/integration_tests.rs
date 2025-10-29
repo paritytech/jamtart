@@ -314,13 +314,31 @@ async fn test_large_event_handling() {
                         },
                         load_ns: (i as u64) * 50_000,
                         host_call: AccumulateHostCallCost {
-                            state: ExecCost { gas_used: (i as u64) * 100_000, elapsed_ns: (i as u64) * 50_000 },
-                            lookup: ExecCost { gas_used: (i as u64) * 200_000, elapsed_ns: (i as u64) * 100_000 },
-                            preimage: ExecCost { gas_used: (i as u64) * 50_000, elapsed_ns: (i as u64) * 25_000 },
-                            service: ExecCost { gas_used: (i as u64) * 150_000, elapsed_ns: (i as u64) * 75_000 },
-                            transfer: ExecCost { gas_used: (i as u64) * 150_000, elapsed_ns: (i as u64) * 75_000 },
+                            state: ExecCost {
+                                gas_used: (i as u64) * 100_000,
+                                elapsed_ns: (i as u64) * 50_000,
+                            },
+                            lookup: ExecCost {
+                                gas_used: (i as u64) * 200_000,
+                                elapsed_ns: (i as u64) * 100_000,
+                            },
+                            preimage: ExecCost {
+                                gas_used: (i as u64) * 50_000,
+                                elapsed_ns: (i as u64) * 25_000,
+                            },
+                            service: ExecCost {
+                                gas_used: (i as u64) * 150_000,
+                                elapsed_ns: (i as u64) * 75_000,
+                            },
+                            transfer: ExecCost {
+                                gas_used: (i as u64) * 150_000,
+                                elapsed_ns: (i as u64) * 75_000,
+                            },
                             transfer_dest_gas: (i as u64) * 50_000,
-                            other: ExecCost { gas_used: (i as u64) * 50_000, elapsed_ns: (i as u64) * 25_000 },
+                            other: ExecCost {
+                                gas_used: (i as u64) * 50_000,
+                                elapsed_ns: (i as u64) * 25_000,
+                            },
                         },
                     },
                 )

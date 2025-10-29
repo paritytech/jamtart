@@ -29,7 +29,10 @@ fn test_node_information_encoding_decoding() {
     let mut cursor = Cursor::new(&buf[..]);
     let decoded = NodeInformation::decode(&mut cursor).unwrap();
     assert_eq!(decoded.details.peer_id, node_info.details.peer_id);
-    assert_eq!(decoded.details.peer_address.port, node_info.details.peer_address.port);
+    assert_eq!(
+        decoded.details.peer_address.port,
+        node_info.details.peer_address.port
+    );
     assert_eq!(decoded.flags, node_info.flags);
     assert_eq!(decoded.implementation_name.as_str().unwrap(), "PolkaJam");
     assert_eq!(decoded.implementation_version.as_str().unwrap(), "1.0.0");
@@ -495,13 +498,31 @@ fn test_block_execution_events() {
                     },
                     load_ns: 50_000,
                     host_call: AccumulateHostCallCost {
-                        state: ExecCost { gas_used: 200_000, elapsed_ns: 100_000 },
-                        lookup: ExecCost { gas_used: 300_000, elapsed_ns: 150_000 },
-                        preimage: ExecCost { gas_used: 100_000, elapsed_ns: 50_000 },
-                        service: ExecCost { gas_used: 150_000, elapsed_ns: 75_000 },
-                        transfer: ExecCost { gas_used: 150_000, elapsed_ns: 75_000 },
+                        state: ExecCost {
+                            gas_used: 200_000,
+                            elapsed_ns: 100_000,
+                        },
+                        lookup: ExecCost {
+                            gas_used: 300_000,
+                            elapsed_ns: 150_000,
+                        },
+                        preimage: ExecCost {
+                            gas_used: 100_000,
+                            elapsed_ns: 50_000,
+                        },
+                        service: ExecCost {
+                            gas_used: 150_000,
+                            elapsed_ns: 75_000,
+                        },
+                        transfer: ExecCost {
+                            gas_used: 150_000,
+                            elapsed_ns: 75_000,
+                        },
                         transfer_dest_gas: 50_000,
-                        other: ExecCost { gas_used: 100_000, elapsed_ns: 50_000 },
+                        other: ExecCost {
+                            gas_used: 100_000,
+                            elapsed_ns: 50_000,
+                        },
                     },
                 },
             ),
@@ -517,13 +538,31 @@ fn test_block_execution_events() {
                     },
                     load_ns: 25_000,
                     host_call: AccumulateHostCallCost {
-                        state: ExecCost { gas_used: 100_000, elapsed_ns: 50_000 },
-                        lookup: ExecCost { gas_used: 150_000, elapsed_ns: 75_000 },
-                        preimage: ExecCost { gas_used: 50_000, elapsed_ns: 25_000 },
-                        service: ExecCost { gas_used: 75_000, elapsed_ns: 37_500 },
-                        transfer: ExecCost { gas_used: 75_000, elapsed_ns: 37_500 },
+                        state: ExecCost {
+                            gas_used: 100_000,
+                            elapsed_ns: 50_000,
+                        },
+                        lookup: ExecCost {
+                            gas_used: 150_000,
+                            elapsed_ns: 75_000,
+                        },
+                        preimage: ExecCost {
+                            gas_used: 50_000,
+                            elapsed_ns: 25_000,
+                        },
+                        service: ExecCost {
+                            gas_used: 75_000,
+                            elapsed_ns: 37_500,
+                        },
+                        transfer: ExecCost {
+                            gas_used: 75_000,
+                            elapsed_ns: 37_500,
+                        },
                         transfer_dest_gas: 25_000,
-                        other: ExecCost { gas_used: 50_000, elapsed_ns: 25_000 },
+                        other: ExecCost {
+                            gas_used: 50_000,
+                            elapsed_ns: 25_000,
+                        },
                     },
                 },
             ),
