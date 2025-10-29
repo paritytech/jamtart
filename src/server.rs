@@ -230,6 +230,18 @@ impl TelemetryServer {
     pub fn get_broadcaster(&self) -> Arc<EventBroadcaster> {
         Arc::clone(&self.broadcaster)
     }
+
+    /// Flush all pending batch writes to database
+    ///
+    /// **For testing only**: Forces immediate flush of all buffered
+    /// data to PostgreSQL. Necessary in tests to ensure data is written
+    /// before queries execute.
+    ///
+    /// In production, this can be used for graceful shutdown but should
+    /// NOT be called during normal operation.
+    pub async fn flush_writes(&self) -> anyhow::Result<()> {
+        self.batch_writer.flush().await
+    }
 }
 
 async fn handle_connection_optimized(

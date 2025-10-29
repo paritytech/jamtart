@@ -557,7 +557,26 @@ impl EventStore {
         Ok(metrics)
     }
 
-    /// Cleanup test data by truncating all tables (for testing only)
+    /// Cleanup test data by truncating all tables
+    ///
+    /// # Safety
+    ///
+    /// **DANGER**: This method **DELETES ALL DATA** from the database by
+    /// truncating all tables. It should **ONLY** be used in:
+    /// - Test setup functions with isolated test databases
+    /// - Development environments that are okay with data loss
+    ///
+    /// **NEVER call this in production!**
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use tart_backend::EventStore;
+    /// # async fn example() {
+    /// let store = EventStore::new("postgres://localhost/tart_TEST").await.unwrap();
+    /// // Only safe with dedicated test database!
+    /// store.cleanup_test_data().await.unwrap();
+    /// # }
+    /// ```
     pub async fn cleanup_test_data(&self) -> Result<(), sqlx::Error> {
         sqlx::query("TRUNCATE TABLE events, nodes, node_status, blocks, stats_cache CASCADE")
             .execute(&self.pool)

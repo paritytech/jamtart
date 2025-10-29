@@ -78,9 +78,18 @@ async fn connect_test_node(port: u16, node_id: u8) -> TcpStream {
     let encoded = encode_message(&node_info).unwrap();
     stream.write_all(&encoded).await.unwrap();
 
-    // Wait for node info to be processed and batched
-    sleep(Duration::from_millis(100)).await;
+    // Small delay for server to receive and queue
+    sleep(Duration::from_millis(50)).await;
     stream
+}
+
+async fn flush_and_wait(telemetry_server: &Arc<TelemetryServer>) {
+    // Flush batch writer and wait for completion
+    // This ensures all queued writes have been processed and written to PostgreSQL
+    // before we query the database in tests
+    telemetry_server.flush_writes().await.expect("Flush failed");
+    // Small delay to ensure PostgreSQL commit completes
+    sleep(Duration::from_millis(50)).await;
 }
 
 #[tokio::test]
@@ -112,14 +121,14 @@ async fn test_nodes_endpoint_empty() {
 
 #[tokio::test]
 async fn test_nodes_endpoint_with_connections() {
-    let (server, _, telemetry_port) = setup_test_api().await;
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
 
     // Connect two nodes
     let _stream1 = connect_test_node(telemetry_port, 1).await;
     let _stream2 = connect_test_node(telemetry_port, 2).await;
 
-    // Wait for batch writer to flush to database (generous timeout for CI)
-    sleep(Duration::from_millis(1000)).await;
+    // Flush batch writer and wait for database write to complete
+    flush_and_wait(&telemetry_server).await;
 
     let response = server.get("/api/nodes").await;
 
@@ -144,13 +153,13 @@ async fn test_nodes_endpoint_with_connections() {
 
 #[tokio::test]
 async fn test_node_details_endpoint() {
-    let (server, _, telemetry_port) = setup_test_api().await;
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
 
     // Connect a node
     let _stream = connect_test_node(telemetry_port, 3).await;
 
-    // Wait for batch writer to flush to database (generous timeout for CI)
-    sleep(Duration::from_millis(1000)).await;
+    // Flush batch writer and wait for database write
+    flush_and_wait(&telemetry_server).await;
 
     // Get node ID (hex encoded peer_id)
     let node_id = hex::encode([3u8; 32]);
@@ -200,10 +209,13 @@ async fn test_events_endpoint_empty() {
 
 #[tokio::test]
 async fn test_events_endpoint_with_data() {
-    let (server, _, telemetry_port) = setup_test_api().await;
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
 
     // Connect a node and send events
     let mut stream = connect_test_node(telemetry_port, 4).await;
+
+    // Flush node connection first
+    flush_and_wait(&telemetry_server).await;
 
     // Send some events
     let events = vec![
@@ -234,8 +246,8 @@ async fn test_events_endpoint_with_data() {
         stream.write_all(&encoded).await.unwrap();
     }
 
-    // Wait for events to be processed, batched, and written to database
-    sleep(Duration::from_millis(1000)).await;
+    // Flush events to database
+    flush_and_wait(&telemetry_server).await;
 
     let response = server.get("/api/events").await;
 
@@ -263,10 +275,13 @@ async fn test_events_endpoint_with_data() {
 
 #[tokio::test]
 async fn test_events_pagination() {
-    let (server, _, telemetry_port) = setup_test_api().await;
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
 
     // Connect a node and send many events
     let mut stream = connect_test_node(telemetry_port, 5).await;
+
+    // Flush node connection
+    flush_and_wait(&telemetry_server).await;
 
     // Send 10 events
     for i in 0..10 {
@@ -279,8 +294,8 @@ async fn test_events_pagination() {
         stream.write_all(&encoded).await.unwrap();
     }
 
-    // Wait for events to be processed, batched, and written to database
-    sleep(Duration::from_millis(1000)).await;
+    // Flush events to database
+    flush_and_wait(&telemetry_server).await;
 
     // Test limit
     let response = server.get("/api/events?limit=5").await;
@@ -310,7 +325,7 @@ async fn test_events_pagination() {
 
 #[tokio::test]
 async fn test_node_events_endpoint() {
-    let (server, _, telemetry_port) = setup_test_api().await;
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
 
     // Connect two nodes
     let mut stream1 = connect_test_node(telemetry_port, 6).await;
@@ -318,6 +333,9 @@ async fn test_node_events_endpoint() {
 
     let node1_id = hex::encode([6u8; 32]);
     let node2_id = hex::encode([7u8; 32]);
+
+    // Flush node connections
+    flush_and_wait(&telemetry_server).await;
 
     // Send events from node 1
     for i in 0..3 {
@@ -341,8 +359,8 @@ async fn test_node_events_endpoint() {
         stream2.write_all(&encoded).await.unwrap();
     }
 
-    // Wait for events to be processed, batched, and written to database
-    sleep(Duration::from_millis(1000)).await;
+    // Flush events to database
+    flush_and_wait(&telemetry_server).await;
 
     // Get events for node 1
     let response = server.get(&format!("/api/nodes/{}/events", node1_id)).await;
@@ -393,13 +411,13 @@ async fn test_websocket_connection() {
 
 #[tokio::test]
 async fn test_concurrent_api_requests() {
-    let (server, _, telemetry_port) = setup_test_api().await;
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
 
     // Connect a node
     let _stream = connect_test_node(telemetry_port, 9).await;
 
-    // Wait for batch writer to flush to database (generous timeout for CI)
-    sleep(Duration::from_millis(1000)).await;
+    // Flush to database
+    flush_and_wait(&telemetry_server).await;
 
     // Make multiple requests sequentially (TestServer doesn't support clone)
     for _ in 0..5 {

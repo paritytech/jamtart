@@ -35,6 +35,9 @@ enum WriterCommand {
         event_id: u64,
         event: Event,
     },
+    Flush {
+        response: tokio::sync::oneshot::Sender<()>,
+    },
     Shutdown,
 }
 
@@ -96,6 +99,32 @@ impl BatchWriter {
     pub async fn shutdown(&self) {
         let _ = self.sender.send(WriterCommand::Shutdown).await;
     }
+
+    /// Flush all pending writes to database
+    ///
+    /// **For testing only**: This method forces immediate flush of all
+    /// batched events and node updates to the database. It's necessary
+    /// in tests to ensure data is written before queries, since the
+    /// batch writer runs asynchronously in the background.
+    ///
+    /// In production, the batch writer automatically flushes based on:
+    /// - Time-based intervals (20ms)
+    /// - Batch size limits (1000 events)
+    /// - Node connection events (immediate flush)
+    ///
+    /// This method is public (not #[cfg(test)]) because it's useful
+    /// for graceful shutdown and debugging, but should NOT be called
+    /// in normal operation as it defeats the purpose of batching.
+    pub async fn flush(&self) -> Result<()> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.sender
+            .send(WriterCommand::Flush { response: tx })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to send flush command: {}", e))?;
+        rx.await
+            .map_err(|e| anyhow::anyhow!("Flush response error: {}", e))?;
+        Ok(())
+    }
 }
 
 async fn batch_writer_loop(
@@ -125,6 +154,7 @@ async fn batch_writer_loop(
                         WriterCommand::NodeDisconnected { node_id } =>
                             format!("NodeDisconnected({})", node_id),
                         WriterCommand::Event { node_id, .. } => format!("Event({})", node_id),
+                        WriterCommand::Flush { .. } => "Flush".to_string(),
                         WriterCommand::Shutdown => "Shutdown".to_string(),
                     }
                 );
@@ -147,6 +177,10 @@ async fn batch_writer_loop(
                     }
                     WriterCommand::NodeDisconnected { node_id } => {
                         node_updates.push((node_id, None));
+                    }
+                    WriterCommand::Flush { response } => {
+                        flush_batch(&store, &mut event_batch, &mut node_updates).await;
+                        let _ = response.send(());
                     }
                     WriterCommand::Shutdown => {
                         info!("Batch writer shutting down");
@@ -196,6 +230,10 @@ async fn batch_writer_loop(
                     }
                     WriterCommand::NodeDisconnected { node_id } => {
                         node_updates.push((node_id, None));
+                    }
+                    WriterCommand::Flush { response } => {
+                        flush_batch(&store, &mut event_batch, &mut node_updates).await;
+                        let _ = response.send(());
                     }
                     WriterCommand::Shutdown => {
                         info!("Batch writer shutting down");
