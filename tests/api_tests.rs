@@ -80,7 +80,7 @@ async fn connect_test_node(port: u16, node_id: u8) -> TcpStream {
 async fn test_health_endpoint() {
     let (server, _, _) = setup_test_api().await;
 
-    let response = server.get("/health").await;
+    let response = server.get("/api/health").await;
 
     assert_eq!(response.status_code(), StatusCode::OK);
 
@@ -94,7 +94,7 @@ async fn test_health_endpoint() {
 async fn test_nodes_endpoint_empty() {
     let (server, _, _) = setup_test_api().await;
 
-    let response = server.get("/nodes").await;
+    let response = server.get("/api/nodes").await;
 
     assert_eq!(response.status_code(), StatusCode::OK);
 
@@ -111,7 +111,10 @@ async fn test_nodes_endpoint_with_connections() {
     let _stream1 = connect_test_node(telemetry_port, 1).await;
     let _stream2 = connect_test_node(telemetry_port, 2).await;
 
-    let response = server.get("/nodes").await;
+    // Wait for batch writer to flush to database
+    sleep(Duration::from_millis(200)).await;
+
+    let response = server.get("/api/nodes").await;
 
     assert_eq!(response.status_code(), StatusCode::OK);
 
@@ -139,10 +142,13 @@ async fn test_node_details_endpoint() {
     // Connect a node
     let _stream = connect_test_node(telemetry_port, 3).await;
 
+    // Wait for batch writer to flush to database
+    sleep(Duration::from_millis(200)).await;
+
     // Get node ID (hex encoded peer_id)
     let node_id = hex::encode([3u8; 32]);
 
-    let response = server.get(&format!("/nodes/{}", node_id)).await;
+    let response = server.get(&format!("/api/nodes/{}", node_id)).await;
 
     assert_eq!(response.status_code(), StatusCode::OK);
 
@@ -162,7 +168,7 @@ async fn test_node_details_endpoint() {
 async fn test_node_details_not_found() {
     let (server, _, _) = setup_test_api().await;
 
-    let response = server.get("/nodes/nonexistent").await;
+    let response = server.get("/api/nodes/nonexistent").await;
 
     assert_eq!(response.status_code(), StatusCode::NOT_FOUND);
 
@@ -174,7 +180,7 @@ async fn test_node_details_not_found() {
 async fn test_events_endpoint_empty() {
     let (server, _, _) = setup_test_api().await;
 
-    let response = server.get("/events").await;
+    let response = server.get("/api/events").await;
 
     assert_eq!(response.status_code(), StatusCode::OK);
 
@@ -222,7 +228,7 @@ async fn test_events_endpoint_with_data() {
 
     sleep(Duration::from_millis(500)).await;
 
-    let response = server.get("/events").await;
+    let response = server.get("/api/events").await;
 
     assert_eq!(response.status_code(), StatusCode::OK);
 
@@ -267,7 +273,7 @@ async fn test_events_pagination() {
     sleep(Duration::from_millis(200)).await;
 
     // Test limit
-    let response = server.get("/events?limit=5").await;
+    let response = server.get("/api/events?limit=5").await;
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
@@ -275,7 +281,7 @@ async fn test_events_pagination() {
     assert_eq!(json["has_more"], true);
 
     // Test offset
-    let response = server.get("/events?limit=5&offset=5").await;
+    let response = server.get("/api/events?limit=5&offset=5").await;
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
@@ -284,7 +290,7 @@ async fn test_events_pagination() {
     assert_eq!(json["has_more"], true);
 
     // Test offset beyond available events
-    let response = server.get("/events?limit=5&offset=10").await;
+    let response = server.get("/api/events?limit=5&offset=10").await;
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
@@ -328,7 +334,7 @@ async fn test_node_events_endpoint() {
     sleep(Duration::from_millis(200)).await;
 
     // Get events for node 1
-    let response = server.get(&format!("/nodes/{}/events", node1_id)).await;
+    let response = server.get(&format!("/api/nodes/{}/events", node1_id)).await;
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
@@ -337,7 +343,7 @@ async fn test_node_events_endpoint() {
     assert!(events.iter().all(|e| e["event_type"] == 11)); // All BestBlockChanged
 
     // Get events for node 2
-    let response = server.get(&format!("/nodes/{}/events", node2_id)).await;
+    let response = server.get(&format!("/api/nodes/{}/events", node2_id)).await;
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
@@ -381,14 +387,17 @@ async fn test_concurrent_api_requests() {
     // Connect a node
     let _stream = connect_test_node(telemetry_port, 9).await;
 
+    // Wait for batch writer to flush to database
+    sleep(Duration::from_millis(200)).await;
+
     // Make multiple requests sequentially (TestServer doesn't support clone)
     for _ in 0..5 {
-        let response = server.get("/nodes").await;
+        let response = server.get("/api/nodes").await;
         assert_eq!(response.status_code(), StatusCode::OK);
     }
 
     for _ in 0..5 {
-        let response = server.get("/events").await;
+        let response = server.get("/api/events").await;
         assert_eq!(response.status_code(), StatusCode::OK);
     }
 }

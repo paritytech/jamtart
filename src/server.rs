@@ -387,7 +387,8 @@ async fn handle_connection_optimized(
                                     metrics::counter!("telemetry_events_received").increment(1);
 
                                     // Update connection stats periodically
-                                    if event_count % CONNECTION_STATS_UPDATE_FREQUENCY == 0 {
+                                    if event_count.is_multiple_of(CONNECTION_STATS_UPDATE_FREQUENCY)
+                                    {
                                         if let Some(mut conn) = connections.get_mut(&node_id_str) {
                                             conn.last_event_at = chrono::Utc::now();
                                             conn.event_count = event_count;
