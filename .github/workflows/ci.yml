@@ -68,17 +68,22 @@ jobs:
       - name: Run database migrations
         env:
           DATABASE_URL: postgres://tart:tart_password@localhost:5432/tart_test
-        run: cargo sqlx migrate run
+        run: |
+          echo "Running migrations..."
+          cargo sqlx migrate run
+          echo "Verifying tables exist..."
+          psql postgres://tart:tart_password@localhost:5432/tart_test -c "\dt"
 
       - name: Run tests
         env:
           DATABASE_URL: postgres://tart:tart_password@localhost:5432/tart_test
           TEST_DATABASE_URL: postgres://tart:tart_password@localhost:5432/tart_test
+          RUST_LOG: info
         run: |
           # Run unit tests in parallel (no database needed)
           cargo test --lib --test types_tests --test events_tests --test error_tests --test encoding_tests
           # Run integration tests serially to avoid database conflicts
-          cargo test --test api_tests --test integration_tests --test optimized_server_tests -- --test-threads=1
+          cargo test --test api_tests --test integration_tests --test optimized_server_tests -- --test-threads=1 --nocapture
 
   fmt:
     name: Format Check

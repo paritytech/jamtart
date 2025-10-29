@@ -47,8 +47,13 @@ impl BatchWriter {
 
         // Spawn the background writer task
         tokio::spawn(async move {
-            if let Err(e) = batch_writer_loop(receiver, store).await {
-                error!("Batch writer error: {}", e);
+            eprintln!("DEBUG: Batch writer task started");
+            match batch_writer_loop(receiver, store).await {
+                Ok(_) => eprintln!("DEBUG: Batch writer task completed normally"),
+                Err(e) => {
+                    eprintln!("ERROR: Batch writer task failed: {}", e);
+                    error!("Batch writer error: {}", e);
+                }
             }
         });
 

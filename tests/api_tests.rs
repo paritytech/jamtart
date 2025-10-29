@@ -17,11 +17,21 @@ use tokio::time::sleep;
 async fn setup_test_api() -> (TestServer, Arc<TelemetryServer>, u16) {
     // Setup test database (PostgreSQL)
     let database_url = std::env::var("TEST_DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tart:tart_password@localhost/tart_test".to_string());
-    let store = Arc::new(EventStore::new(&database_url).await.unwrap());
+        .unwrap_or_else(|_| "postgres://tart:tart_password@localhost:5432/tart_test".to_string());
 
-    // Clean database before each test to avoid pollution
-    store.cleanup_test_data().await.unwrap();
+    eprintln!("DEBUG: Connecting to database: {}", database_url);
+    let store = Arc::new(
+        EventStore::new(&database_url)
+            .await
+            .expect("Failed to connect to database"),
+    );
+
+    eprintln!("DEBUG: Cleaning test data...");
+    store
+        .cleanup_test_data()
+        .await
+        .expect("Failed to cleanup test data");
+    eprintln!("DEBUG: Cleanup completed");
 
     // Small delay to ensure cleanup completes
     sleep(Duration::from_millis(50)).await;
@@ -135,8 +145,13 @@ async fn test_nodes_endpoint_with_connections() {
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
+    eprintln!(
+        "DEBUG: Response JSON: {}",
+        serde_json::to_string_pretty(&json).unwrap()
+    );
     let nodes = json["nodes"].as_array().unwrap();
-    assert_eq!(nodes.len(), 2);
+    eprintln!("DEBUG: Found {} nodes, expected 2", nodes.len());
+    assert_eq!(nodes.len(), 2, "Expected 2 nodes but found {}", nodes.len());
 
     // Check node data
     for node in nodes {
