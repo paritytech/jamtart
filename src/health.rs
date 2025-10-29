@@ -241,10 +241,7 @@ pub mod checks {
                     let start = std::time::Instant::now();
 
                     // Test batch writer responsiveness by sending a flush command
-                    match tokio::time::timeout(
-                        Duration::from_secs(5),
-                        batch_writer.flush()
-                    ).await {
+                    match tokio::time::timeout(Duration::from_secs(5), batch_writer.flush()).await {
                         Ok(Ok(_)) => {
                             let response_time = start.elapsed();
                             let mut metrics = HashMap::new();
@@ -265,9 +262,9 @@ pub mod checks {
                                 serde_json::Value::Bool(batch_writer.is_full()),
                             );
 
-                            let status = if response_time > Duration::from_secs(2) {
-                                HealthStatus::Degraded
-                            } else if batch_writer.is_full() {
+                            let status = if response_time > Duration::from_secs(2)
+                                || batch_writer.is_full()
+                            {
                                 HealthStatus::Degraded
                             } else {
                                 HealthStatus::Healthy
@@ -296,7 +293,9 @@ pub mod checks {
                         Err(_) => ComponentHealth {
                             name: "batch_writer".to_string(),
                             status: HealthStatus::Unhealthy,
-                            message: Some("Batch writer timeout - task may have crashed".to_string()),
+                            message: Some(
+                                "Batch writer timeout - task may have crashed".to_string(),
+                            ),
                             last_check: chrono::Utc::now(),
                             metrics: HashMap::new(),
                         },

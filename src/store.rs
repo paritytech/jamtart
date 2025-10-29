@@ -458,7 +458,10 @@ impl EventStore {
             );
 
             if let Err(e) = query_builder.build().execute(&mut *tx).await {
-                tracing::error!("Failed to execute batch insert chunk, rolling back transaction: {}", e);
+                tracing::error!(
+                    "Failed to execute batch insert chunk, rolling back transaction: {}",
+                    e
+                );
                 // Transaction will be automatically rolled back when tx is dropped
                 return Err(e);
             }
@@ -470,7 +473,11 @@ impl EventStore {
                 Ok(())
             }
             Err(e) => {
-                tracing::error!("Failed to commit transaction for {} events, rolling back: {}", events.len(), e);
+                tracing::error!(
+                    "Failed to commit transaction for {} events, rolling back: {}",
+                    events.len(),
+                    e
+                );
                 // Transaction will be automatically rolled back when tx is dropped
                 Err(e)
             }
@@ -519,18 +526,28 @@ impl EventStore {
             .execute(&mut *tx)
             .await
             .map_err(|e| {
-                tracing::error!("Failed to insert event in simple batch, rolling back: {}", e);
+                tracing::error!(
+                    "Failed to insert event in simple batch, rolling back: {}",
+                    e
+                );
                 e
             })?;
         }
 
         match tx.commit().await {
             Ok(_) => {
-                tracing::debug!("Successfully committed simple batch of {} events", event_count);
+                tracing::debug!(
+                    "Successfully committed simple batch of {} events",
+                    event_count
+                );
                 Ok(())
             }
             Err(e) => {
-                tracing::error!("Failed to commit simple batch transaction for {} events, rolling back: {}", event_count, e);
+                tracing::error!(
+                    "Failed to commit simple batch transaction for {} events, rolling back: {}",
+                    event_count,
+                    e
+                );
                 Err(e)
             }
         }

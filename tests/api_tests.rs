@@ -117,8 +117,8 @@ async fn flush_and_wait(telemetry_server: &Arc<TelemetryServer>) {
             panic!("Flush failed: {}", e);
         }
     }
-    // Small delay to ensure PostgreSQL commit completes
-    sleep(Duration::from_millis(50)).await;
+    // Delay to ensure PostgreSQL commit completes and data is visible to other connections
+    sleep(Duration::from_millis(100)).await;
 }
 
 #[tokio::test]

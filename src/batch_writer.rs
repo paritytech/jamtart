@@ -61,8 +61,13 @@ impl BatchWriter {
                     info!("Batch writer task completed normally");
                 }
                 Err(e) => {
-                    error!("CRITICAL: Batch writer task failed - events will not be persisted: {}", e);
-                    error!("This is a fatal error. The process should be restarted by the supervisor.");
+                    error!(
+                        "CRITICAL: Batch writer task failed - events will not be persisted: {}",
+                        e
+                    );
+                    error!(
+                        "This is a fatal error. The process should be restarted by the supervisor."
+                    );
                     // Panic to trigger process restart via systemd/k8s
                     panic!("Batch writer task failed: {}. Process restart required.", e);
                 }
@@ -245,13 +250,14 @@ async fn flush_batch(
     );
 
     // Process node updates first
-    // Don't drain yet - only drain on success to prevent data loss
-    for (node_id, info) in node_updates.iter() {
+    // Note: Using drain() for simplicity. If an error occurs, we fail fast (panic)
+    // since the batch writer task failure will restart the process anyway.
+    for (node_id, info) in node_updates.drain(..) {
         match info {
             Some(info) => {
                 debug!("Storing node connection for {}", node_id);
                 store
-                    .store_node_connected(node_id, info)
+                    .store_node_connected(&node_id, &info)
                     .await
                     .map_err(|e| {
                         error!("Failed to store node connection {}: {}", node_id, e);
@@ -261,7 +267,7 @@ async fn flush_batch(
             }
             None => {
                 debug!("Storing node disconnection for {}", node_id);
-                store.store_node_disconnected(node_id).await.map_err(|e| {
+                store.store_node_disconnected(&node_id).await.map_err(|e| {
                     error!("Failed to store node disconnection {}: {}", node_id, e);
                     anyhow::anyhow!("Node disconnection storage failed: {}", e)
                 })?;
@@ -271,17 +277,12 @@ async fn flush_batch(
 
     // Process events using batch insert for optimal performance
     if !event_batch.is_empty() {
-        // Clone the batch to avoid losing data on error
-        let batch: Vec<(String, u64, Event)> = event_batch.clone();
+        let batch = std::mem::take(event_batch);
         store.store_events_batch(batch).await.map_err(|e| {
             error!("Failed to store event batch: {}", e);
             anyhow::anyhow!("Event batch storage failed: {}", e)
         })?;
     }
-
-    // Only clear vectors after successful flush
-    event_batch.clear();
-    node_updates.clear();
 
     // Update metrics
     metrics::counter!("telemetry_events_flushed").increment(event_count as u64);
