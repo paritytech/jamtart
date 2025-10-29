@@ -77,7 +77,11 @@ async fn setup_test_api() -> (TestServer, Arc<TelemetryServer>, u16) {
     (test_server, telemetry_server, telemetry_port)
 }
 
-async fn connect_test_node(port: u16, node_id: u8) -> TcpStream {
+async fn connect_test_node_with_server(
+    port: u16,
+    node_id: u8,
+    telemetry_server: &Arc<TelemetryServer>,
+) -> TcpStream {
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
         .await
         .unwrap();
@@ -85,11 +89,19 @@ async fn connect_test_node(port: u16, node_id: u8) -> TcpStream {
     let mut node_info = common::test_node_info([node_id; 32]);
     node_info.implementation_name = BoundedString::new(&format!("test-node-{}", node_id)).unwrap();
 
+    eprintln!("DEBUG: Sending node info for node {}", node_id);
     let encoded = encode_message(&node_info).unwrap();
     stream.write_all(&encoded).await.unwrap();
 
-    // Small delay for server to receive and queue
-    sleep(Duration::from_millis(50)).await;
+    // Wait for server to receive, decode, queue AND write to database
+    // The batch writer automatically flushes NodeConnected immediately
+    sleep(Duration::from_millis(300)).await;
+
+    // Verify the node was actually written by flushing
+    eprintln!("DEBUG: Flushing after node {} connection", node_id);
+    flush_and_wait(telemetry_server).await;
+    eprintln!("DEBUG: Node {} connection confirmed in database", node_id);
+
     stream
 }
 
@@ -140,12 +152,9 @@ async fn test_nodes_endpoint_empty() {
 async fn test_nodes_endpoint_with_connections() {
     let (server, telemetry_server, telemetry_port) = setup_test_api().await;
 
-    // Connect two nodes
-    let _stream1 = connect_test_node(telemetry_port, 1).await;
-    let _stream2 = connect_test_node(telemetry_port, 2).await;
-
-    // Flush batch writer and wait for database write to complete
-    flush_and_wait(&telemetry_server).await;
+    // Connect two nodes (includes flush to ensure data is written)
+    let _stream1 = connect_test_node_with_server(telemetry_port, 1, &telemetry_server).await;
+    let _stream2 = connect_test_node_with_server(telemetry_port, 2, &telemetry_server).await;
 
     let response = server.get("/api/nodes").await;
 
@@ -177,11 +186,8 @@ async fn test_nodes_endpoint_with_connections() {
 async fn test_node_details_endpoint() {
     let (server, telemetry_server, telemetry_port) = setup_test_api().await;
 
-    // Connect a node
-    let _stream = connect_test_node(telemetry_port, 3).await;
-
-    // Flush batch writer and wait for database write
-    flush_and_wait(&telemetry_server).await;
+    // Connect a node (includes flush)
+    let _stream = connect_test_node_with_server(telemetry_port, 3, &telemetry_server).await;
 
     // Get node ID (hex encoded peer_id)
     let node_id = hex::encode([3u8; 32]);
@@ -234,10 +240,7 @@ async fn test_events_endpoint_with_data() {
     let (server, telemetry_server, telemetry_port) = setup_test_api().await;
 
     // Connect a node and send events
-    let mut stream = connect_test_node(telemetry_port, 4).await;
-
-    // Flush node connection first
-    flush_and_wait(&telemetry_server).await;
+    let mut stream = connect_test_node_with_server(telemetry_port, 4, &telemetry_server).await;
 
     // Send some events
     let events = vec![
@@ -300,10 +303,7 @@ async fn test_events_pagination() {
     let (server, telemetry_server, telemetry_port) = setup_test_api().await;
 
     // Connect a node and send many events
-    let mut stream = connect_test_node(telemetry_port, 5).await;
-
-    // Flush node connection
-    flush_and_wait(&telemetry_server).await;
+    let mut stream = connect_test_node_with_server(telemetry_port, 5, &telemetry_server).await;
 
     // Send 10 events
     for i in 0..10 {
@@ -349,15 +349,12 @@ async fn test_events_pagination() {
 async fn test_node_events_endpoint() {
     let (server, telemetry_server, telemetry_port) = setup_test_api().await;
 
-    // Connect two nodes
-    let mut stream1 = connect_test_node(telemetry_port, 6).await;
-    let mut stream2 = connect_test_node(telemetry_port, 7).await;
+    // Connect two nodes (includes flush)
+    let mut stream1 = connect_test_node_with_server(telemetry_port, 6, &telemetry_server).await;
+    let mut stream2 = connect_test_node_with_server(telemetry_port, 7, &telemetry_server).await;
 
     let node1_id = hex::encode([6u8; 32]);
     let node2_id = hex::encode([7u8; 32]);
-
-    // Flush node connections
-    flush_and_wait(&telemetry_server).await;
 
     // Send events from node 1
     for i in 0..3 {
@@ -435,11 +432,8 @@ async fn test_websocket_connection() {
 async fn test_concurrent_api_requests() {
     let (server, telemetry_server, telemetry_port) = setup_test_api().await;
 
-    // Connect a node
-    let _stream = connect_test_node(telemetry_port, 9).await;
-
-    // Flush to database
-    flush_and_wait(&telemetry_server).await;
+    // Connect a node (includes flush)
+    let _stream = connect_test_node_with_server(telemetry_port, 9, &telemetry_server).await;
 
     // Make multiple requests sequentially (TestServer doesn't support clone)
     for _ in 0..5 {

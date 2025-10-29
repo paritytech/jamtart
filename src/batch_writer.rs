@@ -174,7 +174,10 @@ async fn batch_writer_loop(
                         // Force flush node updates immediately to avoid race conditions
                         match flush_batch(&store, &mut event_batch, &mut node_updates).await {
                             Ok(_) => {
-                                eprintln!("DEBUG: NodeConnected flush succeeded for {}", node_id_clone)
+                                eprintln!(
+                                    "DEBUG: NodeConnected flush succeeded for {}",
+                                    node_id_clone
+                                )
                             }
                             Err(e) => {
                                 eprintln!(
