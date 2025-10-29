@@ -25,29 +25,14 @@ jobs:
           # Linux x86_64
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            archive: tar.gz
-
-          # Linux ARM64
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            archive: tar.gz
-            cross: true
 
           # macOS x86_64 (Intel)
           - os: macos-latest
             target: x86_64-apple-darwin
-            archive: tar.gz
 
           # macOS ARM64 (Apple Silicon)
           - os: macos-latest
             target: aarch64-apple-darwin
-            archive: tar.gz
-
-          # Windows x86_64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            archive: zip
-            ext: .exe
 
     steps:
       - name: Checkout code
@@ -57,11 +42,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-
-      - name: Install cross (for cross-compilation)
-        if: matrix.cross
-        run: |
-          cargo install cross --git https://github.com/cross-rs/cross
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -89,48 +69,31 @@ jobs:
 
       - name: Build binaries
         run: |
-          if [ "${{ matrix.cross }}" == "true" ]; then
-            cross build --release --target ${{ matrix.target }} --bin tart-backend
-            cross build --release --target ${{ matrix.target }} --bin tart-dash
-          else
-            cargo build --release --target ${{ matrix.target }} --bin tart-backend
-            cargo build --release --target ${{ matrix.target }} --bin tart-dash
-          fi
-        shell: bash
+          cargo build --release --target ${{ matrix.target }} --bin tart-backend
+          cargo build --release --target ${{ matrix.target }} --bin tart-dash
 
-      - name: Strip binaries (Unix)
-        if: runner.os != 'Windows'
+      - name: Strip binaries
         run: |
           strip target/${{ matrix.target }}/release/tart-backend || true
           strip target/${{ matrix.target }}/release/tart-dash || true
 
-      - name: Create archive (Unix)
-        if: matrix.archive == 'tar.gz'
+      - name: Rename binaries with target suffix
         run: |
-          cd target/${{ matrix.target }}/release
-          tar -czf ../../../tart-backend-${{ matrix.target }}.tar.gz tart-backend${{ matrix.ext }}
-          tar -czf ../../../tart-dash-${{ matrix.target }}.tar.gz tart-dash${{ matrix.ext }}
-
-      - name: Create archive (Windows)
-        if: matrix.archive == 'zip'
-        shell: pwsh
-        run: |
-          cd target/${{ matrix.target }}/release
-          Compress-Archive -Path tart-backend.exe -DestinationPath ../../../tart-backend-${{ matrix.target }}.zip
-          Compress-Archive -Path tart-dash.exe -DestinationPath ../../../tart-dash-${{ matrix.target }}.zip
+          cp target/${{ matrix.target }}/release/tart-backend tart-backend-${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/tart-dash tart-dash-${{ matrix.target }}
 
       - name: Upload backend artifact
         uses: actions/upload-artifact@v4
         with:
           name: tart-backend-${{ matrix.target }}
-          path: tart-backend-${{ matrix.target }}.${{ matrix.archive }}
+          path: tart-backend-${{ matrix.target }}
           if-no-files-found: error
 
       - name: Upload dashboard artifact
         uses: actions/upload-artifact@v4
         with:
           name: tart-dash-${{ matrix.target }}
-          path: tart-dash-${{ matrix.target }}.${{ matrix.archive }}
+          path: tart-dash-${{ matrix.target }}
           if-no-files-found: error
 
   release:
