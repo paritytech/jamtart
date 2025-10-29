@@ -142,9 +142,10 @@ async fn batch_writer_loop(
     let mut node_updates: Vec<(String, Option<NodeInformation>)> = Vec::new();
 
     info!("Batch writer started");
+    eprintln!("DEBUG: Batch writer loop started");
 
-    // Small delay to allow all initial connections to queue
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // Small delay to allow initialization
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
     // Try to receive initial messages immediately with timeout
     let mut initial_count = 0;
@@ -166,13 +167,22 @@ async fn batch_writer_loop(
                 );
                 match command {
                     WriterCommand::NodeConnected { node_id, info } => {
+                        eprintln!("DEBUG: Processing NodeConnected for {}", node_id);
+                        let node_id_clone = node_id.clone();
                         info!("Received NodeConnected command for {}", node_id);
                         node_updates.push((node_id, Some(info)));
                         // Force flush node updates immediately to avoid race conditions
-                        if let Err(e) =
-                            flush_batch(&store, &mut event_batch, &mut node_updates).await
-                        {
-                            error!("Flush batch error: {}", e);
+                        match flush_batch(&store, &mut event_batch, &mut node_updates).await {
+                            Ok(_) => {
+                                eprintln!("DEBUG: NodeConnected flush succeeded for {}", node_id_clone)
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "ERROR: NodeConnected flush failed for {}: {}",
+                                    node_id_clone, e
+                                );
+                                error!("Flush batch error: {}", e);
+                            }
                         }
                     }
                     WriterCommand::Event {
@@ -193,11 +203,21 @@ async fn batch_writer_loop(
                         node_updates.push((node_id, None));
                     }
                     WriterCommand::Flush { response } => {
+                        eprintln!(
+                            "DEBUG: Processing Flush command (batch: {}, nodes: {})",
+                            event_batch.len(),
+                            node_updates.len()
+                        );
                         let result = flush_batch(&store, &mut event_batch, &mut node_updates).await;
-                        if let Err(ref e) = result {
-                            error!("Flush batch error: {}", e);
+                        match &result {
+                            Ok(_) => eprintln!("DEBUG: Flush completed successfully"),
+                            Err(e) => {
+                                eprintln!("ERROR: Flush failed: {}", e);
+                                error!("Flush batch error: {}", e);
+                            }
                         }
                         let _ = response.send(result);
+                        eprintln!("DEBUG: Sent flush response");
                     }
                     WriterCommand::Shutdown => {
                         info!("Batch writer shutting down");
@@ -259,11 +279,17 @@ async fn batch_writer_loop(
                         node_updates.push((node_id, None));
                     }
                     WriterCommand::Flush { response } => {
+                        eprintln!("DEBUG: Processing Flush command (batch: {}, nodes: {})", event_batch.len(), node_updates.len());
                         let result = flush_batch(&store, &mut event_batch, &mut node_updates).await;
-                        if let Err(ref e) = result {
-                            error!("Flush batch error: {}", e);
+                        match &result {
+                            Ok(_) => eprintln!("DEBUG: Flush completed successfully"),
+                            Err(e) => {
+                                eprintln!("ERROR: Flush failed: {}", e);
+                                error!("Flush batch error: {}", e);
+                            }
                         }
                         let _ = response.send(result);
+                        eprintln!("DEBUG: Sent flush response");
                     }
                     WriterCommand::Shutdown => {
                         info!("Batch writer shutting down");
@@ -297,11 +323,16 @@ async fn flush_batch(
         "Flushing batch: {} events, {} node updates",
         event_count, node_count
     );
+    eprintln!(
+        "DEBUG: flush_batch called with {} events, {} nodes",
+        event_count, node_count
+    );
 
     // Process node updates first (fail fast on errors)
     for (node_id, info) in node_updates.drain(..) {
         match info {
             Some(info) => {
+                eprintln!("DEBUG: Storing node connection for {}", node_id);
                 info!("Storing node connection for {}", node_id);
                 store
                     .store_node_connected(&node_id, &info)
@@ -310,6 +341,7 @@ async fn flush_batch(
                         error!("Failed to store node connection {}: {}", node_id, e);
                         anyhow::anyhow!("Node connection storage failed: {}", e)
                     })?;
+                eprintln!("DEBUG: Successfully stored node connection for {}", node_id);
                 info!("Successfully stored node connection for {}", node_id);
             }
             None => {
@@ -335,5 +367,9 @@ async fn flush_batch(
     metrics::counter!("telemetry_events_flushed").increment(event_count as u64);
     metrics::counter!("telemetry_node_updates_flushed").increment(node_count as u64);
 
+    eprintln!(
+        "DEBUG: flush_batch completed - wrote {} events, {} nodes",
+        event_count, node_count
+    );
     Ok(())
 }

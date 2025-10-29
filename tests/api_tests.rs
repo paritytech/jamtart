@@ -97,7 +97,14 @@ async fn flush_and_wait(telemetry_server: &Arc<TelemetryServer>) {
     // Flush batch writer and wait for completion
     // This ensures all queued writes have been processed and written to PostgreSQL
     // before we query the database in tests
-    telemetry_server.flush_writes().await.expect("Flush failed");
+    eprintln!("DEBUG: Calling flush_writes()");
+    match telemetry_server.flush_writes().await {
+        Ok(_) => eprintln!("DEBUG: Flush completed successfully"),
+        Err(e) => {
+            eprintln!("ERROR: Flush failed: {}", e);
+            panic!("Flush failed: {}", e);
+        }
+    }
     // Small delay to ensure PostgreSQL commit completes
     sleep(Duration::from_millis(50)).await;
 }
