@@ -457,11 +457,24 @@ impl EventStore {
                  data = EXCLUDED.data",
             );
 
-            query_builder.build().execute(&mut *tx).await?;
+            if let Err(e) = query_builder.build().execute(&mut *tx).await {
+                tracing::error!("Failed to execute batch insert chunk, rolling back transaction: {}", e);
+                // Transaction will be automatically rolled back when tx is dropped
+                return Err(e);
+            }
         }
 
-        tx.commit().await?;
-        Ok(())
+        match tx.commit().await {
+            Ok(_) => {
+                tracing::debug!("Successfully committed batch of {} events", events.len());
+                Ok(())
+            }
+            Err(e) => {
+                tracing::error!("Failed to commit transaction for {} events, rolling back: {}", events.len(), e);
+                // Transaction will be automatically rolled back when tx is dropped
+                Err(e)
+            }
+        }
     }
 
     /// Simple batch insert for small batches using individual INSERTs in a transaction.
@@ -470,6 +483,7 @@ impl EventStore {
         events: Vec<(String, u64, Event)>,
     ) -> Result<(), sqlx::Error> {
         let mut tx = self.pool.begin().await?;
+        let event_count = events.len();
 
         for (node_id, event_id, event) in events {
             let event_type = event.event_type() as i32;
@@ -503,11 +517,23 @@ impl EventStore {
             .bind(timestamp)
             .bind(event_json)
             .execute(&mut *tx)
-            .await?;
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to insert event in simple batch, rolling back: {}", e);
+                e
+            })?;
         }
 
-        tx.commit().await?;
-        Ok(())
+        match tx.commit().await {
+            Ok(_) => {
+                tracing::debug!("Successfully committed simple batch of {} events", event_count);
+                Ok(())
+            }
+            Err(e) => {
+                tracing::error!("Failed to commit simple batch transaction for {} events, rolling back: {}", event_count, e);
+                Err(e)
+            }
+        }
     }
 
     // Health metrics method for monitoring

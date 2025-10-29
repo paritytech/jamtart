@@ -231,6 +231,10 @@ impl TelemetryServer {
         Arc::clone(&self.broadcaster)
     }
 
+    pub fn get_batch_writer(&self) -> BatchWriter {
+        self.batch_writer.clone()
+    }
+
     /// Flush all pending batch writes to database
     ///
     /// **For testing only**: Forces immediate flush of all buffered

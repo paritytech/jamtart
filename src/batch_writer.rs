@@ -2,8 +2,8 @@ use anyhow::Result;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::{self, Receiver, Sender};
-use tokio::time::{interval, timeout};
-use tracing::{debug, error, info, warn};
+use tokio::time::interval;
+use tracing::{debug, error, info};
 
 use crate::events::{Event, NodeInformation};
 use crate::store::EventStore;
@@ -46,13 +46,25 @@ impl BatchWriter {
         let (sender, receiver) = mpsc::channel(CHANNEL_SIZE);
 
         // Spawn the background writer task
+        // Note: This task is critical. If it fails, the entire process should restart
+        // because:
+        // 1. The channel receiver is consumed and cannot be recreated without
+        //    invalidating all existing BatchWriter sender references
+        // 2. A failed batch writer means NO events are persisted (silent data loss)
+        // 3. Failing fast is better than silently appearing to work
+        // 4. The health check (batch_writer_check) will detect unresponsiveness
+        //    before panic, allowing monitoring/alerting systems to act
         tokio::spawn(async move {
-            eprintln!("DEBUG: Batch writer task started");
+            info!("Batch writer task started");
             match batch_writer_loop(receiver, store).await {
-                Ok(_) => eprintln!("DEBUG: Batch writer task completed normally"),
+                Ok(_) => {
+                    info!("Batch writer task completed normally");
+                }
                 Err(e) => {
-                    eprintln!("ERROR: Batch writer task failed: {}", e);
-                    error!("Batch writer error: {}", e);
+                    error!("CRITICAL: Batch writer task failed - events will not be persisted: {}", e);
+                    error!("This is a fatal error. The process should be restarted by the supervisor.");
+                    // Panic to trigger process restart via systemd/k8s
+                    panic!("Batch writer task failed: {}. Process restart required.", e);
                 }
             }
         });
@@ -101,8 +113,12 @@ impl BatchWriter {
     }
 
     /// Shutdown the batch writer
-    pub async fn shutdown(&self) {
-        let _ = self.sender.send(WriterCommand::Shutdown).await;
+    pub async fn shutdown(&self) -> Result<()> {
+        self.sender
+            .send(WriterCommand::Shutdown)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to send shutdown command: {}", e))?;
+        Ok(())
     }
 
     /// Flush all pending writes to database
@@ -142,114 +158,17 @@ async fn batch_writer_loop(
     let mut node_updates: Vec<(String, Option<NodeInformation>)> = Vec::new();
 
     info!("Batch writer started");
-    eprintln!("DEBUG: Batch writer loop started, processing commands immediately");
 
-    // Process commands immediately without artificial delays
-    let mut initial_count = 0;
-    loop {
-        match timeout(Duration::from_millis(1000), receiver.recv()).await {
-            Ok(Some(command)) => {
-                initial_count += 1;
-                info!(
-                    "Processing initial command: {:?}",
-                    match &command {
-                        WriterCommand::NodeConnected { node_id, .. } =>
-                            format!("NodeConnected({})", node_id),
-                        WriterCommand::NodeDisconnected { node_id } =>
-                            format!("NodeDisconnected({})", node_id),
-                        WriterCommand::Event { node_id, .. } => format!("Event({})", node_id),
-                        WriterCommand::Flush { .. } => "Flush".to_string(),
-                        WriterCommand::Shutdown => "Shutdown".to_string(),
-                    }
-                );
-                match command {
-                    WriterCommand::NodeConnected { node_id, info } => {
-                        eprintln!("DEBUG: Processing NodeConnected for {}", node_id);
-                        let node_id_clone = node_id.clone();
-                        info!("Received NodeConnected command for {}", node_id);
-                        node_updates.push((node_id, Some(info)));
-                        // Force flush node updates immediately to avoid race conditions
-                        match flush_batch(&store, &mut event_batch, &mut node_updates).await {
-                            Ok(_) => {
-                                eprintln!(
-                                    "DEBUG: NodeConnected flush succeeded for {}",
-                                    node_id_clone
-                                )
-                            }
-                            Err(e) => {
-                                eprintln!(
-                                    "ERROR: NodeConnected flush failed for {}: {}",
-                                    node_id_clone, e
-                                );
-                                error!("Flush batch error: {}", e);
-                            }
-                        }
-                    }
-                    WriterCommand::Event {
-                        node_id,
-                        event_id,
-                        event,
-                    } => {
-                        event_batch.push((node_id, event_id, event));
-                        if event_batch.len() >= MAX_BATCH_SIZE {
-                            if let Err(e) =
-                                flush_batch(&store, &mut event_batch, &mut node_updates).await
-                            {
-                                error!("Flush batch error: {}", e);
-                            }
-                        }
-                    }
-                    WriterCommand::NodeDisconnected { node_id } => {
-                        node_updates.push((node_id, None));
-                    }
-                    WriterCommand::Flush { response } => {
-                        eprintln!(
-                            "DEBUG: Processing Flush command (batch: {}, nodes: {})",
-                            event_batch.len(),
-                            node_updates.len()
-                        );
-                        let result = flush_batch(&store, &mut event_batch, &mut node_updates).await;
-                        match &result {
-                            Ok(_) => eprintln!("DEBUG: Flush completed successfully"),
-                            Err(e) => {
-                                eprintln!("ERROR: Flush failed: {}", e);
-                                error!("Flush batch error: {}", e);
-                            }
-                        }
-                        let _ = response.send(result);
-                        eprintln!("DEBUG: Sent flush response");
-                    }
-                    WriterCommand::Shutdown => {
-                        info!("Batch writer shutting down");
-                        if let Err(e) =
-                            flush_batch(&store, &mut event_batch, &mut node_updates).await
-                        {
-                            error!("Flush batch error: {}", e);
-                        }
-                        return Ok(());
-                    }
-                }
-            }
-            Ok(None) => {
-                // Channel closed
-                warn!("Batch writer channel closed");
-                return Ok(());
-            }
-            Err(_) => {
-                // Timeout, no more initial messages
-                break;
-            }
-        }
-    }
+    // Consume the first tick which fires immediately
+    interval.tick().await;
 
-    info!("Processed {} initial commands", initial_count);
-
-    // Main processing loop
+    // Single processing loop - no two-phase initialization
     loop {
         tokio::select! {
             _ = interval.tick() => {
-                // Timeout reached, flush any pending events
+                // Periodic flush
                 if !event_batch.is_empty() || !node_updates.is_empty() {
+                    debug!("Periodic flush: {} events, {} node updates", event_batch.len(), node_updates.len());
                     if let Err(e) = flush_batch(&store, &mut event_batch, &mut node_updates).await {
                         error!("Periodic flush error: {}", e);
                     }
@@ -262,40 +181,40 @@ async fn batch_writer_loop(
 
                         // Flush if batch is full
                         if event_batch.len() >= MAX_BATCH_SIZE {
+                            debug!("Batch size flush: {} events", event_batch.len());
                             if let Err(e) = flush_batch(&store, &mut event_batch, &mut node_updates).await {
-                            error!("Flush batch error: {}", e);
-                        }
+                                error!("Batch size flush error: {}", e);
+                            }
                         }
                     }
                     WriterCommand::NodeConnected { node_id, info } => {
-                        info!("Received NodeConnected command for {}", node_id);
+                        info!("Node connected: {}, flushing immediately", node_id);
                         node_updates.push((node_id, Some(info)));
                         // Force flush node updates immediately to avoid race conditions
                         if let Err(e) = flush_batch(&store, &mut event_batch, &mut node_updates).await {
-                            error!("Flush batch error: {}", e);
+                            error!("Node connection flush error: {}", e);
                         }
                     }
                     WriterCommand::NodeDisconnected { node_id } => {
+                        info!("Node disconnected: {}, flushing immediately", node_id);
                         node_updates.push((node_id, None));
+                        // Flush disconnections immediately too (symmetry with connections)
+                        if let Err(e) = flush_batch(&store, &mut event_batch, &mut node_updates).await {
+                            error!("Node disconnection flush error: {}", e);
+                        }
                     }
                     WriterCommand::Flush { response } => {
-                        eprintln!("DEBUG: Processing Flush command (batch: {}, nodes: {})", event_batch.len(), node_updates.len());
+                        debug!("Manual flush requested: {} events, {} node updates", event_batch.len(), node_updates.len());
                         let result = flush_batch(&store, &mut event_batch, &mut node_updates).await;
-                        match &result {
-                            Ok(_) => eprintln!("DEBUG: Flush completed successfully"),
-                            Err(e) => {
-                                eprintln!("ERROR: Flush failed: {}", e);
-                                error!("Flush batch error: {}", e);
-                            }
+                        if let Err(ref e) = result {
+                            error!("Manual flush error: {}", e);
                         }
                         let _ = response.send(result);
-                        eprintln!("DEBUG: Sent flush response");
                     }
                     WriterCommand::Shutdown => {
-                        info!("Batch writer shutting down");
-                        // Final flush
+                        info!("Batch writer shutting down, performing final flush");
                         if let Err(e) = flush_batch(&store, &mut event_batch, &mut node_updates).await {
-                            error!("Flush batch error: {}", e);
+                            error!("Shutdown flush error: {}", e);
                         }
                         break;
                     }
@@ -304,6 +223,7 @@ async fn batch_writer_loop(
         }
     }
 
+    info!("Batch writer stopped");
     Ok(())
 }
 
@@ -319,34 +239,29 @@ async fn flush_batch(
         return Ok(());
     }
 
-    info!(
+    debug!(
         "Flushing batch: {} events, {} node updates",
         event_count, node_count
     );
-    eprintln!(
-        "DEBUG: flush_batch called with {} events, {} nodes",
-        event_count, node_count
-    );
 
-    // Process node updates first (fail fast on errors)
-    for (node_id, info) in node_updates.drain(..) {
+    // Process node updates first
+    // Don't drain yet - only drain on success to prevent data loss
+    for (node_id, info) in node_updates.iter() {
         match info {
             Some(info) => {
-                eprintln!("DEBUG: Storing node connection for {}", node_id);
-                info!("Storing node connection for {}", node_id);
+                debug!("Storing node connection for {}", node_id);
                 store
-                    .store_node_connected(&node_id, &info)
+                    .store_node_connected(node_id, info)
                     .await
                     .map_err(|e| {
                         error!("Failed to store node connection {}: {}", node_id, e);
                         anyhow::anyhow!("Node connection storage failed: {}", e)
                     })?;
-                eprintln!("DEBUG: Successfully stored node connection for {}", node_id);
-                info!("Successfully stored node connection for {}", node_id);
+                debug!("Successfully stored node connection for {}", node_id);
             }
             None => {
                 debug!("Storing node disconnection for {}", node_id);
-                store.store_node_disconnected(&node_id).await.map_err(|e| {
+                store.store_node_disconnected(node_id).await.map_err(|e| {
                     error!("Failed to store node disconnection {}: {}", node_id, e);
                     anyhow::anyhow!("Node disconnection storage failed: {}", e)
                 })?;
@@ -356,19 +271,24 @@ async fn flush_batch(
 
     // Process events using batch insert for optimal performance
     if !event_batch.is_empty() {
-        let batch: Vec<(String, u64, Event)> = std::mem::take(event_batch);
+        // Clone the batch to avoid losing data on error
+        let batch: Vec<(String, u64, Event)> = event_batch.clone();
         store.store_events_batch(batch).await.map_err(|e| {
             error!("Failed to store event batch: {}", e);
             anyhow::anyhow!("Event batch storage failed: {}", e)
         })?;
     }
 
+    // Only clear vectors after successful flush
+    event_batch.clear();
+    node_updates.clear();
+
     // Update metrics
     metrics::counter!("telemetry_events_flushed").increment(event_count as u64);
     metrics::counter!("telemetry_node_updates_flushed").increment(node_count as u64);
 
-    eprintln!(
-        "DEBUG: flush_batch completed - wrote {} events, {} nodes",
+    debug!(
+        "Flush completed successfully: {} events, {} nodes",
         event_count, node_count
     );
     Ok(())

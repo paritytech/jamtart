@@ -95,7 +95,7 @@ async fn connect_test_node_with_server(
 
     // Wait for server to receive, decode, queue AND write to database
     // The batch writer automatically flushes NodeConnected immediately
-    sleep(Duration::from_millis(300)).await;
+    sleep(Duration::from_millis(50)).await;
 
     // Verify the node was actually written by flushing
     eprintln!("DEBUG: Flushing after node {} connection", node_id);

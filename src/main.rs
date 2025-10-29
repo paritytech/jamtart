@@ -99,6 +99,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Get the broadcaster from telemetry server for API WebSocket connections
     let broadcaster = telemetry_server.get_broadcaster();
+    let batch_writer = Arc::new(telemetry_server.get_batch_writer());
 
     // Initialize health monitoring system
     info!("Initializing comprehensive health monitoring system");
@@ -109,6 +110,9 @@ async fn main() -> anyhow::Result<()> {
         .add_check(checks::database_check(Arc::clone(&store)))
         .await;
     health_monitor
+        .add_check(checks::batch_writer_check(Arc::clone(&batch_writer)))
+        .await;
+    health_monitor
         .add_check(checks::broadcaster_check(Arc::clone(&broadcaster)))
         .await;
     health_monitor.add_check(checks::memory_check()).await;
@@ -116,7 +120,7 @@ async fn main() -> anyhow::Result<()> {
         .add_check(checks::system_resources_check())
         .await;
 
-    info!("Health monitoring system initialized with 4 critical component checks");
+    info!("Health monitoring system initialized with 5 critical component checks");
 
     // Create API state using the optimized components
     let api_state = ApiState {

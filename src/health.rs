@@ -176,6 +176,7 @@ fn calculate_overall_status(components: &HashMap<String, ComponentHealth>) -> He
 /// Utility functions for creating common health checks
 pub mod checks {
     use super::*;
+    use crate::batch_writer::BatchWriter;
     use crate::event_broadcaster::EventBroadcaster;
     use crate::store::EventStore;
 
@@ -220,6 +221,82 @@ pub mod checks {
                             name: "database".to_string(),
                             status: HealthStatus::Unhealthy,
                             message: Some(format!("Database error: {}", e)),
+                            last_check: chrono::Utc::now(),
+                            metrics: HashMap::new(),
+                        },
+                    }
+                })
+            }),
+            interval: Duration::from_secs(30),
+        }
+    }
+
+    /// Create a batch writer health check
+    pub fn batch_writer_check(batch_writer: Arc<BatchWriter>) -> HealthCheck {
+        HealthCheck {
+            name: "batch_writer".to_string(),
+            check_fn: Box::new(move || {
+                let batch_writer = batch_writer.clone();
+                Box::pin(async move {
+                    let start = std::time::Instant::now();
+
+                    // Test batch writer responsiveness by sending a flush command
+                    match tokio::time::timeout(
+                        Duration::from_secs(5),
+                        batch_writer.flush()
+                    ).await {
+                        Ok(Ok(_)) => {
+                            let response_time = start.elapsed();
+                            let mut metrics = HashMap::new();
+                            metrics.insert(
+                                "response_time_ms".to_string(),
+                                serde_json::Value::Number(serde_json::Number::from(
+                                    response_time.as_millis() as u64,
+                                )),
+                            );
+                            metrics.insert(
+                                "pending_count".to_string(),
+                                serde_json::Value::Number(serde_json::Number::from(
+                                    batch_writer.pending_count() as u64,
+                                )),
+                            );
+                            metrics.insert(
+                                "is_full".to_string(),
+                                serde_json::Value::Bool(batch_writer.is_full()),
+                            );
+
+                            let status = if response_time > Duration::from_secs(2) {
+                                HealthStatus::Degraded
+                            } else if batch_writer.is_full() {
+                                HealthStatus::Degraded
+                            } else {
+                                HealthStatus::Healthy
+                            };
+
+                            ComponentHealth {
+                                name: "batch_writer".to_string(),
+                                status,
+                                message: Some(format!(
+                                    "Response time: {}ms, pending: {}, full: {}",
+                                    response_time.as_millis(),
+                                    batch_writer.pending_count(),
+                                    batch_writer.is_full()
+                                )),
+                                last_check: chrono::Utc::now(),
+                                metrics,
+                            }
+                        }
+                        Ok(Err(e)) => ComponentHealth {
+                            name: "batch_writer".to_string(),
+                            status: HealthStatus::Unhealthy,
+                            message: Some(format!("Batch writer flush failed: {}", e)),
+                            last_check: chrono::Utc::now(),
+                            metrics: HashMap::new(),
+                        },
+                        Err(_) => ComponentHealth {
+                            name: "batch_writer".to_string(),
+                            status: HealthStatus::Unhealthy,
+                            message: Some("Batch writer timeout - task may have crashed".to_string()),
                             last_check: chrono::Utc::now(),
                             metrics: HashMap::new(),
                         },
