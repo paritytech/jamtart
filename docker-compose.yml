@@ -1,0 +1,95 @@
+version: '3.8'
+
+services:
+  # PostgreSQL database
+  postgres:
+    image: postgres:16-alpine
+    container_name: tart-postgres
+    environment:
+      # WARNING: Default credentials for LOCAL DEVELOPMENT only
+      # For production, override these with strong passwords via environment variables or secrets
+      - POSTGRES_USER=${POSTGRES_USER:-tart}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-tart_password}
+      - POSTGRES_DB=${POSTGRES_DB:-tart_telemetry}
+      - POSTGRES_INITDB_ARGS=-E UTF8 --locale=C
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    command:
+      - postgres
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - max_connections=200
+      - -c
+      - effective_cache_size=1GB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - wal_buffers=16MB
+      - -c
+      - default_statistics_target=100
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=200
+      - -c
+      - work_mem=4MB
+      - -c
+      - min_wal_size=1GB
+      - -c
+      - max_wal_size=4GB
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tart -d tart_telemetry"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # TART Backend
+  tart-backend:
+    build: .
+    container_name: tart-backend
+    ports:
+      - "9000:9000"  # Telemetry port
+      - "8080:8080"  # API port
+    environment:
+      # WARNING: Default credentials for LOCAL DEVELOPMENT only
+      # For production, set DATABASE_URL via environment variable with strong password
+      - DATABASE_URL=${DATABASE_URL:-postgres://tart:tart_password@postgres:5432/tart_telemetry}
+      - TELEMETRY_BIND=${TELEMETRY_BIND:-0.0.0.0:9000}
+      - API_BIND=${API_BIND:-0.0.0.0:8080}
+      - RUST_LOG=${RUST_LOG:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Optional: JAM validator node
+  jam-validator-0:
+    image: polkajam:latest
+    container_name: jam-validator-0
+    command: >
+      --chain dev
+      run
+      --telemetry tart-backend:9000
+      --dev-validator 0
+      --temp
+    depends_on:
+      tart-backend:
+        condition: service_healthy
+    restart: unless-stopped
+    profiles:
+      - with-validator
+
+volumes:
+  postgres-data:
+    driver: local
