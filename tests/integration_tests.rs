@@ -1,3 +1,5 @@
+mod common;
+
 use std::sync::Arc;
 use std::time::Duration;
 use tart_backend::encoding::encode_message;
@@ -36,17 +38,10 @@ async fn setup_test_server() -> (Arc<TelemetryServer>, u16) {
 }
 
 fn create_test_node_info() -> NodeInformation {
-    NodeInformation {
-        peer_id: [42u8; 32],
-        peer_address: PeerAddress {
-            ipv6: [0; 16],
-            port: 30333,
-        },
-        node_flags: 1,
-        implementation_name: BoundedString::new("test-jam-node").unwrap(),
-        implementation_version: BoundedString::new("0.1.0").unwrap(),
-        additional_info: BoundedString::new("Integration test node").unwrap(),
-    }
+    let mut node_info = common::test_node_info([42u8; 32]);
+    node_info.implementation_name = BoundedString::new("test-jam-node").unwrap();
+    node_info.additional_info = BoundedString::new("Integration test node").unwrap();
+    node_info
 }
 
 #[tokio::test]
@@ -144,7 +139,7 @@ async fn test_multiple_concurrent_connections() {
 
             // Create unique node info for each connection
             let mut node_info = create_test_node_info();
-            node_info.peer_id[0] = i;
+            node_info.details.peer_id[0] = i;
 
             let encoded = encode_message(&node_info).unwrap();
             stream.write_all(&encoded).await.unwrap();
@@ -257,7 +252,7 @@ async fn test_connection_tracking() {
         .unwrap();
 
     let mut node_info1 = create_test_node_info();
-    node_info1.peer_id[0] = 1;
+    node_info1.details.peer_id[0] = 1;
     let encoded = encode_message(&node_info1).unwrap();
     stream1.write_all(&encoded).await.unwrap();
 
@@ -270,7 +265,7 @@ async fn test_connection_tracking() {
         .unwrap();
 
     let mut node_info2 = create_test_node_info();
-    node_info2.peer_id[0] = 2;
+    node_info2.details.peer_id[0] = 2;
     let encoded = encode_message(&node_info2).unwrap();
     stream2.write_all(&encoded).await.unwrap();
 
@@ -317,22 +312,15 @@ async fn test_large_event_handling() {
                             gas_used: (i as u64) * 1_000_000,
                             elapsed_ns: (i as u64) * 500_000,
                         },
-                        read_write_calls: ExecCost {
-                            gas_used: (i as u64) * 100_000,
-                            elapsed_ns: (i as u64) * 50_000,
-                        },
-                        lookup_query_calls: ExecCost {
-                            gas_used: (i as u64) * 200_000,
-                            elapsed_ns: (i as u64) * 100_000,
-                        },
-                        info_new_calls: ExecCost {
-                            gas_used: (i as u64) * 300_000,
-                            elapsed_ns: (i as u64) * 150_000,
-                        },
-                        total_gas_charged: (i as u64) * 900_000,
-                        other_host_calls: ExecCost {
-                            gas_used: (i as u64) * 50_000,
-                            elapsed_ns: (i as u64) * 25_000,
+                        load_ns: (i as u64) * 50_000,
+                        host_call: AccumulateHostCallCost {
+                            state: ExecCost { gas_used: (i as u64) * 100_000, elapsed_ns: (i as u64) * 50_000 },
+                            lookup: ExecCost { gas_used: (i as u64) * 200_000, elapsed_ns: (i as u64) * 100_000 },
+                            preimage: ExecCost { gas_used: (i as u64) * 50_000, elapsed_ns: (i as u64) * 25_000 },
+                            service: ExecCost { gas_used: (i as u64) * 150_000, elapsed_ns: (i as u64) * 75_000 },
+                            transfer: ExecCost { gas_used: (i as u64) * 150_000, elapsed_ns: (i as u64) * 75_000 },
+                            transfer_dest_gas: (i as u64) * 50_000,
+                            other: ExecCost { gas_used: (i as u64) * 50_000, elapsed_ns: (i as u64) * 25_000 },
                         },
                     },
                 )

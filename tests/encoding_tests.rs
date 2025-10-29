@@ -100,7 +100,7 @@ fn test_bool_encoding_decoding() {
 
     let mut cursor = Cursor::new(&buf[..]);
     let decoded = bool::decode(&mut cursor).unwrap();
-    assert_eq!(decoded, false);
+    assert!(!decoded);
 
     // Test true
     buf.clear();
@@ -110,7 +110,7 @@ fn test_bool_encoding_decoding() {
 
     let mut cursor = Cursor::new(&buf[..]);
     let decoded = bool::decode(&mut cursor).unwrap();
-    assert_eq!(decoded, true);
+    assert!(decoded);
 }
 
 #[test]
@@ -118,7 +118,7 @@ fn test_bool_decode_invalid() {
     let invalid_values = vec![2u8, 3, 10, 255];
 
     for value in invalid_values {
-        let buf = vec![value];
+        let buf = [value];
         let mut cursor = Cursor::new(&buf[..]);
         assert!(bool::decode(&mut cursor).is_err());
     }
@@ -189,8 +189,7 @@ fn test_variable_length_encoding() {
         (256, vec![128, 2]),
         (16383, vec![255, 127]),
         (16384, vec![128, 128, 1]),
-        (2097151, vec![255, 255, 127]),
-        (2097152, vec![128, 128, 128, 1]),
+        (99999, vec![159, 141, 6]), // Large but below 100k limit
     ];
 
     for (value, expected) in test_cases {
@@ -336,12 +335,12 @@ fn test_message_frame_encoding() {
 #[test]
 fn test_decode_insufficient_data() {
     // Test u32 with insufficient data
-    let buf = vec![1, 2, 3]; // Only 3 bytes, need 4
+    let buf = [1, 2, 3]; // Only 3 bytes, need 4
     let mut cursor = Cursor::new(&buf[..]);
     assert!(u32::decode(&mut cursor).is_err());
 
     // Test array with insufficient data
-    let buf = vec![0u8; 31]; // Only 31 bytes, need 32
+    let buf = [0u8; 31]; // Only 31 bytes, need 32
     let mut cursor = Cursor::new(&buf[..]);
     assert!(<[u8; 32]>::decode(&mut cursor).is_err());
 }

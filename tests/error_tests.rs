@@ -1,3 +1,5 @@
+mod common;
+
 use bytes::{BufMut, BytesMut};
 use std::io::Cursor;
 use tart_backend::decoder::{decode_message_frame, decode_variable_length, Decode, DecodingError};
@@ -8,7 +10,7 @@ use tart_backend::types::*;
 #[test]
 fn test_decode_insufficient_data_errors() {
     // Test u8 with empty buffer
-    let buf = vec![];
+    let buf = [];
     let mut cursor = Cursor::new(&buf[..]);
     assert!(matches!(
         u8::decode(&mut cursor),
@@ -19,7 +21,7 @@ fn test_decode_insufficient_data_errors() {
     ));
 
     // Test u16 with 1 byte
-    let buf = vec![0xFF];
+    let buf = [0xFF];
     let mut cursor = Cursor::new(&buf[..]);
     assert!(matches!(
         u16::decode(&mut cursor),
@@ -30,7 +32,7 @@ fn test_decode_insufficient_data_errors() {
     ));
 
     // Test u32 with 3 bytes
-    let buf = vec![0xFF, 0xFF, 0xFF];
+    let buf = [0xFF, 0xFF, 0xFF];
     let mut cursor = Cursor::new(&buf[..]);
     assert!(matches!(
         u32::decode(&mut cursor),
@@ -41,7 +43,7 @@ fn test_decode_insufficient_data_errors() {
     ));
 
     // Test u64 with 7 bytes
-    let buf = vec![0xFF; 7];
+    let buf = [0xFF; 7];
     let mut cursor = Cursor::new(&buf[..]);
     assert!(matches!(
         u64::decode(&mut cursor),
@@ -52,7 +54,7 @@ fn test_decode_insufficient_data_errors() {
     ));
 
     // Test array with insufficient data
-    let buf = vec![0xFF; 31];
+    let buf = [0xFF; 31];
     let mut cursor = Cursor::new(&buf[..]);
     assert!(<[u8; 32]>::decode(&mut cursor).is_err());
 }
@@ -60,7 +62,7 @@ fn test_decode_insufficient_data_errors() {
 #[test]
 fn test_invalid_discriminator_errors() {
     // Test invalid bool value
-    let buf = vec![2]; // Only 0 or 1 are valid
+    let buf = [2]; // Only 0 or 1 are valid
     let mut cursor = Cursor::new(&buf[..]);
     assert!(matches!(
         bool::decode(&mut cursor),
@@ -68,7 +70,7 @@ fn test_invalid_discriminator_errors() {
     ));
 
     // Test invalid Option discriminator
-    let buf = vec![2, 0, 0, 0, 0]; // Only 0 or 1 are valid
+    let buf = [2, 0, 0, 0, 0]; // Only 0 or 1 are valid
     let mut cursor = Cursor::new(&buf[..]);
     assert!(matches!(
         Option::<u32>::decode(&mut cursor),
@@ -76,7 +78,7 @@ fn test_invalid_discriminator_errors() {
     ));
 
     // Test invalid ConnectionSide
-    let buf = vec![2]; // Only 0 or 1 are valid
+    let buf = [2]; // Only 0 or 1 are valid
     let mut cursor = Cursor::new(&buf[..]);
     assert!(matches!(
         ConnectionSide::decode(&mut cursor),
@@ -196,10 +198,7 @@ fn test_message_frame_errors() {
 #[test]
 fn test_variable_length_overflow() {
     // Test variable length encoding that would overflow
-    let mut buf = vec![];
-    for _ in 0..10 {
-        buf.push(0xFF); // All continuation bits set
-    }
+    let mut buf = vec![0xFF; 10]; // All continuation bits set
     buf.push(0x01); // Final byte
 
     let mut cursor = Cursor::new(&buf[..]);
@@ -404,22 +403,15 @@ fn test_event_edge_cases() {
                         gas_used: 0,
                         elapsed_ns: 0,
                     },
-                    read_write_calls: ExecCost {
-                        gas_used: 0,
-                        elapsed_ns: 0,
-                    },
-                    lookup_query_calls: ExecCost {
-                        gas_used: 0,
-                        elapsed_ns: 0,
-                    },
-                    info_new_calls: ExecCost {
-                        gas_used: 0,
-                        elapsed_ns: 0,
-                    },
-                    total_gas_charged: 0,
-                    other_host_calls: ExecCost {
-                        gas_used: 0,
-                        elapsed_ns: 0,
+                    load_ns: 0,
+                    host_call: AccumulateHostCallCost {
+                        state: ExecCost { gas_used: 0, elapsed_ns: 0 },
+                        lookup: ExecCost { gas_used: 0, elapsed_ns: 0 },
+                        preimage: ExecCost { gas_used: 0, elapsed_ns: 0 },
+                        service: ExecCost { gas_used: 0, elapsed_ns: 0 },
+                        transfer: ExecCost { gas_used: 0, elapsed_ns: 0 },
+                        transfer_dest_gas: 0,
+                        other: ExecCost { gas_used: 0, elapsed_ns: 0 },
                     },
                 },
             )
@@ -527,24 +519,19 @@ fn test_node_flags_validation() {
     ];
 
     for flags in valid_flags {
-        let node_info = NodeInformation {
-            peer_id: [0; 32],
-            peer_address: PeerAddress {
-                ipv6: [0; 16],
-                port: 9000,
-            },
-            node_flags: flags,
-            implementation_name: BoundedString::new("test").unwrap(),
-            implementation_version: BoundedString::new("1.0").unwrap(),
-            additional_info: BoundedString::new("").unwrap(),
-        };
+        let mut node_info = common::test_node_info([0; 32]);
+        node_info.details.peer_address.port = 9000;
+        node_info.flags = flags;
+        node_info.implementation_name = BoundedString::new("test").unwrap();
+        node_info.implementation_version = BoundedString::new("1.0").unwrap();
+        node_info.additional_info = BoundedString::new("").unwrap();
 
         let mut buf = BytesMut::new();
         node_info.encode(&mut buf).unwrap();
 
         let mut cursor = Cursor::new(&buf[..]);
         let decoded = NodeInformation::decode(&mut cursor).unwrap();
-        assert_eq!(decoded.node_flags, flags);
+        assert_eq!(decoded.flags, flags);
     }
 
     // Note: According to spec, other bits should be 0, but there's no validation

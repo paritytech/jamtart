@@ -1,3 +1,5 @@
+mod common;
+
 use axum::http::StatusCode;
 use axum_test::TestServer;
 use serde_json::Value;
@@ -5,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tart_backend::api::{create_api_router, ApiState};
 use tart_backend::encoding::encode_message;
-use tart_backend::events::{Event, NodeInformation};
+use tart_backend::events::Event;
 use tart_backend::types::*;
 use tart_backend::{EventStore, TelemetryServer};
 use tokio::io::AsyncWriteExt;
@@ -64,17 +66,8 @@ async fn connect_test_node(port: u16, node_id: u8) -> TcpStream {
         .await
         .unwrap();
 
-    let node_info = NodeInformation {
-        peer_id: [node_id; 32],
-        peer_address: PeerAddress {
-            ipv6: [0; 16],
-            port: 30333,
-        },
-        node_flags: 1,
-        implementation_name: BoundedString::new(&format!("test-node-{}", node_id)).unwrap(),
-        implementation_version: BoundedString::new("1.0.0").unwrap(),
-        additional_info: BoundedString::new("Test node").unwrap(),
-    };
+    let mut node_info = common::test_node_info([node_id; 32]);
+    node_info.implementation_name = BoundedString::new(&format!("test-node-{}", node_id)).unwrap();
 
     let encoded = encode_message(&node_info).unwrap();
     stream.write_all(&encoded).await.unwrap();

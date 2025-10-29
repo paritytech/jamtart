@@ -95,6 +95,7 @@ pub struct TelemetryServer {
     connections: Arc<DashMap<String, NodeConnection>>,
     /// EventStore reference - owned by BatchWriter but kept here for lifetime management
     /// and potential future direct queries
+    #[allow(dead_code)]
     store: Arc<EventStore>,
     batch_writer: BatchWriter,
     rate_limiter: Arc<RateLimiter>,
@@ -284,7 +285,7 @@ async fn handle_connection_optimized(
     };
 
     // Generate node ID from peer ID
-    let node_id_str = hex::encode(&node_info.details.peer_id);
+    let node_id_str = hex::encode(node_info.details.peer_id);
 
     info!(
         "Node {} connected: {} v{} - {}",

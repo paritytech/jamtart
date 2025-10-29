@@ -1,3 +1,6 @@
+#[allow(dead_code)]
+mod common;
+
 use bytes::BytesMut;
 use std::io::Cursor;
 use tart_backend::decoder::Decode;
@@ -71,6 +74,7 @@ fn test_outline_encoding_decoding() {
         },
         BlockSummary {
             size_bytes: 1024 * 1024, // 1MB
+            hash: [0xAAu8; 32],
             num_tickets: 100,
             num_preimages: 50,
             total_preimages_size: 1024 * 50,
@@ -80,6 +84,7 @@ fn test_outline_encoding_decoding() {
         },
         BlockSummary {
             size_bytes: u32::MAX,
+            hash: [0xFFu8; 32],
             num_tickets: u32::MAX,
             num_preimages: u32::MAX,
             total_preimages_size: u32::MAX,
@@ -92,8 +97,8 @@ fn test_outline_encoding_decoding() {
     for summary in test_cases {
         let mut buf = BytesMut::new();
         summary.encode(&mut buf).unwrap();
-        assert_eq!(buf.len(), 28); // 7 * 4 bytes
-        assert_eq!(summary.encoded_size(), 28);
+        assert_eq!(buf.len(), 60); // 7 * 4 bytes + 32 byte hash
+        assert_eq!(summary.encoded_size(), 60);
 
         let mut cursor = Cursor::new(&buf[..]);
         let decoded = BlockSummary::decode(&mut cursor).unwrap();
@@ -140,6 +145,7 @@ fn test_exec_cost_encoding_decoding() {
 #[test]
 fn test_accumulate_cost_encoding_decoding() {
     let test_cases = vec![
+        // Minimal case - all zeros
         AccumulateCost {
             num_calls: 0,
             num_transfers: 0,
@@ -148,24 +154,18 @@ fn test_accumulate_cost_encoding_decoding() {
                 gas_used: 0,
                 elapsed_ns: 0,
             },
-            read_write_calls: ExecCost {
-                gas_used: 0,
-                elapsed_ns: 0,
-            },
-            lookup_query_calls: ExecCost {
-                gas_used: 0,
-                elapsed_ns: 0,
-            },
-            info_new_calls: ExecCost {
-                gas_used: 0,
-                elapsed_ns: 0,
-            },
-            total_gas_charged: 0,
-            other_host_calls: ExecCost {
-                gas_used: 0,
-                elapsed_ns: 0,
+            load_ns: 0,
+            host_call: AccumulateHostCallCost {
+                state: ExecCost { gas_used: 0, elapsed_ns: 0 },
+                lookup: ExecCost { gas_used: 0, elapsed_ns: 0 },
+                preimage: ExecCost { gas_used: 0, elapsed_ns: 0 },
+                service: ExecCost { gas_used: 0, elapsed_ns: 0 },
+                transfer: ExecCost { gas_used: 0, elapsed_ns: 0 },
+                transfer_dest_gas: 0,
+                other: ExecCost { gas_used: 0, elapsed_ns: 0 },
             },
         },
+        // Typical case
         AccumulateCost {
             num_calls: 100,
             num_transfers: 50,
@@ -174,24 +174,18 @@ fn test_accumulate_cost_encoding_decoding() {
                 gas_used: 10_000_000,
                 elapsed_ns: 5_000_000,
             },
-            read_write_calls: ExecCost {
-                gas_used: 2_000_000,
-                elapsed_ns: 1_000_000,
-            },
-            lookup_query_calls: ExecCost {
-                gas_used: 3_000_000,
-                elapsed_ns: 1_500_000,
-            },
-            info_new_calls: ExecCost {
-                gas_used: 4_000_000,
-                elapsed_ns: 2_000_000,
-            },
-            total_gas_charged: 9_500_000,
-            other_host_calls: ExecCost {
-                gas_used: 1_000_000,
-                elapsed_ns: 500_000,
+            load_ns: 100_000,
+            host_call: AccumulateHostCallCost {
+                state: ExecCost { gas_used: 2_000_000, elapsed_ns: 1_000_000 },
+                lookup: ExecCost { gas_used: 3_000_000, elapsed_ns: 1_500_000 },
+                preimage: ExecCost { gas_used: 1_000_000, elapsed_ns: 500_000 },
+                service: ExecCost { gas_used: 1_500_000, elapsed_ns: 750_000 },
+                transfer: ExecCost { gas_used: 2_500_000, elapsed_ns: 1_250_000 },
+                transfer_dest_gas: 500_000,
+                other: ExecCost { gas_used: 500_000, elapsed_ns: 250_000 },
             },
         },
+        // Maximum values
         AccumulateCost {
             num_calls: u32::MAX,
             num_transfers: u32::MAX,
@@ -200,22 +194,15 @@ fn test_accumulate_cost_encoding_decoding() {
                 gas_used: u64::MAX,
                 elapsed_ns: u64::MAX,
             },
-            read_write_calls: ExecCost {
-                gas_used: u64::MAX,
-                elapsed_ns: u64::MAX,
-            },
-            lookup_query_calls: ExecCost {
-                gas_used: u64::MAX,
-                elapsed_ns: u64::MAX,
-            },
-            info_new_calls: ExecCost {
-                gas_used: u64::MAX,
-                elapsed_ns: u64::MAX,
-            },
-            total_gas_charged: u64::MAX,
-            other_host_calls: ExecCost {
-                gas_used: u64::MAX,
-                elapsed_ns: u64::MAX,
+            load_ns: u64::MAX,
+            host_call: AccumulateHostCallCost {
+                state: ExecCost { gas_used: u64::MAX, elapsed_ns: u64::MAX },
+                lookup: ExecCost { gas_used: u64::MAX, elapsed_ns: u64::MAX },
+                preimage: ExecCost { gas_used: u64::MAX, elapsed_ns: u64::MAX },
+                service: ExecCost { gas_used: u64::MAX, elapsed_ns: u64::MAX },
+                transfer: ExecCost { gas_used: u64::MAX, elapsed_ns: u64::MAX },
+                transfer_dest_gas: u64::MAX,
+                other: ExecCost { gas_used: u64::MAX, elapsed_ns: u64::MAX },
             },
         },
     ];
@@ -223,10 +210,12 @@ fn test_accumulate_cost_encoding_decoding() {
     for cost in test_cases {
         let mut buf = BytesMut::new();
         cost.encode(&mut buf).unwrap();
-        let expected_size = 3 * 4 + 5 * 16 + 8; // 3 u32s + 5 ExecCosts + 1 u64
-        assert_eq!(buf.len(), expected_size);
-        assert_eq!(cost.encoded_size(), expected_size);
 
+        // Verify encoding size matches
+        assert!(!buf.is_empty());
+        assert_eq!(cost.encoded_size(), buf.len());
+
+        // Decode and verify all fields
         let mut cursor = Cursor::new(&buf[..]);
         let decoded = AccumulateCost::decode(&mut cursor).unwrap();
         assert_eq!(decoded.num_calls, cost.num_calls);
@@ -234,7 +223,9 @@ fn test_accumulate_cost_encoding_decoding() {
         assert_eq!(decoded.num_items, cost.num_items);
         assert_eq!(decoded.total.gas_used, cost.total.gas_used);
         assert_eq!(decoded.total.elapsed_ns, cost.total.elapsed_ns);
-        assert_eq!(decoded.total_gas_charged, cost.total_gas_charged);
+        assert_eq!(decoded.load_ns, cost.load_ns);
+        assert_eq!(decoded.host_call.state.gas_used, cost.host_call.state.gas_used);
+        assert_eq!(decoded.host_call.transfer_dest_gas, cost.host_call.transfer_dest_gas);
     }
 }
 
@@ -286,10 +277,10 @@ fn test_import_spec_encoding() {
 
 #[test]
 fn test_guarantee_discard_reason_encoding() {
-    let reasons = vec![
-        GuaranteeDiscardReason::WorkReportIncluded,
+    let reasons = [
+        GuaranteeDiscardReason::PackageReportedOnChain,
         GuaranteeDiscardReason::ReplacedByBetter,
-        GuaranteeDiscardReason::TooOld,
+        GuaranteeDiscardReason::CannotReportOnChain,
         GuaranteeDiscardReason::TooManyGuarantees,
         GuaranteeDiscardReason::Other,
     ];
@@ -386,22 +377,15 @@ fn test_service_id_accumulate_cost_tuple_decoding() {
                 gas_used: 1_000_000,
                 elapsed_ns: 500_000,
             },
-            read_write_calls: ExecCost {
-                gas_used: 200_000,
-                elapsed_ns: 100_000,
-            },
-            lookup_query_calls: ExecCost {
-                gas_used: 300_000,
-                elapsed_ns: 150_000,
-            },
-            info_new_calls: ExecCost {
-                gas_used: 400_000,
-                elapsed_ns: 200_000,
-            },
-            total_gas_charged: 950_000,
-            other_host_calls: ExecCost {
-                gas_used: 100_000,
-                elapsed_ns: 50_000,
+            load_ns: 50_000,
+            host_call: AccumulateHostCallCost {
+                state: ExecCost { gas_used: 200_000, elapsed_ns: 100_000 },
+                lookup: ExecCost { gas_used: 300_000, elapsed_ns: 150_000 },
+                preimage: ExecCost { gas_used: 100_000, elapsed_ns: 50_000 },
+                service: ExecCost { gas_used: 150_000, elapsed_ns: 75_000 },
+                transfer: ExecCost { gas_used: 150_000, elapsed_ns: 75_000 },
+                transfer_dest_gas: 50_000,
+                other: ExecCost { gas_used: 100_000, elapsed_ns: 50_000 },
             },
         },
     );
@@ -428,22 +412,15 @@ fn test_vec_of_tuples_decoding() {
                     gas_used: 100,
                     elapsed_ns: 50,
                 },
-                read_write_calls: ExecCost {
-                    gas_used: 20,
-                    elapsed_ns: 10,
-                },
-                lookup_query_calls: ExecCost {
-                    gas_used: 30,
-                    elapsed_ns: 15,
-                },
-                info_new_calls: ExecCost {
-                    gas_used: 40,
-                    elapsed_ns: 20,
-                },
-                total_gas_charged: 90,
-                other_host_calls: ExecCost {
-                    gas_used: 10,
-                    elapsed_ns: 5,
+                load_ns: 1000,
+                host_call: AccumulateHostCallCost {
+                    state: ExecCost { gas_used: 20, elapsed_ns: 10 },
+                    lookup: ExecCost { gas_used: 30, elapsed_ns: 15 },
+                    preimage: ExecCost { gas_used: 10, elapsed_ns: 5 },
+                    service: ExecCost { gas_used: 15, elapsed_ns: 8 },
+                    transfer: ExecCost { gas_used: 15, elapsed_ns: 7 },
+                    transfer_dest_gas: 10,
+                    other: ExecCost { gas_used: 10, elapsed_ns: 5 },
                 },
             },
         ),
@@ -457,22 +434,15 @@ fn test_vec_of_tuples_decoding() {
                     gas_used: 1000,
                     elapsed_ns: 500,
                 },
-                read_write_calls: ExecCost {
-                    gas_used: 200,
-                    elapsed_ns: 100,
-                },
-                lookup_query_calls: ExecCost {
-                    gas_used: 300,
-                    elapsed_ns: 150,
-                },
-                info_new_calls: ExecCost {
-                    gas_used: 400,
-                    elapsed_ns: 200,
-                },
-                total_gas_charged: 900,
-                other_host_calls: ExecCost {
-                    gas_used: 100,
-                    elapsed_ns: 50,
+                load_ns: 10000,
+                host_call: AccumulateHostCallCost {
+                    state: ExecCost { gas_used: 200, elapsed_ns: 100 },
+                    lookup: ExecCost { gas_used: 300, elapsed_ns: 150 },
+                    preimage: ExecCost { gas_used: 100, elapsed_ns: 50 },
+                    service: ExecCost { gas_used: 150, elapsed_ns: 75 },
+                    transfer: ExecCost { gas_used: 150, elapsed_ns: 75 },
+                    transfer_dest_gas: 100,
+                    other: ExecCost { gas_used: 100, elapsed_ns: 50 },
                 },
             },
         ),

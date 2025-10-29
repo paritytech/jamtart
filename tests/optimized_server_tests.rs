@@ -1,3 +1,5 @@
+mod common;
+
 use std::sync::Arc;
 use std::time::Duration;
 use tart_backend::encoding::encode_message;
@@ -39,17 +41,11 @@ fn create_test_node_info(id: u8) -> NodeInformation {
     let mut peer_id = [0u8; 32];
     peer_id[0] = id;
 
-    NodeInformation {
-        peer_id,
-        peer_address: PeerAddress {
-            ipv6: [0; 16],
-            port: 30333 + id as u16,
-        },
-        node_flags: 1,
-        implementation_name: BoundedString::new("test-jam-node").unwrap(),
-        implementation_version: BoundedString::new("0.1.0").unwrap(),
-        additional_info: BoundedString::new(&format!("Test node {}", id)).unwrap(),
-    }
+    let mut node_info = common::test_node_info(peer_id);
+    node_info.details.peer_address.port = 30333 + id as u16;
+    node_info.implementation_name = BoundedString::new("test-jam-node").unwrap();
+    node_info.additional_info = BoundedString::new(&format!("Test node {}", id)).unwrap();
+    node_info
 }
 
 #[tokio::test]
@@ -169,7 +165,7 @@ async fn test_connection_limit() {
     }
 
     // We should have connected at least some nodes
-    assert!(streams.len() > 0);
+    assert!(!streams.is_empty());
 
     // Keep connections alive briefly
     sleep(Duration::from_millis(100)).await;

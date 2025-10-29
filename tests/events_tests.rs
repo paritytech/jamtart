@@ -1,3 +1,5 @@
+mod common;
+
 use bytes::BytesMut;
 use std::io::Cursor;
 use tart_backend::decoder::{decode_message_frame, Decode};
@@ -11,17 +13,12 @@ fn get_test_timestamp() -> Timestamp {
 
 #[test]
 fn test_node_information_encoding_decoding() {
-    let node_info = NodeInformation {
-        peer_id: [42u8; 32],
-        peer_address: PeerAddress {
-            ipv6: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            port: 9000,
-        },
-        node_flags: 1, // Uses PVM recompiler
-        implementation_name: BoundedString::new("PolkaJam").unwrap(),
-        implementation_version: BoundedString::new("1.0.0").unwrap(),
-        additional_info: BoundedString::new("Test node for telemetry").unwrap(),
-    };
+    let mut node_info = common::test_node_info([42u8; 32]);
+    node_info.details.peer_address.ipv6 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+    node_info.details.peer_address.port = 9000;
+    node_info.flags = 1; // Uses PVM recompiler
+    node_info.implementation_name = BoundedString::new("PolkaJam").unwrap();
+    node_info.additional_info = BoundedString::new("Test node for telemetry").unwrap();
 
     let mut buf = BytesMut::new();
     node_info.encode(&mut buf).unwrap();
@@ -31,9 +28,9 @@ fn test_node_information_encoding_decoding() {
 
     let mut cursor = Cursor::new(&buf[..]);
     let decoded = NodeInformation::decode(&mut cursor).unwrap();
-    assert_eq!(decoded.peer_id, node_info.peer_id);
-    assert_eq!(decoded.peer_address.port, node_info.peer_address.port);
-    assert_eq!(decoded.node_flags, node_info.node_flags);
+    assert_eq!(decoded.details.peer_id, node_info.details.peer_id);
+    assert_eq!(decoded.details.peer_address.port, node_info.details.peer_address.port);
+    assert_eq!(decoded.flags, node_info.flags);
     assert_eq!(decoded.implementation_name.as_str().unwrap(), "PolkaJam");
     assert_eq!(decoded.implementation_version.as_str().unwrap(), "1.0.0");
 }
@@ -496,22 +493,15 @@ fn test_block_execution_events() {
                         gas_used: 1_000_000,
                         elapsed_ns: 500_000,
                     },
-                    read_write_calls: ExecCost {
-                        gas_used: 200_000,
-                        elapsed_ns: 100_000,
-                    },
-                    lookup_query_calls: ExecCost {
-                        gas_used: 300_000,
-                        elapsed_ns: 150_000,
-                    },
-                    info_new_calls: ExecCost {
-                        gas_used: 400_000,
-                        elapsed_ns: 200_000,
-                    },
-                    total_gas_charged: 950_000,
-                    other_host_calls: ExecCost {
-                        gas_used: 100_000,
-                        elapsed_ns: 50_000,
+                    load_ns: 50_000,
+                    host_call: AccumulateHostCallCost {
+                        state: ExecCost { gas_used: 200_000, elapsed_ns: 100_000 },
+                        lookup: ExecCost { gas_used: 300_000, elapsed_ns: 150_000 },
+                        preimage: ExecCost { gas_used: 100_000, elapsed_ns: 50_000 },
+                        service: ExecCost { gas_used: 150_000, elapsed_ns: 75_000 },
+                        transfer: ExecCost { gas_used: 150_000, elapsed_ns: 75_000 },
+                        transfer_dest_gas: 50_000,
+                        other: ExecCost { gas_used: 100_000, elapsed_ns: 50_000 },
                     },
                 },
             ),
@@ -525,22 +515,15 @@ fn test_block_execution_events() {
                         gas_used: 500_000,
                         elapsed_ns: 250_000,
                     },
-                    read_write_calls: ExecCost {
-                        gas_used: 100_000,
-                        elapsed_ns: 50_000,
-                    },
-                    lookup_query_calls: ExecCost {
-                        gas_used: 150_000,
-                        elapsed_ns: 75_000,
-                    },
-                    info_new_calls: ExecCost {
-                        gas_used: 200_000,
-                        elapsed_ns: 100_000,
-                    },
-                    total_gas_charged: 475_000,
-                    other_host_calls: ExecCost {
-                        gas_used: 50_000,
-                        elapsed_ns: 25_000,
+                    load_ns: 25_000,
+                    host_call: AccumulateHostCallCost {
+                        state: ExecCost { gas_used: 100_000, elapsed_ns: 50_000 },
+                        lookup: ExecCost { gas_used: 150_000, elapsed_ns: 75_000 },
+                        preimage: ExecCost { gas_used: 50_000, elapsed_ns: 25_000 },
+                        service: ExecCost { gas_used: 75_000, elapsed_ns: 37_500 },
+                        transfer: ExecCost { gas_used: 75_000, elapsed_ns: 37_500 },
+                        transfer_dest_gas: 25_000,
+                        other: ExecCost { gas_used: 50_000, elapsed_ns: 25_000 },
                     },
                 },
             ),

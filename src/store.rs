@@ -84,7 +84,7 @@ impl EventStore {
             "#,
         )
         .bind(node_id)
-        .bind(hex::encode(&info.details.peer_id))
+        .bind(hex::encode(info.details.peer_id))
         .bind(info.implementation_name.as_str().unwrap_or("unknown"))
         .bind(info.implementation_version.as_str().unwrap_or("unknown"))
         .bind(info_json)

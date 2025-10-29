@@ -249,7 +249,7 @@ async fn flush_batch(
 
     // Process events using batch insert for optimal performance
     if !event_batch.is_empty() {
-        let batch: Vec<(String, u64, Event)> = event_batch.drain(..).collect();
+        let batch: Vec<(String, u64, Event)> = std::mem::take(event_batch);
         if let Err(e) = store.store_events_batch(batch).await {
             error!("Failed to store event batch: {}", e);
         }

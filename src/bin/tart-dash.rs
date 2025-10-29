@@ -977,11 +977,7 @@ fn render_footer(f: &mut Frame, area: Rect, data: &DashboardData) {
 
     let footer_content = if let Some(error) = &data.error {
         let error_line_width = 2 + 9 + error.len() + 1; // "║ " + "⚠ ERROR: " + error + "║"
-        let padding = if width > error_line_width {
-            width - error_line_width
-        } else {
-            0
-        };
+        let padding = width.saturating_sub(error_line_width);
 
         vec![
             Line::from(vec![Span::styled(
@@ -1136,10 +1132,8 @@ fn main() -> Result<()> {
 
         if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    if app.on_key(key.code) {
-                        break;
-                    }
+                if key.kind == KeyEventKind::Press && app.on_key(key.code) {
+                    break;
                 }
             }
         }
