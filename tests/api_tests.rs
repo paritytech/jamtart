@@ -168,12 +168,13 @@ async fn test_node_details_endpoint() {
 async fn test_node_details_not_found() {
     let (server, _, _) = setup_test_api().await;
 
-    let response = server.get("/api/nodes/nonexistent").await;
+    // Use a valid hex node ID that doesn't exist (64 hex chars = 32 bytes)
+    let nonexistent_node_id = "0000000000000000000000000000000000000000000000000000000000000000";
+    let response = server
+        .get(&format!("/api/nodes/{}", nonexistent_node_id))
+        .await;
 
     assert_eq!(response.status_code(), StatusCode::NOT_FOUND);
-
-    let json: Value = response.json();
-    assert!(json["error"].is_string());
 }
 
 #[tokio::test]

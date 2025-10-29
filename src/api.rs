@@ -145,7 +145,13 @@ async fn get_node_events(
 
     // Use database-level filtering for optimal performance (avoids N+1 query pattern)
     match state.store.get_recent_events_by_node(&node_id, limit).await {
-        Ok(events) => Ok(Json(serde_json::json!({ "events": events }))),
+        Ok(events) => {
+            let has_more = events.len() as i64 == limit;
+            Ok(Json(serde_json::json!({
+                "events": events,
+                "has_more": has_more
+            })))
+        }
         Err(e) => {
             error!("Failed to get node events for {}: {}", node_id, e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -160,7 +166,13 @@ async fn get_recent_events(
     let limit = query.limit.unwrap_or(50).clamp(1, MAX_QUERY_LIMIT);
 
     match state.store.get_recent_events(limit).await {
-        Ok(events) => Ok(Json(serde_json::json!({ "events": events }))),
+        Ok(events) => {
+            let has_more = events.len() as i64 == limit;
+            Ok(Json(serde_json::json!({
+                "events": events,
+                "has_more": has_more
+            })))
+        }
         Err(e) => {
             error!("Failed to get recent events: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
