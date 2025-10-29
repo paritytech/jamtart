@@ -142,15 +142,12 @@ async fn batch_writer_loop(
     let mut node_updates: Vec<(String, Option<NodeInformation>)> = Vec::new();
 
     info!("Batch writer started");
-    eprintln!("DEBUG: Batch writer loop started");
+    eprintln!("DEBUG: Batch writer loop started, processing commands immediately");
 
-    // Small delay to allow initialization
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-
-    // Try to receive initial messages immediately with timeout
+    // Process commands immediately without artificial delays
     let mut initial_count = 0;
     loop {
-        match timeout(Duration::from_millis(10), receiver.recv()).await {
+        match timeout(Duration::from_millis(1000), receiver.recv()).await {
             Ok(Some(command)) => {
                 initial_count += 1;
                 info!(
