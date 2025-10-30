@@ -854,6 +854,7 @@ fn render_events(
         (25, "CONNECTION_OUT_FAILED"),
         (26, "CONNECTED_OUT"),
         (27, "DISCONNECTED"),
+        (28, "PEER_MISBEHAVED"),
         // Block authoring/importing
         (40, "AUTHORING"),
         (41, "AUTHORING_FAILED"),
@@ -864,21 +865,109 @@ fn render_events(
         (46, "BLOCK_EXECUTION_FAILED"),
         (47, "BLOCK_EXECUTED"),
         // Block distribution
-        (60, "ANNOUNCEMENT_STREAM_OPEN_FAILED"),
-        (61, "ANNOUNCEMENT_STREAM_OPENED"),
-        (62, "ANNOUNCEMENT_STREAM_CLOSED"),
-        (63, "BLOCK_ANNOUNCED"),
-        (64, "BLOCK_REQUEST_FAILED_IMMEDIATELY"),
-        (65, "BLOCKS_REQUESTED"),
-        (66, "BLOCK_REQUEST_FAILED"),
-        (67, "BLOCK_TRANSFERRED"),
+        (60, "BLOCK_ANNOUNCEMENT_STREAM_OPENED"),
+        (61, "BLOCK_ANNOUNCEMENT_STREAM_CLOSED"),
+        (62, "BLOCK_ANNOUNCED"),
+        (63, "SENDING_BLOCK_REQUEST"),
+        (64, "RECEIVING_BLOCK_REQUEST"),
+        (65, "BLOCK_REQUEST_FAILED"),
+        (66, "BLOCK_REQUEST_SENT"),
+        (67, "BLOCK_REQUEST_RECEIVED"),
+        (68, "BLOCK_TRANSFERRED"),
         // Safrole ticket events
-        (80, "GENERATING_TICKET"),
+        (80, "GENERATING_TICKETS"),
         (81, "TICKET_GENERATION_FAILED"),
-        (82, "GENERATED_TICKET"),
+        (82, "TICKETS_GENERATED"),
         (83, "TICKET_TRANSFER_FAILED"),
         (84, "TICKET_TRANSFERRED"),
-        (85, "INVALID_TICKET_RECEIVED"),
+        // Work package events
+        (90, "WORK_PACKAGE_SUBMISSION"),
+        (91, "WORK_PACKAGE_BEING_SHARED"),
+        (92, "WORK_PACKAGE_FAILED"),
+        (93, "DUPLICATE_WORK_PACKAGE"),
+        (94, "WORK_PACKAGE_RECEIVED"),
+        (95, "AUTHORIZED"),
+        (96, "EXTRINSIC_DATA_RECEIVED"),
+        (97, "IMPORTS_RECEIVED"),
+        (98, "SHARING_WORK_PACKAGE"),
+        (99, "WORK_PACKAGE_SHARING_FAILED"),
+        (100, "BUNDLE_SENT"),
+        (101, "REFINED"),
+        (102, "WORK_REPORT_BUILT"),
+        (103, "WORK_REPORT_SIGNATURE_SENT"),
+        (104, "WORK_REPORT_SIGNATURE_RECEIVED"),
+        // Guarantee events
+        (105, "GUARANTEE_BUILT"),
+        (106, "SENDING_GUARANTEE"),
+        (107, "GUARANTEE_SEND_FAILED"),
+        (108, "GUARANTEE_SENT"),
+        (109, "GUARANTEES_DISTRIBUTED"),
+        (110, "RECEIVING_GUARANTEE"),
+        (111, "GUARANTEE_RECEIVE_FAILED"),
+        (112, "GUARANTEE_RECEIVED"),
+        (113, "GUARANTEE_DISCARDED"),
+        // Shard request events
+        (120, "SENDING_SHARD_REQUEST"),
+        (121, "RECEIVING_SHARD_REQUEST"),
+        (122, "SHARD_REQUEST_FAILED"),
+        (123, "SHARD_REQUEST_SENT"),
+        (124, "SHARD_REQUEST_RECEIVED"),
+        (125, "SHARDS_TRANSFERRED"),
+        // Assurance events
+        (126, "DISTRIBUTING_ASSURANCE"),
+        (127, "ASSURANCE_SEND_FAILED"),
+        (128, "ASSURANCE_SENT"),
+        (129, "ASSURANCE_DISTRIBUTED"),
+        (130, "ASSURANCE_RECEIVE_FAILED"),
+        (131, "ASSURANCE_RECEIVED"),
+        // Bundle shard events
+        (140, "SENDING_BUNDLE_SHARD_REQUEST"),
+        (141, "RECEIVING_BUNDLE_SHARD_REQUEST"),
+        (142, "BUNDLE_SHARD_REQUEST_FAILED"),
+        (143, "BUNDLE_SHARD_REQUEST_SENT"),
+        (144, "BUNDLE_SHARD_REQUEST_RECEIVED"),
+        (145, "BUNDLE_SHARD_TRANSFERRED"),
+        (146, "RECONSTRUCTING_BUNDLE"),
+        (147, "BUNDLE_RECONSTRUCTED"),
+        (148, "SENDING_BUNDLE_REQUEST"),
+        (149, "RECEIVING_BUNDLE_REQUEST"),
+        (150, "BUNDLE_REQUEST_FAILED"),
+        (151, "BUNDLE_REQUEST_SENT"),
+        (152, "BUNDLE_REQUEST_RECEIVED"),
+        (153, "BUNDLE_TRANSFERRED"),
+        // Work package hash mapping
+        (160, "WORK_PACKAGE_HASH_MAPPED"),
+        (161, "SEGMENTS_ROOT_MAPPED"),
+        // Segment shard events
+        (162, "SENDING_SEGMENT_SHARD_REQUEST"),
+        (163, "RECEIVING_SEGMENT_SHARD_REQUEST"),
+        (164, "SEGMENT_SHARD_REQUEST_FAILED"),
+        (165, "SEGMENT_SHARD_REQUEST_SENT"),
+        (166, "SEGMENT_SHARD_REQUEST_RECEIVED"),
+        (167, "SEGMENT_SHARDS_TRANSFERRED"),
+        // Segment reconstruction events
+        (168, "RECONSTRUCTING_SEGMENTS"),
+        (169, "SEGMENT_RECONSTRUCTION_FAILED"),
+        (170, "SEGMENTS_RECONSTRUCTED"),
+        (171, "SEGMENT_VERIFICATION_FAILED"),
+        (172, "SEGMENTS_VERIFIED"),
+        (173, "SENDING_SEGMENT_REQUEST"),
+        (174, "RECEIVING_SEGMENT_REQUEST"),
+        (175, "SEGMENT_REQUEST_FAILED"),
+        (176, "SEGMENT_REQUEST_SENT"),
+        (177, "SEGMENT_REQUEST_RECEIVED"),
+        (178, "SEGMENTS_TRANSFERRED"),
+        // Preimage events
+        (190, "PREIMAGE_ANNOUNCEMENT_FAILED"),
+        (191, "PREIMAGE_ANNOUNCED"),
+        (192, "ANNOUNCED_PREIMAGE_FORGOTTEN"),
+        (193, "SENDING_PREIMAGE_REQUEST"),
+        (194, "RECEIVING_PREIMAGE_REQUEST"),
+        (195, "PREIMAGE_REQUEST_FAILED"),
+        (196, "PREIMAGE_REQUEST_SENT"),
+        (197, "PREIMAGE_REQUEST_RECEIVED"),
+        (198, "PREIMAGE_TRANSFERRED"),
+        (199, "PREIMAGE_DISCARDED"),
     ];
 
     let items: Vec<ListItem> = data
@@ -901,20 +990,30 @@ fn render_events(
 
             // Categorize events and assign colors/prefixes - Y2K vibrant theme
             let (prefix, color, emoji) = match event.event_type {
-                // Node connection events - electric lime
-                0..=2 => ("CONN ", Color::Rgb(0, 255, 0), "🔌"),
-                // Block events - hot pink
-                10..=17 | 60..=67 => ("BLCK ", Color::Rgb(255, 20, 147), "⬛"),
-                // Finalization events - electric cyan
-                21..=22 => ("FINL ", Color::Rgb(0, 255, 255), "✅"),
-                // Peer events - electric purple
-                30..=37 => ("PEER ", Color::Rgb(191, 0, 255), "👥"),
-                // Import events - electric blue
-                40..=51 => ("IMPT ", Color::Rgb(30, 144, 255), "📥"),
+                // Meta/dropped events - gray
+                0 => ("DROP ", Color::Rgb(128, 128, 128), "💧"),
+                // Status events - electric cyan
+                10..=13 => ("STAT ", Color::Rgb(0, 255, 255), "📊"),
+                // Connection events - electric lime
+                20..=28 => ("CONN ", Color::Rgb(0, 255, 0), "🔌"),
+                // Authoring/importing events - electric blue
+                40..=47 => ("BLCK ", Color::Rgb(30, 144, 255), "⬛"),
+                // Block distribution events - hot pink
+                60..=68 => ("DIST ", Color::Rgb(255, 20, 147), "📡"),
                 // Safrole ticket events - electric orange
-                80..=85 => ("TCKT ", Color::Rgb(255, 165, 0), "🎫"),
-                // Unknown - bright yellow
-                _ => ("UNKN ", Color::Rgb(255, 255, 0), "❓"),
+                80..=84 => ("TCKT ", Color::Rgb(255, 165, 0), "🎫"),
+                // Work package events - electric purple
+                90..=113 => ("WORK ", Color::Rgb(191, 0, 255), "📦"),
+                // Shard/assurance events - bright green
+                120..=131 => ("SHRD ", Color::Rgb(0, 255, 127), "🧩"),
+                // Bundle events - bright blue
+                140..=153 => ("BNDL ", Color::Rgb(0, 191, 255), "📦"),
+                // Segment events - bright magenta
+                160..=178 => ("SEGM ", Color::Rgb(255, 0, 255), "🔗"),
+                // Preimage events - bright yellow
+                190..=199 => ("PREIM", Color::Rgb(255, 255, 0), "🖼️"),
+                // Unknown - dim white
+                _ => ("UNKN ", Color::Rgb(200, 200, 200), "❓"),
             };
 
             let content = Line::from(vec![
