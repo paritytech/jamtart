@@ -36,7 +36,6 @@
 
 | Metric | Specification |
 |--------|--------------|
-| Max Concurrent Nodes | 1024 |
 | Throughput | 10,000+ events/second |
 | Event Ingestion Latency | <1ms (p99) |
 | Database Write Latency | <20ms (p99) |
@@ -1459,7 +1458,6 @@ tart-backend/
 ├── docker-compose.yml          # Docker orchestration
 ├── Dockerfile                  # Container image
 ├── Cargo.toml                  # Rust dependencies
-├── JIP-3.md                    # Telemetry specification
 └── README.md                   # This file
 ```
 
@@ -1469,7 +1467,7 @@ tart-backend/
 # Unit tests (no database required) - can run in parallel
 cargo test --lib --test types_tests --test events_tests --test error_tests --test encoding_tests
 
-# Integration tests (requires PostgreSQL) - MUST run serially
+# Integration tests (requires PostgreSQL)
 export TEST_DATABASE_URL="postgres://tart:tart_password@localhost:5432/tart_test"
 # Create test database first:
 # psql -U tart -h localhost -d postgres -c "CREATE DATABASE tart_test;"
@@ -1514,26 +1512,6 @@ cargo machete
 # Solution: Set environment variable
 export DATABASE_URL="postgres://user:password@localhost:5432/tart_telemetry"
 cargo run --release
-```
-
-**Error:** `error returned from database: functions in index expression must be marked IMMUTABLE`
-```bash
-# Solution: Drop and recreate database
-docker-compose down
-docker volume rm tart-backend_postgres-data
-docker-compose up -d
-```
-
-### Nodes Showing Same ID
-
-**Symptom:** All nodes display identical IDs like `"0a00000000..."`
-
-**Cause:** NodeInformation decoder misalignment
-
-**Solution:** Rebuild backend with latest code (includes ProtocolParameters fix)
-```bash
-docker-compose build tart-backend
-docker-compose up -d
 ```
 
 ### Event Decoding Failures
@@ -1647,24 +1625,6 @@ brew install k6  # macOS
 k6 run tests/load-test.js
 ```
 
-## Documentation
-
-- **[JIP-3.md](JIP-3.md)** - JAM Telemetry Protocol Specification
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Detailed architecture overview
-- **[POSTGRES_MIGRATION.md](POSTGRES_MIGRATION.md)** - PostgreSQL setup guide
-- **[OPTIMIZATIONS.md](OPTIMIZATIONS.md)** - Performance tuning guide
-- **[DEBUGGING_CHEATSHEET.md](DEBUGGING_CHEATSHEET.md)** - Common debugging tasks
-
-## Contributing
-
-Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md) for details on:
-
-- Code of Conduct
-- Development workflow
-- Pull request process
-- Coding standards
-- Testing requirements
-
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
@@ -1673,14 +1633,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - Built for the [JAM (Join-Accumulate Machine)](https://graypaper.com/) protocol
 - Specification: JIP-3 Telemetry
-- Community: Polkadot ecosystem
-
-## Support
-
-- **Issues:** [GitHub Issues](https://github.com/your-org/tart-backend/issues)
-- **Discussions:** [GitHub Discussions](https://github.com/your-org/tart-backend/discussions)
-- **Documentation:** [docs.tart.io](https://docs.tart.io)
-
----
-
-**Status:** Production-ready | **Maintained:** Actively | **Version:** 0.1.0
