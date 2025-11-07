@@ -9,13 +9,16 @@ use crate::events::{Event, NodeInformation};
 use crate::store::EventStore;
 
 /// Maximum number of events to buffer before forcing a flush
-const MAX_BATCH_SIZE: usize = 100;
+/// Increased from 100 to 500 to handle higher throughput (50k events/sec @ 10ms interval)
+const MAX_BATCH_SIZE: usize = 500;
 
 /// Maximum time to wait before flushing a batch
-const BATCH_TIMEOUT: Duration = Duration::from_millis(20);
+/// Decreased from 20ms to 10ms for better throughput and lower latency
+const BATCH_TIMEOUT: Duration = Duration::from_millis(10);
 
 /// Number of events that can be buffered in the channel
-const CHANNEL_SIZE: usize = 100_000;
+/// Increased from 100k to 500k to handle bursts from 1024 concurrent nodes
+const CHANNEL_SIZE: usize = 500_000;
 
 #[derive(Clone)]
 pub struct BatchWriter {
