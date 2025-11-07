@@ -1,0 +1,34 @@
+FROM ubuntu:22.04
+
+# Build arguments for release configuration
+ARG RELEASE_BASE_URL=https://github.com/paritytech/polkajam-releases/releases/download/
+ARG RELEASE_VERSION=nightly-2025-11-06
+ARG RELEASE_ARCH=linux-x86_64
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Download and install polkajam
+ARG RELEASE_FILE=polkajam-${RELEASE_VERSION}-${RELEASE_ARCH}
+
+RUN curl -L ${RELEASE_BASE_URL}${RELEASE_VERSION}/polkajam-${RELEASE_VERSION}-${RELEASE_ARCH}.tgz -o /tmp/polkajam.tgz
+
+RUN tar -xzf /tmp/polkajam.tgz -C /tmp/
+
+RUN mv /tmp/polkajam-${RELEASE_VERSION}-${RELEASE_ARCH}/polkajam /usr/local/bin/polkajam && \
+    chmod +x /usr/local/bin/polkajam
+
+RUN rm -rf /tmp/polkajam.tgz /tmp/polkajam-${RELEASE_VERSION}-${RELEASE_ARCH}
+
+# Set working directory
+WORKDIR /data
+
+# Expose default ports (if needed)
+# EXPOSE 30333 9944 9615
+
+# Default command (can be overridden in docker-compose)
+ENTRYPOINT ["/usr/local/bin/polkajam"]
+CMD ["--help"]
