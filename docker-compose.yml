@@ -63,12 +63,15 @@ services:
       - TELEMETRY_BIND=${TELEMETRY_BIND:-0.0.0.0:9000}
       - API_BIND=${API_BIND:-0.0.0.0:8080}
       - RUST_LOG=${RUST_LOG:-info}
+      # JAM RPC URL for fetching service/core data (connects to any validator's RPC)
+      # Ports start at 19800 and increment per validator (19800, 19801, 19802, ...)
+      - JAM_RPC_URL=${JAM_RPC_URL:-ws://host.docker.internal:19800}
     depends_on:
       postgres:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3

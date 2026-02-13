@@ -2,8 +2,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tart_backend::api::{create_api_router, ApiState};
 use tart_backend::health::{checks, HealthMonitor};
+use tart_backend::jam_rpc::JamRpcClient;
 use tart_backend::{EventStore, TelemetryServer};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Configure TCP socket buffer sizes for better performance.
@@ -119,8 +120,38 @@ async fn main() -> anyhow::Result<()> {
     health_monitor
         .add_check(checks::system_resources_check())
         .await;
+    health_monitor
+        .add_check(checks::partition_check(Arc::clone(&store)))
+        .await;
 
-    info!("Health monitoring system initialized with 5 critical component checks");
+    info!("Health monitoring system initialized with 6 critical component checks");
+
+    // Initialize JAM RPC client if configured
+    let jam_rpc = match std::env::var("JAM_RPC_URL") {
+        Ok(rpc_url) => {
+            info!("Connecting to JAM node RPC at {}", rpc_url);
+            let mut client = JamRpcClient::new(&rpc_url);
+            match client.connect().await {
+                Ok(()) => {
+                    let client = Arc::new(client);
+                    // Start background statistics subscription
+                    let _subscription_handle = client.clone().start_stats_subscription();
+                    info!("JAM RPC client connected and subscribed to statistics");
+                    Some(client)
+                }
+                Err(e) => {
+                    error!("Failed to connect to JAM RPC at {}: {}", rpc_url, e);
+                    info!("JAM RPC endpoints will be unavailable");
+                    None
+                }
+            }
+        }
+        Err(_) => {
+            info!("JAM_RPC_URL not set - JAM RPC endpoints will be unavailable");
+            info!("To enable, set JAM_RPC_URL=ws://localhost:19800");
+            None
+        }
+    };
 
     // Create API state using the optimized components
     let api_state = ApiState {
@@ -128,6 +159,7 @@ async fn main() -> anyhow::Result<()> {
         telemetry_server,
         broadcaster,
         health_monitor,
+        jam_rpc,
     };
 
     // Create HTTP API router

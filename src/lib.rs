@@ -6,6 +6,7 @@ pub mod encoding;
 pub mod event_broadcaster;
 pub mod events;
 pub mod health;
+pub mod jam_rpc;
 pub mod node_id;
 pub mod rate_limiter;
 pub mod retry;
@@ -14,7 +15,8 @@ pub mod store;
 pub mod types;
 
 pub use events::{Event, EventType, NodeInformation};
+pub use jam_rpc::{JamRpcClient, NetworkStats, ServiceInfo};
 pub use node_id::NodeId;
 pub use server::TelemetryServer;
-pub use store::EventStore;
+pub use store::{EventStore, PartitionHealth};
 pub use types::*;
