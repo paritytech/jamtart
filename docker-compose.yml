@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # PostgreSQL database
   postgres:
@@ -78,21 +76,21 @@ services:
 
   # Optional: JAM validator node
   jam-validator-0:
-    image: polkajam:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.validator
+      args:
+        - RELEASE_BASE_URL=${RELEASE_BASE_URL:-https://github.com/paritytech/polkajam-releases/releases/download/}
+        - RELEASE_VERSION=${RELEASE_VERSION:-nightly-2025-11-06}
+        - RELEASE_ARCH=${RELEASE_ARCH:-linux-aarch64}
     container_name: jam-validator-0
-    command: >
-      --chain dev
-      run
-      --telemetry tart-backend:9000
-      --dev-validator 0
-      --temp
+    command: ["--chain", "dev", "run", "--telemetry", "tart-backend:9000", "--dev-validator", "0", "--temp"]
     depends_on:
       tart-backend:
         condition: service_healthy
     restart: unless-stopped
     profiles:
       - with-validator
-
 volumes:
   postgres-data:
     driver: local

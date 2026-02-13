@@ -64,10 +64,11 @@ git clone https://github.com/paritytech/jamtart.git
 cd jamtart
 
 # Start backend + PostgreSQL
-docker-compose up -d
-
+docker compose up -d
+# OR start with a single validator
+docker compose --profile with-validator up
 # View logs
-docker-compose logs -f tart-backend
+docker compose logs -f tart-backend
 
 # API endpoint at http://localhost:8080
 # Telemetry endpoint at tcp://localhost:9000
