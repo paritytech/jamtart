@@ -8,8 +8,8 @@ use futures::StreamExt;
 use jam_codec::{Compact, Decode};
 use jam_program_blob_common::{ConventionalMetadata as Metadata, CrateInfo};
 use jam_std_common::{
-    BlockDesc, ChainSubUpdate, CoreActivityRecord, Node, NodeExt as _,
-    ServiceActivityRecord, Statistics, VersionedParameters,
+    BlockDesc, ChainSubUpdate, CoreActivityRecord, Node, NodeExt as _, ServiceActivityRecord,
+    Statistics, VersionedParameters,
 };
 use jam_types::{HeaderHash, ServiceId};
 use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
@@ -262,7 +262,10 @@ impl JamRpcClient {
         // Fetch service info for each service
         let mut services = Vec::new();
         for &id in &service_ids {
-            match self.fetch_service_info(client, header_hash, id, &statistics).await {
+            match self
+                .fetch_service_info(client, header_hash, id, &statistics)
+                .await
+            {
                 Ok(info) => services.push(info),
                 Err(e) => {
                     warn!("Failed to fetch service {}: {}", id, e);
@@ -307,7 +310,10 @@ impl JamRpcClient {
             .ok_or_else(|| anyhow::anyhow!("Service {} not found", id))?;
 
         // Try to get code metadata
-        let code_info = match client.service_preimage(head, id, service.code_hash.0).await? {
+        let code_info = match client
+            .service_preimage(head, id, service.code_hash.0)
+            .await?
+        {
             None => CodeInfo::NotProvided {
                 code_hash: hex::encode(service.code_hash.0),
             },
@@ -358,11 +364,23 @@ impl JamRpcClient {
             .filter(|(_, r)| r.accumulate_count > 0)
             .count();
 
-        let total_ref_gas: u64 = statistics.services.iter().map(|(_, r)| r.refinement_gas_used).sum();
-        let total_acc_gas: u64 = statistics.services.iter().map(|(_, r)| r.accumulate_gas_used).sum();
+        let total_ref_gas: u64 = statistics
+            .services
+            .iter()
+            .map(|(_, r)| r.refinement_gas_used)
+            .sum();
+        let total_acc_gas: u64 = statistics
+            .services
+            .iter()
+            .map(|(_, r)| r.accumulate_gas_used)
+            .sum();
         let total_imports: u32 = statistics.services.iter().map(|(_, r)| r.imports).sum();
         let total_exports: u32 = statistics.services.iter().map(|(_, r)| r.exports).sum();
-        let total_xts: u32 = statistics.services.iter().map(|(_, r)| r.extrinsic_count).sum();
+        let total_xts: u32 = statistics
+            .services
+            .iter()
+            .map(|(_, r)| r.extrinsic_count)
+            .sum();
 
         NetworkTotals {
             total_services: services.len(),

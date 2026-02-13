@@ -408,7 +408,9 @@ impl EventStore {
                 p.get("core_count").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
                 p.get("val_count").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
                 p.get("epoch_period").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                p.get("slot_period_sec").and_then(|v| v.as_u64()).unwrap_or(6) as u16,
+                p.get("slot_period_sec")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(6) as u16,
             )
         } else {
             (0, 0, 0, 6)
@@ -1204,7 +1206,9 @@ impl EventStore {
             .collect();
 
         // Determine current stage and failure status
-        let current_stage = stages.last().map(|s| s["stage"].as_str().unwrap_or("unknown"));
+        let current_stage = stages
+            .last()
+            .map(|s| s["stage"].as_str().unwrap_or("unknown"));
         let failed = stages.iter().any(|s| {
             matches!(
                 s["stage"].as_str(),
@@ -1468,7 +1472,10 @@ impl EventStore {
     }
 
     /// Get guarantee distribution for a specific core.
-    pub async fn get_core_guarantees(&self, core_index: i32) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn get_core_guarantees(
+        &self,
+        core_index: i32,
+    ) -> Result<serde_json::Value, sqlx::Error> {
         // Get current guarantee count from latest status events
         // Status events contain num_guarantees as Vec<u8> indexed by core
         let current_guarantees: Vec<serde_json::Value> = sqlx::query_scalar(
@@ -1761,7 +1768,10 @@ impl EventStore {
 
     /// Get real-time rolling metrics for the last N seconds.
     /// Returns per-second event counts for immediate display.
-    pub async fn get_realtime_metrics(&self, seconds: i32) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn get_realtime_metrics(
+        &self,
+        seconds: i32,
+    ) -> Result<serde_json::Value, sqlx::Error> {
         let seconds = seconds.clamp(10, 300); // 10s to 5min
 
         // Get per-second event counts
@@ -2377,10 +2387,13 @@ impl EventStore {
                 }
             }
 
-            obj.insert("assigned_core".to_string(),
-                assigned_core.map(|c| serde_json::json!(c)).unwrap_or(serde_json::Value::Null));
-            obj.insert("cores_active".to_string(),
-                serde_json::json!(cores_active));
+            obj.insert(
+                "assigned_core".to_string(),
+                assigned_core
+                    .map(|c| serde_json::json!(c))
+                    .unwrap_or(serde_json::Value::Null),
+            );
+            obj.insert("cores_active".to_string(), serde_json::json!(cores_active));
             obj.insert("guarantee_activity".to_string(), guarantee_activity);
             obj.insert("ticket_activity".to_string(), ticket_activity);
         }
@@ -2608,8 +2621,7 @@ impl EventStore {
             Err(e) => {
                 error!(
                     "Failed to commit simple batch transaction for {} events, rolling back: {}",
-                    event_count,
-                    e
+                    event_count, e
                 );
                 Err(e)
             }
@@ -2723,7 +2735,10 @@ impl EventStore {
 
     /// Get guarantor information for a specific core.
     /// Aggregates DA usage, shard activity, and efficiency metrics per guarantor.
-    pub async fn get_core_guarantors(&self, core_index: i32) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn get_core_guarantors(
+        &self,
+        core_index: i32,
+    ) -> Result<serde_json::Value, sqlx::Error> {
         // Get guarantors who have built guarantees for this core
         let guarantors: Vec<serde_json::Value> = sqlx::query_scalar(
             r#"
@@ -2947,7 +2962,9 @@ impl EventStore {
         let core_index = if core_index.is_some() {
             core_index
         } else {
-            let node_id = stages.first().and_then(|s| s.get("node_id").and_then(|v| v.as_str()));
+            let node_id = stages
+                .first()
+                .and_then(|s| s.get("node_id").and_then(|v| v.as_str()));
             if let Some(nid) = node_id {
                 sqlx::query_scalar::<_, Option<i32>>(
                     r#"
@@ -2977,7 +2994,9 @@ impl EventStore {
 
         let failure_reason = stages.iter().find_map(|s| {
             if s.get("status").and_then(|v| v.as_str()) == Some("failed") {
-                s.get("error_code").and_then(|v| v.as_str()).map(String::from)
+                s.get("error_code")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
             } else {
                 None
             }
@@ -2988,7 +3007,11 @@ impl EventStore {
 
         // Calculate total duration from first to last event
         let total_duration_ms: Option<f64> = if stages.len() >= 2 {
-            stages.iter().filter_map(|s| s.get("duration_ms").and_then(|v| v.as_f64())).sum::<f64>().into()
+            stages
+                .iter()
+                .filter_map(|s| s.get("duration_ms").and_then(|v| v.as_f64()))
+                .sum::<f64>()
+                .into()
         } else {
             None
         };
@@ -3004,7 +3027,9 @@ impl EventStore {
             }
         }
 
-        let current_stage = stages.last().and_then(|s| s.get("stage").cloned())
+        let current_stage = stages
+            .last()
+            .and_then(|s| s.get("stage").cloned())
             .unwrap_or(serde_json::json!("submitted"));
 
         Ok(serde_json::json!({
@@ -3218,10 +3243,12 @@ impl EventStore {
         };
 
         // Total shards and preimages across all nodes
-        let total_shards: i64 = by_node.iter()
+        let total_shards: i64 = by_node
+            .iter()
             .filter_map(|n| n.get("num_shards").and_then(|v| v.as_i64()))
             .sum();
-        let total_preimages: i64 = by_node.iter()
+        let total_preimages: i64 = by_node
+            .iter()
             .filter_map(|n| n.get("preimages_in_pool").and_then(|v| v.as_i64()))
             .sum();
 
@@ -3252,7 +3279,10 @@ impl EventStore {
     }
 
     /// Get work packages currently being processed on a specific core.
-    pub async fn get_core_work_packages(&self, core_index: i32) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn get_core_work_packages(
+        &self,
+        core_index: i32,
+    ) -> Result<serde_json::Value, sqlx::Error> {
         // Get active work packages for this core.
         // Only WorkPackageReceived (94) carries the core field, so we start there
         // and join downstream events via submission_or_share_id.
@@ -3757,12 +3787,19 @@ impl EventStore {
         } else {
             0.0
         };
-        let connectivity_status = if connectivity_score >= 80.0 { "healthy" }
-            else if connectivity_score >= 50.0 { "degraded" }
-            else { "unhealthy" };
+        let connectivity_status = if connectivity_score >= 80.0 {
+            "healthy"
+        } else if connectivity_score >= 50.0 {
+            "degraded"
+        } else {
+            "unhealthy"
+        };
         let mut connectivity_issues: Vec<&str> = vec![];
-        if active_nodes_1m == 0 { connectivity_issues.push("No nodes reporting in last minute"); }
-        else if connectivity_score < 80.0 { connectivity_issues.push("Some nodes have gone offline"); }
+        if active_nodes_1m == 0 {
+            connectivity_issues.push("No nodes reporting in last minute");
+        } else if connectivity_score < 80.0 {
+            connectivity_issues.push("Some nodes have gone offline");
+        }
 
         // ── Component: Block Production ──
         let block_score = if auth_attempts > 0 {
@@ -3774,12 +3811,20 @@ impl EventStore {
         } else {
             0.0
         };
-        let block_status = if block_score >= 80.0 { "healthy" }
-            else if block_score >= 50.0 { "degraded" }
-            else { "unhealthy" };
+        let block_status = if block_score >= 80.0 {
+            "healthy"
+        } else if block_score >= 50.0 {
+            "degraded"
+        } else {
+            "unhealthy"
+        };
         let mut block_issues: Vec<&str> = vec![];
-        if auth_failures > 0 { block_issues.push("Authoring failures detected"); }
-        if auth_attempts > 0 && blocks_authored == 0 { block_issues.push("No blocks produced despite attempts"); }
+        if auth_failures > 0 {
+            block_issues.push("Authoring failures detected");
+        }
+        if auth_attempts > 0 && blocks_authored == 0 {
+            block_issues.push("No blocks produced despite attempts");
+        }
 
         // ── Component: Data Availability ──
         let da_score = if da_ops > 0 {
@@ -3788,11 +3833,17 @@ impl EventStore {
         } else {
             50.0
         };
-        let da_status = if da_score >= 90.0 { "healthy" }
-            else if da_score >= 60.0 { "degraded" }
-            else { "unhealthy" };
+        let da_status = if da_score >= 90.0 {
+            "healthy"
+        } else if da_score >= 60.0 {
+            "degraded"
+        } else {
+            "unhealthy"
+        };
         let mut da_issues: Vec<&str> = vec![];
-        if da_failures > 0 { da_issues.push("Shard request failures detected"); }
+        if da_failures > 0 {
+            da_issues.push("Shard request failures detected");
+        }
 
         // ── Component: Work Package Pipeline ──
         let wp_total = wp_received + wp_failures;
@@ -3802,30 +3853,58 @@ impl EventStore {
         } else {
             50.0 // no WPs — neutral
         };
-        let wp_status = if wp_score >= 90.0 { "healthy" }
-            else if wp_score >= 60.0 { "degraded" }
-            else { "unhealthy" };
+        let wp_status = if wp_score >= 90.0 {
+            "healthy"
+        } else if wp_score >= 60.0 {
+            "degraded"
+        } else {
+            "unhealthy"
+        };
         let mut wp_issues: Vec<&str> = vec![];
-        if wp_failures > 0 { wp_issues.push("Work package failures detected"); }
+        if wp_failures > 0 {
+            wp_issues.push("Work package failures detected");
+        }
 
         // ── Component: Event Throughput ──
-        let throughput_score = if events_per_min > 100 { 100.0 }
-            else if events_per_min > 10 { 80.0 }
-            else if events_per_min > 0 { 50.0 }
-            else { 0.0 };
-        let throughput_status = if throughput_score >= 80.0 { "healthy" }
-            else if throughput_score >= 50.0 { "degraded" }
-            else { "unhealthy" };
+        let throughput_score = if events_per_min > 100 {
+            100.0
+        } else if events_per_min > 10 {
+            80.0
+        } else if events_per_min > 0 {
+            50.0
+        } else {
+            0.0
+        };
+        let throughput_status = if throughput_score >= 80.0 {
+            "healthy"
+        } else if throughput_score >= 50.0 {
+            "degraded"
+        } else {
+            "unhealthy"
+        };
         let mut throughput_issues: Vec<&str> = vec![];
-        if events_per_min == 0 { throughput_issues.push("No events received"); }
-        else if events_per_min < 10 { throughput_issues.push("Low event throughput"); }
+        if events_per_min == 0 {
+            throughput_issues.push("No events received");
+        } else if events_per_min < 10 {
+            throughput_issues.push("Low event throughput");
+        }
 
         // ── Overall health ──
-        let scores = [connectivity_score, block_score, da_score, wp_score, throughput_score];
+        let scores = [
+            connectivity_score,
+            block_score,
+            da_score,
+            wp_score,
+            throughput_score,
+        ];
         let health_score = scores.iter().sum::<f64>() / scores.len() as f64;
-        let overall_health = if health_score >= 75.0 { "healthy" }
-            else if health_score >= 45.0 { "degraded" }
-            else { "unhealthy" };
+        let overall_health = if health_score >= 75.0 {
+            "healthy"
+        } else if health_score >= 45.0 {
+            "degraded"
+        } else {
+            "unhealthy"
+        };
 
         // ── Alerts ──
         let mut alerts: Vec<serde_json::Value> = vec![];
@@ -4463,8 +4542,14 @@ impl EventStore {
         .await?;
 
         for node_info in sync_check {
-            let node_id = node_info.get("node_id").and_then(|v| v.as_str()).unwrap_or("unknown");
-            let slots_behind = node_info.get("slots_behind").and_then(|v| v.as_i64()).unwrap_or(0);
+            let node_id = node_info
+                .get("node_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let slots_behind = node_info
+                .get("slots_behind")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
             alerts.push(serde_json::json!({
                 "severity": "warning",
                 "type": "node_behind",
@@ -4514,7 +4599,10 @@ impl EventStore {
 
     /// Get validators assigned to a specific core with their node IDs.
     /// Derives validator-to-core mapping from guarantee and ticket events.
-    pub async fn get_core_validators(&self, core_index: i32) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn get_core_validators(
+        &self,
+        core_index: i32,
+    ) -> Result<serde_json::Value, sqlx::Error> {
         // Get validators who have processed work packages for this core.
         // Start from WorkPackageReceived (94) which has the core field,
         // then find all nodes that participated via submission_or_share_id linkage.
@@ -4619,7 +4707,10 @@ impl EventStore {
     }
 
     /// Get real-time performance metrics for a specific core.
-    pub async fn get_core_metrics(&self, core_index: i32) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn get_core_metrics(
+        &self,
+        core_index: i32,
+    ) -> Result<serde_json::Value, sqlx::Error> {
         // Get processing metrics for this core (1 hour window).
         // Start from WorkPackageReceived (94) which has the core field,
         // then count downstream events linked via submission_or_share_id.
@@ -4674,7 +4765,7 @@ impl EventStore {
         let processing_efficiency = if total_refinements > 0 {
             (refinements_completed as f64 / total_refinements as f64) * 100.0
         } else if wps_received > 0 {
-            0.0  // WPs received but none refined
+            0.0 // WPs received but none refined
         } else {
             100.0 // No data
         };
@@ -4874,21 +4965,24 @@ impl EventStore {
         .await?;
 
         // Calculate audit statistics
-        let guarantees_built = audit_events.iter().filter(|e| {
-            e.get("event_type").and_then(|v| v.as_i64()) == Some(105)
-        }).count();
+        let guarantees_built = audit_events
+            .iter()
+            .filter(|e| e.get("event_type").and_then(|v| v.as_i64()) == Some(105))
+            .count();
 
-        let guarantees_signed = audit_events.iter().filter(|e| {
-            e.get("event_type").and_then(|v| v.as_i64()) == Some(106)
-        }).count();
+        let guarantees_signed = audit_events
+            .iter()
+            .filter(|e| e.get("event_type").and_then(|v| v.as_i64()) == Some(106))
+            .count();
 
-        let guarantees_shared = audit_events.iter().filter(|e| {
-            e.get("event_type").and_then(|v| v.as_i64()) == Some(107)
-        }).count();
+        let guarantees_shared = audit_events
+            .iter()
+            .filter(|e| e.get("event_type").and_then(|v| v.as_i64()) == Some(107))
+            .count();
 
-        let accumulated = audit_events.iter().any(|e| {
-            e.get("event_type").and_then(|v| v.as_i64()) == Some(108)
-        });
+        let accumulated = audit_events
+            .iter()
+            .any(|e| e.get("event_type").and_then(|v| v.as_i64()) == Some(108));
 
         let failed = audit_events.iter().any(|e| {
             let et = e.get("event_type").and_then(|v| v.as_i64());
@@ -4896,13 +4990,15 @@ impl EventStore {
         });
 
         // Get unique auditors (validators who signed)
-        let auditors: Vec<&str> = audit_events.iter()
+        let auditors: Vec<&str> = audit_events
+            .iter()
             .filter(|e| e.get("event_type").and_then(|v| v.as_i64()) == Some(106))
             .filter_map(|e| e.get("node_id").and_then(|v| v.as_str()))
             .collect();
 
         // Determine tranche from events
-        let tranche = audit_events.iter()
+        let tranche = audit_events
+            .iter()
             .find_map(|e| e.get("tranche").and_then(|v| v.as_i64()))
             .unwrap_or(0);
 
@@ -4944,7 +5040,10 @@ impl EventStore {
     }
 
     /// Detect bottlenecks and slow validators for a specific core.
-    pub async fn get_core_bottlenecks(&self, core_index: i32) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn get_core_bottlenecks(
+        &self,
+        core_index: i32,
+    ) -> Result<serde_json::Value, sqlx::Error> {
         // Find slow validators based on processing times.
         // Start from WorkPackageReceived (94) which has the core field,
         // then find downstream events linked via submission_or_share_id.
@@ -5102,7 +5201,10 @@ impl EventStore {
     }
 
     /// Get enhanced guarantor information with import sharing data.
-    pub async fn get_core_guarantors_with_sharing(&self, core_index: i32) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn get_core_guarantors_with_sharing(
+        &self,
+        core_index: i32,
+    ) -> Result<serde_json::Value, sqlx::Error> {
         // Get guarantors with their activity.
         // Start from WorkPackageReceived (94) which has the core field,
         // then find GuaranteeBuilt events linked via submission_id.
@@ -5213,7 +5315,8 @@ impl EventStore {
         .await?;
 
         // Calculate totals
-        let total_da_bytes: i64 = guarantors.iter()
+        let total_da_bytes: i64 = guarantors
+            .iter()
             .filter_map(|g| g.get("da_usage_bytes").and_then(|v| v.as_i64()))
             .sum();
 
@@ -5241,6 +5344,7 @@ impl EventStore {
 
     /// Multi-criteria event search with pagination.
     /// Supports filtering by event_types, node_id, core_index, wp_hash, and time range.
+    #[allow(clippy::too_many_arguments)]
     pub async fn search_events(
         &self,
         event_types: Option<&[i32]>,
@@ -5604,7 +5708,10 @@ impl EventStore {
             // Events are ordered DESC, so last is earliest, first is latest
             let earliest = events.last().and_then(|e| e.get("created_at").cloned());
             let latest = events.first().and_then(|e| e.get("created_at").cloned());
-            (earliest.unwrap_or(serde_json::Value::Null), latest.unwrap_or(serde_json::Value::Null))
+            (
+                earliest.unwrap_or(serde_json::Value::Null),
+                latest.unwrap_or(serde_json::Value::Null),
+            )
         };
 
         Ok(serde_json::json!({

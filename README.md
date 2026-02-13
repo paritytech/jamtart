@@ -60,8 +60,8 @@
 
 ```bash
 # Clone repository
-git clone https://github.com/your-org/tart-backend.git
-cd tart-backend
+git clone https://github.com/paritytech/jamtart.git
+cd jamtart
 
 # Start backend + PostgreSQL
 docker-compose up -d
@@ -114,8 +114,8 @@ cargo run --release --bin tart-dash
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/your-org/tart-backend.git
-cd tart-backend
+git clone https://github.com/paritytech/jamtart.git
+cd jamtart
 
 # 2. Configure production credentials (IMPORTANT!)
 export POSTGRES_PASSWORD=$(openssl rand -base64 32)
@@ -129,11 +129,7 @@ docker-compose up -d
 curl http://localhost:8080/api/health
 ```
 
-### Option 2: Kubernetes Deployment
-
-See [deployment/kubernetes/README.md](deployment/kubernetes/README.md) for Helm charts and manifests.
-
-### Option 3: Binary Installation
+### Option 2: Binary Installation
 
 ```bash
 # 1. Build release binaries
@@ -142,11 +138,6 @@ cargo build --release
 # 2. Install to system
 sudo cp target/release/tart-backend /usr/local/bin/
 sudo cp target/release/tart-dash /usr/local/bin/
-
-# 3. Create systemd service (see deployment/systemd/tart-backend.service)
-sudo cp deployment/systemd/tart-backend.service /etc/systemd/system/
-sudo systemctl enable tart-backend
-sudo systemctl start tart-backend
 ```
 
 ## Configuration
@@ -158,6 +149,7 @@ sudo systemctl start tart-backend
 | `DATABASE_URL` | PostgreSQL connection string | **Required** | `postgres://tart:STRONG_PASSWORD@db:5432/tart_telemetry` |
 | `TELEMETRY_BIND` | Telemetry server bind address | `0.0.0.0:9000` | `0.0.0.0:9000` |
 | `API_BIND` | HTTP API server bind address | `0.0.0.0:8080` | `0.0.0.0:8080` |
+| `JAM_RPC_URL` | JAM node RPC WebSocket URL (enables `/api/jam/*` endpoints) | *unset* | `ws://localhost:19800` |
 | `RUST_LOG` | Logging configuration | `info` | `tart_backend=info,sqlx=warn` |
 
 ### PostgreSQL Configuration
@@ -381,6 +373,95 @@ ulimit -n 65536
 }
 ```
 </details>
+
+#### Network & Nodes
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/network` | Network overview information |
+| `GET /api/nodes/:node_id/status` | Node status summary |
+| `GET /api/nodes/:node_id/status/enhanced` | Enhanced node status with core assignment |
+| `GET /api/nodes/:node_id/peers` | Node peer connections |
+| `GET /api/nodes/:node_id/timeline` | Node event timeline |
+| `GET /api/network/topology` | Peer-to-peer network topology |
+| `GET /api/validators/cores` | Validator-to-core mapping |
+
+#### Workpackage Analytics
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/workpackages` | Workpackage statistics |
+| `GET /api/workpackages/active` | Currently active workpackages |
+| `GET /api/workpackages/:hash/journey` | Workpackage lifecycle journey |
+| `GET /api/workpackages/:hash/journey/enhanced` | Enhanced journey with detailed stages |
+| `GET /api/workpackages/:hash/audit-progress` | Workpackage audit progress |
+| `POST /api/workpackages/batch/journey` | Batch workpackage journey lookup |
+
+#### Block & Guarantee Statistics
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/blocks` | Block statistics |
+| `GET /api/guarantees` | Guarantee statistics |
+| `GET /api/guarantees/by-guarantor` | Guarantees grouped by guarantor |
+
+#### Core Status
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/cores/status` | All core statuses |
+| `GET /api/cores/:core_index/guarantees` | Guarantees for a specific core |
+| `GET /api/cores/:core_index/guarantors` | Guarantors assigned to a core |
+| `GET /api/cores/:core_index/guarantors/enhanced` | Enhanced guarantor info with sharing data |
+| `GET /api/cores/:core_index/work-packages` | Work packages on a core |
+| `GET /api/cores/:core_index/validators` | Validators assigned to a core |
+| `GET /api/cores/:core_index/metrics` | Core performance metrics |
+| `GET /api/cores/:core_index/bottlenecks` | Core bottleneck detection |
+
+#### Data Availability
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/da/stats` | Data availability statistics |
+| `GET /api/da/stats/enhanced` | Enhanced DA stats |
+
+#### Metrics & Real-time
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/metrics/execution` | Execution metrics |
+| `GET /api/metrics/timeseries` | Time-series metrics |
+| `GET /api/metrics/timeseries/grouped` | Grouped time-series metrics |
+| `GET /api/metrics/realtime` | Real-time metrics snapshot |
+| `GET /api/metrics/live` | Live counter values |
+| `GET /api/metrics/stream` | Server-Sent Events metrics stream |
+
+#### Analytics
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/analytics/failure-rates` | Failure rate analysis |
+| `GET /api/analytics/block-propagation` | Block propagation times |
+| `GET /api/analytics/network-health` | Network health overview |
+| `GET /api/analytics/sync-status/timeline` | Sync status over time |
+| `GET /api/analytics/connections/timeline` | Connection history over time |
+
+#### Search & Explorer
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/events/search` | Multi-criteria event search with pagination |
+| `GET /api/slots/:slot` | Events for a specific slot |
+
+#### JAM RPC (requires `JAM_RPC_URL`)
+
+These endpoints proxy data from a connected JAM node via RPC. They return `503` if `JAM_RPC_URL` is not configured.
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/jam/stats` | JAM network statistics |
+| `GET /api/jam/services` | List of services on the JAM network |
+| `GET /api/jam/cores` | Core activity from the JAM network |
 
 ### WebSocket Endpoints
 
@@ -1405,8 +1486,8 @@ RUST_LOG="tart_backend=info,sqlx=warn,tower_http=warn"
 
 ```bash
 # Clone repository
-git clone https://github.com/your-org/tart-backend.git
-cd tart-backend
+git clone https://github.com/paritytech/jamtart.git
+cd jamtart
 
 # Install Rust (if not already installed)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -1427,7 +1508,7 @@ RUST_LOG=debug cargo run
 ### Project Structure
 
 ```
-tart-backend/
+jamtart/
 ├── src/
 │   ├── main.rs                 # Application entry point
 │   ├── lib.rs                  # Library exports
@@ -1445,16 +1526,23 @@ tart-backend/
 │   ├── types.rs                # JAM types & structures
 │   ├── encoding.rs             # Binary encoding/decoding
 │   ├── decoder.rs              # JIP-3 protocol decoder
+│   ├── jam_rpc.rs              # JAM RPC client (WebSocket)
 │   └── bin/
 │       └── tart-dash.rs        # Terminal UI dashboard
 ├── migrations/
-│   ├── 001_postgres_schema.sql      # Initial schema
-│   └── 002_performance_indexes.sql  # Performance indexes
+│   ├── 001_postgres_schema.sql             # Initial schema
+│   ├── 002_performance_indexes.sql         # Performance indexes
+│   ├── 003_frontend_analytics_indexes.sql  # Analytics indexes
+│   └── 004_frontend_search_indexes.sql     # Search indexes
 ├── tests/
-│   ├── integration_tests.rs    # End-to-end tests
+│   ├── types_tests.rs          # Type system tests
 │   ├── events_tests.rs         # Event encoding tests
+│   ├── error_tests.rs          # Error handling tests
+│   ├── encoding_tests.rs       # Binary protocol tests
 │   ├── api_tests.rs            # API endpoint tests
-│   └── types_tests.rs          # Type system tests
+│   ├── integration_tests.rs    # End-to-end tests
+│   ├── optimized_server_tests.rs # Performance tests
+│   └── common/mod.rs           # Shared test fixtures
 ├── docker-compose.yml          # Docker orchestration
 ├── Dockerfile                  # Container image
 ├── Cargo.toml                  # Rust dependencies

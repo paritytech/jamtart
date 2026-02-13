@@ -59,14 +59,20 @@ pub fn create_api_router(state: ApiState) -> Router {
         // Aggregation endpoints
         .route("/api/workpackages", get(get_workpackage_stats))
         .route("/api/workpackages/active", get(get_active_workpackages))
-        .route("/api/workpackages/:hash/journey", get(get_workpackage_journey))
+        .route(
+            "/api/workpackages/:hash/journey",
+            get(get_workpackage_journey),
+        )
         .route("/api/blocks", get(get_block_stats))
         .route("/api/guarantees", get(get_guarantee_stats))
         // Data availability endpoints
         .route("/api/da/stats", get(get_da_stats))
         // Core status endpoints
         .route("/api/cores/status", get(get_cores_status))
-        .route("/api/cores/:core_index/guarantees", get(get_core_guarantees))
+        .route(
+            "/api/cores/:core_index/guarantees",
+            get(get_core_guarantees),
+        )
         // Execution metrics
         .route("/api/metrics/execution", get(get_execution_metrics))
         .route("/api/metrics/timeseries", get(get_timeseries_metrics))
@@ -84,34 +90,73 @@ pub fn create_api_router(state: ApiState) -> Router {
         .route("/api/metrics/live", get(get_live_counters))
         .route("/api/metrics/stream", get(metrics_sse_handler))
         // HIGH PRIORITY: Frontend team requested endpoints
-        .route("/api/cores/:core_index/guarantors", get(get_core_guarantors))
-        .route("/api/cores/:core_index/work-packages", get(get_core_work_packages))
-        .route("/api/workpackages/:hash/journey/enhanced", get(get_workpackage_journey_enhanced))
+        .route(
+            "/api/cores/:core_index/guarantors",
+            get(get_core_guarantors),
+        )
+        .route(
+            "/api/cores/:core_index/work-packages",
+            get(get_core_work_packages),
+        )
+        .route(
+            "/api/workpackages/:hash/journey/enhanced",
+            get(get_workpackage_journey_enhanced),
+        )
         .route("/api/da/stats/enhanced", get(get_da_stats_enhanced))
         // MEDIUM PRIORITY: Analytics endpoints
         .route("/api/analytics/failure-rates", get(get_failure_rates))
-        .route("/api/analytics/block-propagation", get(get_block_propagation))
+        .route(
+            "/api/analytics/block-propagation",
+            get(get_block_propagation),
+        )
         .route("/api/analytics/network-health", get(get_network_health))
-        .route("/api/guarantees/by-guarantor", get(get_guarantees_by_guarantor))
+        .route(
+            "/api/guarantees/by-guarantor",
+            get(get_guarantees_by_guarantor),
+        )
         // LOW PRIORITY: Timeline & grouped analytics
-        .route("/api/metrics/timeseries/grouped", get(get_timeseries_grouped))
-        .route("/api/analytics/sync-status/timeline", get(get_sync_status_timeline))
-        .route("/api/analytics/connections/timeline", get(get_connections_timeline))
+        .route(
+            "/api/metrics/timeseries/grouped",
+            get(get_timeseries_grouped),
+        )
+        .route(
+            "/api/analytics/sync-status/timeline",
+            get(get_sync_status_timeline),
+        )
+        .route(
+            "/api/analytics/connections/timeline",
+            get(get_connections_timeline),
+        )
         // JAM RPC endpoints (requires JAM_RPC_URL to be set)
         .route("/api/jam/stats", get(get_jam_stats))
         .route("/api/jam/services", get(get_jam_services))
         .route("/api/jam/cores", get(get_jam_cores))
         // DASHBOARD: Mock data replacement endpoints
-        .route("/api/cores/:core_index/validators", get(get_core_validators))
+        .route(
+            "/api/cores/:core_index/validators",
+            get(get_core_validators),
+        )
         .route("/api/cores/:core_index/metrics", get(get_core_metrics))
-        .route("/api/cores/:core_index/bottlenecks", get(get_core_bottlenecks))
-        .route("/api/cores/:core_index/guarantors/enhanced", get(get_core_guarantors_enhanced))
-        .route("/api/workpackages/:hash/audit-progress", get(get_workpackage_audit_progress))
+        .route(
+            "/api/cores/:core_index/bottlenecks",
+            get(get_core_bottlenecks),
+        )
+        .route(
+            "/api/cores/:core_index/guarantors/enhanced",
+            get(get_core_guarantors_enhanced),
+        )
+        .route(
+            "/api/workpackages/:hash/audit-progress",
+            get(get_workpackage_audit_progress),
+        )
         // Frontend search & explorer endpoints
         .route("/api/events/search", get(search_events))
         .route("/api/slots/:slot", get(get_slot_events))
         .route("/api/nodes/:node_id/timeline", get(get_node_timeline))
-        .route("/api/workpackages/batch/journey", axum::routing::post(batch_workpackage_journeys))
+        .route(
+            "/api/workpackages/batch/journey",
+            axum::routing::post(batch_workpackage_journeys),
+        )
         .route("/api/ws", get(websocket_handler))
         .layer(CorsLayer::permissive())
         .with_state(state)
@@ -463,9 +508,7 @@ async fn get_validator_core_mapping(
 }
 
 /// Get peer topology and network traffic patterns
-async fn get_peer_topology(
-    State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
+async fn get_peer_topology(State(state): State<ApiState>) -> Result<impl IntoResponse, StatusCode> {
     match state.store.get_peer_topology().await {
         Ok(topology) => Ok(Json(topology)),
         Err(e) => {
@@ -538,7 +581,9 @@ async fn get_live_counters(State(state): State<ApiState>) -> Result<impl IntoRes
 /// Pushes updates every second without client polling overhead.
 async fn metrics_sse_handler(
     State(state): State<ApiState>,
-) -> axum::response::Sse<impl futures::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>> {
+) -> axum::response::Sse<
+    impl futures::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
+> {
     use axum::response::sse::{Event, KeepAlive};
     use futures::stream;
     use std::time::Duration;
@@ -558,9 +603,7 @@ async fn metrics_sse_handler(
             }
         };
 
-        let event = Event::default()
-            .data(data.to_string())
-            .event("metrics");
+        let event = Event::default().data(data.to_string()).event("metrics");
 
         Some((Ok(event), store))
     });
@@ -632,9 +675,7 @@ async fn get_da_stats_enhanced(
 // ============================================================================
 
 /// Get failure rate analytics across the system.
-async fn get_failure_rates(
-    State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
+async fn get_failure_rates(State(state): State<ApiState>) -> Result<impl IntoResponse, StatusCode> {
     match state.store.get_failure_rates().await {
         Ok(rates) => Ok(Json(rates)),
         Err(e) => {
@@ -708,7 +749,11 @@ async fn get_timeseries_grouped(
     let interval = params.interval.unwrap_or(5);
     let duration = params.duration.unwrap_or(1);
 
-    match state.store.get_timeseries_grouped(&params.metric, &params.group_by, interval, duration).await {
+    match state
+        .store
+        .get_timeseries_grouped(&params.metric, &params.group_by, interval, duration)
+        .await
+    {
         Ok(data) => Ok(Json(data)),
         Err(e) => {
             error!("Failed to get grouped timeseries: {}", e);
@@ -827,10 +872,17 @@ async fn get_core_guarantors_enhanced(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    match state.store.get_core_guarantors_with_sharing(core_index).await {
+    match state
+        .store
+        .get_core_guarantors_with_sharing(core_index)
+        .await
+    {
         Ok(guarantors) => Ok(Json(guarantors)),
         Err(e) => {
-            error!("Failed to get core {} guarantors with sharing: {}", core_index, e);
+            error!(
+                "Failed to get core {} guarantors with sharing: {}",
+                core_index, e
+            );
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
@@ -985,21 +1037,14 @@ async fn get_node_timeline(
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
         .map(|dt| dt.with_timezone(&chrono::Utc));
 
-    let categories: Option<Vec<String>> = query.categories.as_ref().map(|s| {
-        s.split(',')
-            .map(|c| c.trim().to_string())
-            .collect()
-    });
+    let categories: Option<Vec<String>> = query
+        .categories
+        .as_ref()
+        .map(|s| s.split(',').map(|c| c.trim().to_string()).collect());
 
     match state
         .store
-        .get_node_timeline(
-            &node_id,
-            start_time,
-            end_time,
-            categories.as_deref(),
-            limit,
-        )
+        .get_node_timeline(&node_id, start_time, end_time, categories.as_deref(), limit)
         .await
     {
         Ok(timeline) => Ok(Json(timeline)),
@@ -1028,7 +1073,10 @@ async fn batch_workpackage_journeys(
     }
 
     if body.hashes.len() > 50 {
-        warn!("Batch journey request too large: {} hashes", body.hashes.len());
+        warn!(
+            "Batch journey request too large: {} hashes",
+            body.hashes.len()
+        );
         return Err(StatusCode::BAD_REQUEST);
     }
 
@@ -1151,12 +1199,18 @@ async fn get_jam_cores(State(state): State<ApiState>) -> Result<impl IntoRespons
 #[derive(Deserialize)]
 #[serde(tag = "type")]
 enum WebSocketRequest {
-    Subscribe { filter: SubscriptionFilter },
+    Subscribe {
+        filter: SubscriptionFilter,
+    },
     Unsubscribe,
-    GetRecentEvents { limit: Option<usize> },
+    GetRecentEvents {
+        limit: Option<usize>,
+    },
     Ping,
     /// Subscribe to aggregated metrics channel (pushes every interval_ms)
-    SubscribeMetrics { interval_ms: Option<u64> },
+    SubscribeMetrics {
+        interval_ms: Option<u64>,
+    },
     /// Unsubscribe from metrics channel
     UnsubscribeMetrics,
     /// Subscribe to alerts channel
@@ -1370,7 +1424,7 @@ async fn websocket_connection(mut socket: WebSocket, state: ApiState) {
                                 }
                                 WebSocketRequest::SubscribeMetrics { interval_ms } => {
                                     metrics_subscribed = true;
-                                    let interval = interval_ms.unwrap_or(1000).max(500).min(10000);
+                                    let interval = interval_ms.unwrap_or(1000).clamp(500, 10000);
                                     metrics_interval = tokio::time::interval(
                                         std::time::Duration::from_millis(interval)
                                     );

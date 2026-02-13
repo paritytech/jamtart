@@ -66,6 +66,7 @@ async fn setup_test_api() -> (TestServer, Arc<TelemetryServer>, u16) {
         telemetry_server: Arc::clone(&telemetry_server),
         broadcaster,
         health_monitor,
+        jam_rpc: None,
     };
 
     let app = create_api_router(api_state);
