@@ -21,5 +21,5 @@ CREATE INDEX IF NOT EXISTS idx_events_slot ON events (
 
 -- Expression index for service_id timeseries
 CREATE INDEX IF NOT EXISTS idx_events_service_id ON events (
-    (data->'Refined'->'costs'->>'service_id'), created_at DESC
+    (data->'Refined'->'costs'->>'service_id'), received_at DESC
 ) WHERE event_type = 101;
