@@ -426,7 +426,7 @@ async fn handle_connection_optimized(
         }
 
         // Update metrics periodically (every 100 events) to reduce overhead in hot loop
-        if event_count % 100 == 0 {
+        if event_count.is_multiple_of(100) {
             metrics::gauge!("telemetry_buffer_pending").set(batch_writer.pending_count() as f64);
         }
 

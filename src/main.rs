@@ -299,7 +299,7 @@ async fn main() -> anyhow::Result<()> {
 
                 // Evict expired entries every ~15th cycle (roughly every 30s)
                 evict_counter += 1;
-                if evict_counter % 15 == 0 {
+                if evict_counter.is_multiple_of(15) {
                     cache_clone.evict_expired();
                 }
             }
