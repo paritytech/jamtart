@@ -1440,10 +1440,8 @@ impl Encode for Event {
                 attempt.encode(buf)?;
                 buf.extend_from_slice(id);
             }
-            // For all other events (90-199), implement minimally for now
             _ => {
-                // These events don't need encoding for current tests
-                // Can be implemented as needed
+                todo!("Event::Encode not implemented for {:?}", self.event_type())
             }
         }
         Ok(())
@@ -1495,8 +1493,7 @@ impl Encode for Event {
             Event::TicketsGenerated { ids, .. } => 8 + ids.encoded_size(),
             Event::TicketTransferFailed { reason, .. } => 32 + 1 + 1 + reason.encoded_size(),
             Event::TicketTransferred { .. } => 32 + 1 + 1 + 4 + 1 + 32,
-            // For other events, return minimal size
-            _ => 0,
+            _ => todo!("Event::encoded_size not implemented for {:?}", self.event_type()),
         };
 
         base_size + specific_size

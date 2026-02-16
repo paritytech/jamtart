@@ -764,7 +764,7 @@ impl Encode for ProtocolParameters {
     }
 
     fn encoded_size(&self) -> usize {
-        // 3 Balance (8 each) + 4 UnsignedGas (8 each) + 6 Slot (4 each) + 14 u16 (2 each) + 9 u32 (4 each)
-        3 * 8 + 4 * 8 + 6 * 4 + 14 * 2 + 9 * 4
+        // 3 Balance (8 each) + 4 UnsignedGas (8 each) + 4 Slot (4 each) + 13 u16 (2 each) + 9 u32 (4 each)
+        3 * 8 + 4 * 8 + 4 * 4 + 13 * 2 + 9 * 4
     }
 }

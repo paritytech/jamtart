@@ -9,7 +9,7 @@ use tracing::warn;
 const MAX_EVENTS_PER_SECOND: u32 = 100;
 
 /// Maximum number of concurrent connections
-const MAX_CONNECTIONS: usize = 1024;
+pub const MAX_CONNECTIONS: usize = 1024;
 
 /// Time window for rate limiting (1 second)
 const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(1);
