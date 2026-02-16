@@ -10,15 +10,21 @@ path = "src/main.rs"
 [[bin]]
 name = "tart-dash"
 path = "src/bin/tart-dash.rs"
+required-features = ["dashboard"]
+
+[[bin]]
+name = "tart-bench"
+path = "src/bin/bench.rs"
+required-features = ["bench"]
 
 [dependencies]
 # Async runtime
-tokio = { version = "1.40", features = ["full"] }
+tokio = { version = "1.40", features = ["rt-multi-thread", "sync", "time", "macros", "io-util", "net", "signal"] }
 
 # Web framework
 axum = { version = "0.7", features = ["ws"] }
 tower = { version = "0.4" }
-tower-http = { version = "0.5", features = ["cors", "trace"] }
+tower-http = { version = "0.5", features = ["cors", "trace", "compression-gzip", "compression-br", "set-header", "timeout", "limit"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -43,25 +49,28 @@ chrono = { version = "0.4", features = ["serde"] }
 # Utilities
 dashmap = "6.0"
 futures = "0.3"
-pin-project = "1.1"
 hex = "0.4"
 rand = "0.8"
 
 # Performance optimizations
-crossbeam-channel = "0.5"
 parking_lot = "0.12"
 metrics = "0.23"
 metrics-exporter-prometheus = "0.15"
+tikv-jemallocator = { version = "0.6", optional = true }
 
 # Platform-specific dependencies
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-# Dashboard dependencies
-ratatui = "0.26"
-crossterm = "0.27"
-clap = { version = "4.4", features = ["derive", "env"] }
-reqwest = { version = "0.11", features = ["json", "blocking"] }
+# Dashboard dependencies (feature-gated to avoid bloating main binary)
+ratatui = { version = "0.26", optional = true }
+crossterm = { version = "0.27", optional = true }
+clap = { version = "4.4", features = ["derive", "env"], optional = true }
+reqwest = { version = "0.11", features = ["json", "blocking"], optional = true }
+
+# Benchmark dependencies (feature-gated)
+hdrhistogram = { version = "7.5", optional = true }
+tokio-tungstenite = { version = "0.24", optional = true }
 
 # JAM RPC client dependencies
 jam-std-common = "0.1.26"
@@ -72,5 +81,26 @@ jam-codec = { version = "0.1.1", default-features = false, features = ["derive",
 jsonrpsee = { version = "0.24.2", default-features = false, features = ["http-client", "ws-client"] }
 url = "2.5"
 
+[features]
+default = ["jemalloc"]
+jemalloc = ["tikv-jemallocator"]
+dashboard = ["ratatui", "crossterm", "clap", "reqwest"]
+bench = ["reqwest", "hdrhistogram", "tokio-tungstenite"]
+
 [dev-dependencies]
 axum-test = "15.0"
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+
+[profile.dev]
+opt-level = 1
+incremental = true
+lto = false
+codegen-units = 256
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

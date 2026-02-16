@@ -1,0 +1,204 @@
+{
+  "config": {
+    "url": "http://localhost:8080",
+    "scenario": "dashboard",
+    "tabs": 10,
+    "duration_secs": 30.0,
+    "warmup_secs": 5.0
+  },
+  "summary": {
+    "total_requests": 582,
+    "total_errors": 0,
+    "error_rate_pct": 0.0,
+    "throughput_rps": 19.4
+  },
+  "endpoints": [
+    {
+      "path": "/api/metrics/live",
+      "requests": 180,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_us": 1719,
+      "p95_us": 2943,
+      "p99_us": 5663,
+      "max_us": 6967,
+      "mean_us": 1703.7833333333326
+    },
+    {
+      "path": "/api/metrics/realtime?seconds=60",
+      "requests": 180,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_us": 1808,
+      "p95_us": 2961,
+      "p99_us": 5495,
+      "max_us": 7667,
+      "mean_us": 1740.622222222222
+    },
+    {
+      "path": "/api/stats",
+      "requests": 36,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_us": 1188,
+      "p95_us": 4387,
+      "p99_us": 7759,
+      "max_us": 7759,
+      "mean_us": 1685.1388888888885
+    },
+    {
+      "path": "/api/workpackages/active",
+      "requests": 36,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_us": 1171,
+      "p95_us": 5583,
+      "p99_us": 7747,
+      "max_us": 7747,
+      "mean_us": 1727.0000000000002
+    },
+    {
+      "path": "/api/blocks",
+      "requests": 18,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_us": 723,
+      "p95_us": 1132,
+      "p99_us": 1132,
+      "max_us": 1132,
+      "mean_us": 768.0
+    },
+    {
+      "path": "/api/cores/status",
+      "requests": 18,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_us": 642,
+      "p95_us": 1425,
+      "p99_us": 1425,
+      "max_us": 1425,
+      "mean_us": 677.5
+    },
+    {
+      "path": "/api/events/search",
+      "requests": 18,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_us": 44607,
+      "p95_us": 99263,
+      "p99_us": 99263,
+      "max_us": 99263,
+      "mean_us": 49851.55555555555
+    },
+    {
+      "path": "/api/analytics/failure-rates",
+      "requests": 12,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_us": 647,
+      "p95_us": 867,
+      "p99_us": 867,
+      "max_us": 867,
+      "mean_us": 664.1666666666666
+    },
+    {
+      "path": "/api/analytics/network-health",
+      "requests": 12,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_us": 615,
+      "p95_us": 832,
+      "p99_us": 832,
+      "max_us": 832,
+      "mean_us": 661.0
+    },
+    {
+      "path": "/api/metrics/timeseries",
+      "requests": 12,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_us": 27855,
+      "p95_us": 38431,
+      "p99_us": 38431,
+      "max_us": 38431,
+      "mean_us": 29532.666666666664
+    },
+    {
+      "path": "/api/analytics/block-propagation",
+      "requests": 12,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_us": 1171,
+      "p95_us": 5139,
+      "p99_us": 5139,
+      "max_us": 5139,
+      "mean_us": 2063.0
+    },
+    {
+      "path": "/api/workpackages",
+      "requests": 12,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_us": 1436,
+      "p95_us": 5327,
+      "p99_us": 5327,
+      "max_us": 5327,
+      "mean_us": 2177.3333333333335
+    },
+    {
+      "path": "/api/guarantees",
+      "requests": 12,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_us": 1651,
+      "p95_us": 5071,
+      "p99_us": 5071,
+      "max_us": 5071,
+      "mean_us": 2299.916666666667
+    },
+    {
+      "path": "/api/da/stats",
+      "requests": 12,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_us": 991,
+      "p95_us": 5187,
+      "p99_us": 5187,
+      "max_us": 5187,
+      "mean_us": 2018.75
+    },
+    {
+      "path": "/api/guarantees/by-guarantor",
+      "requests": 6,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_us": 633,
+      "p95_us": 1655,
+      "p99_us": 1655,
+      "max_us": 1655,
+      "mean_us": 811.6666666666667
+    },
+    {
+      "path": "/api/nodes",
+      "requests": 6,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_us": 1925,
+      "p95_us": 2351,
+      "p99_us": 2351,
+      "max_us": 2351,
+      "mean_us": 1935.3333333333333
+    }
+  ],
+  "websocket": {
+    "tabs": 6,
+    "connected": 6,
+    "connect_p50_us": 1991,
+    "connect_p95_us": 2297,
+    "connect_p99_us": 2297,
+    "total_messages": 4848,
+    "total_events": 0,
+    "total_stats": 42,
+    "total_metrics": 210
+  }
+}

@@ -1,5 +1,6 @@
 pub mod api;
 pub mod batch_writer;
+pub mod cache;
 pub mod circuit_breaker;
 pub mod decoder;
 pub mod encoding;

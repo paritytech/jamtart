@@ -1,10 +1,9 @@
-version: '3.8'
-
 services:
   # PostgreSQL database
   postgres:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     container_name: tart-postgres
+    shm_size: 512mb
     environment:
       # WARNING: Default credentials for LOCAL DEVELOPMENT only
       # For production, override these with strong passwords via environment variables or secrets
@@ -25,29 +24,44 @@ services:
       - -c
       - effective_cache_size=1GB
       - -c
-      - maintenance_work_mem=64MB
+      - maintenance_work_mem=128MB
       - -c
-      - checkpoint_completion_target=0.9
+      - checkpoint_completion_target=0.95
       - -c
       - wal_buffers=16MB
       - -c
       - default_statistics_target=100
       - -c
-      - random_page_cost=1.1
+      - random_page_cost=1.0
       - -c
       - effective_io_concurrency=200
       - -c
-      - work_mem=4MB
+      - work_mem=16MB
       - -c
-      - min_wal_size=1GB
+      - min_wal_size=2GB
       - -c
-      - max_wal_size=4GB
+      - max_wal_size=8GB
+      - -c
+      - synchronous_commit=local
+      - -c
+      - statement_timeout=30000
+      - -c
+      - idle_in_transaction_session_timeout=30000
+      - -c
+      - autovacuum_vacuum_cost_delay=2
+      - -c
+      - autovacuum_vacuum_cost_limit=1000
+      - -c
+      - jit=on
+      - -c
+      - log_min_duration_statement=1000
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U tart -d tart_telemetry"]
-      interval: 10s
+      interval: 30s
       timeout: 5s
       retries: 5
+      start_period: 10s
 
   # TART Backend
   tart-backend:
@@ -56,6 +70,16 @@ services:
     ports:
       - "9000:9000"  # Telemetry port
       - "8080:8080"  # API port
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 4G
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
     environment:
       # WARNING: Default credentials for LOCAL DEVELOPMENT only
       # For production, set DATABASE_URL via environment variable with strong password
@@ -72,9 +96,10 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
-      interval: 30s
+      interval: 60s
       timeout: 10s
       retries: 3
+      start_period: 15s
 
   # Optional: JAM validator node
   jam-validator-0:

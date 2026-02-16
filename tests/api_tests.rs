@@ -67,6 +67,9 @@ async fn setup_test_api() -> (TestServer, Arc<TelemetryServer>, u16) {
         broadcaster,
         health_monitor,
         jam_rpc: None,
+        cache: Arc::new(tart_backend::cache::TtlCache::new(
+            std::time::Duration::from_secs(5),
+        )),
     };
 
     let app = create_api_router(api_state);
@@ -446,4 +449,453 @@ async fn test_concurrent_api_requests() {
         let response = server.get("/api/events").await;
         assert_eq!(response.status_code(), StatusCode::OK);
     }
+}
+
+// ============================================================================
+// Phase 2: API endpoint smoke tests
+// Each test verifies the endpoint returns 200 OK with valid JSON.
+// ============================================================================
+
+// --- Statistics & Aggregation endpoints (empty DB) ---
+
+#[tokio::test]
+async fn test_stats_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/stats").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object());
+}
+
+#[tokio::test]
+async fn test_workpackage_stats() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/workpackages").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object());
+}
+
+#[tokio::test]
+async fn test_block_stats() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/blocks").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object());
+}
+
+#[tokio::test]
+async fn test_guarantee_stats() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/guarantees").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object());
+}
+
+#[tokio::test]
+async fn test_da_stats() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/da/stats").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object());
+}
+
+#[tokio::test]
+async fn test_da_stats_enhanced() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/da/stats/enhanced").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object());
+}
+
+#[tokio::test]
+async fn test_cores_status() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/cores/status").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object());
+}
+
+#[tokio::test]
+async fn test_guarantees_by_guarantor() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/guarantees/by-guarantor").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object());
+}
+
+// --- Metrics endpoints ---
+
+#[tokio::test]
+async fn test_execution_metrics() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/metrics/execution").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object());
+}
+
+#[tokio::test]
+async fn test_timeseries_metrics() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/metrics/timeseries").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object() || json.is_array());
+}
+
+#[tokio::test]
+async fn test_timeseries_grouped() {
+    let (server, _, _) = setup_test_api().await;
+    // Required query params: metric, group_by
+    let response = server
+        .get("/api/metrics/timeseries/grouped?metric=events&group_by=node")
+        .await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object() || json.is_array());
+}
+
+#[tokio::test]
+async fn test_realtime_metrics() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/metrics/realtime?seconds=60").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object());
+}
+
+#[tokio::test]
+async fn test_live_counters() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/metrics/live").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object());
+}
+
+// --- Analytics endpoints ---
+
+#[tokio::test]
+async fn test_failure_rates() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/analytics/failure-rates").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object());
+}
+
+#[tokio::test]
+async fn test_block_propagation() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/analytics/block-propagation").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object());
+}
+
+#[tokio::test]
+async fn test_network_health() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/analytics/network-health").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object());
+}
+
+#[tokio::test]
+async fn test_sync_status_timeline() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/analytics/sync-status/timeline").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object() || json.is_array());
+}
+
+#[tokio::test]
+async fn test_connections_timeline() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/analytics/connections/timeline").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object() || json.is_array());
+}
+
+// --- Core detail endpoints ---
+
+#[tokio::test]
+async fn test_core_guarantees() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/cores/0/guarantees").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object());
+}
+
+#[tokio::test]
+async fn test_core_validators() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/cores/0/validators").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object());
+}
+
+#[tokio::test]
+async fn test_core_guarantors() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/cores/0/guarantors").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object());
+}
+
+#[tokio::test]
+async fn test_core_guarantors_enhanced() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/cores/0/guarantors/enhanced").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object());
+}
+
+#[tokio::test]
+async fn test_core_work_packages() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/cores/0/work-packages").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object());
+}
+
+#[tokio::test]
+async fn test_core_metrics() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/cores/0/metrics").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object());
+}
+
+#[tokio::test]
+async fn test_core_bottlenecks() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/cores/0/bottlenecks").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object());
+}
+
+// --- Other endpoints ---
+
+#[tokio::test]
+async fn test_network_info() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/network").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object());
+}
+
+#[tokio::test]
+async fn test_detailed_health() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/health/detailed").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object());
+    assert!(json.get("status").is_some());
+    assert!(json.get("components").is_some());
+    assert!(json.get("uptime_seconds").is_some());
+}
+
+#[tokio::test]
+async fn test_validator_core_mapping() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/validators/cores").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object());
+}
+
+#[tokio::test]
+async fn test_peer_topology() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/network/topology").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object());
+}
+
+#[tokio::test]
+async fn test_events_search() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/events/search?event_types=11&limit=10").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    // search_events returns {events: [...]} object
+    assert!(json.is_object());
+    assert!(json["events"].is_array());
+}
+
+#[tokio::test]
+async fn test_slot_events() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/slots/1").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object() || json.is_array());
+}
+
+#[tokio::test]
+async fn test_active_workpackages() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/workpackages/active").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object() || json.is_array());
+}
+
+// --- Node-specific endpoints (require connected node) ---
+
+#[tokio::test]
+async fn test_node_status() {
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
+    let _stream = connect_test_node_with_server(telemetry_port, 10, &telemetry_server).await;
+    let node_id = hex::encode([10u8; 32]);
+
+    let response = server.get(&format!("/api/nodes/{}/status", node_id)).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object());
+}
+
+#[tokio::test]
+async fn test_node_status_enhanced() {
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
+    let _stream = connect_test_node_with_server(telemetry_port, 11, &telemetry_server).await;
+    let node_id = hex::encode([11u8; 32]);
+
+    let response = server
+        .get(&format!("/api/nodes/{}/status/enhanced", node_id))
+        .await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object());
+}
+
+#[tokio::test]
+async fn test_node_peers() {
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
+    let _stream = connect_test_node_with_server(telemetry_port, 12, &telemetry_server).await;
+    let node_id = hex::encode([12u8; 32]);
+
+    let response = server
+        .get(&format!("/api/nodes/{}/peers", node_id))
+        .await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object());
+}
+
+#[tokio::test]
+async fn test_node_timeline() {
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
+    let _stream = connect_test_node_with_server(telemetry_port, 13, &telemetry_server).await;
+    let node_id = hex::encode([13u8; 32]);
+
+    let response = server
+        .get(&format!("/api/nodes/{}/timeline", node_id))
+        .await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json.is_object() || json.is_array());
+}
+
+// --- Work package detail endpoints ---
+
+#[tokio::test]
+async fn test_workpackage_journey() {
+    let (server, _, _) = setup_test_api().await;
+    // Use a fake hash — should return empty result, not error
+    let fake_hash = "0000000000000000000000000000000000000000000000000000000000000000";
+    let response = server
+        .get(&format!("/api/workpackages/{}/journey", fake_hash))
+        .await;
+    // May return 200 with empty data or 404
+    let status = response.status_code();
+    assert!(
+        status == StatusCode::OK || status == StatusCode::NOT_FOUND,
+        "Expected 200 or 404, got {}",
+        status
+    );
+}
+
+#[tokio::test]
+async fn test_workpackage_journey_enhanced() {
+    let (server, _, _) = setup_test_api().await;
+    let fake_hash = "0000000000000000000000000000000000000000000000000000000000000000";
+    let response = server
+        .get(&format!("/api/workpackages/{}/journey/enhanced", fake_hash))
+        .await;
+    let status = response.status_code();
+    assert!(
+        status == StatusCode::OK || status == StatusCode::NOT_FOUND,
+        "Expected 200 or 404, got {}",
+        status
+    );
+}
+
+#[tokio::test]
+async fn test_workpackage_audit_progress() {
+    let (server, _, _) = setup_test_api().await;
+    let fake_hash = "0000000000000000000000000000000000000000000000000000000000000000";
+    let response = server
+        .get(&format!("/api/workpackages/{}/audit-progress", fake_hash))
+        .await;
+    let status = response.status_code();
+    assert!(
+        status == StatusCode::OK || status == StatusCode::NOT_FOUND,
+        "Expected 200 or 404, got {}",
+        status
+    );
+}
+
+#[tokio::test]
+async fn test_batch_workpackage_journeys() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server
+        .post("/api/workpackages/batch/journey")
+        .json(&serde_json::json!({ "hashes": [] }))
+        .await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+}
+
+// --- JAM RPC endpoints (no RPC configured → 503) ---
+
+#[tokio::test]
+async fn test_jam_stats_no_rpc() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/jam/stats").await;
+    assert_eq!(response.status_code(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn test_jam_services_no_rpc() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/jam/services").await;
+    assert_eq!(response.status_code(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn test_jam_cores_no_rpc() {
+    let (server, _, _) = setup_test_api().await;
+    let response = server.get("/api/jam/cores").await;
+    assert_eq!(response.status_code(), StatusCode::SERVICE_UNAVAILABLE);
 }

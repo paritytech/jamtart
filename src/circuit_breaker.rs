@@ -319,16 +319,18 @@ mod tests {
     use super::*;
     use tokio::time::sleep;
 
-    #[tokio::test]
-    async fn test_circuit_breaker_basic() {
-        let config = CircuitBreakerConfig {
+    fn test_config() -> CircuitBreakerConfig {
+        CircuitBreakerConfig {
             failure_threshold: 2,
             success_threshold: 2,
             timeout: Duration::from_millis(100),
             half_open_max_calls: 2,
-        };
+        }
+    }
 
-        let cb = NodeCircuitBreaker::new(config);
+    #[tokio::test]
+    async fn test_circuit_breaker_basic() {
+        let cb = NodeCircuitBreaker::new(test_config());
         let node_id = "test_node";
 
         // Should start closed
@@ -365,5 +367,154 @@ mod tests {
             .await;
 
         assert_eq!(cb.get_state(node_id), Some(CircuitState::HalfOpen));
+    }
+
+    #[tokio::test]
+    async fn test_half_open_to_closed() {
+        let cb = NodeCircuitBreaker::new(test_config());
+        let node_id = "test_node";
+
+        // Open the circuit: 2 failures
+        for _ in 0..2 {
+            let _ = cb
+                .call(node_id, || async { Result::<(), &str>::Err("error") })
+                .await;
+        }
+        assert_eq!(cb.get_state(node_id), Some(CircuitState::Open));
+
+        // Wait for timeout → half-open
+        sleep(Duration::from_millis(150)).await;
+
+        // First success in half-open
+        let _ = cb
+            .call(node_id, || async { Result::<(), &str>::Ok(()) })
+            .await;
+        assert_eq!(cb.get_state(node_id), Some(CircuitState::HalfOpen));
+
+        // Second success → should close
+        let _ = cb
+            .call(node_id, || async { Result::<(), &str>::Ok(()) })
+            .await;
+        assert_eq!(cb.get_state(node_id), Some(CircuitState::Closed));
+    }
+
+    #[tokio::test]
+    async fn test_half_open_failure_reopens() {
+        let cb = NodeCircuitBreaker::new(test_config());
+        let node_id = "test_node";
+
+        // Open the circuit
+        for _ in 0..2 {
+            let _ = cb
+                .call(node_id, || async { Result::<(), &str>::Err("error") })
+                .await;
+        }
+        assert_eq!(cb.get_state(node_id), Some(CircuitState::Open));
+
+        // Wait for timeout → half-open on next call
+        sleep(Duration::from_millis(150)).await;
+
+        // One success in half-open
+        let _ = cb
+            .call(node_id, || async { Result::<(), &str>::Ok(()) })
+            .await;
+        assert_eq!(cb.get_state(node_id), Some(CircuitState::HalfOpen));
+
+        // Failure in half-open → back to open
+        let _ = cb
+            .call(node_id, || async { Result::<(), &str>::Err("oops") })
+            .await;
+        assert_eq!(cb.get_state(node_id), Some(CircuitState::Open));
+    }
+
+    #[tokio::test]
+    async fn test_max_half_open_calls() {
+        let config = CircuitBreakerConfig {
+            failure_threshold: 1,
+            success_threshold: 10, // high threshold so we don't close
+            timeout: Duration::from_millis(50),
+            half_open_max_calls: 2,
+        };
+        let cb = NodeCircuitBreaker::new(config);
+        let node_id = "test_node";
+
+        // Open the circuit: 1 failure
+        let _ = cb
+            .call(node_id, || async { Result::<(), &str>::Err("error") })
+            .await;
+        assert_eq!(cb.get_state(node_id), Some(CircuitState::Open));
+
+        sleep(Duration::from_millis(60)).await;
+
+        // First call transitions Open→HalfOpen (doesn't count towards half_open_calls)
+        let r1 = cb
+            .call(node_id, || async { Result::<(), &str>::Ok(()) })
+            .await;
+        assert!(r1.is_ok());
+        assert_eq!(cb.get_state(node_id), Some(CircuitState::HalfOpen));
+
+        // Next 2 calls count towards half_open_calls (max 2)
+        let r2 = cb
+            .call(node_id, || async { Result::<(), &str>::Ok(()) })
+            .await;
+        assert!(r2.is_ok());
+        let r3 = cb
+            .call(node_id, || async { Result::<(), &str>::Ok(()) })
+            .await;
+        assert!(r3.is_ok());
+
+        // 4th call exceeds half_open_max_calls → rejected
+        let r4 = cb
+            .call(node_id, || async { Result::<(), &str>::Ok(()) })
+            .await;
+        assert!(matches!(r4, Err(CircuitError::Open)));
+    }
+
+    #[tokio::test]
+    async fn test_reset_single() {
+        let cb = NodeCircuitBreaker::new(test_config());
+        let node_id = "test_node";
+
+        // Open the circuit
+        for _ in 0..2 {
+            let _ = cb
+                .call(node_id, || async { Result::<(), &str>::Err("error") })
+                .await;
+        }
+        assert_eq!(cb.get_state(node_id), Some(CircuitState::Open));
+
+        // Reset should bring it back to Closed (fresh state)
+        cb.reset(node_id);
+        // After reset, the entry is re-created as new on next call
+        let result = cb
+            .call(node_id, || async { Result::<(), &str>::Ok(()) })
+            .await;
+        assert!(result.is_ok());
+        assert_eq!(cb.get_state(node_id), Some(CircuitState::Closed));
+    }
+
+    #[tokio::test]
+    async fn test_get_stats_and_all_states() {
+        let cb = NodeCircuitBreaker::new(test_config());
+
+        // Create states for two nodes
+        let _ = cb
+            .call("node_a", || async { Result::<(), &str>::Ok(()) })
+            .await;
+        let _ = cb
+            .call("node_b", || async { Result::<(), &str>::Err("error") })
+            .await;
+
+        let stats_a = cb.get_stats("node_a").unwrap();
+        assert_eq!(stats_a.total_successes, 1);
+        assert_eq!(stats_a.total_failures, 0);
+
+        let stats_b = cb.get_stats("node_b").unwrap();
+        assert_eq!(stats_b.total_failures, 1);
+
+        let all = cb.get_all_states();
+        assert_eq!(all.len(), 2);
+        assert!(all.contains_key("node_a"));
+        assert!(all.contains_key("node_b"));
     }
 }

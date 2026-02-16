@@ -1,3 +1,4 @@
+use crate::cache::TtlCache;
 use crate::event_broadcaster::EventBroadcaster;
 use crate::health::HealthMonitor;
 use crate::jam_rpc::JamRpcClient;
@@ -5,15 +6,17 @@ use crate::server::TelemetryServer;
 use crate::store::EventStore;
 use axum::extract::ws::{Message, WebSocket};
 use axum::{
-    extract::{Path, Query, State, WebSocketUpgrade},
-    http::StatusCode,
+    extract::{DefaultBodyLimit, Path, Query, State, WebSocketUpgrade},
+    http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
     routing::get,
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
+use tower_http::timeout::TimeoutLayer;
 use tracing::{error, info, warn};
 
 /// Validates that a node_id is a valid 64-character hexadecimal string (32 bytes encoded).
@@ -21,7 +24,79 @@ fn is_valid_node_id(node_id: &str) -> bool {
     node_id.len() == 64 && node_id.chars().all(|c| c.is_ascii_hexdigit())
 }
 
+/// Typed response struct for /api/health (avoids serde_json::json! overhead on hot path)
+#[derive(Serialize)]
+struct HealthResponse {
+    status: &'static str,
+    service: &'static str,
+    version: &'static str,
+}
+
 const MAX_QUERY_LIMIT: i64 = 1000;
+
+/// No-cache headers for real-time endpoints polled at high frequency.
+fn no_cache_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-cache, no-store, must-revalidate"),
+    );
+    headers
+}
+
+/// Cache-friendly headers for endpoints backed by the TTL cache.
+fn cache_headers(max_age: u32) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::try_from(format!("public, max-age={}", max_age)).unwrap(),
+    );
+    headers
+}
+
+/// Cache-or-compute helper with stampede prevention.
+/// Checks the cache first; on miss, uses register_inflight to ensure only one
+/// concurrent request computes the value while others wait.
+async fn cache_or_compute<F, Fut>(
+    cache: &TtlCache,
+    key: &str,
+    compute: F,
+) -> Result<Arc<serde_json::Value>, StatusCode>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<serde_json::Value, StatusCode>>,
+{
+    // Fast path: cache hit
+    if let Some(cached) = cache.get(key) {
+        return Ok(cached);
+    }
+
+    // Check if another request is already computing this key
+    if let Some(notify) = cache.register_inflight(key) {
+        // Wait for the other request to finish
+        notify.notified().await;
+        // Re-check cache after being notified
+        if let Some(cached) = cache.get(key) {
+            return Ok(cached);
+        }
+        // Fallthrough: compute ourselves if cache still empty (rare edge case)
+    }
+
+    // We're the one computing
+    let result = compute().await;
+    match result {
+        Ok(value) => {
+            let value = Arc::new(value);
+            cache.insert_arc(key.to_string(), Arc::clone(&value));
+            cache.clear_inflight(key);
+            Ok(value)
+        }
+        Err(e) => {
+            cache.clear_inflight(key);
+            Err(e)
+        }
+    }
+}
 
 /// Helper function to safely serialize responses for WebSocket messages.
 /// Returns None if serialization fails, allowing graceful error handling.
@@ -42,6 +117,8 @@ pub struct ApiState {
     pub broadcaster: Arc<EventBroadcaster>,
     pub health_monitor: Arc<HealthMonitor>,
     pub jam_rpc: Option<Arc<JamRpcClient>>,
+    /// In-memory TTL cache for expensive analytics queries
+    pub cache: Arc<TtlCache>,
 }
 
 pub fn create_api_router(state: ApiState) -> Router {
@@ -158,16 +235,24 @@ pub fn create_api_router(state: ApiState) -> Router {
             axum::routing::post(batch_workpackage_journeys),
         )
         .route("/api/ws", get(websocket_handler))
-        .layer(CorsLayer::permissive())
+        // Middleware layers wrap bottom-up: last .layer() is outermost.
+        // Order (outermost first): CORS → Compression → Headers → Body limit → Timeout
+        .layer(TimeoutLayer::new(std::time::Duration::from_secs(30))) // Innermost: timeout on handler
+        .layer(DefaultBodyLimit::max(256 * 1024)) // Body limit before handler
+        .layer(CompressionLayer::new())
+        .layer(CorsLayer::permissive()) // Outermost: cheap CORS preflight
         .with_state(state)
 }
 
 async fn health_check() -> impl IntoResponse {
-    Json(serde_json::json!({
-        "status": "ok",
-        "service": "tart-backend",
-        "version": env!("CARGO_PKG_VERSION")
-    }))
+    (
+        no_cache_headers(),
+        Json(HealthResponse {
+            status: "ok",
+            service: "tart-backend",
+            version: env!("CARGO_PKG_VERSION"),
+        }),
+    )
 }
 
 async fn detailed_health_check(
@@ -185,13 +270,14 @@ async fn detailed_health_check(
 }
 
 async fn get_stats(State(state): State<ApiState>) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_stats().await {
-        Ok(stats) => Ok(Json(stats)),
-        Err(e) => {
+    let result = cache_or_compute(&state.cache, "stats", || async {
+        state.store.get_stats().await.map_err(|e| {
             error!("Failed to get stats: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+    })
+    .await?;
+    Ok((cache_headers(2), Json(result)))
 }
 
 /// Returns network topology information gleaned from connected nodes.
@@ -226,14 +312,27 @@ async fn get_node_details(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    match state.store.get_nodes().await {
-        Ok(nodes) => {
-            if let Some(node) = nodes.into_iter().find(|n| n["node_id"] == node_id) {
-                Ok(Json(node))
-            } else {
-                Err(StatusCode::NOT_FOUND)
+    match state.store.get_node_by_id(&node_id).await {
+        Ok(Some(mut node)) => {
+            // Enrich with live connection info from telemetry server
+            if let Some(conn) = state
+                .telemetry_server
+                .get_connections()
+                .into_iter()
+                .find(|c| c.id == node_id)
+            {
+                let duration = chrono::Utc::now()
+                    .signed_duration_since(conn.connected_at)
+                    .num_seconds();
+                node["connection_info"] = serde_json::json!({
+                    "address": conn.address.to_string(),
+                    "event_count": conn.event_count,
+                    "connected_duration_secs": duration,
+                });
             }
+            Ok(Json(node))
         }
+        Ok(None) => Err(StatusCode::NOT_FOUND),
         Err(e) => {
             error!("Failed to get node details: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -244,7 +343,6 @@ async fn get_node_details(
 #[derive(Deserialize)]
 struct EventsQuery {
     limit: Option<i64>,
-    #[allow(dead_code)]
     offset: Option<i64>,
 }
 
@@ -282,8 +380,9 @@ async fn get_recent_events(
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let limit = query.limit.unwrap_or(50).clamp(1, MAX_QUERY_LIMIT);
+    let offset = query.offset.unwrap_or(0).max(0);
 
-    match state.store.get_recent_events(limit).await {
+    match state.store.get_recent_events(limit, offset).await {
         Ok(events) => {
             let has_more = events.len() as i64 == limit;
             Ok(Json(serde_json::json!({
@@ -306,24 +405,26 @@ async fn get_recent_events(
 async fn get_workpackage_stats(
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_workpackage_stats().await {
-        Ok(stats) => Ok(Json(stats)),
-        Err(e) => {
+    let result = cache_or_compute(&state.cache, "workpackage_stats", || async {
+        state.store.get_workpackage_stats().await.map_err(|e| {
             error!("Failed to get workpackage stats: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+    })
+    .await?;
+    Ok((cache_headers(2), Json(result)))
 }
 
 /// Get block statistics aggregated from telemetry events
 async fn get_block_stats(State(state): State<ApiState>) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_block_stats().await {
-        Ok(stats) => Ok(Json(stats)),
-        Err(e) => {
+    let result = cache_or_compute(&state.cache, "block_stats", || async {
+        state.store.get_block_stats().await.map_err(|e| {
             error!("Failed to get block stats: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+    })
+    .await?;
+    Ok((cache_headers(2), Json(result)))
 }
 
 /// Get per-node status including best/finalized block heights
@@ -350,13 +451,14 @@ async fn get_node_status(
 async fn get_guarantee_stats(
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_guarantee_stats().await {
-        Ok(stats) => Ok(Json(stats)),
-        Err(e) => {
+    let result = cache_or_compute(&state.cache, "guarantee_stats", || async {
+        state.store.get_guarantee_stats().await.map_err(|e| {
             error!("Failed to get guarantee stats: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+    })
+    .await?;
+    Ok((cache_headers(2), Json(result)))
 }
 
 /// Get peer/connection metrics for a specific node
@@ -380,13 +482,14 @@ async fn get_node_peers(
 
 /// Get data availability (shard/preimage) statistics
 async fn get_da_stats(State(state): State<ApiState>) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_da_stats().await {
-        Ok(stats) => Ok(Json(stats)),
-        Err(e) => {
+    let result = cache_or_compute(&state.cache, "da_stats", || async {
+        state.store.get_da_stats().await.map_err(|e| {
             error!("Failed to get DA stats: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+    })
+    .await?;
+    Ok((cache_headers(2), Json(result)))
 }
 
 /// Get work package journey/pipeline tracking
@@ -414,7 +517,7 @@ async fn get_active_workpackages(
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
     match state.store.get_active_workpackages().await {
-        Ok(wps) => Ok(Json(wps)),
+        Ok(result) => Ok((no_cache_headers(), Json(result))),
         Err(e) => {
             error!("Failed to get active workpackages: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -424,13 +527,14 @@ async fn get_active_workpackages(
 
 /// Get core status aggregation
 async fn get_cores_status(State(state): State<ApiState>) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_cores_status().await {
-        Ok(status) => Ok(Json(status)),
-        Err(e) => {
+    let result = cache_or_compute(&state.cache, "cores_status", || async {
+        state.store.get_cores_status().await.map_err(|e| {
             error!("Failed to get cores status: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+    })
+    .await?;
+    Ok((cache_headers(2), Json(result)))
 }
 
 /// Get guarantee distribution for a specific core
@@ -443,26 +547,29 @@ async fn get_core_guarantees(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    match state.store.get_core_guarantees(core_index).await {
-        Ok(guarantees) => Ok(Json(guarantees)),
-        Err(e) => {
+    let key = format!("core_guarantees_{}", core_index);
+    let result = cache_or_compute(&state.cache, &key, || async {
+        state.store.get_core_guarantees(core_index).await.map_err(|e| {
             error!("Failed to get core guarantees for {}: {}", core_index, e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+    })
+    .await?;
+    Ok((cache_headers(2), Json(result)))
 }
 
 /// Get execution cost metrics
 async fn get_execution_metrics(
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_execution_metrics().await {
-        Ok(metrics) => Ok(Json(metrics)),
-        Err(e) => {
+    let result = cache_or_compute(&state.cache, "execution_metrics", || async {
+        state.store.get_execution_metrics().await.map_err(|e| {
             error!("Failed to get execution metrics: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+    })
+    .await?;
+    Ok((cache_headers(2), Json(result)))
 }
 
 #[derive(Deserialize)]
@@ -477,21 +584,26 @@ async fn get_timeseries_metrics(
     Query(query): Query<TimeseriesQuery>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let metric = query.metric.as_deref().unwrap_or("throughput");
+    let metric = query.metric.as_deref().unwrap_or("throughput").to_string();
     let interval = query.interval.unwrap_or(5).clamp(1, 60); // 1-60 minutes
     let duration = query.duration.unwrap_or(1).clamp(1, 24); // 1-24 hours
 
-    match state
-        .store
-        .get_timeseries_metrics(metric, interval, duration)
-        .await
-    {
-        Ok(metrics) => Ok(Json(metrics)),
-        Err(e) => {
-            error!("Failed to get timeseries metrics: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+    let cache_key = format!("timeseries_{}_{}_{}", metric, interval, duration);
+    let result = cache_or_compute(&state.cache, &cache_key, || {
+        let store = state.store.clone();
+        let metric = metric.clone();
+        async move {
+            store
+                .get_timeseries_metrics(&metric, interval, duration)
+                .await
+                .map_err(|e| {
+                    error!("Failed to get timeseries metrics: {}", e);
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })
         }
-    }
+    })
+    .await?;
+    Ok((cache_headers(2), Json(result)))
 }
 
 /// Get validator-to-core mapping derived from guarantee and ticket events
@@ -557,7 +669,7 @@ async fn get_realtime_metrics(
     let seconds = params.seconds.unwrap_or(60);
 
     match state.store.get_realtime_metrics(seconds).await {
-        Ok(metrics) => Ok(Json(metrics)),
+        Ok(metrics) => Ok((no_cache_headers(), Json(metrics))),
         Err(e) => {
             error!("Failed to get realtime metrics: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -569,7 +681,7 @@ async fn get_realtime_metrics(
 /// Returns current slot, active nodes, and rate calculations.
 async fn get_live_counters(State(state): State<ApiState>) -> Result<impl IntoResponse, StatusCode> {
     match state.store.get_live_counters().await {
-        Ok(counters) => Ok(Json(counters)),
+        Ok(counters) => Ok((no_cache_headers(), Json(counters))),
         Err(e) => {
             error!("Failed to get live counters: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -588,24 +700,22 @@ async fn metrics_sse_handler(
     use futures::stream;
     use std::time::Duration;
 
-    let store = state.store.clone();
+    let cache = state.cache.clone();
 
-    let stream = stream::unfold(store, |store| async move {
+    // Read from cache instead of hitting DB per-connection per-second.
+    // The cache is warmed every 2s by the background task.
+    let stream = stream::unfold(cache, |cache| async move {
         // Wait 1 second between updates
         tokio::time::sleep(Duration::from_secs(1)).await;
 
-        // Fetch live counters
-        let data = match store.get_live_counters().await {
-            Ok(counters) => counters,
-            Err(e) => {
-                error!("SSE metrics error: {}", e);
-                serde_json::json!({"error": "Failed to fetch metrics"})
-            }
+        let data = match cache.get("live_counters") {
+            Some(cached) => (*cached).clone(),
+            None => serde_json::json!({"error": "Cache not available"}),
         };
 
         let event = Event::default().data(data.to_string()).event("metrics");
 
-        Some((Ok(event), store))
+        Some((Ok(event), cache))
     });
 
     axum::response::Sse::new(stream).keep_alive(KeepAlive::default())
@@ -661,13 +771,14 @@ async fn get_workpackage_journey_enhanced(
 async fn get_da_stats_enhanced(
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_da_stats_enhanced().await {
-        Ok(stats) => Ok(Json(stats)),
-        Err(e) => {
+    let result = cache_or_compute(&state.cache, "da_stats_enhanced", || async {
+        state.store.get_da_stats_enhanced().await.map_err(|e| {
             error!("Failed to get enhanced DA stats: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+    })
+    .await?;
+    Ok((cache_headers(2), Json(result)))
 }
 
 // ============================================================================
@@ -676,52 +787,56 @@ async fn get_da_stats_enhanced(
 
 /// Get failure rate analytics across the system.
 async fn get_failure_rates(State(state): State<ApiState>) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_failure_rates().await {
-        Ok(rates) => Ok(Json(rates)),
-        Err(e) => {
+    let result = cache_or_compute(&state.cache, "failure_rates", || async {
+        state.store.get_failure_rates().await.map_err(|e| {
             error!("Failed to get failure rates: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+    })
+    .await?;
+    Ok((cache_headers(2), Json(result)))
 }
 
 /// Get block propagation analytics.
 async fn get_block_propagation(
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_block_propagation().await {
-        Ok(propagation) => Ok(Json(propagation)),
-        Err(e) => {
+    let result = cache_or_compute(&state.cache, "block_propagation", || async {
+        state.store.get_block_propagation().await.map_err(|e| {
             error!("Failed to get block propagation: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+    })
+    .await?;
+    Ok((cache_headers(2), Json(result)))
 }
 
 /// Get network health and congestion metrics.
 async fn get_network_health(
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_network_health().await {
-        Ok(health) => Ok(Json(health)),
-        Err(e) => {
+    let result = cache_or_compute(&state.cache, "network_health", || async {
+        state.store.get_network_health().await.map_err(|e| {
             error!("Failed to get network health: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+    })
+    .await?;
+    Ok((cache_headers(2), Json(result)))
 }
 
 /// Get guarantor statistics aggregated by guarantor.
 async fn get_guarantees_by_guarantor(
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_guarantees_by_guarantor().await {
-        Ok(guarantors) => Ok(Json(guarantors)),
-        Err(e) => {
+    let result = cache_or_compute(&state.cache, "guarantees_by_guarantor", || async {
+        state.store.get_guarantees_by_guarantor().await.map_err(|e| {
             error!("Failed to get guarantees by guarantor: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+    })
+    .await?;
+    Ok((cache_headers(2), Json(result)))
 }
 
 // ============================================================================
@@ -939,12 +1054,13 @@ async fn search_events(
             .collect()
     });
 
-    // Parse timestamps
+    // Parse timestamps; default to last 1 hour if no start_time to prevent full table scans
     let start_time = query
         .start_time
         .as_ref()
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-        .map(|dt| dt.with_timezone(&chrono::Utc));
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .or_else(|| Some(chrono::Utc::now() - chrono::Duration::hours(1)));
 
     let end_time = query
         .end_time
@@ -974,7 +1090,7 @@ async fn search_events(
         )
         .await
     {
-        Ok(results) => Ok(Json(results)),
+        Ok(results) => Ok((no_cache_headers(), Json(results))),
         Err(e) => {
             error!("Failed to search events: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -994,14 +1110,21 @@ async fn get_slot_events(
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let include_events = query.include_events.unwrap_or(false);
+    let cache_key = format!("slot_events_{}_{}", slot, include_events);
 
-    match state.store.get_slot_events(slot, include_events).await {
-        Ok(events) => Ok(Json(events)),
-        Err(e) => {
-            error!("Failed to get slot {} events: {}", slot, e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+    let result = cache_or_compute(&state.cache, &cache_key, || async {
+        state
+            .store
+            .get_slot_events(slot, include_events)
+            .await
+            .map_err(|e| {
+                error!("Failed to get slot {} events: {}", slot, e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })
+    })
+    .await?;
+
+    Ok((cache_headers(2), Json(result)))
 }
 
 #[derive(Deserialize)]
@@ -1235,19 +1358,35 @@ struct WebSocketResponse<T> {
     timestamp: chrono::DateTime<chrono::Utc>,
 }
 
+/// Maximum concurrent WebSocket connections
+const MAX_WS_CONNECTIONS: usize = 5000;
+
+/// Active WebSocket connection counter
+static ACTIVE_WS_CONNECTIONS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 async fn websocket_handler(
     ws: WebSocketUpgrade,
     State(state): State<ApiState>,
-) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| websocket_connection(socket, state))
+) -> Result<impl IntoResponse, StatusCode> {
+    let current = ACTIVE_WS_CONNECTIONS.load(std::sync::atomic::Ordering::Relaxed);
+    if current >= MAX_WS_CONNECTIONS {
+        warn!("WebSocket connection limit reached ({})", MAX_WS_CONNECTIONS);
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+    Ok(ws.on_upgrade(move |socket| websocket_connection(socket, state)))
 }
 
+/// Send timeout for WebSocket messages - prevents slow clients from blocking
+const WS_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 async fn websocket_connection(mut socket: WebSocket, state: ApiState) {
+    ACTIVE_WS_CONNECTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     info!("WebSocket connection established");
 
     // Send initial connection confirmation with recent events
-    let recent_events = state.broadcaster.get_recent_events(Some(20)).await;
-    let broadcaster_stats = state.broadcaster.get_stats().await;
+    let recent_events = state.broadcaster.get_recent_events(Some(20));
+    let broadcaster_stats = state.broadcaster.get_stats();
 
     let initial_state = WebSocketResponse {
         r#type: "connected".to_string(),
@@ -1303,28 +1442,34 @@ async fn websocket_connection(mut socket: WebSocket, state: ApiState) {
             Ok(event) = event_receiver.recv() => {
                 events_received += 1;
 
-                // Calculate latency
-                let latency_ms = (chrono::Utc::now() - event.timestamp).num_milliseconds();
-
-                let response = WebSocketResponse {
-                    r#type: "event".to_string(),
-                    data: serde_json::json!({
-                        "id": event.id,
-                        "node_id": event.node_id,
-                        "event_type": event.event_type,
-                        "latency_ms": latency_ms,
-                        "event": event.event,
-                    }),
-                    timestamp: chrono::Utc::now(),
+                // Use pre-serialized JSON if available (avoids re-serializing per subscriber)
+                let msg = if let Some(ref json) = event.serialized_json {
+                    json.to_string()
+                } else {
+                    let response = WebSocketResponse {
+                        r#type: "event".to_string(),
+                        data: serde_json::json!({
+                            "id": event.id,
+                            "node_id": event.node_id,
+                            "event_type": event.event_type,
+                            "event": event.event,
+                        }),
+                        timestamp: chrono::Utc::now(),
+                    };
+                    match serialize_ws_message(&response) {
+                        Some(m) => m,
+                        None => break,
+                    }
                 };
 
-                if let Some(msg) = serialize_ws_message(&response) {
-                    if socket.send(Message::Text(msg)).await.is_err() {
-                        break;
+                // Send with timeout to prevent slow clients from blocking
+                match tokio::time::timeout(WS_SEND_TIMEOUT, socket.send(Message::Text(msg))).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(_)) => break, // Send error
+                    Err(_) => {
+                        warn!("WebSocket send timeout, closing slow client");
+                        break; // Timeout
                     }
-                } else {
-                    // Failed to serialize, close connection
-                    break;
                 }
 
                 last_event_time = chrono::Utc::now();
@@ -1343,7 +1488,7 @@ async fn websocket_connection(mut socket: WebSocket, state: ApiState) {
                                             state.broadcaster.subscribe_all()
                                         }
                                         SubscriptionFilter::Node { node_id } => {
-                                            state.broadcaster.subscribe_node(node_id).await
+                                            state.broadcaster.subscribe_node(node_id)
                                         }
                                         SubscriptionFilter::EventType { event_type: _ } => {
                                             // For now, use main channel and client-side filtering
@@ -1385,7 +1530,7 @@ async fn websocket_connection(mut socket: WebSocket, state: ApiState) {
                                     }
                                 }
                                 WebSocketRequest::GetRecentEvents { limit } => {
-                                    let events = state.broadcaster.get_recent_events(limit).await;
+                                    let events = state.broadcaster.get_recent_events(limit);
 
                                     let response = WebSocketResponse {
                                         r#type: "recent_events".to_string(),
@@ -1494,16 +1639,20 @@ async fn websocket_connection(mut socket: WebSocket, state: ApiState) {
                 }
             }
 
-            // Periodic stats updates
+            // Periodic stats updates (read from cache to avoid N*DB queries for N WS clients)
             _ = stats_interval.tick() => {
-                if let Ok(db_stats) = state.store.get_stats().await {
-                    let broadcaster_stats = state.broadcaster.get_stats().await;
+                let stats_result = cache_or_compute(&state.cache, "stats", || async {
+                    state.store.get_stats().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+                }).await;
+
+                if let Ok(db_stats) = stats_result {
+                    let broadcaster_stats = state.broadcaster.get_stats();
                     let node_ids = state.telemetry_server.get_connection_ids();
 
                     let response = WebSocketResponse {
                         r#type: "stats".to_string(),
                         data: serde_json::json!({
-                            "database": db_stats,
+                            "database": (*db_stats),
                             "broadcaster": broadcaster_stats,
                             "connections": {
                                 "total": node_ids.len(),
@@ -1528,12 +1677,16 @@ async fn websocket_connection(mut socket: WebSocket, state: ApiState) {
                 }
             }
 
-            // Metrics channel updates (if subscribed)
+            // Metrics channel updates (if subscribed, read from cache)
             _ = metrics_interval.tick(), if metrics_subscribed => {
-                if let Ok(metrics) = state.store.get_aggregated_metrics().await {
+                let metrics_result = cache_or_compute(&state.cache, "aggregated_metrics", || async {
+                    state.store.get_aggregated_metrics().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+                }).await;
+
+                if let Ok(metrics) = metrics_result {
                     let response = WebSocketResponse {
                         r#type: "metrics".to_string(),
-                        data: metrics,
+                        data: (*metrics).clone(),
                         timestamp: chrono::Utc::now(),
                     };
 
@@ -1572,6 +1725,7 @@ async fn websocket_connection(mut socket: WebSocket, state: ApiState) {
         }
     }
 
+    ACTIVE_WS_CONNECTIONS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     info!(
         "WebSocket connection closed (received {} events)",
         events_received

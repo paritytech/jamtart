@@ -1,0 +1,7 @@
+target/
+.git/
+*.md
+tests/
+benches/
+.cargo/
+.github/

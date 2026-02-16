@@ -55,13 +55,23 @@ impl EventStore {
     /// Returns `sqlx::Error` if connection fails or migrations cannot be applied.
     pub async fn new(database_url: &str) -> Result<Self, sqlx::Error> {
         // Optimized connection pool for PostgreSQL high concurrency
-        // Increased to 200 to support 1024 concurrent nodes (each node may need 1-2 connections)
+        // 150 connections for batch writer + API + analytics (PG max_connections=200 leaves headroom)
         let pool = PgPoolOptions::new()
-            .max_connections(200) // Increased for 1024+ node support
-            .min_connections(20) // Keep more connections ready
+            .max_connections(150)
+            .min_connections(50) // Keep more connections ready for burst traffic
             .acquire_timeout(Duration::from_secs(5))
-            .idle_timeout(Duration::from_secs(300))
-            .max_lifetime(Duration::from_secs(600)) // Recycle connections every 10 minutes
+            .idle_timeout(Duration::from_secs(180)) // Recycle idle connections faster
+            .max_lifetime(Duration::from_secs(300)) // Recycle connections every 5 minutes
+            .after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    // Set statement timeout to prevent runaway queries from holding connections
+                    // 60s allows complex analytics queries while preventing true runaways
+                    sqlx::query("SET statement_timeout = '60s'")
+                        .execute(&mut *conn)
+                        .await?;
+                    Ok(())
+                })
+            })
             .connect(database_url)
             .await?;
 
@@ -325,6 +335,75 @@ impl EventStore {
         Ok(())
     }
 
+    /// Batch upsert multiple node connections in a single query.
+    /// Reduces N round trips to 1 during node connection churn.
+    pub async fn store_nodes_connected_batch(
+        &self,
+        nodes: &[(String, NodeInformation)],
+    ) -> Result<(), sqlx::Error> {
+        if nodes.is_empty() {
+            return Ok(());
+        }
+
+        let now = Utc::now();
+        let mut query_builder = sqlx::QueryBuilder::new(
+            "INSERT INTO nodes (node_id, peer_id, implementation_name, implementation_version, node_info, connected_at, last_seen_at, is_connected, event_count) "
+        );
+
+        query_builder.push_values(nodes, |mut b, (node_id, info)| {
+            let info_json = serde_json::to_value(info).unwrap_or_default();
+            b.push_bind(node_id.clone())
+                .push_bind(hex::encode(info.details.peer_id))
+                .push_bind(info.implementation_name.as_str().unwrap_or("unknown").to_string())
+                .push_bind(info.implementation_version.as_str().unwrap_or("unknown").to_string())
+                .push_bind(info_json)
+                .push_bind(now)
+                .push_bind(now)
+                .push_bind(true)
+                .push_bind(0_i64);
+        });
+
+        query_builder.push(
+            " ON CONFLICT(node_id) DO UPDATE SET \
+             implementation_name = EXCLUDED.implementation_name, \
+             implementation_version = EXCLUDED.implementation_version, \
+             node_info = EXCLUDED.node_info, \
+             last_seen_at = EXCLUDED.last_seen_at, \
+             is_connected = true"
+        );
+
+        query_builder.build().execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// Batch disconnect multiple nodes in a single query.
+    /// Uses ANY() to update all nodes in one round trip.
+    pub async fn store_nodes_disconnected_batch(
+        &self,
+        node_ids: &[String],
+    ) -> Result<(), sqlx::Error> {
+        if node_ids.is_empty() {
+            return Ok(());
+        }
+
+        let now = Utc::now();
+        sqlx::query(
+            r#"
+            UPDATE nodes
+            SET is_connected = false,
+                disconnected_at = $1,
+                total_events = total_events + event_count
+            WHERE node_id = ANY($2)
+            "#,
+        )
+        .bind(now)
+        .bind(node_ids)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
     pub async fn store_event(
         &self,
         node_id: &str,
@@ -479,10 +558,59 @@ impl EventStore {
         Ok(nodes)
     }
 
+    /// Get a single node by ID. Much more efficient than get_nodes() + find().
+    pub async fn get_node_by_id(
+        &self,
+        node_id: &str,
+    ) -> Result<Option<serde_json::Value>, sqlx::Error> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                node_id,
+                peer_id,
+                implementation_name,
+                implementation_version,
+                node_info,
+                connected_at,
+                disconnected_at,
+                last_seen_at,
+                is_connected,
+                event_count,
+                total_events
+            FROM nodes
+            WHERE node_id = $1
+            "#,
+        )
+        .bind(node_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|row| {
+            let event_count: i64 =
+                row.get::<i64, _>("event_count") + row.get::<i64, _>("total_events");
+            let node_info: serde_json::Value = row.get("node_info");
+            serde_json::json!({
+                "node_id": row.get::<String, _>("node_id"),
+                "peer_id": row.get::<String, _>("peer_id"),
+                "implementation_name": row.get::<String, _>("implementation_name"),
+                "implementation_version": row.get::<String, _>("implementation_version"),
+                "node_info": node_info,
+                "connected_at": row.get::<DateTime<Utc>, _>("connected_at"),
+                "disconnected_at": row.get::<Option<DateTime<Utc>>, _>("disconnected_at"),
+                "last_seen_at": row.get::<DateTime<Utc>, _>("last_seen_at"),
+                "is_connected": row.get::<bool, _>("is_connected"),
+                "event_count": event_count,
+            })
+        }))
+    }
+
     pub async fn get_recent_events(
         &self,
         limit: i64,
+        offset: i64,
     ) -> Result<Vec<serde_json::Value>, sqlx::Error> {
+        // Subquery limits events BEFORE joining with nodes table
+        // to avoid scanning the full nodes table for every event row
         let rows = sqlx::query(
             r#"
             SELECT
@@ -494,13 +622,13 @@ impl EventStore {
                 e.data,
                 n.implementation_name,
                 n.implementation_version
-            FROM events e
+            FROM (SELECT * FROM events ORDER BY id DESC LIMIT $1 OFFSET $2) e
             JOIN nodes n ON e.node_id = n.node_id
             ORDER BY e.id DESC
-            LIMIT $1
             "#,
         )
         .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
 
@@ -610,14 +738,19 @@ impl EventStore {
         }
 
         // Cache miss or expired - recompute stats
+        // Use time-bounded queries to avoid full table scans on 10M+ rows.
+        // The max slot is always from recent events; scanning last 10 minutes is sufficient.
         let (total_blocks, best_block_opt, finalized_block_opt) = tokio::try_join!(
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM events WHERE event_type = 42")
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM events WHERE event_type = 42 AND created_at > NOW() - INTERVAL '1 hour'"
+            )
                 .fetch_one(&self.pool),
             sqlx::query_scalar::<_, Option<i64>>(
                 r#"
                 SELECT MAX(CAST(data->'BestBlockChanged'->>'slot' AS BIGINT))
                 FROM events
                 WHERE event_type = 11
+                AND created_at > NOW() - INTERVAL '10 minutes'
                 "#
             )
             .fetch_one(&self.pool),
@@ -626,6 +759,7 @@ impl EventStore {
                 SELECT MAX(CAST(data->'FinalizedBlockChanged'->>'slot' AS BIGINT))
                 FROM events
                 WHERE event_type = 12
+                AND created_at > NOW() - INTERVAL '10 minutes'
                 "#
             )
             .fetch_one(&self.pool)
@@ -771,6 +905,7 @@ impl EventStore {
                 MAX(CAST(data->'FinalizedBlockChanged'->>'slot' AS BIGINT)) FILTER (WHERE event_type = 12) as finalized_slot
             FROM events
             WHERE event_type IN (40, 41, 42, 43, 44, 45, 46, 47, 11, 12)
+            AND created_at > NOW() - INTERVAL '1 hour'
             "#,
         )
         .fetch_one(&self.pool)
@@ -782,6 +917,7 @@ impl EventStore {
             SELECT node_id, COUNT(*) as blocks_authored
             FROM events
             WHERE event_type = 42
+            AND created_at > NOW() - INTERVAL '1 hour'
             GROUP BY node_id
             ORDER BY blocks_authored DESC
             "#,
@@ -800,6 +936,7 @@ impl EventStore {
             )
             FROM events
             WHERE event_type = 42
+            AND created_at > NOW() - INTERVAL '1 hour'
             ORDER BY created_at DESC
             LIMIT 50
             "#,
@@ -852,98 +989,96 @@ impl EventStore {
             None => return Ok(serde_json::json!({"error": "Node not found"})),
         };
 
-        // Get best and finalized slots for this node (including hashes)
-        let slots = sqlx::query(
-            r#"
-            SELECT
-                MAX(CAST(data->'BestBlockChanged'->>'slot' AS BIGINT)) FILTER (WHERE event_type = 11) as best_slot,
-                MAX(CAST(data->'FinalizedBlockChanged'->>'slot' AS BIGINT)) FILTER (WHERE event_type = 12) as finalized_slot,
-                COUNT(*) FILTER (WHERE event_type = 11) as best_block_events,
-                COUNT(*) FILTER (WHERE event_type = 12) as finalized_block_events,
-                MAX(created_at) as last_updated
-            FROM events
-            WHERE node_id = $1 AND event_type IN (11, 12)
-            "#,
-        )
-        .bind(node_id)
-        .fetch_one(&self.pool)
-        .await?;
-
-        // Get latest best block hash (hex-encoded from JSON byte array)
-        let best_hash: Option<String> = sqlx::query_scalar(
-            r#"
-            SELECT (
-                SELECT string_agg(lpad(to_hex(elem::int), 2, '0'), '')
-                FROM jsonb_array_elements_text(data->'BestBlockChanged'->'hash') elem
+        // Run all remaining queries in parallel since they're independent
+        let (slots, best_hash_result, finalized_hash_result, latest_status, sync_status, event_breakdown) = tokio::try_join!(
+            // Get best and finalized slots for this node
+            sqlx::query(
+                r#"
+                SELECT
+                    MAX(CAST(data->'BestBlockChanged'->>'slot' AS BIGINT)) FILTER (WHERE event_type = 11) as best_slot,
+                    MAX(CAST(data->'FinalizedBlockChanged'->>'slot' AS BIGINT)) FILTER (WHERE event_type = 12) as finalized_slot,
+                    COUNT(*) FILTER (WHERE event_type = 11) as best_block_events,
+                    COUNT(*) FILTER (WHERE event_type = 12) as finalized_block_events,
+                    MAX(created_at) as last_updated
+                FROM events
+                WHERE node_id = $1 AND event_type IN (11, 12)
+                "#,
             )
-            FROM events
-            WHERE node_id = $1 AND event_type = 11
-            ORDER BY created_at DESC LIMIT 1
-            "#,
-        )
-        .bind(node_id)
-        .fetch_optional(&self.pool)
-        .await?
-        .flatten();
+            .bind(node_id)
+            .fetch_one(&self.pool),
 
-        // Get latest finalized block hash
-        let finalized_hash: Option<String> = sqlx::query_scalar(
-            r#"
-            SELECT (
-                SELECT string_agg(lpad(to_hex(elem::int), 2, '0'), '')
-                FROM jsonb_array_elements_text(data->'FinalizedBlockChanged'->'hash') elem
+            // Get latest best block hash (hex-encoded from JSON byte array)
+            sqlx::query_scalar::<_, Option<String>>(
+                r#"
+                SELECT (
+                    SELECT string_agg(lpad(to_hex(elem::int), 2, '0'), '')
+                    FROM jsonb_array_elements_text(data->'BestBlockChanged'->'hash') elem
+                )
+                FROM events
+                WHERE node_id = $1 AND event_type = 11
+                ORDER BY created_at DESC LIMIT 1
+                "#,
             )
-            FROM events
-            WHERE node_id = $1 AND event_type = 12
-            ORDER BY created_at DESC LIMIT 1
-            "#,
-        )
-        .bind(node_id)
-        .fetch_optional(&self.pool)
-        .await?
-        .flatten();
+            .bind(node_id)
+            .fetch_optional(&self.pool),
 
-        // Get latest status event for this node
-        let latest_status: Option<serde_json::Value> = sqlx::query_scalar(
-            r#"
-            SELECT data->'Status'
-            FROM events
-            WHERE node_id = $1 AND event_type = 10
-            ORDER BY created_at DESC
-            LIMIT 1
-            "#,
-        )
-        .bind(node_id)
-        .fetch_optional(&self.pool)
-        .await?;
+            // Get latest finalized block hash
+            sqlx::query_scalar::<_, Option<String>>(
+                r#"
+                SELECT (
+                    SELECT string_agg(lpad(to_hex(elem::int), 2, '0'), '')
+                    FROM jsonb_array_elements_text(data->'FinalizedBlockChanged'->'hash') elem
+                )
+                FROM events
+                WHERE node_id = $1 AND event_type = 12
+                ORDER BY created_at DESC LIMIT 1
+                "#,
+            )
+            .bind(node_id)
+            .fetch_optional(&self.pool),
 
-        // Get sync status
-        let sync_status: Option<bool> = sqlx::query_scalar(
-            r#"
-            SELECT CAST(data->'SyncStatusChanged'->>'synced' AS BOOLEAN)
-            FROM events
-            WHERE node_id = $1 AND event_type = 13
-            ORDER BY created_at DESC
-            LIMIT 1
-            "#,
-        )
-        .bind(node_id)
-        .fetch_optional(&self.pool)
-        .await?;
+            // Get latest status event for this node
+            sqlx::query_scalar::<_, Option<serde_json::Value>>(
+                r#"
+                SELECT data->'Status'
+                FROM events
+                WHERE node_id = $1 AND event_type = 10
+                ORDER BY created_at DESC
+                LIMIT 1
+                "#,
+            )
+            .bind(node_id)
+            .fetch_optional(&self.pool),
 
-        // Get event type breakdown for this node
-        let event_breakdown: Vec<(i32, i64)> = sqlx::query_as(
-            r#"
-            SELECT event_type, COUNT(*) as count
-            FROM events
-            WHERE node_id = $1
-            GROUP BY event_type
-            ORDER BY count DESC
-            "#,
-        )
-        .bind(node_id)
-        .fetch_all(&self.pool)
-        .await?;
+            // Get sync status
+            sqlx::query_scalar::<_, Option<bool>>(
+                r#"
+                SELECT CAST(data->'SyncStatusChanged'->>'synced' AS BOOLEAN)
+                FROM events
+                WHERE node_id = $1 AND event_type = 13
+                ORDER BY created_at DESC
+                LIMIT 1
+                "#,
+            )
+            .bind(node_id)
+            .fetch_optional(&self.pool),
+
+            // Get event type breakdown for this node
+            sqlx::query_as::<_, (i32, i64)>(
+                r#"
+                SELECT event_type, COUNT(*) as count
+                FROM events
+                WHERE node_id = $1
+                GROUP BY event_type
+                ORDER BY count DESC
+                "#,
+            )
+            .bind(node_id)
+            .fetch_all(&self.pool),
+        )?;
+
+        let best_hash = best_hash_result.flatten();
+        let finalized_hash = finalized_hash_result.flatten();
 
         Ok(serde_json::json!({
             "node": {
@@ -1061,6 +1196,7 @@ impl EventStore {
                     CAST(data->'Status'->>'preimages_size' AS INTEGER) as preimages_size
                 FROM events
                 WHERE event_type = 10
+                AND created_at > NOW() - INTERVAL '10 minutes'
                 ORDER BY node_id, created_at DESC
             )
             SELECT
@@ -1089,6 +1225,7 @@ impl EventStore {
                     timestamp
                 FROM events
                 WHERE event_type = 10
+                AND created_at > NOW() - INTERVAL '10 minutes'
                 ORDER BY node_id, created_at DESC
             )
             SELECT jsonb_build_object(
@@ -1150,24 +1287,37 @@ impl EventStore {
         // 102: WorkReportBuilt, 105: GuaranteeBuilt
         // Also track failures: 92: Failed, 113: GuaranteeDiscarded
 
-        // Search for events containing this work package hash
-        // The hash might be in different fields depending on event type
+        // Search for events containing this work package hash using JSONB field lookups
+        // instead of data::text LIKE which causes a full table scan
         let events: Vec<(i32, DateTime<Utc>, String, serde_json::Value)> = sqlx::query_as(
             r#"
             SELECT event_type, timestamp, node_id, data
             FROM events
             WHERE event_type IN (90, 91, 92, 93, 94, 95, 96, 97, 101, 102, 105, 106, 108, 109, 112, 113)
             AND (
-                data::text LIKE $1
-                OR data->'WorkPackageReceived'->'outline'->>'hash' = $2
-                OR data->'DuplicateWorkPackage'->>'hash' = $2
-                OR data->'WorkPackageHashMapped'->>'work_package_hash' = $2
+                data->'WorkPackageSubmitted'->>'hash' = $1
+                OR data->'WorkPackageBeingShared'->>'hash' = $1
+                OR data->'WorkPackageFailed'->>'hash' = $1
+                OR data->'WorkPackageReceived'->>'hash' = $1
+                OR data->'WorkPackageReceived'->'outline'->>'hash' = $1
+                OR data->'DuplicateWorkPackage'->>'hash' = $1
+                OR data->'WorkPackageAuthorized'->>'hash' = $1
+                OR data->'ExtrinsicReceived'->>'hash' = $1
+                OR data->'ImportsReceived'->>'hash' = $1
+                OR data->'Refined'->>'hash' = $1
+                OR data->'WorkReportBuilt'->'outline'->>'hash' = $1
+                OR data->'GuaranteeBuilt'->'outline'->>'hash' = $1
+                OR data->'GuaranteeSending'->>'hash' = $1
+                OR data->'GuaranteeSent'->>'hash' = $1
+                OR data->'GuaranteesDistributed'->>'hash' = $1
+                OR data->'GuaranteeReceived'->>'hash' = $1
+                OR data->'GuaranteeDiscarded'->>'hash' = $1
+                OR data->'WorkPackageHashMapped'->>'work_package_hash' = $1
             )
             ORDER BY timestamp ASC
             LIMIT 100
             "#,
         )
-        .bind(format!("%{}%", wp_hash))
         .bind(wp_hash)
         .fetch_all(&self.pool)
         .await?;
@@ -1274,7 +1424,7 @@ impl EventStore {
                     CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) as core_index
                 FROM events
                 WHERE event_type = 94
-                AND created_at > NOW() - INTERVAL '7 days'
+                AND created_at > NOW() - INTERVAL '1 day'
                 AND data->'WorkPackageReceived'->>'core' IS NOT NULL
                 ORDER BY node_id, created_at DESC
             ),
@@ -1487,6 +1637,7 @@ impl EventStore {
                     timestamp
                 FROM events
                 WHERE event_type = 10
+                AND created_at > NOW() - INTERVAL '10 minutes'
                 ORDER BY node_id, created_at DESC
             )
             SELECT jsonb_build_object(
@@ -1570,6 +1721,7 @@ impl EventStore {
                 COALESCE(AVG(CAST(c->'total'->>'elapsed_ns' AS BIGINT)), 0)::FLOAT8 as avg_time_ns
             FROM events e, jsonb_array_elements(e.data->'Refined'->'costs') c
             WHERE e.event_type = 101
+            AND e.created_at > NOW() - INTERVAL '1 hour'
             "#,
         )
         .fetch_one(&self.pool)
@@ -1586,6 +1738,7 @@ impl EventStore {
                 COALESCE(AVG(CAST(data->'Authorized'->'cost'->'total'->>'elapsed_ns' AS BIGINT)), 0)::FLOAT8 as avg_time_ns
             FROM events
             WHERE event_type = 95
+            AND created_at > NOW() - INTERVAL '1 hour'
             "#,
         )
         .fetch_one(&self.pool)
@@ -1603,6 +1756,7 @@ impl EventStore {
                 COALESCE(AVG(CAST(pair->1->'total'->>'elapsed_ns' AS BIGINT)), 0)::FLOAT8 as avg_time_ns
             FROM events e, jsonb_array_elements(e.data->'BlockExecuted'->'accumulate_costs') pair
             WHERE e.event_type = 47
+            AND e.created_at > NOW() - INTERVAL '1 hour'
             "#,
         )
         .fetch_one(&self.pool)
@@ -2408,7 +2562,7 @@ impl EventStore {
     /// this method will attempt to create the missing partition and retry once.
     pub async fn store_events_batch(
         &self,
-        events: Vec<(String, u64, Event)>,
+        events: &[(String, u64, Arc<Event>)],
     ) -> Result<(), sqlx::Error> {
         if events.is_empty() {
             return Ok(());
@@ -2420,7 +2574,7 @@ impl EventStore {
         }
 
         // Try to insert, with one retry if partition is missing
-        match self.store_events_batch_inner(&events).await {
+        match self.store_events_batch_inner(events).await {
             Ok(()) => Ok(()),
             Err(e) => {
                 let err_str = e.to_string();
@@ -2440,7 +2594,7 @@ impl EventStore {
 
                     // Retry the insert
                     info!("Retrying batch insert after partition recovery");
-                    self.store_events_batch_inner(&events).await
+                    self.store_events_batch_inner(events).await
                 } else {
                     Err(e)
                 }
@@ -2451,7 +2605,7 @@ impl EventStore {
     /// Inner batch insert implementation (used for retry logic)
     async fn store_events_batch_inner(
         &self,
-        events: &[(String, u64, Event)],
+        events: &[(String, u64, Arc<Event>)],
     ) -> Result<(), sqlx::Error> {
         // Use PostgreSQL QueryBuilder for true multi-row INSERT
         // Process in chunks to respect PostgreSQL parameter limit (~65535)
@@ -2525,14 +2679,80 @@ impl EventStore {
         }
     }
 
+    /// Update node stats (last_seen_at and event_count) in batch after flushing events.
+    /// This replaces the per-row trigger `trg_update_node_last_seen` which fired an individual
+    /// UPDATE for every inserted row, killing batch insert performance.
+    pub async fn update_node_stats_batch(&self, node_ids: &[&str]) -> Result<(), sqlx::Error> {
+        if node_ids.is_empty() {
+            return Ok(());
+        }
+
+        // Count occurrences of each node_id to get the correct event_count increment
+        let mut counts: std::collections::HashMap<&str, i64> = std::collections::HashMap::new();
+        for id in node_ids {
+            *counts.entry(id).or_insert(0) += 1;
+        }
+
+        let unique_ids: Vec<&str> = counts.keys().copied().collect();
+        let increments: Vec<i64> = unique_ids.iter().map(|id| counts[id]).collect();
+
+        sqlx::query(
+            r#"
+            UPDATE nodes
+            SET last_seen_at = NOW(),
+                event_count = nodes.event_count + batch.cnt
+            FROM (
+                SELECT unnest($1::text[]) as node_id, unnest($2::bigint[]) as cnt
+            ) batch
+            WHERE nodes.node_id = batch.node_id
+            "#,
+        )
+        .bind(&unique_ids)
+        .bind(&increments)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Update node stats with pre-computed unique IDs and increment counts.
+    /// Avoids re-computing counts from raw node_ids (saves allocations in hot path).
+    pub async fn update_node_stats_batch_precomputed(
+        &self,
+        unique_ids: &[String],
+        increments: &[i64],
+    ) -> Result<(), sqlx::Error> {
+        if unique_ids.is_empty() {
+            return Ok(());
+        }
+
+        sqlx::query(
+            r#"
+            UPDATE nodes
+            SET last_seen_at = NOW(),
+                event_count = nodes.event_count + batch.cnt
+            FROM (
+                SELECT unnest($1::text[]) as node_id, unnest($2::bigint[]) as cnt
+            ) batch
+            WHERE nodes.node_id = batch.node_id
+            "#,
+        )
+        .bind(unique_ids)
+        .bind(increments)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
     /// Simple batch insert for small batches using individual INSERTs in a transaction.
     /// Includes automatic partition recovery.
     async fn store_events_simple(
         &self,
-        events: Vec<(String, u64, Event)>,
+        events: &[(String, u64, Arc<Event>)],
     ) -> Result<(), sqlx::Error> {
         // Try to insert, with one retry if partition is missing
-        match self.store_events_simple_inner(&events).await {
+        match self.store_events_simple_inner(events).await {
             Ok(()) => Ok(()),
             Err(e) => {
                 let err_str = e.to_string();
@@ -2552,7 +2772,7 @@ impl EventStore {
 
                     // Retry the insert
                     info!("Retrying simple batch insert after partition recovery");
-                    self.store_events_simple_inner(&events).await
+                    self.store_events_simple_inner(events).await
                 } else {
                     Err(e)
                 }
@@ -2563,7 +2783,7 @@ impl EventStore {
     /// Inner simple batch insert implementation (used for retry logic)
     async fn store_events_simple_inner(
         &self,
-        events: &[(String, u64, Event)],
+        events: &[(String, u64, Arc<Event>)],
     ) -> Result<(), sqlx::Error> {
         let mut tx = self.pool.begin().await?;
         let event_count = events.len();
@@ -2629,6 +2849,13 @@ impl EventStore {
     }
 
     // Health metrics method for monitoring
+    /// Lightweight connection pool health check. Executes `SELECT 1` to verify
+    /// the pool can acquire a connection and the database is responsive.
+    pub async fn ping(&self) -> Result<(), sqlx::Error> {
+        sqlx::query("SELECT 1").execute(&self.pool).await?;
+        Ok(())
+    }
+
     pub async fn get_health_metrics(
         &self,
     ) -> Result<std::collections::HashMap<String, serde_json::Value>, sqlx::Error> {
@@ -2640,12 +2867,17 @@ impl EventStore {
                 .fetch_one(&self.pool)
                 .await?;
 
-        let event_count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM events")
-            .fetch_one(&self.pool)
-            .await?;
+        // Use approximate count from pg_stat to avoid full table scan
+        let event_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(n_live_tup, 0)::bigint FROM pg_stat_user_tables WHERE relname = 'events'",
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        .unwrap_or(0);
 
+        // Use partition-aware query for recent events (only scans today's partition)
         let recent_events = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM events WHERE created_at > NOW() - INTERVAL '1 hour'",
+            "SELECT COUNT(*) FROM events WHERE created_at > NOW() - INTERVAL '1 hour' AND created_at >= CURRENT_DATE",
         )
         .fetch_one(&self.pool)
         .await?;
@@ -5356,37 +5588,45 @@ impl EventStore {
         limit: i64,
         offset: i64,
     ) -> Result<serde_json::Value, sqlx::Error> {
-        let events: Vec<serde_json::Value> = sqlx::query_scalar(
+        // Single CTE query: compute filtered results + total count in one pass
+        // Uses COUNT(*) OVER() window function to avoid executing the WHERE clause twice
+        let rows: Vec<(serde_json::Value, i64)> = sqlx::query_as(
             r#"
-            SELECT jsonb_build_object(
-                'id', e.id,
-                'node_id', e.node_id,
-                'event_type', e.event_type,
-                'timestamp', e.timestamp,
-                'created_at', e.created_at,
-                'data', e.data
+            WITH filtered AS (
+                SELECT
+                    e.id, e.node_id, e.event_type, e.timestamp, e.created_at, e.data,
+                    COUNT(*) OVER() as total_count
+                FROM events e
+                WHERE ($1::integer[] IS NULL OR e.event_type = ANY($1))
+                AND ($2::text IS NULL OR e.node_id = $2)
+                AND ($3::integer IS NULL OR (
+                    COALESCE(
+                        CAST(e.data->'WorkPackageReceived'->>'core' AS INTEGER),
+                        CAST(e.data->'GuaranteeBuilt'->'outline'->>'core' AS INTEGER),
+                        CAST(e.data->'Refined'->>'core' AS INTEGER)
+                    ) = $3
+                ))
+                AND ($4::text IS NULL OR (
+                    e.data->>'hash' = $4
+                    OR e.data->'WorkPackageSubmitted'->>'hash' = $4
+                    OR e.data->'WorkPackageReceived'->>'hash' = $4
+                    OR e.data->'Refined'->>'hash' = $4
+                    OR e.data->'GuaranteeBuilt'->'outline'->>'hash' = $4
+                ))
+                AND ($5::timestamptz IS NULL OR e.created_at >= $5)
+                AND ($6::timestamptz IS NULL OR e.created_at <= $6)
+                ORDER BY e.created_at DESC
+                LIMIT $7 OFFSET $8
             )
-            FROM events e
-            WHERE ($1::integer[] IS NULL OR e.event_type = ANY($1))
-            AND ($2::text IS NULL OR e.node_id = $2)
-            AND ($3::integer IS NULL OR (
-                COALESCE(
-                    CAST(e.data->'WorkPackageReceived'->>'core' AS INTEGER),
-                    CAST(e.data->'GuaranteeBuilt'->'outline'->>'core' AS INTEGER),
-                    CAST(e.data->'Refined'->>'core' AS INTEGER)
-                ) = $3
-            ))
-            AND ($4::text IS NULL OR (
-                e.data->>'hash' = $4
-                OR e.data->'WorkPackageSubmitted'->>'hash' = $4
-                OR e.data->'WorkPackageReceived'->>'hash' = $4
-                OR e.data->'Refined'->>'hash' = $4
-                OR e.data->'GuaranteeBuilt'->'outline'->>'hash' = $4
-            ))
-            AND ($5::timestamptz IS NULL OR e.created_at >= $5)
-            AND ($6::timestamptz IS NULL OR e.created_at <= $6)
-            ORDER BY e.created_at DESC
-            LIMIT $7 OFFSET $8
+            SELECT jsonb_build_object(
+                'id', id,
+                'node_id', node_id,
+                'event_type', event_type,
+                'timestamp', timestamp,
+                'created_at', created_at,
+                'data', data
+            ), total_count
+            FROM filtered
             "#,
         )
         .bind(event_types)
@@ -5400,39 +5640,8 @@ impl EventStore {
         .fetch_all(&self.pool)
         .await?;
 
-        // Get total count for pagination
-        let total: i64 = sqlx::query_scalar(
-            r#"
-            SELECT COUNT(*)
-            FROM events e
-            WHERE ($1::integer[] IS NULL OR e.event_type = ANY($1))
-            AND ($2::text IS NULL OR e.node_id = $2)
-            AND ($3::integer IS NULL OR (
-                COALESCE(
-                    CAST(e.data->'WorkPackageReceived'->>'core' AS INTEGER),
-                    CAST(e.data->'GuaranteeBuilt'->'outline'->>'core' AS INTEGER),
-                    CAST(e.data->'Refined'->>'core' AS INTEGER)
-                ) = $3
-            ))
-            AND ($4::text IS NULL OR (
-                e.data->>'hash' = $4
-                OR e.data->'WorkPackageSubmitted'->>'hash' = $4
-                OR e.data->'WorkPackageReceived'->>'hash' = $4
-                OR e.data->'Refined'->>'hash' = $4
-                OR e.data->'GuaranteeBuilt'->'outline'->>'hash' = $4
-            ))
-            AND ($5::timestamptz IS NULL OR e.created_at >= $5)
-            AND ($6::timestamptz IS NULL OR e.created_at <= $6)
-            "#,
-        )
-        .bind(event_types)
-        .bind(node_id)
-        .bind(core_index)
-        .bind(wp_hash)
-        .bind(start_time)
-        .bind(end_time)
-        .fetch_one(&self.pool)
-        .await?;
+        let total = rows.first().map(|(_, t)| *t).unwrap_or(0);
+        let events: Vec<serde_json::Value> = rows.into_iter().map(|(e, _)| e).collect();
 
         Ok(serde_json::json!({
             "events": events,
@@ -5468,7 +5677,7 @@ impl EventStore {
                     CAST(data->'BlockTransferred'->>'slot' AS BIGINT)
                 ) = $1
                 AND event_type IN (11, 12, 40, 43, 62, 68)
-                AND created_at > NOW() - INTERVAL '7 days'
+                AND created_at > NOW() - INTERVAL '1 day'
             ),
             slot_authoring AS (
                 SELECT id, node_id
@@ -5535,7 +5744,7 @@ impl EventStore {
                         CAST(data->'BlockTransferred'->>'slot' AS BIGINT)
                     ) = $1
                     AND event_type IN (11, 12, 40, 43, 62, 68)
-                    AND created_at > NOW() - INTERVAL '7 days'
+                    AND created_at > NOW() - INTERVAL '1 day'
                 ),
                 slot_authoring AS (
                     SELECT id, node_id

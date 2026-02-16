@@ -326,6 +326,7 @@ async fn handle_connection_optimized(
     connections.insert(node_id_str.clone(), connection);
 
     // Queue node connection event
+    // Queue node connection event
     info!("Queueing node connection for {}", node_id_str);
     match batch_writer
         .node_connected(node_id_str.clone(), node_info)
@@ -343,22 +344,8 @@ async fn handle_connection_optimized(
 
     // Read events
     loop {
-        let n = stream.read_buf(&mut buffer).await?;
-        if n == 0 {
-            info!(
-                "Node {} disconnected (received {} events, dropped {})",
-                node_id_str, event_count, dropped_events
-            );
-            break;
-        }
-
-        // Prevent buffer overflow
-        if buffer.len() > MAX_BUFFER_SIZE {
-            warn!("Buffer overflow for node {} - disconnecting", node_id_str);
-            break;
-        }
-
-        // Process all complete messages in buffer
+        // Process all complete messages already in buffer before blocking on read.
+        // This handles leftover bytes from the node info read and coalesced TCP segments.
         while buffer.len() >= 4 {
             match decode_message_frame(&buffer) {
                 Ok((size, msg_data)) => {
@@ -387,17 +374,19 @@ async fn handle_connection_optimized(
                                 node_id_str
                             );
 
-                            // Broadcast event for real-time subscribers (non-blocking)
-                            let broadcast_result = broadcaster
-                                .broadcast_event(node_id_str.clone(), event.clone())
-                                .await;
+                            // Wrap event in Arc once to share between broadcaster and batch writer
+                            let event = Arc::new(event);
+
+                            // Broadcast event for real-time subscribers (non-blocking, sync)
+                            let broadcast_result =
+                                broadcaster.broadcast_event(&node_id_str, Arc::clone(&event));
 
                             if let Ok(event_id) = broadcast_result {
                                 debug!("Broadcast event {} from node {}", event_id, node_id_str);
                             }
 
                             // Try to queue event for batch writing
-                            match batch_writer.write_event(node_id_str.clone(), event_count, event)
+                            match batch_writer.write_event(&node_id_str, event_count, event)
                             {
                                 Ok(_) => {
                                     metrics::counter!("telemetry_events_received").increment(1);
@@ -437,8 +426,26 @@ async fn handle_connection_optimized(
             }
         }
 
-        // Update metrics
-        metrics::gauge!("telemetry_buffer_pending").set(batch_writer.pending_count() as f64);
+        // Update metrics periodically (every 100 events) to reduce overhead in hot loop
+        if event_count % 100 == 0 {
+            metrics::gauge!("telemetry_buffer_pending").set(batch_writer.pending_count() as f64);
+        }
+
+        // Read more data from the stream
+        let n = stream.read_buf(&mut buffer).await?;
+        if n == 0 {
+            info!(
+                "Node {} disconnected (received {} events, dropped {})",
+                node_id_str, event_count, dropped_events
+            );
+            break;
+        }
+
+        // Prevent buffer overflow
+        if buffer.len() > MAX_BUFFER_SIZE {
+            warn!("Buffer overflow for node {} - disconnecting", node_id_str);
+            break;
+        }
     }
 
     // Clean up

@@ -13,7 +13,7 @@ use tokio::time::{sleep, timeout};
 async fn setup_optimized_test_server() -> (Arc<TelemetryServer>, u16) {
     // Use test database URL from environment or default PostgreSQL test database
     let database_url = std::env::var("TEST_DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://localhost/tart_test".to_string());
+        .unwrap_or_else(|_| "postgres://tart:tart_password@localhost:5432/tart_test".to_string());
 
     let store = Arc::new(EventStore::new(&database_url).await.unwrap());
 

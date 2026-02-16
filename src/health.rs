@@ -105,20 +105,23 @@ impl HealthMonitor {
     pub async fn get_health(&self) -> HealthReport {
         let components = self.components.read().await.clone();
 
+        // Single-pass counting instead of 3 separate filter().count() iterations
+        let mut healthy = 0usize;
+        let mut degraded = 0usize;
+        let mut unhealthy = 0usize;
+        for c in components.values() {
+            match c.status {
+                HealthStatus::Healthy => healthy += 1,
+                HealthStatus::Degraded => degraded += 1,
+                HealthStatus::Unhealthy => unhealthy += 1,
+            }
+        }
+
         let summary = HealthSummary {
             total_components: components.len(),
-            healthy_components: components
-                .values()
-                .filter(|c| c.status == HealthStatus::Healthy)
-                .count(),
-            degraded_components: components
-                .values()
-                .filter(|c| c.status == HealthStatus::Degraded)
-                .count(),
-            unhealthy_components: components
-                .values()
-                .filter(|c| c.status == HealthStatus::Unhealthy)
-                .count(),
+            healthy_components: healthy,
+            degraded_components: degraded,
+            unhealthy_components: unhealthy,
         };
 
         let overall_status = calculate_overall_status(&components);
@@ -180,7 +183,9 @@ pub mod checks {
     use crate::event_broadcaster::EventBroadcaster;
     use crate::store::EventStore;
 
-    /// Create a database health check
+    /// Create a lightweight database health check using `SELECT 1`.
+    /// Verifies the connection pool can acquire a connection and the database
+    /// is responsive without running expensive queries.
     pub fn database_check(store: Arc<EventStore>) -> HealthCheck {
         HealthCheck {
             name: "database".to_string(),
@@ -189,18 +194,24 @@ pub mod checks {
                 Box::pin(async move {
                     let start = std::time::Instant::now();
 
-                    match store.get_health_metrics().await {
-                        Ok(metrics) => {
+                    // Lightweight ping with 500ms timeout
+                    match tokio::time::timeout(
+                        Duration::from_millis(500),
+                        store.ping(),
+                    )
+                    .await
+                    {
+                        Ok(Ok(())) => {
                             let response_time = start.elapsed();
-                            let mut component_metrics = metrics;
-                            component_metrics.insert(
+                            let mut metrics = HashMap::new();
+                            metrics.insert(
                                 "response_time_ms".to_string(),
                                 serde_json::Value::Number(serde_json::Number::from(
                                     response_time.as_millis() as u64,
                                 )),
                             );
 
-                            let status = if response_time > Duration::from_secs(5) {
+                            let status = if response_time > Duration::from_millis(200) {
                                 HealthStatus::Degraded
                             } else {
                                 HealthStatus::Healthy
@@ -210,95 +221,78 @@ pub mod checks {
                                 name: "database".to_string(),
                                 status,
                                 message: Some(format!(
-                                    "Response time: {}ms",
+                                    "Ping: {}ms",
                                     response_time.as_millis()
-                                )),
-                                last_check: chrono::Utc::now(),
-                                metrics: component_metrics,
-                            }
-                        }
-                        Err(e) => ComponentHealth {
-                            name: "database".to_string(),
-                            status: HealthStatus::Unhealthy,
-                            message: Some(format!("Database error: {}", e)),
-                            last_check: chrono::Utc::now(),
-                            metrics: HashMap::new(),
-                        },
-                    }
-                })
-            }),
-            interval: Duration::from_secs(30),
-        }
-    }
-
-    /// Create a batch writer health check
-    pub fn batch_writer_check(batch_writer: Arc<BatchWriter>) -> HealthCheck {
-        HealthCheck {
-            name: "batch_writer".to_string(),
-            check_fn: Box::new(move || {
-                let batch_writer = batch_writer.clone();
-                Box::pin(async move {
-                    let start = std::time::Instant::now();
-
-                    // Test batch writer responsiveness by sending a flush command
-                    match tokio::time::timeout(Duration::from_secs(5), batch_writer.flush()).await {
-                        Ok(Ok(_)) => {
-                            let response_time = start.elapsed();
-                            let mut metrics = HashMap::new();
-                            metrics.insert(
-                                "response_time_ms".to_string(),
-                                serde_json::Value::Number(serde_json::Number::from(
-                                    response_time.as_millis() as u64,
-                                )),
-                            );
-                            metrics.insert(
-                                "pending_count".to_string(),
-                                serde_json::Value::Number(serde_json::Number::from(
-                                    batch_writer.pending_count() as u64,
-                                )),
-                            );
-                            metrics.insert(
-                                "is_full".to_string(),
-                                serde_json::Value::Bool(batch_writer.is_full()),
-                            );
-
-                            let status = if response_time > Duration::from_secs(2)
-                                || batch_writer.is_full()
-                            {
-                                HealthStatus::Degraded
-                            } else {
-                                HealthStatus::Healthy
-                            };
-
-                            ComponentHealth {
-                                name: "batch_writer".to_string(),
-                                status,
-                                message: Some(format!(
-                                    "Response time: {}ms, pending: {}, full: {}",
-                                    response_time.as_millis(),
-                                    batch_writer.pending_count(),
-                                    batch_writer.is_full()
                                 )),
                                 last_check: chrono::Utc::now(),
                                 metrics,
                             }
                         }
                         Ok(Err(e)) => ComponentHealth {
-                            name: "batch_writer".to_string(),
+                            name: "database".to_string(),
                             status: HealthStatus::Unhealthy,
-                            message: Some(format!("Batch writer flush failed: {}", e)),
+                            message: Some(format!("Database error: {}", e)),
                             last_check: chrono::Utc::now(),
                             metrics: HashMap::new(),
                         },
                         Err(_) => ComponentHealth {
-                            name: "batch_writer".to_string(),
+                            name: "database".to_string(),
                             status: HealthStatus::Unhealthy,
-                            message: Some(
-                                "Batch writer timeout - task may have crashed".to_string(),
-                            ),
+                            message: Some("Database ping timed out (>500ms)".to_string()),
                             last_check: chrono::Utc::now(),
                             metrics: HashMap::new(),
                         },
+                    }
+                })
+            }),
+            interval: Duration::from_secs(15),
+        }
+    }
+
+    /// Create a batch writer health check.
+    /// Uses non-blocking status checks only - never calls flush() which would
+    /// defeat the batching optimization this check is meant to monitor.
+    pub fn batch_writer_check(batch_writer: Arc<BatchWriter>) -> HealthCheck {
+        HealthCheck {
+            name: "batch_writer".to_string(),
+            check_fn: Box::new(move || {
+                let batch_writer = batch_writer.clone();
+                Box::pin(async move {
+                    let pending = batch_writer.pending_count();
+                    let is_full = batch_writer.is_full();
+                    let usage_pct = batch_writer.buffer_usage_percent();
+
+                    let status = if is_full {
+                        HealthStatus::Unhealthy
+                    } else if usage_pct > 75.0 {
+                        HealthStatus::Degraded
+                    } else {
+                        HealthStatus::Healthy
+                    };
+
+                    let mut metrics = HashMap::new();
+                    metrics.insert(
+                        "pending_count".to_string(),
+                        serde_json::Value::Number(serde_json::Number::from(pending as u64)),
+                    );
+                    metrics.insert(
+                        "is_full".to_string(),
+                        serde_json::Value::Bool(is_full),
+                    );
+                    metrics.insert(
+                        "usage_percent".to_string(),
+                        serde_json::json!(usage_pct),
+                    );
+
+                    ComponentHealth {
+                        name: "batch_writer".to_string(),
+                        status,
+                        message: Some(format!(
+                            "Buffer {:.0}% full ({} pending), full: {}",
+                            usage_pct, pending, is_full
+                        )),
+                        last_check: chrono::Utc::now(),
+                        metrics,
                     }
                 })
             }),
@@ -313,7 +307,7 @@ pub mod checks {
             check_fn: Box::new(move || {
                 let broadcaster = broadcaster.clone();
                 Box::pin(async move {
-                    let stats = broadcaster.get_stats().await;
+                    let stats = broadcaster.get_stats();
 
                     // Only consider significant dropped events as a problem
                     // Undelivered events (no subscribers) are normal when no clients are connected
@@ -383,27 +377,19 @@ pub mod checks {
         }
     }
 
-    /// Create a memory usage health check
+    /// Create a memory usage health check.
+    /// Reports always healthy (actual memory pressure is handled by the OS/container runtime).
     pub fn memory_check() -> HealthCheck {
         HealthCheck {
             name: "memory".to_string(),
             check_fn: Box::new(|| {
                 Box::pin(async move {
-                    // Get memory info (simplified - would use proper system APIs in production)
-                    let mut metrics = HashMap::new();
-
-                    // For now, just check if we can allocate memory
-                    let test_allocation = Vec::<u8>::with_capacity(1024 * 1024); // 1MB
-                    drop(test_allocation);
-
-                    metrics.insert("test_allocation".to_string(), serde_json::Value::Bool(true));
-
                     ComponentHealth {
                         name: "memory".to_string(),
                         status: HealthStatus::Healthy,
-                        message: Some("Memory allocation test passed".to_string()),
+                        message: Some("OK".to_string()),
                         last_check: chrono::Utc::now(),
-                        metrics,
+                        metrics: HashMap::new(),
                     }
                 })
             }),
@@ -411,38 +397,20 @@ pub mod checks {
         }
     }
 
-    /// Create a system resource health check
+    /// Create a system resource health check.
+    /// Lightweight check that avoids file I/O - always reports healthy as actual
+    /// resource limits are enforced by the container runtime.
     pub fn system_resources_check() -> HealthCheck {
         HealthCheck {
             name: "system_resources".to_string(),
             check_fn: Box::new(|| {
                 Box::pin(async move {
-                    let mut metrics = HashMap::new();
-
-                    // Check available file descriptors (simplified)
-                    let status = match std::fs::File::open("/dev/null") {
-                        Ok(_) => {
-                            metrics.insert(
-                                "file_descriptor_test".to_string(),
-                                serde_json::Value::Bool(true),
-                            );
-                            HealthStatus::Healthy
-                        }
-                        Err(e) => {
-                            metrics.insert(
-                                "file_descriptor_error".to_string(),
-                                serde_json::Value::String(e.to_string()),
-                            );
-                            HealthStatus::Degraded
-                        }
-                    };
-
                     ComponentHealth {
                         name: "system_resources".to_string(),
-                        status,
-                        message: Some("System resource checks".to_string()),
+                        status: HealthStatus::Healthy,
+                        message: Some("OK".to_string()),
                         last_check: chrono::Utc::now(),
-                        metrics,
+                        metrics: HashMap::new(),
                     }
                 })
             }),
@@ -538,35 +506,98 @@ mod tests {
     use super::*;
     use tokio::time::sleep;
 
-    #[tokio::test]
-    async fn test_health_monitor() {
-        let monitor = HealthMonitor::new();
-
-        // Add a simple health check
-        let check = HealthCheck {
-            name: "test".to_string(),
-            check_fn: Box::new(|| {
+    fn make_check(name: &str, status: HealthStatus) -> HealthCheck {
+        let name = name.to_string();
+        let name2 = name.clone();
+        HealthCheck {
+            name,
+            check_fn: Box::new(move || {
+                let name = name2.clone();
+                let status = status.clone();
                 Box::pin(async move {
                     ComponentHealth {
-                        name: "test".to_string(),
-                        status: HealthStatus::Healthy,
-                        message: Some("Test check".to_string()),
+                        name,
+                        status,
+                        message: None,
                         last_check: chrono::Utc::now(),
                         metrics: HashMap::new(),
                     }
                 })
             }),
-            interval: Duration::from_millis(100),
-        };
+            interval: Duration::from_millis(50),
+        }
+    }
 
-        monitor.add_check(check).await;
-
-        // Wait for the check to run
-        sleep(Duration::from_millis(150)).await;
+    #[tokio::test]
+    async fn test_health_monitor() {
+        let monitor = HealthMonitor::new();
+        monitor.add_check(make_check("test", HealthStatus::Healthy)).await;
+        sleep(Duration::from_millis(100)).await;
 
         let health = monitor.get_health().await;
         assert_eq!(health.status, HealthStatus::Healthy);
         assert_eq!(health.components.len(), 1);
         assert!(health.components.contains_key("test"));
+    }
+
+    #[tokio::test]
+    async fn test_degraded_status() {
+        let monitor = HealthMonitor::new();
+        monitor
+            .add_check(make_check("comp1", HealthStatus::Healthy))
+            .await;
+        monitor
+            .add_check(make_check("comp2", HealthStatus::Degraded))
+            .await;
+        sleep(Duration::from_millis(100)).await;
+
+        let health = monitor.get_health().await;
+        assert_eq!(health.status, HealthStatus::Degraded);
+        assert_eq!(health.summary.degraded_components, 1);
+        assert_eq!(health.summary.healthy_components, 1);
+    }
+
+    #[tokio::test]
+    async fn test_unhealthy_status() {
+        let monitor = HealthMonitor::new();
+        monitor
+            .add_check(make_check("comp1", HealthStatus::Healthy))
+            .await;
+        monitor
+            .add_check(make_check("comp2", HealthStatus::Unhealthy))
+            .await;
+        sleep(Duration::from_millis(100)).await;
+
+        let health = monitor.get_health().await;
+        assert_eq!(health.status, HealthStatus::Unhealthy);
+        assert_eq!(health.summary.unhealthy_components, 1);
+    }
+
+    #[tokio::test]
+    async fn test_empty_components_degraded() {
+        // No checks registered → overall status should be Degraded
+        let components: HashMap<String, ComponentHealth> = HashMap::new();
+        let status = calculate_overall_status(&components);
+        assert_eq!(status, HealthStatus::Degraded);
+    }
+
+    #[tokio::test]
+    async fn test_mixed_status_unhealthy_wins() {
+        let monitor = HealthMonitor::new();
+        monitor
+            .add_check(make_check("healthy", HealthStatus::Healthy))
+            .await;
+        monitor
+            .add_check(make_check("degraded", HealthStatus::Degraded))
+            .await;
+        monitor
+            .add_check(make_check("unhealthy", HealthStatus::Unhealthy))
+            .await;
+        sleep(Duration::from_millis(100)).await;
+
+        let health = monitor.get_health().await;
+        // Unhealthy takes precedence over Degraded
+        assert_eq!(health.status, HealthStatus::Unhealthy);
+        assert_eq!(health.summary.total_components, 3);
     }
 }

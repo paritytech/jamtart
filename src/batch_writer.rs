@@ -3,22 +3,26 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::time::interval;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::events::{Event, NodeInformation};
 use crate::store::EventStore;
 
+/// Type alias for batch event tuples stored in the channel and flush buffer
+pub(crate) type BatchEvent = (String, u64, Arc<Event>);
+
 /// Maximum number of events to buffer before forcing a flush
-/// Increased from 100 to 500 to handle higher throughput (50k events/sec @ 10ms interval)
-const MAX_BATCH_SIZE: usize = 500;
+/// 2000 matches real throughput at 100K events/sec with 20ms intervals
+const MAX_BATCH_SIZE: usize = 2000;
 
 /// Maximum time to wait before flushing a batch
-/// Decreased from 20ms to 10ms for better throughput and lower latency
-const BATCH_TIMEOUT: Duration = Duration::from_millis(10);
+/// 5ms keeps data fresh for real-time dashboard queries while still batching efficiently
+/// (~500 events/batch at 100K events/sec is well within Postgres's optimal batch INSERT range)
+const BATCH_TIMEOUT: Duration = Duration::from_millis(5);
 
 /// Number of events that can be buffered in the channel
-/// Increased from 100k to 500k to handle bursts from 1024 concurrent nodes
-const CHANNEL_SIZE: usize = 500_000;
+/// 200K provides ~2 seconds of headroom at 100K events/sec processing rate
+const CHANNEL_SIZE: usize = 200_000;
 
 #[derive(Clone)]
 pub struct BatchWriter {
@@ -28,7 +32,7 @@ pub struct BatchWriter {
 enum WriterCommand {
     NodeConnected {
         node_id: String,
-        info: NodeInformation,
+        info: Box<NodeInformation>,
     },
     NodeDisconnected {
         node_id: String,
@@ -36,7 +40,7 @@ enum WriterCommand {
     Event {
         node_id: String,
         event_id: u64,
-        event: Event,
+        event: Arc<Event>,
     },
     Flush {
         response: tokio::sync::oneshot::Sender<Result<()>>,
@@ -83,7 +87,7 @@ impl BatchWriter {
     /// Queue a node connection event (async for reliability)
     pub async fn node_connected(&self, node_id: String, info: NodeInformation) -> Result<()> {
         self.sender
-            .send(WriterCommand::NodeConnected { node_id, info })
+            .send(WriterCommand::NodeConnected { node_id, info: Box::new(info) })
             .await
             .map_err(|e| anyhow::anyhow!("Failed to send node connection: {}", e))?;
         Ok(())
@@ -98,11 +102,13 @@ impl BatchWriter {
         Ok(())
     }
 
-    /// Queue an event for writing (non-blocking)
-    pub fn write_event(&self, node_id: String, event_id: u64, event: Event) -> Result<()> {
+    /// Queue an event for writing (non-blocking).
+    /// Accepts &str for node_id to avoid cloning in the caller's hot path;
+    /// allocates String only at the channel boundary.
+    pub fn write_event(&self, node_id: &str, event_id: u64, event: Arc<Event>) -> Result<()> {
         self.sender
             .try_send(WriterCommand::Event {
-                node_id,
+                node_id: node_id.to_string(),
                 event_id,
                 event,
             })
@@ -118,6 +124,11 @@ impl BatchWriter {
     /// Get the number of events currently buffered
     pub fn pending_count(&self) -> usize {
         CHANNEL_SIZE - self.sender.capacity()
+    }
+
+    /// Get buffer usage as a percentage (0-100)
+    pub fn buffer_usage_percent(&self) -> f64 {
+        (self.pending_count() as f64 / CHANNEL_SIZE as f64) * 100.0
     }
 
     /// Shutdown the batch writer
@@ -162,7 +173,7 @@ async fn batch_writer_loop(
     store: Arc<EventStore>,
 ) -> Result<()> {
     let mut interval = interval(BATCH_TIMEOUT);
-    let mut event_batch = Vec::with_capacity(MAX_BATCH_SIZE);
+    let mut event_batch: Vec<BatchEvent> = Vec::with_capacity(MAX_BATCH_SIZE);
     let mut node_updates: Vec<(String, Option<NodeInformation>)> = Vec::new();
 
     info!("Batch writer started");
@@ -173,15 +184,9 @@ async fn batch_writer_loop(
     // Single processing loop - no two-phase initialization
     loop {
         tokio::select! {
-            _ = interval.tick() => {
-                // Periodic flush
-                if !event_batch.is_empty() || !node_updates.is_empty() {
-                    debug!("Periodic flush: {} events, {} node updates", event_batch.len(), node_updates.len());
-                    if let Err(e) = flush_batch(&store, &mut event_batch, &mut node_updates).await {
-                        error!("Periodic flush error: {}", e);
-                    }
-                }
-            }
+            // Prefer draining the channel over timer ticks under load
+            biased;
+
             Some(command) = receiver.recv() => {
                 match command {
                     WriterCommand::Event { node_id, event_id, event } => {
@@ -196,19 +201,23 @@ async fn batch_writer_loop(
                         }
                     }
                     WriterCommand::NodeConnected { node_id, info } => {
-                        info!("Node connected: {}, flushing immediately", node_id);
-                        node_updates.push((node_id, Some(info)));
-                        // Force flush node updates immediately to avoid race conditions
-                        if let Err(e) = flush_batch(&store, &mut event_batch, &mut node_updates).await {
-                            error!("Node connection flush error: {}", e);
+                        info!("Node connected: {}", node_id);
+                        node_updates.push((node_id, Some(*info)));
+                        // Accumulate node updates and flush with next batch or when >100 pending
+                        // This reduces transaction count during node churn by 10-100x
+                        if node_updates.len() > 100 {
+                            if let Err(e) = flush_batch(&store, &mut event_batch, &mut node_updates).await {
+                                error!("Node connection batch flush error: {}", e);
+                            }
                         }
                     }
                     WriterCommand::NodeDisconnected { node_id } => {
-                        info!("Node disconnected: {}, flushing immediately", node_id);
+                        info!("Node disconnected: {}", node_id);
                         node_updates.push((node_id, None));
-                        // Flush disconnections immediately too (symmetry with connections)
-                        if let Err(e) = flush_batch(&store, &mut event_batch, &mut node_updates).await {
-                            error!("Node disconnection flush error: {}", e);
+                        if node_updates.len() > 100 {
+                            if let Err(e) = flush_batch(&store, &mut event_batch, &mut node_updates).await {
+                                error!("Node disconnection batch flush error: {}", e);
+                            }
                         }
                     }
                     WriterCommand::Flush { response } => {
@@ -228,6 +237,15 @@ async fn batch_writer_loop(
                     }
                 }
             }
+            _ = interval.tick() => {
+                // Periodic flush
+                if !event_batch.is_empty() || !node_updates.is_empty() {
+                    debug!("Periodic flush: {} events, {} node updates", event_batch.len(), node_updates.len());
+                    if let Err(e) = flush_batch(&store, &mut event_batch, &mut node_updates).await {
+                        error!("Periodic flush error: {}", e);
+                    }
+                }
+            }
         }
     }
 
@@ -237,7 +255,7 @@ async fn batch_writer_loop(
 
 async fn flush_batch(
     store: &EventStore,
-    event_batch: &mut Vec<(String, u64, Event)>,
+    event_batch: &mut Vec<BatchEvent>,
     node_updates: &mut Vec<(String, Option<NodeInformation>)>,
 ) -> Result<()> {
     let event_count = event_batch.len();
@@ -247,53 +265,104 @@ async fn flush_batch(
         return Ok(());
     }
 
+    let flush_start = std::time::Instant::now();
+
     debug!(
         "Flushing batch: {} events, {} node updates",
         event_count, node_count
     );
 
-    // Process node updates first
-    // Note: Using drain() for simplicity. If an error occurs, we fail fast (panic)
-    // since the batch writer task failure will restart the process anyway.
-    for (node_id, info) in node_updates.drain(..) {
-        match info {
-            Some(info) => {
-                debug!("Storing node connection for {}", node_id);
-                store
-                    .store_node_connected(&node_id, &info)
-                    .await
-                    .map_err(|e| {
-                        error!("Failed to store node connection {}: {}", node_id, e);
-                        anyhow::anyhow!("Node connection storage failed: {}", e)
-                    })?;
-                debug!("Successfully stored node connection for {}", node_id);
+    // Process node updates using batch operations (1 query per type instead of N)
+    if !node_updates.is_empty() {
+        let mut connections: Vec<(String, NodeInformation)> = Vec::new();
+        let mut disconnections: Vec<String> = Vec::new();
+
+        for (node_id, info) in node_updates.drain(..) {
+            match info {
+                Some(info) => connections.push((node_id, info)),
+                None => disconnections.push(node_id),
             }
-            None => {
-                debug!("Storing node disconnection for {}", node_id);
-                store.store_node_disconnected(&node_id).await.map_err(|e| {
-                    error!("Failed to store node disconnection {}: {}", node_id, e);
-                    anyhow::anyhow!("Node disconnection storage failed: {}", e)
+        }
+
+        if !connections.is_empty() {
+            debug!("Batch storing {} node connections", connections.len());
+            store
+                .store_nodes_connected_batch(&connections)
+                .await
+                .map_err(|e| {
+                    error!("Failed to store node connections batch: {}", e);
+                    anyhow::anyhow!("Node connection batch storage failed: {}", e)
                 })?;
-            }
+        }
+
+        if !disconnections.is_empty() {
+            debug!("Batch storing {} node disconnections", disconnections.len());
+            store
+                .store_nodes_disconnected_batch(&disconnections)
+                .await
+                .map_err(|e| {
+                    error!("Failed to store node disconnections batch: {}", e);
+                    anyhow::anyhow!("Node disconnection batch storage failed: {}", e)
+                })?;
         }
     }
 
     // Process events using batch insert for optimal performance
+    // Events are only cleared after successful write to prevent data loss
     if !event_batch.is_empty() {
-        let batch = std::mem::take(event_batch);
-        store.store_events_batch(batch).await.map_err(|e| {
+        // Collect node_ids for stats update before passing event_batch to store
+        let node_ids: Vec<&str> = event_batch.iter().map(|(id, _, _)| id.as_str()).collect();
+
+        // Pre-compute stats update data before mutably borrowing event_batch
+        let mut counts: std::collections::HashMap<&str, i64> =
+            std::collections::HashMap::new();
+        for id in &node_ids {
+            *counts.entry(id).or_insert(0) += 1;
+        }
+        let unique_ids: Vec<String> = counts.keys().map(|s| s.to_string()).collect();
+        let increments: Vec<i64> = unique_ids.iter().map(|id| counts[id.as_str()]).collect();
+        drop(node_ids);
+        drop(counts);
+
+        store.store_events_batch(event_batch).await.map_err(|e| {
             error!("Failed to store event batch: {}", e);
             anyhow::anyhow!("Event batch storage failed: {}", e)
         })?;
+
+        // Only clear after successful write
+        event_batch.clear();
+
+        // Update node stats in batch (replaces per-row trigger)
+        if let Err(e) = store
+            .update_node_stats_batch_precomputed(&unique_ids, &increments)
+            .await
+        {
+            error!("Failed to update node stats batch: {}", e);
+            // Non-fatal: events were already stored, stats will catch up
+        }
     }
 
     // Update metrics
+    let flush_duration = flush_start.elapsed();
     metrics::counter!("telemetry_events_flushed").increment(event_count as u64);
     metrics::counter!("telemetry_node_updates_flushed").increment(node_count as u64);
+    metrics::histogram!("telemetry_batch_flush_duration_ms")
+        .record(flush_duration.as_millis() as f64);
+
+    if flush_duration.as_millis() > 100 {
+        warn!(
+            "Slow flush: {}ms for {} events, {} nodes",
+            flush_duration.as_millis(),
+            event_count,
+            node_count
+        );
+    }
 
     debug!(
-        "Flush completed successfully: {} events, {} nodes",
-        event_count, node_count
+        "Flush completed in {}ms: {} events, {} nodes",
+        flush_duration.as_millis(),
+        event_count,
+        node_count
     );
     Ok(())
 }

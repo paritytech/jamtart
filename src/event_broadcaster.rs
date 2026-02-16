@@ -1,15 +1,15 @@
 use crate::events::Event;
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::broadcast;
-use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 /// Size of the main broadcast channel
-/// Must be large enough to handle bursts from 1024 nodes
-const BROADCAST_CHANNEL_SIZE: usize = 100_000;
+/// 500K provides ~5 seconds of buffer at peak throughput (100K events/sec)
+const BROADCAST_CHANNEL_SIZE: usize = 500_000;
 
 /// Size of per-node channels (smaller since filtered)
 const NODE_CHANNEL_SIZE: usize = 10_000;
@@ -21,7 +21,7 @@ const MAX_RETAINED_EVENTS: usize = 10_000;
 const MAX_NODE_CHANNELS: usize = 2048;
 
 /// How often to clean up inactive channels (seconds)
-const CHANNEL_CLEANUP_INTERVAL: u64 = 300;
+const CHANNEL_CLEANUP_INTERVAL: u64 = 30;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BroadcastEvent {
@@ -30,6 +30,9 @@ pub struct BroadcastEvent {
     pub event: Event,
     pub timestamp: chrono::DateTime<chrono::Utc>,
     pub event_type: u8,
+    /// Pre-serialized JSON for WebSocket delivery (serialize once, send to all subscribers)
+    #[serde(skip)]
+    pub serialized_json: Option<Arc<str>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -51,18 +54,20 @@ pub struct BroadcasterStats {
     pub undelivered_events: u64, // Events with no subscribers but still in buffer
 }
 
-/// High-performance event broadcaster designed for 1024+ nodes
+/// High-performance event broadcaster designed for 1024+ nodes.
+///
+/// Uses `parking_lot::RwLock` instead of `tokio::sync::RwLock` for the recent_events
+/// ring buffer and node_channels map because the critical sections contain no await
+/// points. This avoids async lock overhead on the hottest path.
 pub struct EventBroadcaster {
     /// Main broadcast channel for all events
     sender: broadcast::Sender<Arc<BroadcastEvent>>,
 
     /// Per-node broadcast channels for filtered subscriptions
-    /// Using RwLock for better read performance with many subscribers
     node_channels: Arc<RwLock<HashMap<String, broadcast::Sender<Arc<BroadcastEvent>>>>>,
 
     /// Ring buffer of recent events for new connections
-    /// Arc<RwLock> for concurrent reads, sequential writes
-    /// Using VecDeque for O(1) push_back/pop_front operations
+    /// Uses parking_lot::RwLock for fast sync access (no await points in critical section)
     recent_events: Arc<RwLock<VecDeque<Arc<BroadcastEvent>>>>,
 
     /// Event counter for unique IDs
@@ -101,22 +106,46 @@ impl EventBroadcaster {
     }
 
     /// Broadcast an event to all subscribers
-    /// Optimized for high throughput with minimal latency
-    pub async fn broadcast_event(
+    /// Optimized for high throughput with minimal latency.
+    /// Accepts `Arc<Event>` to avoid cloning in the caller's hot path.
+    pub fn broadcast_event(
         &self,
-        node_id: String,
-        event: Event,
+        node_id: &str,
+        event: Arc<Event>,
     ) -> Result<u64, broadcast::error::SendError<Arc<BroadcastEvent>>> {
         // Generate unique event ID
         let id = self.event_counter.fetch_add(1, Ordering::Relaxed);
 
-        let broadcast_event = Arc::new(BroadcastEvent {
+        let event_type = event.event_type() as u8;
+        let mut broadcast_event = BroadcastEvent {
             id,
-            node_id: node_id.clone(),
-            event_type: event.event_type() as u8,
+            node_id: node_id.to_string(),
+            event_type,
             timestamp: chrono::Utc::now(),
-            event,
-        });
+            event: (*event).clone(),
+            serialized_json: None,
+        };
+
+        // Pre-serialize in WebSocketResponse format so the WS handler can send it directly.
+        // Must match the {"type": "event", "data": {...}, "timestamp": "..."} envelope
+        // that clients (frontend) expect.
+        if self.sender.receiver_count() > 0 {
+            let ws_response = serde_json::json!({
+                "type": "event",
+                "data": {
+                    "id": broadcast_event.id,
+                    "node_id": &broadcast_event.node_id,
+                    "event_type": broadcast_event.event_type,
+                    "event": &broadcast_event.event,
+                },
+                "timestamp": broadcast_event.timestamp,
+            });
+            if let Ok(json) = serde_json::to_string(&ws_response) {
+                broadcast_event.serialized_json = Some(Arc::from(json.as_str()));
+            }
+        }
+
+        let broadcast_event = Arc::new(broadcast_event);
 
         // Broadcast to main channel (fast path)
         let receiver_count = self.sender.receiver_count();
@@ -146,17 +175,17 @@ impl EventBroadcaster {
             }
         }
 
-        // Broadcast to node-specific channel if exists (optimized for read-heavy workload)
+        // Broadcast to node-specific channel if exists (sync read lock - fast path)
         {
-            let node_channels = self.node_channels.read().await;
-            if let Some(sender) = node_channels.get(&node_id) {
+            let node_channels = self.node_channels.read();
+            if let Some(sender) = node_channels.get(node_id) {
                 let _ = sender.send(broadcast_event.clone());
             }
         }
 
         // Add to recent events ring buffer (O(1) operations with VecDeque)
         {
-            let mut recent = self.recent_events.write().await;
+            let mut recent = self.recent_events.write();
             if recent.len() >= MAX_RETAINED_EVENTS {
                 // This is normal ring buffer rotation, not data loss
                 // The event was already broadcast to all subscribers
@@ -175,17 +204,17 @@ impl EventBroadcaster {
 
     /// Subscribe to events from a specific node
     /// Creates a dedicated channel for this node if it doesn't exist
-    pub async fn subscribe_node(&self, node_id: &str) -> broadcast::Receiver<Arc<BroadcastEvent>> {
+    pub fn subscribe_node(&self, node_id: &str) -> broadcast::Receiver<Arc<BroadcastEvent>> {
         // Check if channel exists (read lock - fast path)
         {
-            let channels = self.node_channels.read().await;
+            let channels = self.node_channels.read();
             if let Some(sender) = channels.get(node_id) {
                 return sender.subscribe();
             }
         }
 
         // Channel doesn't exist, need to create it (write lock)
-        let mut channels = self.node_channels.write().await;
+        let mut channels = self.node_channels.write();
 
         // Check again in case another task created it
         if let Some(sender) = channels.get(node_id) {
@@ -211,13 +240,13 @@ impl EventBroadcaster {
 
     /// Subscribe with a custom filter
     /// For complex filters, subscribers should use the main channel and filter client-side
-    pub async fn subscribe_filtered(
+    pub fn subscribe_filtered(
         &self,
         filter: EventFilter,
     ) -> broadcast::Receiver<Arc<BroadcastEvent>> {
         match filter {
             EventFilter::All => self.subscribe_all(),
-            EventFilter::Node(node_id) => self.subscribe_node(&node_id).await,
+            EventFilter::Node(node_id) => self.subscribe_node(&node_id),
             // For other filters, use main channel and filter client-side
             _ => self.subscribe_all(),
         }
@@ -225,8 +254,8 @@ impl EventBroadcaster {
 
     /// Get recent events for catch-up on new connections
     /// Returns up to `limit` most recent events
-    pub async fn get_recent_events(&self, limit: Option<usize>) -> Vec<Arc<BroadcastEvent>> {
-        let recent = self.recent_events.read().await;
+    pub fn get_recent_events(&self, limit: Option<usize>) -> Vec<Arc<BroadcastEvent>> {
+        let recent = self.recent_events.read();
         let limit = limit.unwrap_or(recent.len()).min(recent.len());
 
         if limit == 0 {
@@ -239,31 +268,33 @@ impl EventBroadcaster {
     }
 
     /// Get recent events filtered by node
-    pub async fn get_recent_events_by_node(
+    pub fn get_recent_events_by_node(
         &self,
         node_id: &str,
         limit: usize,
     ) -> Vec<Arc<BroadcastEvent>> {
-        let recent = self.recent_events.read().await;
-        recent
-            .iter()
-            .rev()
-            .filter(|e| e.node_id == node_id)
-            .take(limit)
-            .cloned()
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect()
+        let recent = self.recent_events.read();
+        // Single pass: collect from reverse iterator, then reverse the result
+        let mut result = Vec::with_capacity(limit.min(recent.len()));
+        for event in recent.iter().rev() {
+            if event.node_id == node_id {
+                result.push(Arc::clone(event));
+                if result.len() >= limit {
+                    break;
+                }
+            }
+        }
+        result.reverse();
+        result
     }
 
     /// Get broadcaster statistics
-    pub async fn get_stats(&self) -> BroadcasterStats {
+    pub fn get_stats(&self) -> BroadcasterStats {
         BroadcasterStats {
             total_events_broadcast: self.total_broadcast.load(Ordering::Relaxed),
             active_subscribers: self.sender.receiver_count(),
-            node_channels: self.node_channels.read().await.len(),
-            events_in_buffer: self.recent_events.read().await.len(),
+            node_channels: self.node_channels.read().len(),
+            events_in_buffer: self.recent_events.read().len(),
             dropped_events: self.dropped_events.load(Ordering::Relaxed),
             undelivered_events: self.undelivered_events.load(Ordering::Relaxed),
         }
@@ -280,7 +311,7 @@ impl EventBroadcaster {
             loop {
                 interval.tick().await;
 
-                let mut channels = node_channels.write().await;
+                let mut channels = node_channels.write();
                 let before = channels.len();
 
                 // Remove channels with no receivers
@@ -307,6 +338,14 @@ impl EventBroadcaster {
 mod tests {
     use super::*;
 
+    fn make_test_event(_node_id: &str) -> Arc<Event> {
+        Arc::new(Event::BestBlockChanged {
+            timestamp: 1_000_000,
+            slot: 42,
+            hash: [0xAA; 32],
+        })
+    }
+
     #[tokio::test]
     async fn test_broadcaster_scale() {
         let broadcaster = EventBroadcaster::new();
@@ -314,14 +353,155 @@ mod tests {
         // Simulate 1024 nodes
         let mut receivers = Vec::new();
         for i in 0..1024 {
-            let rx = broadcaster.subscribe_node(&format!("node_{}", i)).await;
+            let rx = broadcaster.subscribe_node(&format!("node_{}", i));
             receivers.push(rx);
         }
 
         // Verify we can handle the load
         assert!(receivers.len() == 1024);
 
-        let stats = broadcaster.get_stats().await;
+        let stats = broadcaster.get_stats();
         assert!(stats.node_channels <= MAX_NODE_CHANNELS);
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_and_receive() {
+        let broadcaster = EventBroadcaster::new();
+        let mut rx = broadcaster.subscribe_all();
+
+        let event = make_test_event("node_1");
+        let id = broadcaster.broadcast_event("node_1", event).unwrap();
+        assert_eq!(id, 0);
+
+        let received = rx.recv().await.unwrap();
+        assert_eq!(received.id, 0);
+        assert_eq!(received.node_id, "node_1");
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_all_multiple_subscribers() {
+        let broadcaster = EventBroadcaster::new();
+        let mut rx1 = broadcaster.subscribe_all();
+        let mut rx2 = broadcaster.subscribe_all();
+
+        let event = make_test_event("node_1");
+        broadcaster.broadcast_event("node_1", event).unwrap();
+
+        let e1 = rx1.recv().await.unwrap();
+        let e2 = rx2.recv().await.unwrap();
+        assert_eq!(e1.id, e2.id);
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_node_filters() {
+        let broadcaster = EventBroadcaster::new();
+        let mut rx_node1 = broadcaster.subscribe_node("node_1");
+
+        // Broadcast to node_1 — should be received
+        let event1 = make_test_event("node_1");
+        broadcaster.broadcast_event("node_1", event1).unwrap();
+
+        // Broadcast to node_2 — should NOT be received on node_1 channel
+        let event2 = make_test_event("node_2");
+        broadcaster.broadcast_event("node_2", event2).unwrap();
+
+        let received = rx_node1.recv().await.unwrap();
+        assert_eq!(received.node_id, "node_1");
+
+        // Trying to receive again should timeout (no more messages for node_1)
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            rx_node1.recv(),
+        )
+        .await;
+        assert!(result.is_err(), "Should timeout — no more node_1 events");
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_filtered_all() {
+        let broadcaster = EventBroadcaster::new();
+        let mut rx = broadcaster.subscribe_filtered(EventFilter::All);
+
+        let event = make_test_event("node_1");
+        broadcaster.broadcast_event("node_1", event).unwrap();
+
+        let received = rx.recv().await.unwrap();
+        assert_eq!(received.node_id, "node_1");
+    }
+
+    #[tokio::test]
+    async fn test_recent_events() {
+        let broadcaster = EventBroadcaster::new();
+
+        // Broadcast 5 events
+        for i in 0..5 {
+            let event = make_test_event(&format!("node_{}", i));
+            broadcaster
+                .broadcast_event(&format!("node_{}", i), event)
+                .unwrap();
+        }
+
+        // Get last 3
+        let recent = broadcaster.get_recent_events(Some(3));
+        assert_eq!(recent.len(), 3);
+        // Should be the last 3 (ids 2, 3, 4)
+        assert_eq!(recent[0].id, 2);
+        assert_eq!(recent[2].id, 4);
+
+        // Get all
+        let all = broadcaster.get_recent_events(None);
+        assert_eq!(all.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_recent_events_by_node() {
+        let broadcaster = EventBroadcaster::new();
+
+        // Broadcast from multiple nodes
+        for _ in 0..3 {
+            let event = make_test_event("node_a");
+            broadcaster.broadcast_event("node_a", event).unwrap();
+        }
+        for _ in 0..2 {
+            let event = make_test_event("node_b");
+            broadcaster.broadcast_event("node_b", event).unwrap();
+        }
+
+        let node_a_events = broadcaster.get_recent_events_by_node("node_a", 10);
+        assert_eq!(node_a_events.len(), 3);
+        assert!(node_a_events.iter().all(|e| e.node_id == "node_a"));
+
+        let node_b_events = broadcaster.get_recent_events_by_node("node_b", 10);
+        assert_eq!(node_b_events.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_recent_events_ring_buffer() {
+        let broadcaster = EventBroadcaster::new();
+
+        // Broadcast more than MAX_RETAINED_EVENTS
+        for _ in 0..(MAX_RETAINED_EVENTS + 100) {
+            let event = make_test_event("node_1");
+            broadcaster.broadcast_event("node_1", event).unwrap();
+        }
+
+        let recent = broadcaster.get_recent_events(None);
+        assert_eq!(recent.len(), MAX_RETAINED_EVENTS);
+        // First event in buffer should be #100 (oldest were evicted)
+        assert_eq!(recent[0].id, 100);
+    }
+
+    #[tokio::test]
+    async fn test_get_stats() {
+        let broadcaster = EventBroadcaster::new();
+        let _rx = broadcaster.subscribe_all();
+
+        let event = make_test_event("node_1");
+        broadcaster.broadcast_event("node_1", event).unwrap();
+
+        let stats = broadcaster.get_stats();
+        assert_eq!(stats.total_events_broadcast, 1);
+        assert_eq!(stats.active_subscribers, 1);
+        assert_eq!(stats.events_in_buffer, 1);
     }
 }

@@ -1,0 +1,5 @@
+# Optimize for modern x86-64 CPUs (AVX2, BMI2, etc.)
+# x86-64-v3 covers ~95% of server/cloud CPUs from 2013+
+# This enables SIMD optimizations for JSON parsing, string ops, and hashing
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=x86-64-v3"]

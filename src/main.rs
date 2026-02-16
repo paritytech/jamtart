@@ -1,3 +1,7 @@
+#[cfg(feature = "jemalloc")]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tart_backend::api::{create_api_router, ApiState};
@@ -50,6 +54,52 @@ fn configure_socket_buffers(listener: &tokio::net::TcpListener) {
             warn!(
                 "Failed to set SO_SNDBUF: {}",
                 std::io::Error::last_os_error()
+            );
+        }
+
+        // Enable TCP keepalive to prevent zombie connections
+        let keepalive: libc::c_int = 1;
+        libc::setsockopt(
+            sock,
+            libc::SOL_SOCKET,
+            libc::SO_KEEPALIVE,
+            &keepalive as *const _ as *const libc::c_void,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        );
+        // Set keepalive idle time (60s) - platform-specific constant name
+        let idle: libc::c_int = 60;
+        #[cfg(target_os = "macos")]
+        libc::setsockopt(
+            sock,
+            libc::IPPROTO_TCP,
+            libc::TCP_KEEPALIVE,
+            &idle as *const _ as *const libc::c_void,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        );
+        #[cfg(target_os = "linux")]
+        {
+            libc::setsockopt(
+                sock,
+                libc::IPPROTO_TCP,
+                libc::TCP_KEEPIDLE,
+                &idle as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            );
+            let interval: libc::c_int = 10;
+            libc::setsockopt(
+                sock,
+                libc::IPPROTO_TCP,
+                libc::TCP_KEEPINTVL,
+                &interval as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            );
+            let count: libc::c_int = 5;
+            libc::setsockopt(
+                sock,
+                libc::IPPROTO_TCP,
+                libc::TCP_KEEPCNT,
+                &count as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
             );
         }
     }
@@ -153,6 +203,110 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    // Create TTL cache for expensive analytics queries
+    // 3s TTL with 2s warming interval means data is never more than ~2s old
+    let cache = Arc::new(tart_backend::cache::TtlCache::new(
+        std::time::Duration::from_secs(3),
+    ));
+
+    // Spawn background cache management task:
+    // - Evicts expired entries every ~30 seconds
+    // - Proactively re-warms all cached endpoints every 2 seconds (before the 3s TTL expires)
+    // - Warming runs concurrently via tokio::join! so cycle time = max(query times) not sum
+    // This means the cache is never cold: the HTTP server starts immediately and the first
+    // user request always hits a warm cache. Slow DB queries happen in the background only.
+    {
+        let cache_clone = Arc::clone(&cache);
+        let store_clone = Arc::clone(&store);
+        tokio::spawn(async move {
+            let mut warm_interval =
+                tokio::time::interval(std::time::Duration::from_secs(2));
+            let mut evict_counter: u64 = 0;
+
+            loop {
+                warm_interval.tick().await;
+                let first = evict_counter == 0;
+
+                if first {
+                    info!("Warming cache with all aggregation endpoints (concurrent)...");
+                }
+
+                // Warm all cached endpoints concurrently — cycle time = max(query) not sum(queries)
+                // NOTE: live_counters is warmed for the SSE handler (reads from cache directly).
+                // Real-time endpoints (realtime_metrics, active_workpackages, events/search)
+                // hit the DB directly — they must never serve stale data.
+                let (
+                    r_stats,
+                    r_wp_stats,
+                    r_block_stats,
+                    r_guarantee_stats,
+                    r_da_stats,
+                    r_cores_status,
+                    r_failure_rates,
+                    r_block_propagation,
+                    r_network_health,
+                    r_guarantees_by_guarantor,
+                    r_live_counters,
+                    r_da_stats_enhanced,
+                    r_execution_metrics,
+                ) = tokio::join!(
+                    store_clone.get_stats(),
+                    store_clone.get_workpackage_stats(),
+                    store_clone.get_block_stats(),
+                    store_clone.get_guarantee_stats(),
+                    store_clone.get_da_stats(),
+                    store_clone.get_cores_status(),
+                    store_clone.get_failure_rates(),
+                    store_clone.get_block_propagation(),
+                    store_clone.get_network_health(),
+                    store_clone.get_guarantees_by_guarantor(),
+                    store_clone.get_live_counters(),
+                    store_clone.get_da_stats_enhanced(),
+                    store_clone.get_execution_metrics(),
+                );
+
+                // Insert results into cache, logging on first run
+                macro_rules! cache_result {
+                    ($key:expr, $result:expr) => {
+                        match $result {
+                            Ok(value) => {
+                                cache_clone.insert($key.to_string(), value);
+                                if first {
+                                    info!("Cache warmed: {}", $key);
+                                }
+                            }
+                            Err(e) => warn!("Failed to warm cache for {}: {}", $key, e),
+                        }
+                    };
+                }
+
+                cache_result!("stats", r_stats);
+                cache_result!("workpackage_stats", r_wp_stats);
+                cache_result!("block_stats", r_block_stats);
+                cache_result!("guarantee_stats", r_guarantee_stats);
+                cache_result!("da_stats", r_da_stats);
+                cache_result!("cores_status", r_cores_status);
+                cache_result!("failure_rates", r_failure_rates);
+                cache_result!("block_propagation", r_block_propagation);
+                cache_result!("network_health", r_network_health);
+                cache_result!("guarantees_by_guarantor", r_guarantees_by_guarantor);
+                cache_result!("live_counters", r_live_counters);
+                cache_result!("da_stats_enhanced", r_da_stats_enhanced);
+                cache_result!("execution_metrics", r_execution_metrics);
+
+                if first {
+                    info!("Initial cache warming complete (13 endpoints, concurrent)");
+                }
+
+                // Evict expired entries every ~15th cycle (roughly every 30s)
+                evict_counter += 1;
+                if evict_counter % 15 == 0 {
+                    cache_clone.evict_expired();
+                }
+            }
+        });
+    }
+
     // Create API state using the optimized components
     let api_state = ApiState {
         store: Arc::clone(&store),
@@ -160,6 +314,7 @@ async fn main() -> anyhow::Result<()> {
         broadcaster,
         health_monitor,
         jam_rpc,
+        cache,
     };
 
     // Create HTTP API router
@@ -184,12 +339,41 @@ async fn main() -> anyhow::Result<()> {
 
     info!("=== TART Backend Optimized Configuration ===");
     info!("Max concurrent connections: 1024");
-    info!("Max events per second per node: 100");
-    info!("Write batch size: 1000 events");
-    info!("Write batch timeout: 100ms");
+    info!("Max events per second per node: 100 (+50 burst)");
+    info!("Write batch size: 2000 events");
+    info!("Write batch timeout: 5ms");
+    info!("Cache TTL: 3s, warm interval: 2s (15 endpoints, concurrent)");
     info!("==========================================");
 
+    // Graceful shutdown: flush pending data on SIGTERM/SIGINT
+    let batch_writer_shutdown = Arc::clone(&batch_writer);
     axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            let ctrl_c = tokio::signal::ctrl_c();
+            #[cfg(unix)]
+            let mut sigterm =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("Failed to install SIGTERM handler");
+            #[cfg(unix)]
+            let terminate = sigterm.recv();
+            #[cfg(not(unix))]
+            let terminate = std::future::pending::<Option<()>>();
+
+            tokio::select! {
+                _ = ctrl_c => info!("Received SIGINT, shutting down gracefully..."),
+                _ = terminate => info!("Received SIGTERM, shutting down gracefully..."),
+            }
+
+            // Flush batch writer to prevent data loss
+            info!("Flushing batch writer...");
+            if let Err(e) = batch_writer_shutdown.flush().await {
+                error!("Failed to flush batch writer during shutdown: {}", e);
+            }
+            if let Err(e) = batch_writer_shutdown.shutdown().await {
+                error!("Failed to shutdown batch writer: {}", e);
+            }
+            info!("Graceful shutdown complete");
+        })
         .await
         .map_err(|e| anyhow::anyhow!("HTTP server error: {}", e))?;
 

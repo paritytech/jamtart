@@ -16,21 +16,20 @@ jobs:
   test:
     name: Test Suite
     runs-on: ubuntu-latest
-    # PostgreSQL service disabled while integration tests are disabled
-    # services:
-    #   postgres:
-    #     image: postgres:16-alpine
-    #     env:
-    #       POSTGRES_USER: tart
-    #       POSTGRES_PASSWORD: tart_password
-    #       POSTGRES_DB: tart_test
-    #     ports:
-    #       - 5432:5432
-    #     options: >-
-    #       --health-cmd pg_isready
-    #       --health-interval 10s
-    #       --health-timeout 5s
-    #       --health-retries 5
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: tart
+          POSTGRES_PASSWORD: tart_password
+          POSTGRES_DB: tart_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - name: Checkout code
@@ -63,30 +62,15 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-build-
 
-      # Database setup disabled while integration tests are disabled
-      # - name: Install sqlx-cli
-      #   run: cargo install sqlx-cli --no-default-features --features postgres
-      #
-      # - name: Run database migrations
-      #   env:
-      #     DATABASE_URL: postgres://tart:tart_password@localhost:5432/tart_test
-      #   run: |
-      #     echo "Running migrations..."
-      #     cargo sqlx migrate run
-      #     echo "Verifying tables exist..."
-      #     psql postgres://tart:tart_password@localhost:5432/tart_test -c "\dt"
+      - name: Run unit tests
+        run: cargo test --lib --test types_tests --test events_tests --test error_tests --test encoding_tests
 
-      - name: Run tests
+      - name: Run integration tests
         env:
           DATABASE_URL: postgres://tart:tart_password@localhost:5432/tart_test
           TEST_DATABASE_URL: postgres://tart:tart_password@localhost:5432/tart_test
           RUST_LOG: info
-        run: |
-          # Run unit tests in parallel (no database needed)
-          cargo test --lib --test types_tests --test events_tests --test error_tests --test encoding_tests
-          # Integration tests disabled temporarily due to timing issues
-          # TODO: Re-enable after fixing async timing in batch writer tests
-          # cargo test --test api_tests --test integration_tests --test optimized_server_tests -- --test-threads=1 --nocapture
+        run: cargo test --test api_tests --test ws_tests --test integration_tests --test optimized_server_tests -- --test-threads=1
 
   fmt:
     name: Format Check
@@ -180,3 +164,116 @@ jobs:
         run: |
           cargo build --release --bin tart-backend
           cargo build --release --bin tart-dash
+          cargo build --release --features bench --bin tart-bench
+
+  bench:
+    name: Benchmark Sanity Check
+    runs-on: ubuntu-latest
+    needs: [build]
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: tart
+          POSTGRES_PASSWORD: tart_password
+          POSTGRES_DB: tart_bench
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-git-
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-check-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-check-
+
+      - name: Build backend and bench tool
+        run: |
+          cargo build --release --bin tart-backend
+          cargo build --release --features bench --bin tart-bench
+
+      - name: Start backend
+        env:
+          DATABASE_URL: postgres://tart:tart_password@localhost:5432/tart_bench
+          API_BIND: 0.0.0.0:8080
+          TELEMETRY_BIND: 0.0.0.0:9000
+          RUST_LOG: warn
+        run: |
+          ./target/release/tart-backend &
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/api/health > /dev/null 2>&1; then
+              echo "Backend is healthy"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "ERROR: Backend failed to start"
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Run benchmark sanity check
+        run: |
+          ./target/release/tart-bench \
+            --tabs 3 \
+            --duration 10 \
+            --warmup 3 \
+            --scenario dashboard \
+            --json > bench-results.json
+
+          cat bench-results.json
+
+          # Fail if error rate exceeds 5%
+          ERROR_RATE=$(jq '.summary.error_rate_pct' bench-results.json)
+          echo "Error rate: ${ERROR_RATE}%"
+          if [ "$(echo "$ERROR_RATE > 5.0" | bc -l)" -eq 1 ]; then
+            echo "FAIL: Error rate ${ERROR_RATE}% exceeds 5% threshold"
+            exit 1
+          fi
+
+          # Fail if any endpoint p99 exceeds 5 seconds (5000000 us)
+          WORST_P99=$(jq '[.endpoints[].p99_us] | max' bench-results.json)
+          echo "Worst p99 latency: ${WORST_P99}us"
+          if [ "$WORST_P99" -gt 5000000 ]; then
+            echo "FAIL: Worst p99 latency ${WORST_P99}us exceeds 5s threshold"
+            exit 1
+          fi
+
+          echo "Benchmark sanity check passed"
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-${{ github.sha }}
+          path: bench-results.json
+          retention-days: 30

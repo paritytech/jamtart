@@ -12,9 +12,8 @@ use tokio::time::{sleep, timeout};
 
 async fn setup_test_server() -> (Arc<TelemetryServer>, u16) {
     // Use test PostgreSQL database
-    // For local testing: docker run -d -p 5432:5432 -e POSTGRES_USER=test -e POSTGRES_PASSWORD=test -e POSTGRES_DB=test_db postgres:16-alpine
     let test_db_url = std::env::var("TEST_DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://test:test@localhost:5432/test_db".to_string());
+        .unwrap_or_else(|_| "postgres://tart:tart_password@localhost:5432/tart_test".to_string());
     let store = Arc::new(EventStore::new(&test_db_url).await.unwrap());
 
     // Clean database before each test
@@ -131,55 +130,51 @@ async fn test_send_multiple_events() {
 async fn test_multiple_concurrent_connections() {
     let (server, port) = setup_test_server().await;
 
-    let mut handles = vec![];
+    let mut streams = Vec::new();
 
     // Create 5 concurrent connections
-    for i in 0..5 {
-        let handle = tokio::spawn(async move {
-            let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
-                .await
-                .unwrap();
+    for i in 0u8..5 {
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
+            .await
+            .unwrap();
 
-            // Create unique node info for each connection
-            let mut node_info = create_test_node_info();
-            node_info.details.peer_id[0] = i;
+        // Create unique node info for each connection
+        let mut node_info = create_test_node_info();
+        node_info.details.peer_id[0] = i;
 
-            let encoded = encode_message(&node_info).unwrap();
+        let encoded = encode_message(&node_info).unwrap();
+        stream.write_all(&encoded).await.unwrap();
+
+        // Send some events
+        for j in 0u32..10 {
+            let event = Event::Status {
+                timestamp: (i as u64 * 1000) + (j as u64),
+                num_val_peers: i as u32,
+                num_peers: j,
+                num_sync_peers: 0,
+                num_guarantees: vec![],
+                num_shards: 0,
+                shards_size: 0,
+                num_preimages: 0,
+                preimages_size: 0,
+            };
+
+            let encoded = encode_message(&event).unwrap();
             stream.write_all(&encoded).await.unwrap();
+        }
 
-            // Send some events
-            for j in 0..10 {
-                let event = Event::Status {
-                    timestamp: (i as u64 * 1000) + (j as u64),
-                    num_val_peers: i as u32,
-                    num_peers: j as u32,
-                    num_sync_peers: 0,
-                    num_guarantees: vec![],
-                    num_shards: 0,
-                    shards_size: 0,
-                    num_preimages: 0,
-                    preimages_size: 0,
-                };
-
-                let encoded = encode_message(&event).unwrap();
-                stream.write_all(&encoded).await.unwrap();
-                sleep(Duration::from_millis(10)).await;
-            }
-
-            sleep(Duration::from_millis(100)).await;
-        });
-
-        handles.push(handle);
+        streams.push(stream);
     }
 
-    // Wait for all connections to complete
-    for handle in handles {
-        handle.await.unwrap();
-    }
+    // Allow server to process all connections
+    sleep(Duration::from_millis(200)).await;
 
-    // Check that server tracked all connections
+    // Check that server tracked all connections (streams still alive)
     let connections = server.get_connections();
     assert_eq!(connections.len(), 5);
+
+    // Drop streams to clean up
+    drop(streams);
 }
 
 #[tokio::test]
