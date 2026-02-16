@@ -28,6 +28,19 @@ CREATE INDEX IF NOT EXISTS idx_nodes_connected ON nodes(is_connected, last_seen_
 CREATE INDEX IF NOT EXISTS idx_nodes_last_seen ON nodes(last_seen_at DESC);
 
 -- Events hypertable (main time-series data)
+--
+-- Schema differences from the original PostgreSQL schema (v0.2.0):
+--   id BIGSERIAL PRIMARY KEY  →  event_id BIGINT (no PK)
+--     Hypertables don't support BIGSERIAL PKs; unique constraints require
+--     the partition column. At 3M events/s dedup is too expensive anyway.
+--   created_at TIMESTAMPTZ    →  received_at TIMESTAMPTZ
+--     Clarifies semantics: this is server receive time, not event creation time.
+--   timestamp BIGINT          →  time TIMESTAMPTZ
+--     Native timestamp used as hypertable partition key (1-hour chunks).
+--     The original stored unix millis which required casting in every query.
+--   event_type INTEGER        →  event_type SMALLINT
+--     130 event types fit in 2 bytes; saves ~2GB/day at full throughput.
+--
 CREATE TABLE IF NOT EXISTS events (
     time         TIMESTAMPTZ NOT NULL,
     node_id      TEXT        NOT NULL,

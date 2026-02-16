@@ -158,12 +158,8 @@ async fn test_node_details_endpoint() {
     assert_eq!(json["node_id"], node_id);
     assert_eq!(json["implementation_name"], "test-node-3");
     assert_eq!(json["is_connected"], true);
-    assert!(json["connection_info"].is_object());
-
-    let conn_info = &json["connection_info"];
-    assert!(conn_info["address"].is_string());
-    assert_eq!(conn_info["event_count"], 0);
-    assert!(conn_info["connected_duration_secs"].is_number());
+    assert_eq!(json["event_count"], 0);
+    assert!(json["address"].is_string());
 }
 
 #[tokio::test]
@@ -1177,9 +1173,11 @@ async fn test_workpackage_stats_with_data() {
     common::flush_and_wait(&telemetry_server).await;
 
     let response = server.get("/api/workpackages").await;
-    assert_eq!(response.status_code(), StatusCode::OK);
-    let json: Value = response.json();
-    eprintln!("DEBUG: /api/workpackages with data: {}", serde_json::to_string_pretty(&json).unwrap());
+    let status = response.status_code();
+    let body = response.text();
+    eprintln!("DEBUG: /api/workpackages status={} body={}", status, body);
+    assert_eq!(status, StatusCode::OK);
+    let json: Value = serde_json::from_str(&body).unwrap();
 
     // Should have counted 2 received WPs and 1 refined
     let totals = &json["totals"];

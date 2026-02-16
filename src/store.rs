@@ -329,7 +329,7 @@ impl EventStore {
         // Use continuous aggregates for total blocks (avoids full table scan)
         let (total_blocks, best_block_opt, finalized_block_opt) = tokio::try_join!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT COALESCE(SUM(event_count), 0) FROM event_stats_1h WHERE event_type = 42"
+                "SELECT COALESCE(SUM(event_count), 0)::BIGINT FROM event_stats_1h WHERE event_type = 42"
             )
             .fetch_one(&self.pool),
             sqlx::query_scalar::<_, Option<i64>>(
@@ -592,7 +592,7 @@ impl EventStore {
 
         // Use continuous aggregate for recent event count
         let recent_events = sqlx::query_scalar::<_, i64>(
-            "SELECT COALESCE(SUM(event_count), 0) FROM event_stats_1m WHERE bucket > NOW() - INTERVAL '1 hour'",
+            "SELECT COALESCE(SUM(event_count), 0)::BIGINT FROM event_stats_1m WHERE bucket > NOW() - INTERVAL '1 hour'",
         )
         .fetch_one(&self.pool)
         .await
@@ -958,7 +958,7 @@ impl EventStore {
         .await?;
 
         // Get event type breakdown for this node
-        let event_breakdown: Vec<(i32, i64)> = sqlx::query_as(
+        let event_breakdown: Vec<(i16, i64)> = sqlx::query_as(
             r#"
             SELECT event_type, COUNT(*) as count
             FROM events
@@ -5154,7 +5154,7 @@ impl EventStore {
         let summary: Option<serde_json::Value> = sqlx::query_scalar(
             r#"
             WITH direct_slot_events AS (
-                SELECT id, event_type, node_id, received_at, data
+                SELECT event_id, event_type, node_id, received_at, data
                 FROM events
                 WHERE COALESCE(
                     CAST(data->'Authoring'->>'slot' AS BIGINT),
@@ -5168,20 +5168,20 @@ impl EventStore {
                 AND received_at > NOW() - INTERVAL '7 days'
             ),
             slot_authoring AS (
-                SELECT id, node_id
+                SELECT event_id, node_id, received_at
                 FROM direct_slot_events
                 WHERE event_type = 40
             ),
             linked_events AS (
-                SELECT next_evt.id, next_evt.event_type, next_evt.node_id, next_evt.received_at, next_evt.data
+                SELECT next_evt.event_id, next_evt.event_type, next_evt.node_id, next_evt.received_at, next_evt.data
                 FROM slot_authoring sa
                 CROSS JOIN LATERAL (
-                    SELECT e.event_type, e.node_id, e.received_at, e.data
+                    SELECT e.event_id, e.event_type, e.node_id, e.received_at, e.data
                     FROM events e
                     WHERE e.node_id = sa.node_id
                     AND e.event_type IN (41, 42)
-                    AND e.time > sa.time
-                    ORDER BY e.time ASC
+                    AND e.received_at > sa.received_at
+                    ORDER BY e.received_at ASC
                     LIMIT 1
                 ) next_evt
             ),
@@ -5221,7 +5221,7 @@ impl EventStore {
             let events_by_node: Vec<serde_json::Value> = sqlx::query_scalar(
                 r#"
                 WITH direct_slot_events AS (
-                    SELECT id, event_type, node_id, time, data
+                    SELECT event_id, event_type, node_id, time, data
                     FROM events
                     WHERE COALESCE(
                         CAST(data->'Authoring'->>'slot' AS BIGINT),
@@ -5235,15 +5235,15 @@ impl EventStore {
                     AND received_at > NOW() - INTERVAL '7 days'
                 ),
                 slot_authoring AS (
-                    SELECT id, node_id
+                    SELECT event_id, node_id, time
                     FROM direct_slot_events
                     WHERE event_type = 40
                 ),
                 linked_events AS (
-                    SELECT next_evt.id, next_evt.event_type, next_evt.node_id, next_evt.time, next_evt.data
+                    SELECT next_evt.event_id, next_evt.event_type, next_evt.node_id, next_evt.time, next_evt.data
                     FROM slot_authoring sa
                     CROSS JOIN LATERAL (
-                        SELECT e.event_type, e.node_id, e.time, e.data
+                        SELECT e.event_id, e.event_type, e.node_id, e.time, e.data
                         FROM events e
                         WHERE e.node_id = sa.node_id
                         AND e.event_type IN (41, 42)
@@ -5261,7 +5261,7 @@ impl EventStore {
                     'node_id', node_id,
                     'events', jsonb_agg(
                         jsonb_build_object(
-                            'id', id,
+                            'event_id', event_id,
                             'event_type', event_type,
                             'time', time,
                             'data', data
@@ -5297,7 +5297,7 @@ impl EventStore {
         let events: Vec<serde_json::Value> = sqlx::query_scalar(
             r#"
             SELECT jsonb_build_object(
-                'id', id,
+                'event_id', event_id,
                 'event_type', event_type,
                 'time', time,
                 'received_at', received_at,
