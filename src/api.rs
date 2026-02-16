@@ -35,9 +35,18 @@ fn serialize_ws_message<T: Serialize>(data: &T) -> Option<String> {
     }
 }
 
+/// Helper macro-like function: returns a 503 response when store is not configured.
+fn store_unavailable() -> axum::response::Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(serde_json::json!({"error": "Database not configured"})),
+    )
+        .into_response()
+}
+
 #[derive(Clone)]
 pub struct ApiState {
-    pub store: Arc<EventStore>,
+    pub store: Option<Arc<EventStore>>,
     pub telemetry_server: Arc<TelemetryServer>,
     pub broadcaster: Arc<EventBroadcaster>,
     pub health_monitor: Arc<HealthMonitor>,
@@ -184,34 +193,49 @@ async fn detailed_health_check(
     Ok((status_code, Json(health_report)))
 }
 
-async fn get_stats(State(state): State<ApiState>) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_stats().await {
-        Ok(stats) => Ok(Json(stats)),
+async fn get_stats(State(state): State<ApiState>) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
+    match store.get_stats().await {
+        Ok(stats) => Json(stats).into_response(),
         Err(e) => {
             error!("Failed to get stats: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
 
 /// Returns network topology information gleaned from connected nodes.
 /// This includes core count, validator count, and other protocol parameters.
-async fn get_network_info(State(state): State<ApiState>) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_network_info().await {
-        Ok(info) => Ok(Json(info)),
+async fn get_network_info(State(state): State<ApiState>) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
+    match store.get_network_info().await {
+        Ok(info) => Json(info).into_response(),
         Err(e) => {
             error!("Failed to get network info: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
 
-async fn get_nodes(State(state): State<ApiState>) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_nodes().await {
-        Ok(nodes) => Ok(Json(serde_json::json!({ "nodes": nodes }))),
+async fn get_nodes(State(state): State<ApiState>) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
+    match store.get_nodes().await {
+        Ok(nodes) => Json(serde_json::json!({ "nodes": nodes })).into_response(),
         Err(e) => {
             error!("Failed to get nodes: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
@@ -219,24 +243,29 @@ async fn get_nodes(State(state): State<ApiState>) -> Result<impl IntoResponse, S
 async fn get_node_details(
     Path(node_id): Path<String>,
     State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
     // Validate node_id format
     if !is_valid_node_id(&node_id) {
         warn!("Invalid node_id format: {}", node_id);
-        return Err(StatusCode::BAD_REQUEST);
+        return StatusCode::BAD_REQUEST.into_response();
     }
 
-    match state.store.get_nodes().await {
+    match store.get_nodes().await {
         Ok(nodes) => {
             if let Some(node) = nodes.into_iter().find(|n| n["node_id"] == node_id) {
-                Ok(Json(node))
+                Json(node).into_response()
             } else {
-                Err(StatusCode::NOT_FOUND)
+                StatusCode::NOT_FOUND.into_response()
             }
         }
         Err(e) => {
             error!("Failed to get node details: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
@@ -244,7 +273,6 @@ async fn get_node_details(
 #[derive(Deserialize)]
 struct EventsQuery {
     limit: Option<i64>,
-    #[allow(dead_code)]
     offset: Option<i64>,
 }
 
@@ -252,27 +280,33 @@ async fn get_node_events(
     Path(node_id): Path<String>,
     Query(query): Query<EventsQuery>,
     State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
     // Validate node_id format
     if !is_valid_node_id(&node_id) {
         warn!("Invalid node_id format: {}", node_id);
-        return Err(StatusCode::BAD_REQUEST);
+        return StatusCode::BAD_REQUEST.into_response();
     }
 
     let limit = query.limit.unwrap_or(50).clamp(1, MAX_QUERY_LIMIT);
 
     // Use database-level filtering for optimal performance (avoids N+1 query pattern)
-    match state.store.get_recent_events_by_node(&node_id, limit).await {
+    match store.get_recent_events_by_node(&node_id, limit).await {
         Ok(events) => {
             let has_more = events.len() as i64 == limit;
-            Ok(Json(serde_json::json!({
+            Json(serde_json::json!({
                 "events": events,
                 "has_more": has_more
-            })))
+            }))
+            .into_response()
         }
         Err(e) => {
             error!("Failed to get node events for {}: {}", node_id, e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
@@ -280,20 +314,27 @@ async fn get_node_events(
 async fn get_recent_events(
     Query(query): Query<EventsQuery>,
     State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
-    let limit = query.limit.unwrap_or(50).clamp(1, MAX_QUERY_LIMIT);
+) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
 
-    match state.store.get_recent_events(limit).await {
+    let limit = query.limit.unwrap_or(50).clamp(1, MAX_QUERY_LIMIT);
+    let offset = query.offset.unwrap_or(0).max(0);
+
+    match store.get_recent_events(limit, offset).await {
         Ok(events) => {
             let has_more = events.len() as i64 == limit;
-            Ok(Json(serde_json::json!({
+            Json(serde_json::json!({
                 "events": events,
                 "has_more": has_more
-            })))
+            }))
+            .into_response()
         }
         Err(e) => {
             error!("Failed to get recent events: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
@@ -303,25 +344,33 @@ async fn get_recent_events(
 // ============================================================================
 
 /// Get work package statistics aggregated from telemetry events
-async fn get_workpackage_stats(
-    State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_workpackage_stats().await {
-        Ok(stats) => Ok(Json(stats)),
+async fn get_workpackage_stats(State(state): State<ApiState>) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
+    match store.get_workpackage_stats().await {
+        Ok(stats) => Json(stats).into_response(),
         Err(e) => {
             error!("Failed to get workpackage stats: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
 
 /// Get block statistics aggregated from telemetry events
-async fn get_block_stats(State(state): State<ApiState>) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_block_stats().await {
-        Ok(stats) => Ok(Json(stats)),
+async fn get_block_stats(State(state): State<ApiState>) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
+    match store.get_block_stats().await {
+        Ok(stats) => Json(stats).into_response(),
         Err(e) => {
             error!("Failed to get block stats: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
@@ -330,31 +379,39 @@ async fn get_block_stats(State(state): State<ApiState>) -> Result<impl IntoRespo
 async fn get_node_status(
     Path(node_id): Path<String>,
     State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
     // Validate node_id format
     if !is_valid_node_id(&node_id) {
         warn!("Invalid node_id format: {}", node_id);
-        return Err(StatusCode::BAD_REQUEST);
+        return StatusCode::BAD_REQUEST.into_response();
     }
 
-    match state.store.get_node_status(&node_id).await {
-        Ok(status) => Ok(Json(status)),
+    match store.get_node_status(&node_id).await {
+        Ok(status) => Json(status).into_response(),
         Err(e) => {
             error!("Failed to get node status for {}: {}", node_id, e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
 
 /// Get guarantee distribution statistics
-async fn get_guarantee_stats(
-    State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_guarantee_stats().await {
-        Ok(stats) => Ok(Json(stats)),
+async fn get_guarantee_stats(State(state): State<ApiState>) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
+    match store.get_guarantee_stats().await {
+        Ok(stats) => Json(stats).into_response(),
         Err(e) => {
             error!("Failed to get guarantee stats: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
@@ -363,28 +420,38 @@ async fn get_guarantee_stats(
 async fn get_node_peers(
     Path(node_id): Path<String>,
     State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
     if !is_valid_node_id(&node_id) {
         warn!("Invalid node_id format: {}", node_id);
-        return Err(StatusCode::BAD_REQUEST);
+        return StatusCode::BAD_REQUEST.into_response();
     }
 
-    match state.store.get_node_peers(&node_id).await {
-        Ok(peers) => Ok(Json(peers)),
+    match store.get_node_peers(&node_id).await {
+        Ok(peers) => Json(peers).into_response(),
         Err(e) => {
             error!("Failed to get node peers for {}: {}", node_id, e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
 
 /// Get data availability (shard/preimage) statistics
-async fn get_da_stats(State(state): State<ApiState>) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_da_stats().await {
-        Ok(stats) => Ok(Json(stats)),
+async fn get_da_stats(State(state): State<ApiState>) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
+    match store.get_da_stats().await {
+        Ok(stats) => Json(stats).into_response(),
         Err(e) => {
             error!("Failed to get DA stats: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
@@ -393,42 +460,55 @@ async fn get_da_stats(State(state): State<ApiState>) -> Result<impl IntoResponse
 async fn get_workpackage_journey(
     Path(hash): Path<String>,
     State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
     // Basic validation - hash should be hex
     if hash.is_empty() || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
         warn!("Invalid work package hash format: {}", hash);
-        return Err(StatusCode::BAD_REQUEST);
+        return StatusCode::BAD_REQUEST.into_response();
     }
 
-    match state.store.get_workpackage_journey(&hash).await {
-        Ok(journey) => Ok(Json(journey)),
+    match store.get_workpackage_journey(&hash).await {
+        Ok(journey) => Json(journey).into_response(),
         Err(e) => {
             error!("Failed to get workpackage journey for {}: {}", hash, e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
 
 /// Get list of active work packages
-async fn get_active_workpackages(
-    State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_active_workpackages().await {
-        Ok(wps) => Ok(Json(wps)),
+async fn get_active_workpackages(State(state): State<ApiState>) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
+    match store.get_active_workpackages().await {
+        Ok(wps) => Json(wps).into_response(),
         Err(e) => {
             error!("Failed to get active workpackages: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
 
 /// Get core status aggregation
-async fn get_cores_status(State(state): State<ApiState>) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_cores_status().await {
-        Ok(status) => Ok(Json(status)),
+async fn get_cores_status(State(state): State<ApiState>) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
+    match store.get_cores_status().await {
+        Ok(status) => Json(status).into_response(),
         Err(e) => {
             error!("Failed to get cores status: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
@@ -437,30 +517,38 @@ async fn get_cores_status(State(state): State<ApiState>) -> Result<impl IntoResp
 async fn get_core_guarantees(
     Path(core_index): Path<i32>,
     State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
     if core_index < 0 {
         warn!("Invalid core_index: {}", core_index);
-        return Err(StatusCode::BAD_REQUEST);
+        return StatusCode::BAD_REQUEST.into_response();
     }
 
-    match state.store.get_core_guarantees(core_index).await {
-        Ok(guarantees) => Ok(Json(guarantees)),
+    match store.get_core_guarantees(core_index).await {
+        Ok(guarantees) => Json(guarantees).into_response(),
         Err(e) => {
             error!("Failed to get core guarantees for {}: {}", core_index, e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
 
 /// Get execution cost metrics
-async fn get_execution_metrics(
-    State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_execution_metrics().await {
-        Ok(metrics) => Ok(Json(metrics)),
+async fn get_execution_metrics(State(state): State<ApiState>) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
+    match store.get_execution_metrics().await {
+        Ok(metrics) => Json(metrics).into_response(),
         Err(e) => {
             error!("Failed to get execution metrics: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
@@ -476,44 +564,56 @@ struct TimeseriesQuery {
 async fn get_timeseries_metrics(
     Query(query): Query<TimeseriesQuery>,
     State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
     let metric = query.metric.as_deref().unwrap_or("throughput");
     let interval = query.interval.unwrap_or(5).clamp(1, 60); // 1-60 minutes
     let duration = query.duration.unwrap_or(1).clamp(1, 24); // 1-24 hours
 
-    match state
-        .store
+    match store
         .get_timeseries_metrics(metric, interval, duration)
         .await
     {
-        Ok(metrics) => Ok(Json(metrics)),
+        Ok(metrics) => Json(metrics).into_response(),
         Err(e) => {
             error!("Failed to get timeseries metrics: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
 
 /// Get validator-to-core mapping derived from guarantee and ticket events
-async fn get_validator_core_mapping(
-    State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_validator_core_mapping().await {
-        Ok(mapping) => Ok(Json(mapping)),
+async fn get_validator_core_mapping(State(state): State<ApiState>) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
+    match store.get_validator_core_mapping().await {
+        Ok(mapping) => Json(mapping).into_response(),
         Err(e) => {
             error!("Failed to get validator core mapping: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
 
 /// Get peer topology and network traffic patterns
-async fn get_peer_topology(State(state): State<ApiState>) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_peer_topology().await {
-        Ok(topology) => Ok(Json(topology)),
+async fn get_peer_topology(State(state): State<ApiState>) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
+    match store.get_peer_topology().await {
+        Ok(topology) => Json(topology).into_response(),
         Err(e) => {
             error!("Failed to get peer topology: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
@@ -522,17 +622,22 @@ async fn get_peer_topology(State(state): State<ApiState>) -> Result<impl IntoRes
 async fn get_node_status_enhanced(
     Path(node_id): Path<String>,
     State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
     if !is_valid_node_id(&node_id) {
         warn!("Invalid node_id format: {}", node_id);
-        return Err(StatusCode::BAD_REQUEST);
+        return StatusCode::BAD_REQUEST.into_response();
     }
 
-    match state.store.get_node_status_enhanced(&node_id).await {
-        Ok(status) => Ok(Json(status)),
+    match store.get_node_status_enhanced(&node_id).await {
+        Ok(status) => Json(status).into_response(),
         Err(e) => {
             error!("Failed to get enhanced node status for {}: {}", node_id, e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
@@ -553,26 +658,36 @@ struct RealtimeMetricsQuery {
 async fn get_realtime_metrics(
     Query(params): Query<RealtimeMetricsQuery>,
     State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
     let seconds = params.seconds.unwrap_or(60);
 
-    match state.store.get_realtime_metrics(seconds).await {
-        Ok(metrics) => Ok(Json(metrics)),
+    match store.get_realtime_metrics(seconds).await {
+        Ok(metrics) => Json(metrics).into_response(),
         Err(e) => {
             error!("Failed to get realtime metrics: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
 
 /// Get live counters - ultra-lightweight for high-frequency polling.
 /// Returns current slot, active nodes, and rate calculations.
-async fn get_live_counters(State(state): State<ApiState>) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_live_counters().await {
-        Ok(counters) => Ok(Json(counters)),
+async fn get_live_counters(State(state): State<ApiState>) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
+    match store.get_live_counters().await {
+        Ok(counters) => Json(counters).into_response(),
         Err(e) => {
             error!("Failed to get live counters: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
@@ -581,14 +696,15 @@ async fn get_live_counters(State(state): State<ApiState>) -> Result<impl IntoRes
 /// Pushes updates every second without client polling overhead.
 async fn metrics_sse_handler(
     State(state): State<ApiState>,
-) -> axum::response::Sse<
-    impl futures::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
-> {
+) -> axum::response::Response {
     use axum::response::sse::{Event, KeepAlive};
     use futures::stream;
     use std::time::Duration;
 
-    let store = state.store.clone();
+    let store = match state.store.as_ref() {
+        Some(s) => Arc::clone(s),
+        None => return store_unavailable(),
+    };
 
     let stream = stream::unfold(store, |store| async move {
         // Wait 1 second between updates
@@ -605,10 +721,12 @@ async fn metrics_sse_handler(
 
         let event = Event::default().data(data.to_string()).event("metrics");
 
-        Some((Ok(event), store))
+        Some((Ok::<_, std::convert::Infallible>(event), store))
     });
 
-    axum::response::Sse::new(stream).keep_alive(KeepAlive::default())
+    axum::response::Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
 
 // ============================================================================
@@ -619,12 +737,17 @@ async fn metrics_sse_handler(
 async fn get_core_guarantors(
     Path(core_index): Path<i32>,
     State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_core_guarantors(core_index).await {
-        Ok(guarantors) => Ok(Json(guarantors)),
+) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
+    match store.get_core_guarantors(core_index).await {
+        Ok(guarantors) => Json(guarantors).into_response(),
         Err(e) => {
             error!("Failed to get core {} guarantors: {}", core_index, e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
@@ -633,12 +756,17 @@ async fn get_core_guarantors(
 async fn get_core_work_packages(
     Path(core_index): Path<i32>,
     State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_core_work_packages(core_index).await {
-        Ok(work_packages) => Ok(Json(work_packages)),
+) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
+    match store.get_core_work_packages(core_index).await {
+        Ok(work_packages) => Json(work_packages).into_response(),
         Err(e) => {
             error!("Failed to get core {} work packages: {}", core_index, e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
@@ -647,25 +775,33 @@ async fn get_core_work_packages(
 async fn get_workpackage_journey_enhanced(
     Path(hash): Path<String>,
     State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_workpackage_journey_enhanced(&hash).await {
-        Ok(journey) => Ok(Json(journey)),
+) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
+    match store.get_workpackage_journey_enhanced(&hash).await {
+        Ok(journey) => Json(journey).into_response(),
         Err(e) => {
             error!("Failed to get enhanced WP journey for {}: {}", hash, e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
 
 /// Get enhanced DA stats with read/write operations and latency metrics.
-async fn get_da_stats_enhanced(
-    State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_da_stats_enhanced().await {
-        Ok(stats) => Ok(Json(stats)),
+async fn get_da_stats_enhanced(State(state): State<ApiState>) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
+    match store.get_da_stats_enhanced().await {
+        Ok(stats) => Json(stats).into_response(),
         Err(e) => {
             error!("Failed to get enhanced DA stats: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
@@ -675,51 +811,65 @@ async fn get_da_stats_enhanced(
 // ============================================================================
 
 /// Get failure rate analytics across the system.
-async fn get_failure_rates(State(state): State<ApiState>) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_failure_rates().await {
-        Ok(rates) => Ok(Json(rates)),
+async fn get_failure_rates(State(state): State<ApiState>) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
+    match store.get_failure_rates().await {
+        Ok(rates) => Json(rates).into_response(),
         Err(e) => {
             error!("Failed to get failure rates: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
 
 /// Get block propagation analytics.
-async fn get_block_propagation(
-    State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_block_propagation().await {
-        Ok(propagation) => Ok(Json(propagation)),
+async fn get_block_propagation(State(state): State<ApiState>) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
+    match store.get_block_propagation().await {
+        Ok(propagation) => Json(propagation).into_response(),
         Err(e) => {
             error!("Failed to get block propagation: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
 
 /// Get network health and congestion metrics.
-async fn get_network_health(
-    State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_network_health().await {
-        Ok(health) => Ok(Json(health)),
+async fn get_network_health(State(state): State<ApiState>) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
+    match store.get_network_health().await {
+        Ok(health) => Json(health).into_response(),
         Err(e) => {
             error!("Failed to get network health: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
 
 /// Get guarantor statistics aggregated by guarantor.
-async fn get_guarantees_by_guarantor(
-    State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_guarantees_by_guarantor().await {
-        Ok(guarantors) => Ok(Json(guarantors)),
+async fn get_guarantees_by_guarantor(State(state): State<ApiState>) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
+    match store.get_guarantees_by_guarantor().await {
+        Ok(guarantors) => Json(guarantors).into_response(),
         Err(e) => {
             error!("Failed to get guarantees by guarantor: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
@@ -745,19 +895,23 @@ struct TimeseriesGroupedQuery {
 async fn get_timeseries_grouped(
     Query(params): Query<TimeseriesGroupedQuery>,
     State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
     let interval = params.interval.unwrap_or(5);
     let duration = params.duration.unwrap_or(1);
 
-    match state
-        .store
+    match store
         .get_timeseries_grouped(&params.metric, &params.group_by, interval, duration)
         .await
     {
-        Ok(data) => Ok(Json(data)),
+        Ok(data) => Json(data).into_response(),
         Err(e) => {
             error!("Failed to get grouped timeseries: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
@@ -773,14 +927,19 @@ struct TimelineQuery {
 async fn get_sync_status_timeline(
     Query(params): Query<TimelineQuery>,
     State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
     let duration = params.duration.unwrap_or(1);
 
-    match state.store.get_sync_status_timeline(duration).await {
-        Ok(timeline) => Ok(Json(timeline)),
+    match store.get_sync_status_timeline(duration).await {
+        Ok(timeline) => Json(timeline).into_response(),
         Err(e) => {
             error!("Failed to get sync status timeline: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
@@ -789,14 +948,19 @@ async fn get_sync_status_timeline(
 async fn get_connections_timeline(
     Query(params): Query<TimelineQuery>,
     State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
     let duration = params.duration.unwrap_or(1);
 
-    match state.store.get_connections_timeline(duration).await {
-        Ok(timeline) => Ok(Json(timeline)),
+    match store.get_connections_timeline(duration).await {
+        Ok(timeline) => Json(timeline).into_response(),
         Err(e) => {
             error!("Failed to get connections timeline: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
@@ -809,17 +973,22 @@ async fn get_connections_timeline(
 async fn get_core_validators(
     Path(core_index): Path<i32>,
     State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
     if core_index < 0 {
         warn!("Invalid core_index: {}", core_index);
-        return Err(StatusCode::BAD_REQUEST);
+        return StatusCode::BAD_REQUEST.into_response();
     }
 
-    match state.store.get_core_validators(core_index).await {
-        Ok(validators) => Ok(Json(validators)),
+    match store.get_core_validators(core_index).await {
+        Ok(validators) => Json(validators).into_response(),
         Err(e) => {
             error!("Failed to get core {} validators: {}", core_index, e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
@@ -828,17 +997,22 @@ async fn get_core_validators(
 async fn get_core_metrics(
     Path(core_index): Path<i32>,
     State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
     if core_index < 0 {
         warn!("Invalid core_index: {}", core_index);
-        return Err(StatusCode::BAD_REQUEST);
+        return StatusCode::BAD_REQUEST.into_response();
     }
 
-    match state.store.get_core_metrics(core_index).await {
-        Ok(metrics) => Ok(Json(metrics)),
+    match store.get_core_metrics(core_index).await {
+        Ok(metrics) => Json(metrics).into_response(),
         Err(e) => {
             error!("Failed to get core {} metrics: {}", core_index, e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
@@ -847,17 +1021,22 @@ async fn get_core_metrics(
 async fn get_core_bottlenecks(
     Path(core_index): Path<i32>,
     State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
     if core_index < 0 {
         warn!("Invalid core_index: {}", core_index);
-        return Err(StatusCode::BAD_REQUEST);
+        return StatusCode::BAD_REQUEST.into_response();
     }
 
-    match state.store.get_core_bottlenecks(core_index).await {
-        Ok(bottlenecks) => Ok(Json(bottlenecks)),
+    match store.get_core_bottlenecks(core_index).await {
+        Ok(bottlenecks) => Json(bottlenecks).into_response(),
         Err(e) => {
             error!("Failed to get core {} bottlenecks: {}", core_index, e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
@@ -866,24 +1045,28 @@ async fn get_core_bottlenecks(
 async fn get_core_guarantors_enhanced(
     Path(core_index): Path<i32>,
     State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
     if core_index < 0 {
         warn!("Invalid core_index: {}", core_index);
-        return Err(StatusCode::BAD_REQUEST);
+        return StatusCode::BAD_REQUEST.into_response();
     }
 
-    match state
-        .store
+    match store
         .get_core_guarantors_with_sharing(core_index)
         .await
     {
-        Ok(guarantors) => Ok(Json(guarantors)),
+        Ok(guarantors) => Json(guarantors).into_response(),
         Err(e) => {
             error!(
                 "Failed to get core {} guarantors with sharing: {}",
                 core_index, e
             );
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
@@ -892,18 +1075,23 @@ async fn get_core_guarantors_enhanced(
 async fn get_workpackage_audit_progress(
     Path(hash): Path<String>,
     State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
     // Basic validation - hash should be hex
     if hash.is_empty() || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
         warn!("Invalid work package hash format: {}", hash);
-        return Err(StatusCode::BAD_REQUEST);
+        return StatusCode::BAD_REQUEST.into_response();
     }
 
-    match state.store.get_workpackage_audit_progress(&hash).await {
-        Ok(progress) => Ok(Json(progress)),
+    match store.get_workpackage_audit_progress(&hash).await {
+        Ok(progress) => Json(progress).into_response(),
         Err(e) => {
             error!("Failed to get WP {} audit progress: {}", hash, e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
@@ -928,7 +1116,12 @@ struct EventSearchQuery {
 async fn search_events(
     Query(query): Query<EventSearchQuery>,
     State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
     let limit = query.limit.unwrap_or(50).clamp(1, MAX_QUERY_LIMIT);
     let offset = query.offset.unwrap_or(0).max(0);
 
@@ -956,12 +1149,11 @@ async fn search_events(
     if let Some(ref nid) = query.node_id {
         if !is_valid_node_id(nid) {
             warn!("Invalid node_id format in search: {}", nid);
-            return Err(StatusCode::BAD_REQUEST);
+            return StatusCode::BAD_REQUEST.into_response();
         }
     }
 
-    match state
-        .store
+    match store
         .search_events(
             event_types.as_deref(),
             query.node_id.as_deref(),
@@ -974,10 +1166,10 @@ async fn search_events(
         )
         .await
     {
-        Ok(results) => Ok(Json(results)),
+        Ok(results) => Json(results).into_response(),
         Err(e) => {
             error!("Failed to search events: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
@@ -992,14 +1184,19 @@ async fn get_slot_events(
     Path(slot): Path<i64>,
     Query(query): Query<SlotQuery>,
     State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
     let include_events = query.include_events.unwrap_or(false);
 
-    match state.store.get_slot_events(slot, include_events).await {
-        Ok(events) => Ok(Json(events)),
+    match store.get_slot_events(slot, include_events).await {
+        Ok(events) => Json(events).into_response(),
         Err(e) => {
             error!("Failed to get slot {} events: {}", slot, e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
@@ -1017,10 +1214,15 @@ async fn get_node_timeline(
     Path(node_id): Path<String>,
     Query(query): Query<NodeTimelineQuery>,
     State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
     if !is_valid_node_id(&node_id) {
         warn!("Invalid node_id format in timeline: {}", node_id);
-        return Err(StatusCode::BAD_REQUEST);
+        return StatusCode::BAD_REQUEST.into_response();
     }
 
     let limit = query.limit.unwrap_or(200).clamp(1, MAX_QUERY_LIMIT);
@@ -1042,15 +1244,14 @@ async fn get_node_timeline(
         .as_ref()
         .map(|s| s.split(',').map(|c| c.trim().to_string()).collect());
 
-    match state
-        .store
+    match store
         .get_node_timeline(&node_id, start_time, end_time, categories.as_deref(), limit)
         .await
     {
-        Ok(timeline) => Ok(Json(timeline)),
+        Ok(timeline) => Json(timeline).into_response(),
         Err(e) => {
             error!("Failed to get node {} timeline: {}", node_id, e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
@@ -1064,12 +1265,18 @@ struct BatchJourneyRequest {
 async fn batch_workpackage_journeys(
     State(state): State<ApiState>,
     Json(body): Json<BatchJourneyRequest>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> axum::response::Response {
+    let store = match state.store.as_ref() {
+        Some(s) => s,
+        None => return store_unavailable(),
+    };
+
     if body.hashes.is_empty() {
-        return Ok(Json(serde_json::json!({
+        return Json(serde_json::json!({
             "journeys": [],
             "timestamp": chrono::Utc::now(),
-        })));
+        }))
+        .into_response();
     }
 
     if body.hashes.len() > 50 {
@@ -1077,22 +1284,22 @@ async fn batch_workpackage_journeys(
             "Batch journey request too large: {} hashes",
             body.hashes.len()
         );
-        return Err(StatusCode::BAD_REQUEST);
+        return StatusCode::BAD_REQUEST.into_response();
     }
 
     // Validate all hashes
     for hash in &body.hashes {
         if hash.is_empty() || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
             warn!("Invalid work package hash in batch: {}", hash);
-            return Err(StatusCode::BAD_REQUEST);
+            return StatusCode::BAD_REQUEST.into_response();
         }
     }
 
-    match state.store.batch_workpackage_journeys(&body.hashes).await {
-        Ok(journeys) => Ok(Json(journeys)),
+    match store.batch_workpackage_journeys(&body.hashes).await {
+        Ok(journeys) => Json(journeys).into_response(),
         Err(e) => {
             error!("Failed to get batch WP journeys: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
@@ -1496,65 +1703,24 @@ async fn websocket_connection(mut socket: WebSocket, state: ApiState) {
 
             // Periodic stats updates
             _ = stats_interval.tick() => {
-                if let Ok(db_stats) = state.store.get_stats().await {
-                    let broadcaster_stats = state.broadcaster.get_stats().await;
-                    let node_ids = state.telemetry_server.get_connection_ids();
+                if let Some(store) = state.store.as_ref() {
+                    if let Ok(db_stats) = store.get_stats().await {
+                        let broadcaster_stats = state.broadcaster.get_stats().await;
+                        let node_ids = state.telemetry_server.get_connection_ids();
 
-                    let response = WebSocketResponse {
-                        r#type: "stats".to_string(),
-                        data: serde_json::json!({
-                            "database": db_stats,
-                            "broadcaster": broadcaster_stats,
-                            "connections": {
-                                "total": node_ids.len(),
-                                "nodes": node_ids
-                            },
-                            "websocket": {
-                                "events_received": events_received,
-                                "current_filter": current_filter
-                            }
-                        }),
-                        timestamp: chrono::Utc::now(),
-                    };
-
-                    if let Some(msg) = serialize_ws_message(&response) {
-                        if socket.send(Message::Text(msg)).await.is_err() {
-                            break;
-                        }
-                    } else {
-                        // Failed to serialize, close connection
-                        break;
-                    }
-                }
-            }
-
-            // Metrics channel updates (if subscribed)
-            _ = metrics_interval.tick(), if metrics_subscribed => {
-                if let Ok(metrics) = state.store.get_aggregated_metrics().await {
-                    let response = WebSocketResponse {
-                        r#type: "metrics".to_string(),
-                        data: metrics,
-                        timestamp: chrono::Utc::now(),
-                    };
-
-                    if let Some(msg) = serialize_ws_message(&response) {
-                        if socket.send(Message::Text(msg)).await.is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // Alerts channel updates (if subscribed)
-            _ = alerts_interval.tick(), if alerts_subscribed => {
-                if let Ok(alerts) = state.store.detect_anomalies().await {
-                    // Only send if there are new alerts
-                    if !alerts.is_empty() && alerts != last_alerts {
                         let response = WebSocketResponse {
-                            r#type: "alert".to_string(),
+                            r#type: "stats".to_string(),
                             data: serde_json::json!({
-                                "alerts": alerts,
-                                "count": alerts.len()
+                                "database": db_stats,
+                                "broadcaster": broadcaster_stats,
+                                "connections": {
+                                    "total": node_ids.len(),
+                                    "nodes": node_ids
+                                },
+                                "websocket": {
+                                    "events_received": events_received,
+                                    "current_filter": current_filter
+                                }
                             }),
                             timestamp: chrono::Utc::now(),
                         };
@@ -1563,9 +1729,56 @@ async fn websocket_connection(mut socket: WebSocket, state: ApiState) {
                             if socket.send(Message::Text(msg)).await.is_err() {
                                 break;
                             }
+                        } else {
+                            // Failed to serialize, close connection
+                            break;
                         }
+                    }
+                }
+            }
 
-                        last_alerts = alerts;
+            // Metrics channel updates (if subscribed)
+            _ = metrics_interval.tick(), if metrics_subscribed => {
+                if let Some(store) = state.store.as_ref() {
+                    if let Ok(metrics) = store.get_aggregated_metrics().await {
+                        let response = WebSocketResponse {
+                            r#type: "metrics".to_string(),
+                            data: metrics,
+                            timestamp: chrono::Utc::now(),
+                        };
+
+                        if let Some(msg) = serialize_ws_message(&response) {
+                            if socket.send(Message::Text(msg)).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Alerts channel updates (if subscribed)
+            _ = alerts_interval.tick(), if alerts_subscribed => {
+                if let Some(store) = state.store.as_ref() {
+                    if let Ok(alerts) = store.detect_anomalies().await {
+                        // Only send if there are new alerts
+                        if !alerts.is_empty() && alerts != last_alerts {
+                            let response = WebSocketResponse {
+                                r#type: "alert".to_string(),
+                                data: serde_json::json!({
+                                    "alerts": alerts,
+                                    "count": alerts.len()
+                                }),
+                                timestamp: chrono::Utc::now(),
+                            };
+
+                            if let Some(msg) = serialize_ws_message(&response) {
+                                if socket.send(Message::Text(msg)).await.is_err() {
+                                    break;
+                                }
+                            }
+
+                            last_alerts = alerts;
+                        }
                     }
                 }
             }
