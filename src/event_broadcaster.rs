@@ -409,11 +409,8 @@ mod tests {
         assert_eq!(received.node_id, "node_1");
 
         // Trying to receive again should timeout (no more messages for node_1)
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(50),
-            rx_node1.recv(),
-        )
-        .await;
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(50), rx_node1.recv()).await;
         assert!(result.is_err(), "Should timeout — no more node_1 events");
     }
 

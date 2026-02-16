@@ -87,7 +87,10 @@ impl BatchWriter {
     /// Queue a node connection event (async for reliability)
     pub async fn node_connected(&self, node_id: String, info: NodeInformation) -> Result<()> {
         self.sender
-            .send(WriterCommand::NodeConnected { node_id, info: Box::new(info) })
+            .send(WriterCommand::NodeConnected {
+                node_id,
+                info: Box::new(info),
+            })
             .await
             .map_err(|e| anyhow::anyhow!("Failed to send node connection: {}", e))?;
         Ok(())
@@ -314,8 +317,7 @@ async fn flush_batch(
         let node_ids: Vec<&str> = event_batch.iter().map(|(id, _, _)| id.as_str()).collect();
 
         // Pre-compute stats update data before mutably borrowing event_batch
-        let mut counts: std::collections::HashMap<&str, i64> =
-            std::collections::HashMap::new();
+        let mut counts: std::collections::HashMap<&str, i64> = std::collections::HashMap::new();
         for id in &node_ids {
             *counts.entry(id).or_insert(0) += 1;
         }

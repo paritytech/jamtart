@@ -386,8 +386,7 @@ async fn handle_connection_optimized(
                             }
 
                             // Try to queue event for batch writing
-                            match batch_writer.write_event(&node_id_str, event_count, event)
-                            {
+                            match batch_writer.write_event(&node_id_str, event_count, event) {
                                 Ok(_) => {
                                     metrics::counter!("telemetry_events_received").increment(1);
 

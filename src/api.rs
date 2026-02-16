@@ -549,10 +549,14 @@ async fn get_core_guarantees(
 
     let key = format!("core_guarantees_{}", core_index);
     let result = cache_or_compute(&state.cache, &key, || async {
-        state.store.get_core_guarantees(core_index).await.map_err(|e| {
-            error!("Failed to get core guarantees for {}: {}", core_index, e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+        state
+            .store
+            .get_core_guarantees(core_index)
+            .await
+            .map_err(|e| {
+                error!("Failed to get core guarantees for {}: {}", core_index, e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })
     })
     .await?;
     Ok((cache_headers(2), Json(result)))
@@ -830,10 +834,14 @@ async fn get_guarantees_by_guarantor(
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let result = cache_or_compute(&state.cache, "guarantees_by_guarantor", || async {
-        state.store.get_guarantees_by_guarantor().await.map_err(|e| {
-            error!("Failed to get guarantees by guarantor: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+        state
+            .store
+            .get_guarantees_by_guarantor()
+            .await
+            .map_err(|e| {
+                error!("Failed to get guarantees by guarantor: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })
     })
     .await?;
     Ok((cache_headers(2), Json(result)))
@@ -1371,7 +1379,10 @@ async fn websocket_handler(
 ) -> Result<impl IntoResponse, StatusCode> {
     let current = ACTIVE_WS_CONNECTIONS.load(std::sync::atomic::Ordering::Relaxed);
     if current >= MAX_WS_CONNECTIONS {
-        warn!("WebSocket connection limit reached ({})", MAX_WS_CONNECTIONS);
+        warn!(
+            "WebSocket connection limit reached ({})",
+            MAX_WS_CONNECTIONS
+        );
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
     Ok(ws.on_upgrade(move |socket| websocket_connection(socket, state)))

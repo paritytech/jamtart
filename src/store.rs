@@ -354,8 +354,18 @@ impl EventStore {
             let info_json = serde_json::to_value(info).unwrap_or_default();
             b.push_bind(node_id.clone())
                 .push_bind(hex::encode(info.details.peer_id))
-                .push_bind(info.implementation_name.as_str().unwrap_or("unknown").to_string())
-                .push_bind(info.implementation_version.as_str().unwrap_or("unknown").to_string())
+                .push_bind(
+                    info.implementation_name
+                        .as_str()
+                        .unwrap_or("unknown")
+                        .to_string(),
+                )
+                .push_bind(
+                    info.implementation_version
+                        .as_str()
+                        .unwrap_or("unknown")
+                        .to_string(),
+                )
                 .push_bind(info_json)
                 .push_bind(now)
                 .push_bind(now)
@@ -369,7 +379,7 @@ impl EventStore {
              implementation_version = EXCLUDED.implementation_version, \
              node_info = EXCLUDED.node_info, \
              last_seen_at = EXCLUDED.last_seen_at, \
-             is_connected = true"
+             is_connected = true",
         );
 
         query_builder.build().execute(&self.pool).await?;

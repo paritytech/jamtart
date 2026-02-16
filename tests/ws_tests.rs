@@ -59,9 +59,7 @@ async fn setup_ws_test() -> (String, Arc<TelemetryServer>, u16) {
     let app = create_api_router(api_state);
 
     // Bind to random port for the HTTP server
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
     tokio::spawn(async move {
@@ -111,9 +109,7 @@ async fn test_ws_ping_pong() {
 
     // Send a Ping message
     let ping_msg = serde_json::json!({"type": "Ping"});
-    ws.send(Message::Text(ping_msg.to_string()))
-        .await
-        .unwrap();
+    ws.send(Message::Text(ping_msg.to_string())).await.unwrap();
 
     // Read messages until we find "pong" (stats may arrive first)
     let mut found_pong = false;

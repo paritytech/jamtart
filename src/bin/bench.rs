@@ -36,7 +36,10 @@ const DASHBOARD_ENDPOINTS: &[(&str, u64)] = &[
     ("/api/workpackages/active", 5_000),
     ("/api/blocks", 10_000),
     ("/api/cores/status", 10_000),
-    ("/api/events/search?event_types=43,44,45,46,47,11,12&limit=500", 10_000),
+    (
+        "/api/events/search?event_types=43,44,45,46,47,11,12&limit=500",
+        10_000,
+    ),
     ("/api/analytics/failure-rates", 12_000),
     ("/api/analytics/network-health", 12_000),
     ("/api/metrics/timeseries", 12_000),
@@ -116,7 +119,9 @@ fn parse_config() -> BenchConfig {
 
     let mut config = BenchConfig {
         base_url: env_or_default("TART_BENCH_URL", "http://localhost:8080"),
-        tabs: env_or_default("TART_BENCH_TABS", "10").parse().unwrap_or(10),
+        tabs: env_or_default("TART_BENCH_TABS", "10")
+            .parse()
+            .unwrap_or(10),
         duration: Duration::from_secs(
             env_or_default("TART_BENCH_DURATION", "30")
                 .parse()
@@ -138,19 +143,20 @@ fn parse_config() -> BenchConfig {
             }
             "--tabs" => {
                 i += 1;
-                config.tabs = args.get(i).and_then(|s| s.parse().ok()).unwrap_or(config.tabs);
+                config.tabs = args
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(config.tabs);
             }
             "--duration" => {
                 i += 1;
-                config.duration = Duration::from_secs(
-                    args.get(i).and_then(|s| s.parse().ok()).unwrap_or(30),
-                );
+                config.duration =
+                    Duration::from_secs(args.get(i).and_then(|s| s.parse().ok()).unwrap_or(30));
             }
             "--warmup" => {
                 i += 1;
-                config.warmup = Duration::from_secs(
-                    args.get(i).and_then(|s| s.parse().ok()).unwrap_or(5),
-                );
+                config.warmup =
+                    Duration::from_secs(args.get(i).and_then(|s| s.parse().ok()).unwrap_or(5));
             }
             "--scenario" => {
                 i += 1;
@@ -512,9 +518,7 @@ async fn run_poller(
         }
 
         // Only record samples after warmup
-        if Instant::now() >= warmup_ends
-            && tx.send((path.clone(), elapsed_us, is_error)).is_err()
-        {
+        if Instant::now() >= warmup_ends && tx.send((path.clone(), elapsed_us, is_error)).is_err() {
             break; // receiver dropped
         }
     }
@@ -621,11 +625,7 @@ async fn send_ws_json(
 // Report formatting — table output
 // ---------------------------------------------------------------------------
 
-fn print_table_report(
-    config: &BenchConfig,
-    metrics: &EndpointMetrics,
-    ws_all: &[WsMetrics],
-) {
+fn print_table_report(config: &BenchConfig, metrics: &EndpointMetrics, ws_all: &[WsMetrics]) {
     let total_reqs: u64 = metrics.request_counts.values().sum();
     let total_errs: u64 = metrics.error_counts.values().sum();
     let err_pct = if total_reqs > 0 {
@@ -641,10 +641,7 @@ fn print_table_report(
     println!("================================================================================");
     println!("  Target:      {}", config.base_url);
     println!("  Scenario:    {}", config.scenario.name());
-    println!(
-        "  Tabs:        {} simulated browser tabs",
-        config.tabs
-    );
+    println!("  Tabs:        {} simulated browser tabs", config.tabs);
     println!(
         "  Duration:    {:.1}s (+ {:.1}s warmup)",
         config.duration.as_secs_f64(),
@@ -668,10 +665,7 @@ fn print_table_report(
         "  {:<42} {:>6} {:>6} {:>7} {:>7} {:>7} {:>7}",
         "Endpoint", "Reqs", "Err%", "p50", "p95", "p99", "Max"
     );
-    println!(
-        "  {}",
-        "\u{2500}".repeat(82)
-    );
+    println!("  {}", "\u{2500}".repeat(82));
 
     // Aggregate histogram for the TOTAL row
     let mut total_hist = Histogram::<u64>::new_with_bounds(1, 60_000_000, 3).unwrap();
@@ -725,10 +719,7 @@ fn print_table_report(
         }
     }
 
-    println!(
-        "  {}",
-        "\u{2500}".repeat(82)
-    );
+    println!("  {}", "\u{2500}".repeat(82));
 
     if !total_hist.is_empty() {
         println!(
@@ -759,10 +750,7 @@ fn print_table_report(
 
         println!();
         println!("  WebSocket");
-        println!(
-            "  {}",
-            "\u{2500}".repeat(82)
-        );
+        println!("  {}", "\u{2500}".repeat(82));
         println!(
             "  Connections:    {} ({} successful)",
             ws_all.len(),
@@ -796,10 +784,7 @@ fn print_table_report(
             format_count(total_metrics_ws),
             total_metrics_ws as f64 / ws_all.len().max(1) as f64,
         );
-        println!(
-            "  {}",
-            "\u{2500}".repeat(82)
-        );
+        println!("  {}", "\u{2500}".repeat(82));
     }
 
     println!();
@@ -860,11 +845,7 @@ struct JsonWebSocket {
     total_metrics: u64,
 }
 
-fn print_json_report(
-    config: &BenchConfig,
-    metrics: &EndpointMetrics,
-    ws_all: &[WsMetrics],
-) {
+fn print_json_report(config: &BenchConfig, metrics: &EndpointMetrics, ws_all: &[WsMetrics]) {
     let total_reqs: u64 = metrics.request_counts.values().sum();
     let total_errs: u64 = metrics.error_counts.values().sum();
 

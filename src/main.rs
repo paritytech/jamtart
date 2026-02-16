@@ -219,8 +219,7 @@ async fn main() -> anyhow::Result<()> {
         let cache_clone = Arc::clone(&cache);
         let store_clone = Arc::clone(&store);
         tokio::spawn(async move {
-            let mut warm_interval =
-                tokio::time::interval(std::time::Duration::from_secs(2));
+            let mut warm_interval = tokio::time::interval(std::time::Duration::from_secs(2));
             let mut evict_counter: u64 = 0;
 
             loop {

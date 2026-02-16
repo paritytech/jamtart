@@ -195,12 +195,7 @@ pub mod checks {
                     let start = std::time::Instant::now();
 
                     // Lightweight ping with 500ms timeout
-                    match tokio::time::timeout(
-                        Duration::from_millis(500),
-                        store.ping(),
-                    )
-                    .await
-                    {
+                    match tokio::time::timeout(Duration::from_millis(500), store.ping()).await {
                         Ok(Ok(())) => {
                             let response_time = start.elapsed();
                             let mut metrics = HashMap::new();
@@ -220,10 +215,7 @@ pub mod checks {
                             ComponentHealth {
                                 name: "database".to_string(),
                                 status,
-                                message: Some(format!(
-                                    "Ping: {}ms",
-                                    response_time.as_millis()
-                                )),
+                                message: Some(format!("Ping: {}ms", response_time.as_millis())),
                                 last_check: chrono::Utc::now(),
                                 metrics,
                             }
@@ -275,14 +267,8 @@ pub mod checks {
                         "pending_count".to_string(),
                         serde_json::Value::Number(serde_json::Number::from(pending as u64)),
                     );
-                    metrics.insert(
-                        "is_full".to_string(),
-                        serde_json::Value::Bool(is_full),
-                    );
-                    metrics.insert(
-                        "usage_percent".to_string(),
-                        serde_json::json!(usage_pct),
-                    );
+                    metrics.insert("is_full".to_string(), serde_json::Value::Bool(is_full));
+                    metrics.insert("usage_percent".to_string(), serde_json::json!(usage_pct));
 
                     ComponentHealth {
                         name: "batch_writer".to_string(),
@@ -531,7 +517,9 @@ mod tests {
     #[tokio::test]
     async fn test_health_monitor() {
         let monitor = HealthMonitor::new();
-        monitor.add_check(make_check("test", HealthStatus::Healthy)).await;
+        monitor
+            .add_check(make_check("test", HealthStatus::Healthy))
+            .await;
         sleep(Duration::from_millis(100)).await;
 
         let health = monitor.get_health().await;

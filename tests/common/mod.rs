@@ -53,6 +53,7 @@ pub fn test_exec_cost() -> ExecCost {
 }
 
 /// Creates a test ProtocolParameters with reasonable default values for testing
+#[allow(dead_code)]
 pub fn test_protocol_params() -> ProtocolParameters {
     ProtocolParameters {
         deposit_per_item: 1000,
@@ -92,6 +93,7 @@ pub fn test_protocol_params() -> ProtocolParameters {
 }
 
 /// Creates a test NodeInformation with the given peer ID
+#[allow(dead_code)]
 pub fn test_node_info(peer_id: [u8; 32]) -> NodeInformation {
     NodeInformation {
         params: test_protocol_params(),

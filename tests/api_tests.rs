@@ -736,7 +736,9 @@ async fn test_peer_topology() {
 #[tokio::test]
 async fn test_events_search() {
     let (server, _, _) = setup_test_api().await;
-    let response = server.get("/api/events/search?event_types=11&limit=10").await;
+    let response = server
+        .get("/api/events/search?event_types=11&limit=10")
+        .await;
     assert_eq!(response.status_code(), StatusCode::OK);
     let json: Value = response.json();
     // search_events returns {events: [...]} object
@@ -796,9 +798,7 @@ async fn test_node_peers() {
     let _stream = connect_test_node_with_server(telemetry_port, 12, &telemetry_server).await;
     let node_id = hex::encode([12u8; 32]);
 
-    let response = server
-        .get(&format!("/api/nodes/{}/peers", node_id))
-        .await;
+    let response = server.get(&format!("/api/nodes/{}/peers", node_id)).await;
     assert_eq!(response.status_code(), StatusCode::OK);
     let json: Value = response.json();
     assert!(json.is_object());
