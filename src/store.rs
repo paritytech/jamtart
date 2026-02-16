@@ -1178,7 +1178,7 @@ impl EventStore {
 
         // Search for events containing this work package hash
         // The hash might be in different fields depending on event type
-        let events: Vec<(i32, DateTime<Utc>, String, serde_json::Value)> = sqlx::query_as(
+        let events: Vec<(i16, DateTime<Utc>, String, serde_json::Value)> = sqlx::query_as(
             r#"
             SELECT event_type, time, node_id, data
             FROM events
