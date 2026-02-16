@@ -28,7 +28,7 @@ async fn setup_test_api() -> (TestServer, Arc<TelemetryServer>, u16) {
         .expect("Failed to cleanup test data");
 
     let telemetry_server = Arc::new(
-        TelemetryServer::new("127.0.0.1:0", Some(Arc::clone(&store)))
+        TelemetryServer::new("127.0.0.1:0", Arc::clone(&store))
             .await
             .unwrap(),
     );
@@ -48,7 +48,7 @@ async fn setup_test_api() -> (TestServer, Arc<TelemetryServer>, u16) {
 
     // Create API state and router
     let api_state = ApiState {
-        store: Some(store),
+        store: store,
         telemetry_server: Arc::clone(&telemetry_server),
         broadcaster,
         health_monitor,
@@ -1537,7 +1537,7 @@ async fn test_workpackage_journey_enhanced_with_data() {
         assert!(first.get("status").is_some(), "Should have status");
         assert!(first.get("event_type").is_some(), "Should have event_type");
         assert!(first.get("node_id").is_some(), "Should have node_id");
-        assert!(first.get("time").is_some(), "Should have time");
+        assert!(first.get("timestamp").is_some(), "Should have timestamp");
 
         // Verify stage sequence
         let stage_names: Vec<&str> = stages.iter()

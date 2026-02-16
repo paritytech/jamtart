@@ -18,7 +18,7 @@ async fn setup_test_server() -> (Arc<TelemetryServer>, u16) {
     // Clean database before each test
     let _ = store.cleanup_test_data().await;
 
-    let server = Arc::new(TelemetryServer::new("127.0.0.1:0", Some(store)).await.unwrap());
+    let server = Arc::new(TelemetryServer::new("127.0.0.1:0", store).await.unwrap());
     let port = server.local_addr().unwrap().port();
 
     // Start server in background

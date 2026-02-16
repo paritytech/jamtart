@@ -139,13 +139,13 @@ ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, group_name = EXCLUDED.group
 -- Use this in Grafana panels instead of raw events + JOIN.
 CREATE OR REPLACE VIEW events_view AS
 SELECT
-    e.time,
+    e.timestamp,
     e.node_id,
     e.event_id,
     e.event_type,
     et.name AS event_name,
     et.group_name AS event_group,
     e.data,
-    e.received_at
+    e.created_at
 FROM events e
 LEFT JOIN event_types et ON e.event_type = et.id;

@@ -99,7 +99,7 @@ impl BatchWriter {
             let node_counts = shared_node_counts.clone();
             tokio::spawn(async move {
                 info!("Writer worker {} started", id);
-                match writer_worker(id, rx, Some(store), node_counts).await {
+                match writer_worker(id, rx, store, node_counts).await {
                     Ok(_) => {
                         info!("Writer worker {} completed normally", id);
                     }
@@ -116,31 +116,6 @@ impl BatchWriter {
                 }
             });
         }
-
-        BatchWriter { sender }
-    }
-
-    /// Create a BatchWriter that discards all events (no database persistence).
-    /// Used when running with --no-database flag for WebSocket-only mode.
-    pub fn new_no_database() -> Self {
-        let (sender, receiver) = mpsc::channel(CHANNEL_SIZE);
-        let shared_rx = Arc::new(Mutex::new(receiver));
-
-        let shared_node_counts: Arc<Mutex<HashMap<String, u64>>> =
-            Arc::new(Mutex::new(HashMap::new()));
-
-        // Single worker in no-database mode (just discards events)
-        tokio::spawn(async move {
-            info!("Batch writer started (no-database mode)");
-            match writer_worker(0, shared_rx, None, shared_node_counts).await {
-                Ok(_) => {
-                    info!("Batch writer completed normally (no-database mode)");
-                }
-                Err(e) => {
-                    warn!("Batch writer ended with error (no-database mode): {}", e);
-                }
-            }
-        });
 
         BatchWriter { sender }
     }
@@ -230,7 +205,7 @@ impl BatchWriter {
 async fn writer_worker(
     id: usize,
     receiver: Arc<Mutex<Receiver<WriterCommand>>>,
-    store: Option<Arc<EventStore>>,
+    store: Arc<EventStore>,
     shared_node_counts: Arc<Mutex<HashMap<String, u64>>>,
 ) -> Result<()> {
     let mut event_batch: Vec<(String, u64, Event)> = Vec::with_capacity(MAX_BATCH_SIZE);
@@ -265,22 +240,17 @@ async fn writer_worker(
 
         // Phase 3: Flush node connect/disconnect immediately
         // These are rare events (~1024 total) so no need to batch on a timer
-        if let Some(ref store) = store {
-            if !node_connects.is_empty() {
-                let connects = std::mem::take(&mut node_connects);
-                if let Err(e) = store.store_nodes_connected_batch(&connects).await {
-                    warn!("Writer {} failed to flush node connects: {}", id, e);
-                }
+        if !node_connects.is_empty() {
+            let connects = std::mem::take(&mut node_connects);
+            if let Err(e) = store.store_nodes_connected_batch(&connects).await {
+                warn!("Writer {} failed to flush node connects: {}", id, e);
             }
-            if !node_disconnects.is_empty() {
-                let disconnects = std::mem::take(&mut node_disconnects);
-                if let Err(e) = store.store_nodes_disconnected_batch(&disconnects).await {
-                    warn!("Writer {} failed to flush node disconnects: {}", id, e);
-                }
+        }
+        if !node_disconnects.is_empty() {
+            let disconnects = std::mem::take(&mut node_disconnects);
+            if let Err(e) = store.store_nodes_disconnected_batch(&disconnects).await {
+                warn!("Writer {} failed to flush node disconnects: {}", id, e);
             }
-        } else {
-            node_connects.clear();
-            node_disconnects.clear();
         }
 
         // Send flush response after everything is written
@@ -308,15 +278,13 @@ async fn writer_worker(
                 error!("Writer {} shutdown event flush error: {}", id, e);
             }
             // Final node updates flush
-            if let Some(ref store) = store {
-                if !node_connects.is_empty() {
-                    let _ = store.store_nodes_connected_batch(&node_connects).await;
-                }
-                if !node_disconnects.is_empty() {
-                    let _ = store
-                        .store_nodes_disconnected_batch(&node_disconnects)
-                        .await;
-                }
+            if !node_connects.is_empty() {
+                let _ = store.store_nodes_connected_batch(&node_connects).await;
+            }
+            if !node_disconnects.is_empty() {
+                let _ = store
+                    .store_nodes_disconnected_batch(&node_disconnects)
+                    .await;
             }
             // Merge remaining node counts into shared aggregator
             if !node_counts.is_empty() {
@@ -454,7 +422,7 @@ fn handle_command(
 
 /// Flush only events to database (node updates are decoupled).
 async fn flush_events(
-    store: &Option<Arc<EventStore>>,
+    store: &Arc<EventStore>,
     event_batch: &mut Vec<(String, u64, Event)>,
 ) -> Result<()> {
     let event_count = event_batch.len();
@@ -462,14 +430,6 @@ async fn flush_events(
     if event_count == 0 {
         return Ok(());
     }
-
-    // In no-database mode, just discard the events
-    let Some(store) = store else {
-        debug!("Discarding {} events (no-database mode)", event_count);
-        event_batch.clear();
-        metrics::counter!("telemetry_events_discarded").increment(event_count as u64);
-        return Ok(());
-    };
 
     let start = std::time::Instant::now();
 

@@ -1,4 +1,3 @@
-use clap::Parser;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tart_backend::api::{create_api_router, ApiState};
@@ -7,34 +6,6 @@ use tart_backend::jam_rpc::JamRpcClient;
 use tart_backend::{EventStore, TelemetryServer};
 use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-
-#[derive(Parser, Debug)]
-#[command(author, version, about = "TART (Testing, Analytics and Research Telemetry) Backend")]
-struct Args {
-    /// Disable PostgreSQL database (WebSocket forwarding only mode)
-    #[arg(long)]
-    no_database: bool,
-
-    /// Disable rate limiting (allows unlimited events per node)
-    #[arg(long)]
-    no_rate_limit: bool,
-
-    /// Telemetry server bind address
-    #[arg(long, env = "TELEMETRY_BIND", default_value = "0.0.0.0:9000")]
-    telemetry_bind: String,
-
-    /// API server bind address
-    #[arg(long, env = "API_BIND", default_value = "0.0.0.0:8080")]
-    api_bind: String,
-
-    /// Database URL (required unless --no-database is set)
-    #[arg(long, env = "DATABASE_URL")]
-    database_url: Option<String>,
-
-    /// JAM RPC WebSocket URL (optional, enables JAM RPC endpoints)
-    #[arg(long, env = "JAM_RPC_URL")]
-    jam_rpc_url: Option<String>,
-}
 
 /// Configure TCP socket buffer sizes for better performance.
 ///
@@ -95,39 +66,33 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    // Parse CLI arguments
-    let args = Args::parse();
-
     info!("Starting TART (Testing, Analytics and Research Telemetry) Backend");
     info!(
         "Optimized for handling up to {} concurrent nodes",
         tart_backend::rate_limiter::MAX_CONNECTIONS
     );
 
+    // Configuration from environment variables
+    let telemetry_bind =
+        std::env::var("TELEMETRY_BIND").unwrap_or_else(|_| "0.0.0.0:9000".to_string());
+    let api_bind = std::env::var("API_BIND").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
+    let database_url = std::env::var("DATABASE_URL").expect(
+        "DATABASE_URL must be set. Example: postgres://user:password@localhost:5432/dbname",
+    );
+    let no_rate_limit = std::env::var("NO_RATE_LIMIT").is_ok();
+
     // Initialize metrics
     let prometheus_handle =
         metrics_exporter_prometheus::PrometheusBuilder::new().install_recorder()?;
 
-    // Initialize storage (optional based on --no-database flag)
-    let store = if args.no_database {
-        info!("Running in WebSocket-only mode (database disabled)");
-        None
-    } else {
-        let database_url = args.database_url.expect(
-            "DATABASE_URL must be set (or use --no-database for WebSocket-only mode)",
-        );
-        info!("Connecting to database: {}", database_url);
-        Some(Arc::new(EventStore::new(&database_url).await?))
-    };
+    // Initialize optimized storage
+    info!("Connecting to database: {}", database_url);
+    let store = Arc::new(EventStore::new(&database_url).await?);
 
     // Start optimized telemetry server
-    info!(
-        "Starting optimized telemetry server on {}",
-        args.telemetry_bind
-    );
+    info!("Starting optimized telemetry server on {}", telemetry_bind);
     let telemetry_server = Arc::new(
-        TelemetryServer::with_options(&args.telemetry_bind, store.clone(), args.no_rate_limit)
-            .await?,
+        TelemetryServer::with_options(&telemetry_bind, Arc::clone(&store), no_rate_limit).await?,
     );
     let telemetry_server_clone = Arc::clone(&telemetry_server);
 
@@ -147,12 +112,9 @@ async fn main() -> anyhow::Result<()> {
     let health_monitor = Arc::new(HealthMonitor::new());
 
     // Add health checks for all critical components
-    // Only add database check if database is enabled
-    if let Some(ref s) = store {
-        health_monitor
-            .add_check(checks::database_check(Arc::clone(s)))
-            .await;
-    }
+    health_monitor
+        .add_check(checks::database_check(Arc::clone(&store)))
+        .await;
     health_monitor
         .add_check(checks::batch_writer_check(Arc::clone(&batch_writer)))
         .await;
@@ -164,15 +126,11 @@ async fn main() -> anyhow::Result<()> {
         .add_check(checks::system_resources_check())
         .await;
 
-    let check_count = if store.is_some() { 5 } else { 4 };
-    info!(
-        "Health monitoring system initialized with {} critical component checks",
-        check_count
-    );
+    info!("Health monitoring system initialized with 5 critical component checks");
 
     // Initialize JAM RPC client if configured
-    let jam_rpc = match args.jam_rpc_url {
-        Some(rpc_url) => {
+    let jam_rpc = match std::env::var("JAM_RPC_URL") {
+        Ok(rpc_url) => {
             info!("Connecting to JAM node RPC at {}", rpc_url);
             let mut client = JamRpcClient::new(&rpc_url);
             match client.connect().await {
@@ -190,7 +148,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        None => {
+        Err(_) => {
             info!("JAM_RPC_URL not set - JAM RPC endpoints will be unavailable");
             info!("To enable, set JAM_RPC_URL=ws://localhost:19800");
             None
@@ -199,7 +157,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Create API state using the optimized components
     let api_state = ApiState {
-        store,
+        store: Arc::clone(&store),
         telemetry_server,
         broadcaster,
         health_monitor,
@@ -216,7 +174,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Start HTTP server with optimized settings
-    let api_addr: SocketAddr = args.api_bind.parse()?;
+    let api_addr: SocketAddr = api_bind.parse()?;
     info!("Starting HTTP API server on {}", api_addr);
     info!("Metrics available at http://{}/metrics", api_addr);
 
@@ -228,30 +186,20 @@ async fn main() -> anyhow::Result<()> {
 
     info!("=== TART Backend Configuration ===");
     info!(
-        "Database mode: {}",
-        if args.no_database {
-            "disabled (WebSocket-only)"
-        } else {
-            "enabled"
-        }
+        "Max concurrent connections: {}",
+        tart_backend::rate_limiter::MAX_CONNECTIONS
     );
     info!(
         "Rate limiting: {}",
-        if args.no_rate_limit {
+        if no_rate_limit {
             "disabled"
         } else {
             "100 events/sec per node"
         }
     );
-    info!(
-        "Max concurrent connections: {}",
-        tart_backend::rate_limiter::MAX_CONNECTIONS
-    );
-    if !args.no_database {
-        info!("Write batch size: 10000 events");
-        info!("Write batch timeout: 100ms");
-        info!("Parallel writer workers: 32");
-    }
+    info!("Write batch size: 10000 events");
+    info!("Write batch timeout: 100ms");
+    info!("Parallel writer workers: 32");
     info!("===================================");
 
     axum::serve(listener, app)

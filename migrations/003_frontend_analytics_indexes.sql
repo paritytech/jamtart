@@ -16,7 +16,7 @@ CREATE INDEX IF NOT EXISTS idx_block_transferred_slot
 -- Index for failure event analysis
 -- Optimizes failure rate queries by category
 CREATE INDEX IF NOT EXISTS idx_failed_events
-    ON events (event_type, node_id, time)
+    ON events (event_type, node_id, timestamp)
     WHERE event_type IN (41, 44, 46, 81, 94, 97, 99, 102, 109, 110, 112, 113);
 
 -- Index for guarantee analysis by core
@@ -28,7 +28,7 @@ CREATE INDEX IF NOT EXISTS idx_guarantee_built_core
 -- Index for shard operations (DA stats)
 -- Optimizes read/write operation counting
 CREATE INDEX IF NOT EXISTS idx_shard_operations
-    ON events (event_type, node_id, received_at)
+    ON events (event_type, node_id, created_at)
     WHERE event_type IN (121, 123, 124);
 
 -- Index for work package events by hash (journey tracking)
@@ -49,7 +49,7 @@ CREATE INDEX IF NOT EXISTS idx_preimage_events
 
 -- Index for ticket events
 CREATE INDEX IF NOT EXISTS idx_ticket_events
-    ON events (event_type, node_id, time)
+    ON events (event_type, node_id, timestamp)
     WHERE event_type IN (80, 81, 82, 84);
 
 -- Performance comments
