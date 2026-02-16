@@ -52,6 +52,7 @@ async fn setup_test_api() -> (TestServer, Arc<TelemetryServer>, u16) {
         telemetry_server: Arc::clone(&telemetry_server),
         broadcaster,
         health_monitor,
+        jam_rpc: None,
     };
 
     let app = create_api_router(api_state);
@@ -365,4 +366,694 @@ async fn test_concurrent_api_requests() {
         let response = server.get("/api/events").await;
         assert_eq!(response.status_code(), StatusCode::OK);
     }
+}
+
+// ============================================================================
+// Tier 1 — Critical endpoint tests (query DB with potentially renamed columns)
+// ============================================================================
+
+#[tokio::test]
+async fn test_network_info_endpoint() {
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
+
+    // Empty DB
+    let response = server.get("/api/network").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/network empty response: {}", serde_json::to_string_pretty(&json).unwrap());
+
+    // With connected nodes
+    let _stream1 = connect_test_node_with_server(telemetry_port, 10, &telemetry_server).await;
+    let _stream2 = connect_test_node_with_server(telemetry_port, 11, &telemetry_server).await;
+
+    let response = server.get("/api/network").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/network with nodes: {}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+#[tokio::test]
+async fn test_workpackage_stats_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+
+    let response = server.get("/api/workpackages").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/workpackages response: {}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+#[tokio::test]
+async fn test_block_stats_endpoint() {
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
+
+    // Empty DB
+    let response = server.get("/api/blocks").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/blocks empty: {}", serde_json::to_string_pretty(&json).unwrap());
+
+    // With block events
+    let mut stream = connect_test_node_with_server(telemetry_port, 12, &telemetry_server).await;
+
+    let events = vec![
+        Event::BestBlockChanged {
+            timestamp: 1_000_000,
+            slot: 100,
+            hash: [0xBB; 32],
+        },
+        Event::BlockExecuted {
+            timestamp: 2_000_000,
+            authoring_or_importing_id: 1,
+            accumulate_costs: vec![(1, common::test_accumulate_cost())],
+        },
+    ];
+
+    for event in events {
+        let encoded = encode_message(&event).unwrap();
+        stream.write_all(&encoded).await.unwrap();
+    }
+    common::flush_and_wait(&telemetry_server).await;
+
+    let response = server.get("/api/blocks").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/blocks with data: {}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+#[tokio::test]
+async fn test_guarantee_stats_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+
+    let response = server.get("/api/guarantees").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/guarantees response: {}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+#[tokio::test]
+async fn test_cores_status_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+
+    let response = server.get("/api/cores/status").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/cores/status response: {}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+#[tokio::test]
+async fn test_node_status_endpoint() {
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
+
+    // Invalid node_id → 400
+    let response = server.get("/api/nodes/invalid/status").await;
+    assert_eq!(response.status_code(), StatusCode::BAD_REQUEST);
+
+    // Connect a node and send BestBlockChanged
+    let mut stream = connect_test_node_with_server(telemetry_port, 13, &telemetry_server).await;
+    let node_id = hex::encode([13u8; 32]);
+
+    let event = Event::BestBlockChanged {
+        timestamp: 5_000_000,
+        slot: 200,
+        hash: [0xCC; 32],
+    };
+    let encoded = encode_message(&event).unwrap();
+    stream.write_all(&encoded).await.unwrap();
+    common::flush_and_wait(&telemetry_server).await;
+
+    let response = server.get(&format!("/api/nodes/{}/status", node_id)).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/nodes/:id/status: {}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+#[tokio::test]
+async fn test_node_peers_endpoint() {
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
+
+    // Invalid node_id → 400
+    let response = server.get("/api/nodes/short/peers").await;
+    assert_eq!(response.status_code(), StatusCode::BAD_REQUEST);
+
+    // Connect a node
+    let _stream = connect_test_node_with_server(telemetry_port, 14, &telemetry_server).await;
+    let node_id = hex::encode([14u8; 32]);
+
+    let response = server.get(&format!("/api/nodes/{}/peers", node_id)).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/nodes/:id/peers: {}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+#[tokio::test]
+async fn test_da_stats_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+
+    let response = server.get("/api/da/stats").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/da/stats response: {}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+#[tokio::test]
+async fn test_execution_metrics_endpoint() {
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
+
+    // Empty DB
+    let response = server.get("/api/metrics/execution").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/metrics/execution empty: {}", serde_json::to_string_pretty(&json).unwrap());
+
+    // With BlockExecuted events
+    let mut stream = connect_test_node_with_server(telemetry_port, 15, &telemetry_server).await;
+
+    let event = Event::BlockExecuted {
+        timestamp: 3_000_000,
+        authoring_or_importing_id: 1,
+        accumulate_costs: vec![
+            (1, common::test_accumulate_cost()),
+            (2, common::test_accumulate_cost()),
+        ],
+    };
+    let encoded = encode_message(&event).unwrap();
+    stream.write_all(&encoded).await.unwrap();
+    common::flush_and_wait(&telemetry_server).await;
+
+    let response = server.get("/api/metrics/execution").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/metrics/execution with data: {}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+#[tokio::test]
+async fn test_timeseries_metrics_endpoint() {
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
+
+    // With events
+    let mut stream = connect_test_node_with_server(telemetry_port, 16, &telemetry_server).await;
+
+    for i in 0..5 {
+        let event = Event::BestBlockChanged {
+            timestamp: i as u64 * 1_000_000,
+            slot: i,
+            hash: [i as u8; 32],
+        };
+        let encoded = encode_message(&event).unwrap();
+        stream.write_all(&encoded).await.unwrap();
+    }
+    common::flush_and_wait(&telemetry_server).await;
+
+    // Default params
+    let response = server.get("/api/metrics/timeseries").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/metrics/timeseries default: {}", serde_json::to_string_pretty(&json).unwrap());
+
+    // With query params
+    let response = server.get("/api/metrics/timeseries?metric=throughput&interval=5&duration=1").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/metrics/timeseries params: {}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+#[tokio::test]
+async fn test_search_events_endpoint() {
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
+
+    // Connect node and send diverse events
+    let mut stream = connect_test_node_with_server(telemetry_port, 17, &telemetry_server).await;
+    let node_id = hex::encode([17u8; 32]);
+
+    let events = vec![
+        Event::BestBlockChanged {
+            timestamp: 1_000_000,
+            slot: 50,
+            hash: [0xDD; 32],
+        },
+        Event::SyncStatusChanged {
+            timestamp: 2_000_000,
+            synced: true,
+        },
+        Event::FinalizedBlockChanged {
+            timestamp: 3_000_000,
+            slot: 49,
+            hash: [0xEE; 32],
+        },
+    ];
+
+    for event in events {
+        let encoded = encode_message(&event).unwrap();
+        stream.write_all(&encoded).await.unwrap();
+    }
+    common::flush_and_wait(&telemetry_server).await;
+
+    // No filters → returns recent events
+    let response = server.get("/api/events/search").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    // Filter by event_types (11 = BestBlockChanged)
+    let response = server.get("/api/events/search?event_types=11").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: search by event_type=11: {}", serde_json::to_string_pretty(&json).unwrap());
+
+    // Filter by node_id
+    let response = server.get(&format!("/api/events/search?node_id={}", node_id)).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    // Invalid node_id → 400
+    let response = server.get("/api/events/search?node_id=invalid").await;
+    assert_eq!(response.status_code(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_slot_events_endpoint() {
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
+
+    let mut stream = connect_test_node_with_server(telemetry_port, 18, &telemetry_server).await;
+
+    // Send events at slot 999
+    let event = Event::BestBlockChanged {
+        timestamp: 1_000_000,
+        slot: 999,
+        hash: [0xFF; 32],
+    };
+    let encoded = encode_message(&event).unwrap();
+    stream.write_all(&encoded).await.unwrap();
+    common::flush_and_wait(&telemetry_server).await;
+
+    let response = server.get("/api/slots/999").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/slots/999: {}", serde_json::to_string_pretty(&json).unwrap());
+
+    // Slot with no events
+    let response = server.get("/api/slots/0").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+}
+
+// ============================================================================
+// Tier 2 — Important endpoint tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_workpackage_journey_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+
+    // Invalid hash → 400
+    let response = server.get("/api/workpackages/not-hex/journey").await;
+    assert_eq!(response.status_code(), StatusCode::BAD_REQUEST);
+
+    // Valid hex hash with no data
+    let hash = "aa".repeat(32); // 64 hex chars
+    let response = server.get(&format!("/api/workpackages/{}/journey", hash)).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/workpackages/:hash/journey empty: {}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+#[tokio::test]
+async fn test_active_workpackages_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+
+    let response = server.get("/api/workpackages/active").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/workpackages/active: {}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+#[tokio::test]
+async fn test_core_guarantees_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+
+    // Valid core_index
+    let response = server.get("/api/cores/0/guarantees").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/cores/0/guarantees: {}", serde_json::to_string_pretty(&json).unwrap());
+
+    // Negative core_index → 400 (axum parses i32, -1 is valid i32 but handler rejects)
+    let response = server.get("/api/cores/-1/guarantees").await;
+    assert_eq!(response.status_code(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_validator_core_mapping_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+
+    let response = server.get("/api/validators/cores").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/validators/cores: {}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+#[tokio::test]
+async fn test_peer_topology_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+
+    let response = server.get("/api/network/topology").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/network/topology: {}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+#[tokio::test]
+async fn test_realtime_metrics_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+
+    let response = server.get("/api/metrics/realtime").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/metrics/realtime: {}", serde_json::to_string_pretty(&json).unwrap());
+
+    // With seconds param
+    let response = server.get("/api/metrics/realtime?seconds=30").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_live_counters_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+
+    let response = server.get("/api/metrics/live").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/metrics/live: {}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+#[tokio::test]
+async fn test_failure_rates_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+
+    let response = server.get("/api/analytics/failure-rates").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/analytics/failure-rates: {}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+#[tokio::test]
+async fn test_network_health_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+
+    let response = server.get("/api/analytics/network-health").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/analytics/network-health: {}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+#[tokio::test]
+async fn test_block_propagation_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+
+    let response = server.get("/api/analytics/block-propagation").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/analytics/block-propagation: {}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+// ============================================================================
+// Tier 3 — JAM RPC endpoints (503 when not configured)
+// ============================================================================
+
+#[tokio::test]
+async fn test_jam_endpoints_without_rpc() {
+    let (server, _, _) = setup_test_api().await;
+
+    // All JAM RPC endpoints should return 503 when jam_rpc is None
+    let response = server.get("/api/jam/stats").await;
+    assert_eq!(response.status_code(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let response = server.get("/api/jam/services").await;
+    assert_eq!(response.status_code(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let response = server.get("/api/jam/cores").await;
+    assert_eq!(response.status_code(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+// ============================================================================
+// Tier 4 — Additional endpoint coverage
+// ============================================================================
+
+#[tokio::test]
+async fn test_core_validators_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+
+    let response = server.get("/api/cores/0/validators").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/cores/0/validators: {}", serde_json::to_string_pretty(&json).unwrap());
+
+    // Negative core_index → 400
+    let response = server.get("/api/cores/-1/validators").await;
+    assert_eq!(response.status_code(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_core_metrics_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+
+    let response = server.get("/api/cores/0/metrics").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/cores/0/metrics: {}", serde_json::to_string_pretty(&json).unwrap());
+
+    let response = server.get("/api/cores/-1/metrics").await;
+    assert_eq!(response.status_code(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_core_bottlenecks_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+
+    let response = server.get("/api/cores/0/bottlenecks").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/cores/0/bottlenecks: {}", serde_json::to_string_pretty(&json).unwrap());
+
+    let response = server.get("/api/cores/-1/bottlenecks").await;
+    assert_eq!(response.status_code(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_da_stats_enhanced_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+
+    let response = server.get("/api/da/stats/enhanced").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/da/stats/enhanced: {}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+#[tokio::test]
+async fn test_node_timeline_endpoint() {
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
+
+    // Invalid node_id → 400
+    let response = server.get("/api/nodes/bad/timeline").await;
+    assert_eq!(response.status_code(), StatusCode::BAD_REQUEST);
+
+    // Connect a node and send events
+    let mut stream = connect_test_node_with_server(telemetry_port, 19, &telemetry_server).await;
+    let node_id = hex::encode([19u8; 32]);
+
+    let event = Event::BestBlockChanged {
+        timestamp: 1_000_000,
+        slot: 42,
+        hash: [0xAA; 32],
+    };
+    let encoded = encode_message(&event).unwrap();
+    stream.write_all(&encoded).await.unwrap();
+    common::flush_and_wait(&telemetry_server).await;
+
+    let response = server.get(&format!("/api/nodes/{}/timeline", node_id)).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/nodes/:id/timeline: {}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+#[tokio::test]
+async fn test_sync_status_timeline_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+
+    let response = server.get("/api/analytics/sync-status/timeline").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/analytics/sync-status/timeline: {}", serde_json::to_string_pretty(&json).unwrap());
+
+    // With duration param
+    let response = server.get("/api/analytics/sync-status/timeline?duration=2").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_connections_timeline_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+
+    let response = server.get("/api/analytics/connections/timeline").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/analytics/connections/timeline: {}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+#[tokio::test]
+async fn test_batch_workpackage_journeys() {
+    let (server, _, _) = setup_test_api().await;
+
+    // Empty hashes → returns empty journeys
+    let response = server
+        .post("/api/workpackages/batch/journey")
+        .json(&serde_json::json!({"hashes": []}))
+        .await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert!(json["journeys"].is_array());
+    assert_eq!(json["journeys"].as_array().unwrap().len(), 0);
+
+    // Valid hashes with no data
+    let hash = "bb".repeat(32);
+    let response = server
+        .post("/api/workpackages/batch/journey")
+        .json(&serde_json::json!({"hashes": [hash]}))
+        .await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    // Too many hashes → 400
+    let hashes: Vec<String> = (0..51).map(|i| format!("{:064x}", i)).collect();
+    let response = server
+        .post("/api/workpackages/batch/journey")
+        .json(&serde_json::json!({"hashes": hashes}))
+        .await;
+    assert_eq!(response.status_code(), StatusCode::BAD_REQUEST);
+
+    // Invalid hash in batch → 400
+    let response = server
+        .post("/api/workpackages/batch/journey")
+        .json(&serde_json::json!({"hashes": ["not-hex"]}))
+        .await;
+    assert_eq!(response.status_code(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_timeseries_grouped_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+
+    let response = server.get("/api/metrics/timeseries/grouped?metric=events&group_by=event_type").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/metrics/timeseries/grouped: {}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+#[tokio::test]
+async fn test_detailed_health_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+
+    let response = server.get("/api/health/detailed").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/health/detailed: {}", serde_json::to_string_pretty(&json).unwrap());
+    assert!(json["status"].is_string());
+    assert!(json["timestamp"].is_string());
+    assert!(json["components"].is_object());
+    assert!(json["version"].is_string());
+    assert!(json["uptime_seconds"].is_number());
+    assert!(json["summary"].is_object());
+}
+
+#[tokio::test]
+async fn test_stats_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+
+    let response = server.get("/api/stats").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/stats: {}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+#[tokio::test]
+async fn test_node_status_enhanced_endpoint() {
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
+
+    // Invalid node_id → 400
+    let response = server.get("/api/nodes/bad/status/enhanced").await;
+    assert_eq!(response.status_code(), StatusCode::BAD_REQUEST);
+
+    // Connect a node
+    let _stream = connect_test_node_with_server(telemetry_port, 20, &telemetry_server).await;
+    let node_id = hex::encode([20u8; 32]);
+
+    let response = server.get(&format!("/api/nodes/{}/status/enhanced", node_id)).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/nodes/:id/status/enhanced: {}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+#[tokio::test]
+async fn test_core_guarantors_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+
+    let response = server.get("/api/cores/0/guarantors").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/cores/0/guarantors: {}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+#[tokio::test]
+async fn test_core_work_packages_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+
+    let response = server.get("/api/cores/0/work-packages").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/cores/0/work-packages: {}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+#[tokio::test]
+async fn test_workpackage_journey_enhanced_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+
+    let hash = "cc".repeat(32);
+    let response = server.get(&format!("/api/workpackages/{}/journey/enhanced", hash)).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/workpackages/:hash/journey/enhanced: {}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+#[tokio::test]
+async fn test_workpackage_audit_progress_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+
+    // Invalid hash → 400
+    let response = server.get("/api/workpackages/not-hex/audit-progress").await;
+    assert_eq!(response.status_code(), StatusCode::BAD_REQUEST);
+
+    // Valid hash
+    let hash = "dd".repeat(32);
+    let response = server.get(&format!("/api/workpackages/{}/audit-progress", hash)).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/workpackages/:hash/audit-progress: {}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+#[tokio::test]
+async fn test_guarantees_by_guarantor_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+
+    let response = server.get("/api/guarantees/by-guarantor").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/guarantees/by-guarantor: {}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+#[tokio::test]
+async fn test_core_guarantors_enhanced_endpoint() {
+    let (server, _, _) = setup_test_api().await;
+
+    let response = server.get("/api/cores/0/guarantors/enhanced").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    eprintln!("DEBUG: /api/cores/0/guarantors/enhanced: {}", serde_json::to_string_pretty(&json).unwrap());
+
+    let response = server.get("/api/cores/-1/guarantors/enhanced").await;
+    assert_eq!(response.status_code(), StatusCode::BAD_REQUEST);
 }
