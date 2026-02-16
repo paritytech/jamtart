@@ -1,24 +1,35 @@
 use anyhow::Result;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::sync::Mutex;
 use tokio::time::interval;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::events::{Event, NodeInformation};
 use crate::store::EventStore;
 
-/// Maximum number of events to buffer before forcing a flush
-/// Increased from 100 to 500 to handle higher throughput (50k events/sec @ 10ms interval)
-const MAX_BATCH_SIZE: usize = 500;
+/// Number of parallel DB writer tasks (work-stealing pool).
+/// More workers = more concurrent COPY operations in flight while waiting on DB I/O.
+const NUM_WRITERS: usize = 32;
 
-/// Maximum time to wait before flushing a batch
-/// Decreased from 20ms to 10ms for better throughput and lower latency
-const BATCH_TIMEOUT: Duration = Duration::from_millis(10);
+/// Maximum number of events to buffer per writer before flushing.
+/// Increased from 3,000 to 10,000 for TimescaleDB hypertable efficiency.
+const MAX_BATCH_SIZE: usize = 16_000;
 
-/// Number of events that can be buffered in the channel
-/// Increased from 100k to 500k to handle bursts from 1024 concurrent nodes
-const CHANNEL_SIZE: usize = 500_000;
+/// Maximum time to wait for events to accumulate before flushing.
+/// After receiving the first event, the worker will keep draining for up to
+/// this duration (or until MAX_BATCH_SIZE is reached), preventing tiny 1-event
+/// flushes when many workers compete for a trickle of events.
+const BATCH_TIMEOUT: Duration = Duration::from_millis(100);
+
+/// Total channel capacity shared across all writers.
+const CHANNEL_SIZE: usize = 5_000_000;
+
+/// Interval for flushing per-node event counts to the database.
+/// Replaces the per-row trigger which is catastrophic at 3M events/s.
+const NODE_STATS_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 pub struct BatchWriter {
@@ -29,6 +40,7 @@ enum WriterCommand {
     NodeConnected {
         node_id: String,
         info: NodeInformation,
+        address: String,
     },
     NodeDisconnected {
         node_id: String,
@@ -45,34 +57,87 @@ enum WriterCommand {
 }
 
 impl BatchWriter {
+    /// Create a new BatchWriter with N parallel writer workers (work-stealing pool).
+    ///
+    /// The receiver is wrapped in `Arc<Mutex<Receiver>>` and shared across N workers.
+    /// Each worker locks the mutex briefly to drain events, then releases it and
+    /// performs the slow DB write without holding the lock. This provides natural
+    /// work-stealing: idle workers pick up events while busy workers are blocked on I/O.
     pub fn new(store: Arc<EventStore>) -> Self {
         let (sender, receiver) = mpsc::channel(CHANNEL_SIZE);
+        let shared_rx = Arc::new(Mutex::new(receiver));
+        let shared_node_counts: Arc<Mutex<HashMap<String, u64>>> =
+            Arc::new(Mutex::new(HashMap::new()));
 
-        // Spawn the background writer task
-        // Note: This task is critical. If it fails, the entire process should restart
-        // because:
-        // 1. The channel receiver is consumed and cannot be recreated without
-        //    invalidating all existing BatchWriter sender references
-        // 2. A failed batch writer means NO events are persisted (silent data loss)
-        // 3. Failing fast is better than silently appearing to work
-        // 4. The health check (batch_writer_check) will detect unresponsiveness
-        //    before panic, allowing monitoring/alerting systems to act
+        // Single dedicated task for flushing node stats to DB.
+        // Aggregates counts from all writers, preventing deadlocks from concurrent UPDATEs.
+        {
+            let counts = shared_node_counts.clone();
+            let store = store.clone();
+            tokio::spawn(async move {
+                let mut tick = interval(NODE_STATS_INTERVAL);
+                tick.tick().await;
+                loop {
+                    tick.tick().await;
+                    let batch = {
+                        let mut map = counts.lock().await;
+                        if map.is_empty() {
+                            continue;
+                        }
+                        std::mem::take(&mut *map)
+                    };
+                    if let Err(e) = store.update_node_stats(&batch).await {
+                        warn!("Stats flusher failed to update node stats: {}", e);
+                    }
+                }
+            });
+        }
+
+        for id in 0..NUM_WRITERS {
+            let rx = shared_rx.clone();
+            let store = store.clone();
+            let node_counts = shared_node_counts.clone();
+            tokio::spawn(async move {
+                info!("Writer worker {} started", id);
+                match writer_worker(id, rx, Some(store), node_counts).await {
+                    Ok(_) => {
+                        info!("Writer worker {} completed normally", id);
+                    }
+                    Err(e) => {
+                        error!(
+                            "CRITICAL: Writer worker {} failed - events may not be persisted: {}",
+                            id, e
+                        );
+                        panic!(
+                            "Writer worker {} failed: {}. Process restart required.",
+                            id, e
+                        );
+                    }
+                }
+            });
+        }
+
+        BatchWriter { sender }
+    }
+
+    /// Create a BatchWriter that discards all events (no database persistence).
+    /// Used when running with --no-database flag for WebSocket-only mode.
+    pub fn new_no_database() -> Self {
+        let (sender, receiver) = mpsc::channel(CHANNEL_SIZE);
+        let shared_rx = Arc::new(Mutex::new(receiver));
+
+        let shared_node_counts: Arc<Mutex<HashMap<String, u64>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        // Single worker in no-database mode (just discards events)
         tokio::spawn(async move {
-            info!("Batch writer task started");
-            match batch_writer_loop(receiver, store).await {
+            info!("Batch writer started (no-database mode)");
+            match writer_worker(0, shared_rx, None, shared_node_counts).await {
                 Ok(_) => {
-                    info!("Batch writer task completed normally");
+                    info!("Batch writer completed normally (no-database mode)");
                 }
                 Err(e) => {
-                    error!(
-                        "CRITICAL: Batch writer task failed - events will not be persisted: {}",
-                        e
-                    );
-                    error!(
-                        "This is a fatal error. The process should be restarted by the supervisor."
-                    );
-                    // Panic to trigger process restart via systemd/k8s
-                    panic!("Batch writer task failed: {}. Process restart required.", e);
+                    warn!("Batch writer ended with error (no-database mode): {}", e);
                 }
             }
         });
@@ -81,9 +146,9 @@ impl BatchWriter {
     }
 
     /// Queue a node connection event (async for reliability)
-    pub async fn node_connected(&self, node_id: String, info: NodeInformation) -> Result<()> {
+    pub async fn node_connected(&self, node_id: String, info: NodeInformation, address: String) -> Result<()> {
         self.sender
-            .send(WriterCommand::NodeConnected { node_id, info })
+            .send(WriterCommand::NodeConnected { node_id, info, address })
             .await
             .map_err(|e| anyhow::anyhow!("Failed to send node connection: {}", e))?;
         Ok(())
@@ -120,7 +185,7 @@ impl BatchWriter {
         CHANNEL_SIZE - self.sender.capacity()
     }
 
-    /// Shutdown the batch writer
+    /// Shutdown all writer workers
     pub async fn shutdown(&self) -> Result<()> {
         self.sender
             .send(WriterCommand::Shutdown)
@@ -129,171 +194,301 @@ impl BatchWriter {
         Ok(())
     }
 
-    /// Flush all pending writes to database
+    /// Flush all pending writes to database.
     ///
-    /// **For testing only**: This method forces immediate flush of all
-    /// batched events and node updates to the database. It's necessary
-    /// in tests to ensure data is written before queries, since the
-    /// batch writer runs asynchronously in the background.
-    ///
-    /// In production, the batch writer automatically flushes based on:
-    /// - Time-based intervals (20ms)
-    /// - Batch size limits (1000 events)
-    /// - Node connection events (immediate flush)
-    ///
-    /// This method is public (not #[cfg(test)]) because it's useful
-    /// for graceful shutdown and debugging, but should NOT be called
-    /// in normal operation as it defeats the purpose of batching.
+    /// **For testing only**: Forces immediate flush. Sends a flush command to
+    /// every worker so all local buffers are drained, then waits for all to complete.
     pub async fn flush(&self) -> Result<()> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        self.sender
-            .send(WriterCommand::Flush { response: tx })
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to send flush command: {}", e))?;
-        let result = rx
-            .await
-            .map_err(|e| anyhow::anyhow!("Flush response channel closed: {}", e))?;
-        result.map_err(|e| anyhow::anyhow!("Flush failed: {}", e))
+        let mut receivers = Vec::with_capacity(NUM_WRITERS);
+        for _ in 0..NUM_WRITERS {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            self.sender
+                .send(WriterCommand::Flush { response: tx })
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to send flush command: {}", e))?;
+            receivers.push(rx);
+        }
+        for rx in receivers {
+            let result = rx
+                .await
+                .map_err(|e| anyhow::anyhow!("Flush response channel closed: {}", e))?;
+            result.map_err(|e| anyhow::anyhow!("Flush failed: {}", e))?;
+        }
+        Ok(())
     }
 }
 
-async fn batch_writer_loop(
-    mut receiver: Receiver<WriterCommand>,
-    store: Arc<EventStore>,
+/// Individual writer worker task. Multiple instances share the same receiver
+/// via Arc<Mutex<Receiver>>, implementing implicit work-stealing.
+///
+/// Each worker:
+/// 1. Locks the mutex briefly to drain events via try_recv() (microseconds)
+/// 2. Releases the mutex
+/// 3. Flushes the event batch to DB (milliseconds, no lock held)
+/// 4. Node updates are flushed separately on a timer (decoupled from event path)
+/// 5. Other workers drain events while this one is blocked on I/O
+async fn writer_worker(
+    id: usize,
+    receiver: Arc<Mutex<Receiver<WriterCommand>>>,
+    store: Option<Arc<EventStore>>,
+    shared_node_counts: Arc<Mutex<HashMap<String, u64>>>,
 ) -> Result<()> {
-    let mut interval = interval(BATCH_TIMEOUT);
-    let mut event_batch = Vec::with_capacity(MAX_BATCH_SIZE);
-    let mut node_updates: Vec<(String, Option<NodeInformation>)> = Vec::new();
+    let mut event_batch: Vec<(String, u64, Event)> = Vec::with_capacity(MAX_BATCH_SIZE);
+    let mut node_connects: Vec<(String, NodeInformation, String)> = Vec::new();
+    let mut node_disconnects: Vec<String> = Vec::new();
+    let mut node_counts: HashMap<String, u64> = HashMap::new();
 
-    info!("Batch writer started");
+    let mut stats_interval = interval(NODE_STATS_INTERVAL);
+    stats_interval.tick().await;
 
-    // Consume the first tick which fires immediately
-    interval.tick().await;
-
-    // Single processing loop - no two-phase initialization
     loop {
-        tokio::select! {
-            _ = interval.tick() => {
-                // Periodic flush
-                if !event_batch.is_empty() || !node_updates.is_empty() {
-                    debug!("Periodic flush: {} events, {} node updates", event_batch.len(), node_updates.len());
-                    if let Err(e) = flush_batch(&store, &mut event_batch, &mut node_updates).await {
-                        error!("Periodic flush error: {}", e);
-                    }
-                }
-            }
-            Some(command) = receiver.recv() => {
-                match command {
-                    WriterCommand::Event { node_id, event_id, event } => {
-                        event_batch.push((node_id, event_id, event));
+        // Phase 1: Acquire lock and drain available events into local batch.
+        // Hold lock only for try_recv() calls (microseconds), release before DB I/O.
+        let mut flush_response: Option<tokio::sync::oneshot::Sender<Result<()>>> = None;
+        let should_shutdown = drain_from_channel(
+            &receiver,
+            &mut event_batch,
+            &mut node_connects,
+            &mut node_disconnects,
+            &mut node_counts,
+            &mut flush_response,
+        )
+        .await;
 
-                        // Flush if batch is full
-                        if event_batch.len() >= MAX_BATCH_SIZE {
-                            debug!("Batch size flush: {} events", event_batch.len());
-                            if let Err(e) = flush_batch(&store, &mut event_batch, &mut node_updates).await {
-                                error!("Batch size flush error: {}", e);
-                            }
-                        }
-                    }
-                    WriterCommand::NodeConnected { node_id, info } => {
-                        info!("Node connected: {}, flushing immediately", node_id);
-                        node_updates.push((node_id, Some(info)));
-                        // Force flush node updates immediately to avoid race conditions
-                        if let Err(e) = flush_batch(&store, &mut event_batch, &mut node_updates).await {
-                            error!("Node connection flush error: {}", e);
-                        }
-                    }
-                    WriterCommand::NodeDisconnected { node_id } => {
-                        info!("Node disconnected: {}, flushing immediately", node_id);
-                        node_updates.push((node_id, None));
-                        // Flush disconnections immediately too (symmetry with connections)
-                        if let Err(e) = flush_batch(&store, &mut event_batch, &mut node_updates).await {
-                            error!("Node disconnection flush error: {}", e);
-                        }
-                    }
-                    WriterCommand::Flush { response } => {
-                        debug!("Manual flush requested: {} events, {} node updates", event_batch.len(), node_updates.len());
-                        let result = flush_batch(&store, &mut event_batch, &mut node_updates).await;
-                        if let Err(ref e) = result {
-                            error!("Manual flush error: {}", e);
-                        }
-                        let _ = response.send(result);
-                    }
-                    WriterCommand::Shutdown => {
-                        info!("Batch writer shutting down, performing final flush");
-                        if let Err(e) = flush_batch(&store, &mut event_batch, &mut node_updates).await {
-                            error!("Shutdown flush error: {}", e);
-                        }
-                        break;
-                    }
+        // Phase 2: Flush EVENT batch to DB (slow, milliseconds — NO lock held)
+        if !event_batch.is_empty() {
+            let result = flush_events(&store, &mut event_batch).await;
+            if let Err(e) = result {
+                error!("Writer {} event flush error: {}", id, e);
+            }
+        }
+
+        // Phase 3: Flush node connect/disconnect immediately
+        // These are rare events (~1024 total) so no need to batch on a timer
+        if let Some(ref store) = store {
+            if !node_connects.is_empty() {
+                let connects = std::mem::take(&mut node_connects);
+                if let Err(e) = store.store_nodes_connected_batch(&connects).await {
+                    warn!("Writer {} failed to flush node connects: {}", id, e);
                 }
             }
+            if !node_disconnects.is_empty() {
+                let disconnects = std::mem::take(&mut node_disconnects);
+                if let Err(e) = store.store_nodes_disconnected_batch(&disconnects).await {
+                    warn!("Writer {} failed to flush node disconnects: {}", id, e);
+                }
+            }
+        } else {
+            node_connects.clear();
+            node_disconnects.clear();
+        }
+
+        // Send flush response after everything is written
+        if let Some(response) = flush_response.take() {
+            let _ = response.send(Ok(()));
+        }
+
+        // Phase 4: Merge local node counts into shared aggregator (every 5 seconds)
+        // A single dedicated task flushes the shared map to DB, preventing deadlocks
+        if tokio::time::timeout(Duration::ZERO, stats_interval.tick())
+            .await
+            .is_ok()
+            && !node_counts.is_empty()
+        {
+            let local = std::mem::take(&mut node_counts);
+            let mut shared = shared_node_counts.lock().await;
+            for (node_id, count) in local {
+                *shared.entry(node_id).or_default() += count;
+            }
+        }
+
+        if should_shutdown {
+            // Final event flush
+            if let Err(e) = flush_events(&store, &mut event_batch).await {
+                error!("Writer {} shutdown event flush error: {}", id, e);
+            }
+            // Final node updates flush
+            if let Some(ref store) = store {
+                if !node_connects.is_empty() {
+                    let _ = store.store_nodes_connected_batch(&node_connects).await;
+                }
+                if !node_disconnects.is_empty() {
+                    let _ = store
+                        .store_nodes_disconnected_batch(&node_disconnects)
+                        .await;
+                }
+            }
+            // Merge remaining node counts into shared aggregator
+            if !node_counts.is_empty() {
+                let mut shared = shared_node_counts.lock().await;
+                for (node_id, count) in &node_counts {
+                    *shared.entry(node_id.clone()).or_default() += count;
+                }
+            }
+            info!("Writer worker {} stopped", id);
+            break;
         }
     }
 
-    info!("Batch writer stopped");
     Ok(())
 }
 
-async fn flush_batch(
-    store: &EventStore,
+/// Drain events from the shared channel into local buffers.
+/// Returns true if a Shutdown command was received.
+///
+/// Strategy: block-wait for the first event, then keep draining for up to
+/// BATCH_TIMEOUT (or until MAX_BATCH_SIZE). This prevents tiny 1-event flushes
+/// when 32 workers compete for events on a lightly-loaded channel.
+async fn drain_from_channel(
+    receiver: &Arc<Mutex<Receiver<WriterCommand>>>,
     event_batch: &mut Vec<(String, u64, Event)>,
-    node_updates: &mut Vec<(String, Option<NodeInformation>)>,
-) -> Result<()> {
-    let event_count = event_batch.len();
-    let node_count = node_updates.len();
+    node_connects: &mut Vec<(String, NodeInformation, String)>,
+    node_disconnects: &mut Vec<String>,
+    node_counts: &mut HashMap<String, u64>,
+    flush_response: &mut Option<tokio::sync::oneshot::Sender<Result<()>>>,
+) -> bool {
+    let mut rx = receiver.lock().await;
 
-    if event_count == 0 && node_count == 0 {
-        return Ok(());
+    // Phase 1: Block-wait for the first event (no point spinning with empty batch)
+    match rx.recv().await {
+        Some(cmd) => match handle_command(
+            cmd,
+            event_batch,
+            node_connects,
+            node_disconnects,
+            node_counts,
+            flush_response,
+        ) {
+            CommandAction::Shutdown => return true,
+            CommandAction::Flush => return false,
+            CommandAction::Continue => {}
+        },
+        None => return true, // channel closed
     }
 
-    debug!(
-        "Flushing batch: {} events, {} node updates",
-        event_count, node_count
-    );
+    // Phase 2: Drain as many events as possible within BATCH_TIMEOUT.
+    // This lets events accumulate into larger batches instead of flushing
+    // after every tiny handful of events.
+    let deadline = tokio::time::Instant::now() + BATCH_TIMEOUT;
 
-    // Process node updates first
-    // Note: Using drain() for simplicity. If an error occurs, we fail fast (panic)
-    // since the batch writer task failure will restart the process anyway.
-    for (node_id, info) in node_updates.drain(..) {
-        match info {
-            Some(info) => {
-                debug!("Storing node connection for {}", node_id);
-                store
-                    .store_node_connected(&node_id, &info)
-                    .await
-                    .map_err(|e| {
-                        error!("Failed to store node connection {}: {}", node_id, e);
-                        anyhow::anyhow!("Node connection storage failed: {}", e)
-                    })?;
-                debug!("Successfully stored node connection for {}", node_id);
-            }
-            None => {
-                debug!("Storing node disconnection for {}", node_id);
-                store.store_node_disconnected(&node_id).await.map_err(|e| {
-                    error!("Failed to store node disconnection {}: {}", node_id, e);
-                    anyhow::anyhow!("Node disconnection storage failed: {}", e)
-                })?;
+    loop {
+        if event_batch.len() >= MAX_BATCH_SIZE || flush_response.is_some() {
+            return false;
+        }
+
+        match rx.try_recv() {
+            Ok(cmd) => match handle_command(
+                cmd,
+                event_batch,
+                node_connects,
+                node_disconnects,
+                node_counts,
+                flush_response,
+            ) {
+                CommandAction::Continue => {}
+                CommandAction::Shutdown => return true,
+                CommandAction::Flush => return false,
+            },
+            Err(_) => {
+                // Channel empty — wait for more events or timeout
+                match tokio::time::timeout_at(deadline, rx.recv()).await {
+                    Ok(Some(cmd)) => match handle_command(
+                        cmd,
+                        event_batch,
+                        node_connects,
+                        node_disconnects,
+                        node_counts,
+                        flush_response,
+                    ) {
+                        CommandAction::Continue => {}
+                        CommandAction::Shutdown => return true,
+                        CommandAction::Flush => return false,
+                    },
+                    Ok(None) => return true, // channel closed
+                    Err(_) => return false,   // timeout — flush what we have
+                }
             }
         }
     }
+}
 
-    // Process events using batch insert for optimal performance
-    if !event_batch.is_empty() {
-        let batch = std::mem::take(event_batch);
-        store.store_events_batch(batch).await.map_err(|e| {
-            error!("Failed to store event batch: {}", e);
-            anyhow::anyhow!("Event batch storage failed: {}", e)
-        })?;
+enum CommandAction {
+    Continue,
+    Shutdown,
+    Flush,
+}
+
+fn handle_command(
+    cmd: WriterCommand,
+    event_batch: &mut Vec<(String, u64, Event)>,
+    node_connects: &mut Vec<(String, NodeInformation, String)>,
+    node_disconnects: &mut Vec<String>,
+    node_counts: &mut HashMap<String, u64>,
+    flush_response: &mut Option<tokio::sync::oneshot::Sender<Result<()>>>,
+) -> CommandAction {
+    match cmd {
+        WriterCommand::Event {
+            node_id,
+            event_id,
+            event,
+        } => {
+            *node_counts.entry(node_id.clone()).or_default() += 1;
+            event_batch.push((node_id, event_id, event));
+            CommandAction::Continue
+        }
+        WriterCommand::NodeConnected { node_id, info, address } => {
+            node_connects.push((node_id, info, address));
+            CommandAction::Continue
+        }
+        WriterCommand::NodeDisconnected { node_id } => {
+            node_disconnects.push(node_id);
+            CommandAction::Continue
+        }
+        WriterCommand::Flush { response } => {
+            *flush_response = Some(response);
+            CommandAction::Flush
+        }
+        WriterCommand::Shutdown => CommandAction::Shutdown,
     }
+}
+
+/// Flush only events to database (node updates are decoupled).
+async fn flush_events(
+    store: &Option<Arc<EventStore>>,
+    event_batch: &mut Vec<(String, u64, Event)>,
+) -> Result<()> {
+    let event_count = event_batch.len();
+
+    if event_count == 0 {
+        return Ok(());
+    }
+
+    // In no-database mode, just discard the events
+    let Some(store) = store else {
+        debug!("Discarding {} events (no-database mode)", event_count);
+        event_batch.clear();
+        metrics::counter!("telemetry_events_discarded").increment(event_count as u64);
+        return Ok(());
+    };
+
+    let start = std::time::Instant::now();
+
+    debug!("Flushing {} events", event_count);
+
+    // Process events using batch insert
+    let batch = std::mem::take(event_batch);
+    store.store_events_batch(batch).await.map_err(|e| {
+        error!("Failed to store event batch: {}", e);
+        anyhow::anyhow!("Event batch storage failed: {}", e)
+    })?;
 
     // Update metrics
     metrics::counter!("telemetry_events_flushed").increment(event_count as u64);
-    metrics::counter!("telemetry_node_updates_flushed").increment(node_count as u64);
 
     debug!(
-        "Flush completed successfully: {} events, {} nodes",
-        event_count, node_count
+        "Flush completed: {} events in {:?}",
+        event_count,
+        start.elapsed()
     );
     Ok(())
 }
