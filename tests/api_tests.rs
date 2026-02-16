@@ -4,7 +4,6 @@ use axum::http::StatusCode;
 use axum_test::TestServer;
 use serde_json::Value;
 use std::sync::Arc;
-use std::time::Duration;
 use tart_backend::api::{create_api_router, ApiState};
 use tart_backend::encoding::encode_message;
 use tart_backend::events::Event;
@@ -12,41 +11,28 @@ use tart_backend::types::*;
 use tart_backend::{EventStore, TelemetryServer};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
-use tokio::time::sleep;
 
 async fn setup_test_api() -> (TestServer, Arc<TelemetryServer>, u16) {
     // Setup test database (PostgreSQL)
-    let database_url = std::env::var("TEST_DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tart:tart_password@localhost:5432/tart_test".to_string());
+    let database_url = common::test_database_url();
 
-    eprintln!("DEBUG: Connecting to database: {}", database_url);
     let store = Arc::new(
         EventStore::new(&database_url)
             .await
             .expect("Failed to connect to database"),
     );
 
-    eprintln!("DEBUG: Cleaning test data...");
     store
         .cleanup_test_data()
         .await
         .expect("Failed to cleanup test data");
-    eprintln!("DEBUG: Cleanup completed");
 
-    // Small delay to ensure cleanup completes
-    sleep(Duration::from_millis(50)).await;
-
-    // Find available port for telemetry
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let telemetry_port = listener.local_addr().unwrap().port();
-    drop(listener);
-
-    let telemetry_bind = format!("127.0.0.1:{}", telemetry_port);
     let telemetry_server = Arc::new(
-        TelemetryServer::new(&telemetry_bind, Arc::clone(&store))
+        TelemetryServer::new("127.0.0.1:0", Some(Arc::clone(&store)))
             .await
             .unwrap(),
     );
+    let telemetry_port = telemetry_server.local_addr().unwrap().port();
 
     // Start telemetry server
     let telemetry_server_clone = Arc::clone(&telemetry_server);
@@ -62,18 +48,14 @@ async fn setup_test_api() -> (TestServer, Arc<TelemetryServer>, u16) {
 
     // Create API state and router
     let api_state = ApiState {
-        store,
+        store: Some(store),
         telemetry_server: Arc::clone(&telemetry_server),
         broadcaster,
         health_monitor,
-        jam_rpc: None,
     };
 
     let app = create_api_router(api_state);
     let test_server = TestServer::new(app).unwrap();
-
-    // Give servers time to start
-    sleep(Duration::from_millis(100)).await;
 
     (test_server, telemetry_server, telemetry_port)
 }
@@ -83,6 +65,8 @@ async fn connect_test_node_with_server(
     node_id: u8,
     telemetry_server: &Arc<TelemetryServer>,
 ) -> TcpStream {
+    let expected = telemetry_server.connection_count() + 1;
+
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
         .await
         .unwrap();
@@ -90,36 +74,13 @@ async fn connect_test_node_with_server(
     let mut node_info = common::test_node_info([node_id; 32]);
     node_info.implementation_name = BoundedString::new(&format!("test-node-{}", node_id)).unwrap();
 
-    eprintln!("DEBUG: Sending node info for node {}", node_id);
     let encoded = encode_message(&node_info).unwrap();
     stream.write_all(&encoded).await.unwrap();
 
-    // Wait for server to receive, decode, queue AND write to database
-    // The batch writer automatically flushes NodeConnected immediately
-    sleep(Duration::from_millis(50)).await;
-
-    // Verify the node was actually written by flushing
-    eprintln!("DEBUG: Flushing after node {} connection", node_id);
-    flush_and_wait(telemetry_server).await;
-    eprintln!("DEBUG: Node {} connection confirmed in database", node_id);
+    telemetry_server.wait_for_connections(expected).await;
+    common::flush_and_wait(telemetry_server).await;
 
     stream
-}
-
-async fn flush_and_wait(telemetry_server: &Arc<TelemetryServer>) {
-    // Flush batch writer and wait for completion
-    // This ensures all queued writes have been processed and written to PostgreSQL
-    // before we query the database in tests
-    eprintln!("DEBUG: Calling flush_writes()");
-    match telemetry_server.flush_writes().await {
-        Ok(_) => eprintln!("DEBUG: Flush completed successfully"),
-        Err(e) => {
-            eprintln!("ERROR: Flush failed: {}", e);
-            panic!("Flush failed: {}", e);
-        }
-    }
-    // Delay to ensure PostgreSQL commit completes and data is visible to other connections
-    sleep(Duration::from_millis(100)).await;
 }
 
 #[tokio::test]
@@ -162,12 +123,7 @@ async fn test_nodes_endpoint_with_connections() {
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
-    eprintln!(
-        "DEBUG: Response JSON: {}",
-        serde_json::to_string_pretty(&json).unwrap()
-    );
     let nodes = json["nodes"].as_array().unwrap();
-    eprintln!("DEBUG: Found {} nodes, expected 2", nodes.len());
     assert_eq!(nodes.len(), 2, "Expected 2 nodes but found {}", nodes.len());
 
     // Check node data
@@ -273,7 +229,7 @@ async fn test_events_endpoint_with_data() {
     }
 
     // Flush events to database
-    flush_and_wait(&telemetry_server).await;
+    common::flush_and_wait(&telemetry_server).await;
 
     let response = server.get("/api/events").await;
 
@@ -281,15 +237,6 @@ async fn test_events_endpoint_with_data() {
 
     let json: Value = response.json();
     let events = json["events"].as_array().unwrap();
-
-    // Debug: print what events we actually got
-    eprintln!("Got {} events:", events.len());
-    for (i, event) in events.iter().enumerate() {
-        eprintln!(
-            "  Event {}: type={}, timestamp={}",
-            i, event["event_type"], event["timestamp"]
-        );
-    }
 
     assert_eq!(events.len(), 3);
 
@@ -318,7 +265,7 @@ async fn test_events_pagination() {
     }
 
     // Flush events to database
-    flush_and_wait(&telemetry_server).await;
+    common::flush_and_wait(&telemetry_server).await;
 
     // Test limit
     let response = server.get("/api/events?limit=5").await;
@@ -380,7 +327,7 @@ async fn test_node_events_endpoint() {
     }
 
     // Flush events to database
-    flush_and_wait(&telemetry_server).await;
+    common::flush_and_wait(&telemetry_server).await;
 
     // Get events for node 1
     let response = server.get(&format!("/api/nodes/{}/events", node1_id)).await;
@@ -400,34 +347,6 @@ async fn test_node_events_endpoint() {
     assert_eq!(events.len(), 2);
     assert!(events.iter().all(|e| e["event_type"] == 12)); // All FinalizedBlockChanged
 }
-
-// WebSocket testing is commented out as axum-test doesn't have direct WebSocket support
-// In a real implementation, you would use a WebSocket client library to test this
-/*
-#[tokio::test]
-async fn test_websocket_connection() {
-    let (server, _, telemetry_port) = setup_test_api().await;
-
-    // Connect via WebSocket
-    let ws = server.ws("/ws").await;
-
-    // Should receive initial nodes update
-    let msg = ws.receive_text().await;
-    let json: Value = serde_json::from_str(&msg).unwrap();
-    assert_eq!(json["type"], "nodes_update");
-    assert!(json["nodes"].is_array());
-    assert_eq!(json["nodes"].as_array().unwrap().len(), 0);
-
-    // Connect a telemetry node
-    let _stream = connect_test_node(telemetry_port, 8).await;
-
-    // TODO: In a real implementation, we would receive real-time updates
-    // For now, just verify WebSocket stays connected
-    ws.send_text(json!({"type": "ping"}).to_string()).await;
-
-    ws.close().await;
-}
-*/
 
 #[tokio::test]
 async fn test_concurrent_api_requests() {

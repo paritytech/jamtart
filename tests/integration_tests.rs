@@ -12,30 +12,20 @@ use tokio::time::{sleep, timeout};
 
 async fn setup_test_server() -> (Arc<TelemetryServer>, u16) {
     // Use test PostgreSQL database
-    // For local testing: docker run -d -p 5432:5432 -e POSTGRES_USER=test -e POSTGRES_PASSWORD=test -e POSTGRES_DB=test_db postgres:16-alpine
-    let test_db_url = std::env::var("TEST_DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://test:test@localhost:5432/test_db".to_string());
-    let store = Arc::new(EventStore::new(&test_db_url).await.unwrap());
+    let database_url = common::test_database_url();
+    let store = Arc::new(EventStore::new(&database_url).await.unwrap());
 
     // Clean database before each test
     let _ = store.cleanup_test_data().await;
 
-    // Find available port
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
-
-    let bind_addr = format!("127.0.0.1:{}", port);
-    let server = Arc::new(TelemetryServer::new(&bind_addr, store).await.unwrap());
+    let server = Arc::new(TelemetryServer::new("127.0.0.1:0", Some(store)).await.unwrap());
+    let port = server.local_addr().unwrap().port();
 
     // Start server in background
     let server_clone = Arc::clone(&server);
     tokio::spawn(async move {
         server_clone.run().await.unwrap();
     });
-
-    // Give server time to start
-    sleep(Duration::from_millis(100)).await;
 
     (server, port)
 }
@@ -49,7 +39,7 @@ fn create_test_node_info() -> NodeInformation {
 
 #[tokio::test]
 async fn test_tcp_connection_and_node_info() {
-    let (_server, port) = setup_test_server().await;
+    let (server, port) = setup_test_server().await;
 
     // Connect to server
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
@@ -61,8 +51,8 @@ async fn test_tcp_connection_and_node_info() {
     let encoded = encode_message(&node_info).unwrap();
     stream.write_all(&encoded).await.unwrap();
 
-    // Give server time to process
-    sleep(Duration::from_millis(100)).await;
+    // Wait for server to register the connection
+    server.wait_for_connections(1).await;
 
     // Connection should remain open
     assert!(stream.peer_addr().is_ok());
@@ -70,7 +60,7 @@ async fn test_tcp_connection_and_node_info() {
 
 #[tokio::test]
 async fn test_send_multiple_events() {
-    let (_server, port) = setup_test_server().await;
+    let (server, port) = setup_test_server().await;
 
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
         .await
@@ -120,8 +110,8 @@ async fn test_send_multiple_events() {
         sleep(Duration::from_millis(10)).await;
     }
 
-    // Give server time to process all events
-    sleep(Duration::from_millis(200)).await;
+    // Wait for server to process all events
+    common::flush_and_wait(&server).await;
 
     // Connection should still be open
     assert!(stream.peer_addr().is_ok());
@@ -166,20 +156,28 @@ async fn test_multiple_concurrent_connections() {
                 sleep(Duration::from_millis(10)).await;
             }
 
-            sleep(Duration::from_millis(100)).await;
+            // Return stream to keep connection alive
+            stream
         });
 
         handles.push(handle);
     }
 
-    // Wait for all connections to complete
+    // Wait for all tasks to finish sending, keeping streams alive
+    let mut streams = vec![];
     for handle in handles {
-        handle.await.unwrap();
+        streams.push(handle.await.unwrap());
     }
 
-    // Check that server tracked all connections
+    // Wait for server to register all connections
+    server.wait_for_connections(5).await;
+
+    // Check that server tracked all connections (streams still alive)
     let connections = server.get_connections();
     assert_eq!(connections.len(), 5);
+
+    // Now drop streams to allow cleanup
+    drop(streams);
 }
 
 #[tokio::test]
@@ -259,7 +257,7 @@ async fn test_connection_tracking() {
     let encoded = encode_message(&node_info1).unwrap();
     stream1.write_all(&encoded).await.unwrap();
 
-    sleep(Duration::from_millis(100)).await;
+    server.wait_for_connections(1).await;
     assert_eq!(server.get_connections().len(), 1);
 
     // Connect second node
@@ -272,23 +270,23 @@ async fn test_connection_tracking() {
     let encoded = encode_message(&node_info2).unwrap();
     stream2.write_all(&encoded).await.unwrap();
 
-    sleep(Duration::from_millis(100)).await;
+    server.wait_for_connections(2).await;
     assert_eq!(server.get_connections().len(), 2);
 
     // Disconnect first node
     drop(stream1);
-    sleep(Duration::from_millis(200)).await;
+    server.wait_for_connections(1).await;
     assert_eq!(server.get_connections().len(), 1);
 
     // Disconnect second node
     drop(stream2);
-    sleep(Duration::from_millis(200)).await;
+    server.wait_for_connections(0).await;
     assert_eq!(server.get_connections().len(), 0);
 }
 
 #[tokio::test]
 async fn test_large_event_handling() {
-    let (_server, port) = setup_test_server().await;
+    let (server, port) = setup_test_server().await;
 
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
         .await
@@ -352,8 +350,8 @@ async fn test_large_event_handling() {
     let encoded = encode_message(&large_event).unwrap();
     stream.write_all(&encoded).await.unwrap();
 
-    // Give server time to process
-    sleep(Duration::from_millis(200)).await;
+    // Wait for server to process the event
+    common::flush_and_wait(&server).await;
 
     // Connection should still be open
     assert!(stream.peer_addr().is_ok());
@@ -361,7 +359,7 @@ async fn test_large_event_handling() {
 
 #[tokio::test]
 async fn test_rapid_event_sending() {
-    let (_server, port) = setup_test_server().await;
+    let (server, port) = setup_test_server().await;
 
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
         .await
@@ -387,8 +385,8 @@ async fn test_rapid_event_sending() {
     // Flush the stream
     stream.flush().await.unwrap();
 
-    // Give server time to process
-    sleep(Duration::from_secs(1)).await;
+    // Wait for server to process all events
+    common::flush_and_wait(&server).await;
 
     // Connection should still be open
     assert!(stream.peer_addr().is_ok());

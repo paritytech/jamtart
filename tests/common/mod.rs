@@ -1,5 +1,38 @@
+use std::sync::Arc;
+use std::time::Duration;
 use tart_backend::events::NodeInformation;
 use tart_backend::types::*;
+use tart_backend::TelemetryServer;
+use tokio::time::sleep;
+
+/// Returns DATABASE_URL after verifying it points to a test database.
+/// Panics if DATABASE_URL is unset or doesn't contain "test" in the name.
+pub fn test_database_url() -> String {
+    let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    assert!(
+        url.contains("test"),
+        "Refusing to run tests against non-test database: {url}"
+    );
+    url
+}
+
+/// Flush all pending batch writes and wait for database visibility.
+///
+/// The 100ms pre-flush sleep covers the TCP propagation gap: the test writes
+/// bytes to a TCP socket, but the server's async read loop must complete
+/// `read_buf()` → `decode` → `batch_writer.write_event()` before events
+/// enter the batch writer channel. The flush command has correct channel
+/// ordering (events first, then flush sentinel), but only if events are
+/// already in the channel.
+///
+/// Possible future improvements to eliminate this sleep:
+/// 1. Track bytes_consumed per connection; wait until consumed >= bytes_sent
+/// 2. Expose per-connection event_count via watch channel; wait until >= expected
+#[allow(dead_code)]
+pub async fn flush_and_wait(server: &Arc<TelemetryServer>) {
+    sleep(Duration::from_millis(100)).await;
+    server.flush_writes().await.expect("Flush failed");
+}
 
 /// Creates a test BlockSummary with reasonable default values
 #[allow(dead_code)]

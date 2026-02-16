@@ -12,30 +12,21 @@ use tokio::time::{sleep, timeout};
 
 async fn setup_optimized_test_server() -> (Arc<TelemetryServer>, u16) {
     // Use test database URL from environment or default PostgreSQL test database
-    let database_url = std::env::var("TEST_DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://localhost/tart_test".to_string());
+    let database_url = common::test_database_url();
 
     let store = Arc::new(EventStore::new(&database_url).await.unwrap());
 
     // Clean database before each test
     let _ = store.cleanup_test_data().await;
 
-    // Find available port
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
-
-    let bind_addr = format!("127.0.0.1:{}", port);
-    let server = Arc::new(TelemetryServer::new(&bind_addr, store).await.unwrap());
+    let server = Arc::new(TelemetryServer::new("127.0.0.1:0", Some(store)).await.unwrap());
+    let port = server.local_addr().unwrap().port();
 
     // Start server in background
     let server_clone = Arc::clone(&server);
     tokio::spawn(async move {
         server_clone.run().await.unwrap();
     });
-
-    // Give server time to start
-    sleep(Duration::from_millis(200)).await;
 
     (server, port)
 }
@@ -53,7 +44,7 @@ fn create_test_node_info(id: u8) -> NodeInformation {
 
 #[tokio::test]
 async fn test_optimized_server_handles_multiple_connections() {
-    let (_server, port) = setup_optimized_test_server().await;
+    let (server, port) = setup_optimized_test_server().await;
 
     // Connect 10 nodes concurrently
     let mut handles = vec![];
@@ -90,25 +81,26 @@ async fn test_optimized_server_handles_multiple_connections() {
                 sleep(Duration::from_millis(10)).await;
             }
 
-            // Keep connection alive briefly
-            sleep(Duration::from_millis(100)).await;
+            stream
         });
 
         handles.push(handle);
     }
 
-    // Wait for all connections to complete
-    for handle in handles {
-        handle.await.unwrap();
-    }
+    // Wait for all connections to complete sending
+    let _streams: Vec<_> = futures::future::join_all(handles)
+        .await
+        .into_iter()
+        .map(|r| r.unwrap())
+        .collect();
 
-    // Give batch writer time to flush
-    sleep(Duration::from_millis(200)).await;
+    // Wait for batch writer to flush
+    common::flush_and_wait(&server).await;
 }
 
 #[tokio::test]
 async fn test_rate_limiting() {
-    let (_server, port) = setup_optimized_test_server().await;
+    let (server, port) = setup_optimized_test_server().await;
 
     // Connect a single node
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
@@ -132,15 +124,15 @@ async fn test_rate_limiting() {
         stream.write_all(&encoded).await.unwrap();
     }
 
-    // Give server time to process
-    sleep(Duration::from_millis(500)).await;
+    // Wait for server to process
+    common::flush_and_wait(&server).await;
 }
 
 #[tokio::test]
 async fn test_connection_limit() {
     // This test would need to be adjusted based on the actual connection limit
     // For now, just verify we can handle a reasonable number of connections
-    let (_server, port) = setup_optimized_test_server().await;
+    let (server, port) = setup_optimized_test_server().await;
 
     let mut streams = vec![];
 
@@ -170,13 +162,13 @@ async fn test_connection_limit() {
     // We should have connected at least some nodes
     assert!(!streams.is_empty());
 
-    // Keep connections alive briefly
-    sleep(Duration::from_millis(100)).await;
+    // Wait for server to register connections
+    server.wait_for_connections(streams.len()).await;
 }
 
 #[tokio::test]
 async fn test_batch_writer_flushes() {
-    let (_server, port) = setup_optimized_test_server().await;
+    let (server, port) = setup_optimized_test_server().await;
 
     // Connect a node
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
@@ -209,15 +201,13 @@ async fn test_batch_writer_flushes() {
         stream.write_all(&encoded).await.unwrap();
     }
 
-    // Wait for batch timeout (100ms) plus some buffer
-    sleep(Duration::from_millis(150)).await;
-
-    // Events should have been flushed by now
+    // Events should be flushed by batch writer
+    common::flush_and_wait(&server).await;
 }
 
 #[tokio::test]
 async fn test_bounded_buffer_protection() {
-    let (_server, port) = setup_optimized_test_server().await;
+    let (server, port) = setup_optimized_test_server().await;
 
     // Connect a node
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
@@ -243,6 +233,6 @@ async fn test_bounded_buffer_protection() {
     // Should succeed as it's within bounds
     assert!(result.is_ok());
 
-    // Give server time to process
-    sleep(Duration::from_millis(100)).await;
+    // Wait for server to process
+    common::flush_and_wait(&server).await;
 }

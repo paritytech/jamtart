@@ -6,21 +6,17 @@ This document explains the testing architecture and best practices for the TART 
 
 ### Unit Tests (No Database Required)
 These tests run in parallel and don't require external services:
-- `types_tests.rs` - Type encoding/decoding (12 tests)
-- `events_tests.rs` - Event serialization (18 tests)
-- `error_tests.rs` - Error handling and edge cases (15 tests)
-- `encoding_tests.rs` - Binary protocol encoding (16 tests)
-- Library tests in `src/` - Core logic (10 tests)
-
-**Total: 71 unit tests**
+- `types_tests.rs` - Type encoding/decoding
+- `events_tests.rs` - Event serialization
+- `error_tests.rs` - Error handling and edge cases
+- `encoding_tests.rs` - Binary protocol encoding
+- Library tests in `src/` - Core logic
 
 ### Integration Tests (Require PostgreSQL)
 These tests use a real PostgreSQL database and MUST run serially:
-- `api_tests.rs` - REST API endpoints (10 tests)
-- `integration_tests.rs` - End-to-end telemetry flow (8 tests)
-- `optimized_server_tests.rs` - Performance and concurrency (6 tests)
-
-**Total: 24 integration tests**
+- `api_tests.rs` - REST API endpoints
+- `integration_tests.rs` - End-to-end telemetry flow
+- `optimized_server_tests.rs` - Performance and concurrency
 
 ## Running Tests Locally
 
@@ -29,7 +25,7 @@ These tests use a real PostgreSQL database and MUST run serially:
 cargo test --lib --test types_tests --test events_tests --test error_tests --test encoding_tests
 
 # Integration tests (requires PostgreSQL)
-export TEST_DATABASE_URL="postgres://tart:tart_password@localhost:5432/tart_test"
+export DATABASE_URL="postgres://tart:tart_password@localhost:5432/tart_test"
 
 # Start PostgreSQL (using docker-compose)
 docker-compose up -d postgres
@@ -40,6 +36,9 @@ cargo sqlx migrate run
 
 # Run integration tests SERIALLY
 cargo test --test api_tests --test integration_tests --test optimized_server_tests -- --test-threads=1
+
+# To reset the database completely (removes all data)
+docker-compose down -v && docker-compose up -d postgres
 ```
 
 ## Why Tests Must Run Serially (`--test-threads=1`)
@@ -73,8 +72,8 @@ Test queries database... but data might not be written yet!
 ```
 
 Even though:
-- Node connections flush immediately (line 151, 214 in batch_writer.rs)
-- Events batch every 20ms or 1000 events
+- Node connections flush immediately
+- Events batch periodically or when the batch is full
 
 The `node_connected()` method returns as soon as it QUEUES the message, not when it's written.
 
@@ -145,8 +144,8 @@ Located in `tests/common/mod.rs`:
 ✅ **Deterministic**: flush() instead of arbitrary sleeps
 ✅ **Safety**: Dangerous methods protected with #[cfg(test)]
 ✅ **Clear Intent**: Well-documented test helpers
-✅ **Fast Unit Tests**: No database for 71 tests
-✅ **Realistic Integration Tests**: Real PostgreSQL for 24 tests
+✅ **Fast Unit Tests**: No database for unit tests
+✅ **Realistic Integration Tests**: Real PostgreSQL for integration tests
 ✅ **CI Optimized**: Parallel unit tests, serial integration tests
 
 ## Alternative Approaches Considered
