@@ -1440,6 +1440,40 @@ impl Encode for Event {
                 attempt.encode(buf)?;
                 buf.extend_from_slice(id);
             }
+            Event::WorkPackageReceived {
+                submission_or_share_id,
+                core,
+                outline,
+                ..
+            } => {
+                submission_or_share_id.encode(buf)?;
+                core.encode(buf)?;
+                outline.encode(buf)?;
+            }
+            Event::Authorized {
+                submission_or_share_id,
+                cost,
+                ..
+            } => {
+                submission_or_share_id.encode(buf)?;
+                cost.encode(buf)?;
+            }
+            Event::Refined {
+                submission_or_share_id,
+                costs,
+                ..
+            } => {
+                submission_or_share_id.encode(buf)?;
+                costs.encode(buf)?;
+            }
+            Event::GuaranteeBuilt {
+                submission_id,
+                outline,
+                ..
+            } => {
+                submission_id.encode(buf)?;
+                outline.encode(buf)?;
+            }
             _ => {
                 todo!("Event::Encode not implemented for {:?}", self.event_type())
             }
@@ -1493,6 +1527,12 @@ impl Encode for Event {
             Event::TicketsGenerated { ids, .. } => 8 + ids.encoded_size(),
             Event::TicketTransferFailed { reason, .. } => 32 + 1 + 1 + reason.encoded_size(),
             Event::TicketTransferred { .. } => 32 + 1 + 1 + 4 + 1 + 32,
+            Event::WorkPackageReceived {
+                outline, ..
+            } => 8 + 2 + outline.encoded_size(), // event_id + core + outline
+            Event::Authorized { cost, .. } => 8 + cost.encoded_size(),
+            Event::Refined { costs, .. } => 8 + costs.encoded_size(),
+            Event::GuaranteeBuilt { outline, .. } => 8 + outline.encoded_size(),
             _ => todo!("Event::encoded_size not implemented for {:?}", self.event_type()),
         };
 
