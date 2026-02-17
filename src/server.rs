@@ -361,7 +361,7 @@ async fn handle_connection_optimized(
     // Queue node connection event first - only insert into DashMap on success
     info!("Queueing node connection for {}", node_id_str);
     match batch_writer
-        .node_connected(node_id_str.clone(), node_info.clone())
+        .node_connected(node_id_str.clone(), node_info.clone(), addr.to_string())
         .await
     {
         Ok(_) => {
@@ -430,7 +430,10 @@ async fn handle_connection_optimized(
                             }
 
                             // Try to queue event for batch writing
-                            match batch_writer.write_event(&node_id_str, event_count, event) {
+                            // Unwrap Arc — broadcaster already has its clone
+                            let event_owned = Arc::try_unwrap(event)
+                                .unwrap_or_else(|arc| (*arc).clone());
+                            match batch_writer.write_event(node_id_str.clone(), event_count, event_owned) {
                                 Ok(_) => {
                                     metrics::counter!("telemetry_events_received").increment(1);
 

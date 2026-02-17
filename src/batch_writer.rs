@@ -160,6 +160,11 @@ impl BatchWriter {
         CHANNEL_SIZE - self.sender.capacity()
     }
 
+    /// Get buffer usage as a percentage (0.0 - 100.0)
+    pub fn buffer_usage_percent(&self) -> f64 {
+        (self.pending_count() as f64 / CHANNEL_SIZE as f64) * 100.0
+    }
+
     /// Shutdown all writer workers
     pub async fn shutdown(&self) -> Result<()> {
         self.sender
