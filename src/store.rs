@@ -1164,10 +1164,10 @@ impl EventStore {
             WITH latest_status AS (
                 SELECT DISTINCT ON (node_id)
                     node_id,
-                    CAST(data->'Status'->>'num_shards' AS INTEGER) as num_shards,
+                    CAST(data->'Status'->>'num_shards' AS BIGINT) as num_shards,
                     CAST(data->'Status'->>'shards_size' AS BIGINT) as shards_size,
-                    CAST(data->'Status'->>'num_preimages' AS INTEGER) as num_preimages,
-                    CAST(data->'Status'->>'preimages_size' AS INTEGER) as preimages_size
+                    CAST(data->'Status'->>'num_preimages' AS BIGINT) as num_preimages,
+                    CAST(data->'Status'->>'preimages_size' AS BIGINT) as preimages_size
                 FROM events
                 WHERE event_type = 10
                 ORDER BY node_id, created_at DESC
@@ -1191,10 +1191,10 @@ impl EventStore {
             WITH latest_status AS (
                 SELECT DISTINCT ON (node_id)
                     node_id,
-                    CAST(data->'Status'->>'num_shards' AS INTEGER) as num_shards,
+                    CAST(data->'Status'->>'num_shards' AS BIGINT) as num_shards,
                     CAST(data->'Status'->>'shards_size' AS BIGINT) as shards_size,
-                    CAST(data->'Status'->>'num_preimages' AS INTEGER) as num_preimages,
-                    CAST(data->'Status'->>'preimages_size' AS INTEGER) as preimages_size,
+                    CAST(data->'Status'->>'num_preimages' AS BIGINT) as num_preimages,
+                    CAST(data->'Status'->>'preimages_size' AS BIGINT) as preimages_size,
                     timestamp
                 FROM events
                 WHERE event_type = 10
