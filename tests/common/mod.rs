@@ -5,10 +5,10 @@ use tart_backend::types::*;
 use tart_backend::TelemetryServer;
 use tokio::time::sleep;
 
-/// Returns DATABASE_URL after verifying it points to a test database.
-/// Panics if DATABASE_URL is unset or doesn't contain "test" in the name.
+/// Returns TEST_DATABASE_URL after verifying it points to a test database.
+/// Panics if TEST_DATABASE_URL is unset or doesn't contain "test" in the name.
 pub fn test_database_url() -> String {
-    let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let url = std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL must be set");
     assert!(
         url.contains("test"),
         "Refusing to run tests against non-test database: {url}"

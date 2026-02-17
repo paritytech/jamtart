@@ -25,7 +25,7 @@ These tests use a real PostgreSQL database and MUST run serially:
 cargo test --lib --test types_tests --test events_tests --test error_tests --test encoding_tests
 
 # Integration tests (requires PostgreSQL)
-export DATABASE_URL="postgres://tart:tart_password@localhost:5432/tart_test"
+export TEST_DATABASE_URL="postgres://tart:tart_password@localhost:5432/tart_test"
 
 # Start PostgreSQL (using docker-compose)
 docker-compose up -d postgres
