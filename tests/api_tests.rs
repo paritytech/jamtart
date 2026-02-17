@@ -53,7 +53,7 @@ async fn setup_test_api() -> (TestServer, Arc<TelemetryServer>, u16) {
         health_monitor,
         jam_rpc: None,
         cache: Arc::new(tart_backend::cache::TtlCache::new(
-            std::time::Duration::from_secs(5),
+            std::time::Duration::ZERO,
         )),
     };
 
