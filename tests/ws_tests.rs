@@ -13,8 +13,7 @@ use tokio_tungstenite::tungstenite::Message;
 /// Starts a real HTTP server (not axum-test) so WebSocket upgrades work.
 /// Returns (server_url, telemetry_server, telemetry_port).
 async fn setup_ws_test() -> (String, Arc<TelemetryServer>, u16) {
-    let database_url = std::env::var("TEST_DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tart:tart_password@localhost:5432/tart_test".to_string());
+    let database_url = common::test_database_url();
 
     let store = Arc::new(
         EventStore::new(&database_url)
@@ -25,19 +24,13 @@ async fn setup_ws_test() -> (String, Arc<TelemetryServer>, u16) {
         .cleanup_test_data()
         .await
         .expect("Failed to cleanup test data");
-    sleep(Duration::from_millis(50)).await;
 
-    // Start telemetry server on random port
-    let tl = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let telemetry_port = tl.local_addr().unwrap().port();
-    drop(tl);
-
-    let telemetry_bind = format!("127.0.0.1:{}", telemetry_port);
     let telemetry_server = Arc::new(
-        TelemetryServer::new(&telemetry_bind, Arc::clone(&store))
+        TelemetryServer::with_options("127.0.0.1:0", Arc::clone(&store), true)
             .await
             .unwrap(),
     );
+    let telemetry_port = telemetry_server.local_addr().unwrap().port();
 
     let ts_clone = Arc::clone(&telemetry_server);
     tokio::spawn(async move {
