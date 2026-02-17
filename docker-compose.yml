@@ -3,7 +3,7 @@ version: '3.8'
 services:
   # PostgreSQL database
   postgres:
-    image: postgres:16-alpine
+    image: timescale/timescaledb:latest-pg16
     container_name: tart-postgres
     environment:
       # WARNING: Default credentials for LOCAL DEVELOPMENT only
