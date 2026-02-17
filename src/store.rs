@@ -3485,123 +3485,125 @@ impl EventStore {
         &self,
         core_index: i32,
     ) -> Result<serde_json::Value, sqlx::Error> {
-        // Get active work packages for this core.
-        // Only WorkPackageReceived (94) carries the core field, so we start there
-        // and join downstream events via submission_or_share_id.
-        let work_packages: Vec<serde_json::Value> = sqlx::query_scalar(
-            r#"
-            WITH received AS (
-                SELECT
-                    node_id,
-                    timestamp as submitted_at,
-                    (data->'WorkPackageReceived'->>'submission_or_share_id') as wp_id
-                FROM events
-                WHERE event_type = 94
-                AND CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) = $1
-                AND created_at > NOW() - INTERVAL '1 hour'
-            ),
-            latest_stage AS (
-                SELECT DISTINCT ON (r.wp_id)
-                    r.wp_id,
-                    r.submitted_at,
-                    r.node_id,
-                    COALESCE(e.event_type, 94) as event_type,
-                    COALESCE(e.timestamp, r.submitted_at) as last_update,
-                    e.data as stage_data
-                FROM received r
-                LEFT JOIN LATERAL (
-                    SELECT event_type, timestamp, data
+        // Run both independent queries concurrently:
+        // Q1: Active work packages for this core
+        // Q2: Historical processing time for this core
+        let (work_packages, processing_stats) = tokio::try_join!(
+            // Q1: Active work packages — only WorkPackageReceived (94) carries the core field,
+            // so we start there and join downstream events via submission_or_share_id.
+            sqlx::query_scalar::<_, serde_json::Value>(
+                r#"
+                WITH received AS (
+                    SELECT
+                        node_id,
+                        timestamp as submitted_at,
+                        (data->'WorkPackageReceived'->>'submission_or_share_id') as wp_id
                     FROM events
-                    WHERE created_at > NOW() - INTERVAL '1 hour'
-                    AND event_type IN (95, 101, 102, 105, 109, 92)
-                    AND (
-                        data->'Authorized'->>'submission_or_share_id' = r.wp_id
-                        OR data->'Refined'->>'submission_or_share_id' = r.wp_id
-                        OR data->'WorkReportBuilt'->>'submission_or_share_id' = r.wp_id
-                        OR data->'WorkPackageFailed'->>'submission_or_share_id' = r.wp_id
-                        OR data->'GuaranteeBuilt'->>'submission_id' = r.wp_id
-                        OR data->'GuaranteesDistributed'->>'submission_id' = r.wp_id
-                    )
-                    ORDER BY timestamp DESC
-                    LIMIT 1
-                ) e ON true
-                ORDER BY r.wp_id, COALESCE(e.timestamp, r.submitted_at) DESC
-            )
-            SELECT jsonb_build_object(
-                'hash', wp_id,
-                'stage', CASE event_type
-                    WHEN 94 THEN 'received'
-                    WHEN 95 THEN 'authorized'
-                    WHEN 101 THEN 'refined'
-                    WHEN 102 THEN 'report_built'
-                    WHEN 105 THEN 'guarantee_built'
-                    WHEN 109 THEN 'distributed'
-                    WHEN 92 THEN 'failed'
-                    ELSE 'processing'
-                END,
-                'is_active', event_type NOT IN (109, 92),
-                'last_update', last_update,
-                'submitted_at', submitted_at,
-                'submitting_node', node_id,
-                'gas_used', CASE WHEN stage_data IS NOT NULL
-                    THEN COALESCE(
-                        CAST(stage_data->'Refined'->>'gas_used' AS BIGINT),
-                        NULL
-                    )
-                    ELSE NULL
-                END,
-                'elapsed_ms', EXTRACT(EPOCH FROM (last_update - submitted_at)) * 1000
-            )
-            FROM latest_stage
-            WHERE wp_id IS NOT NULL
-            ORDER BY submitted_at DESC
-            LIMIT 50
-            "#,
-        )
-        .bind(core_index)
-        .fetch_all(&self.pool)
-        .await?;
-
-        // Get historical processing time for this core
-        let processing_stats = sqlx::query(
-            r#"
-            WITH received AS (
-                SELECT
-                    (data->'WorkPackageReceived'->>'submission_or_share_id') as wp_id,
-                    timestamp as start_time
-                FROM events
-                WHERE event_type = 94
-                AND CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) = $1
-                AND created_at > NOW() - INTERVAL '1 hour'
-            ),
-            wp_times AS (
-                SELECT
-                    r.wp_id,
-                    r.start_time,
-                    MAX(e.timestamp) as end_time
-                FROM received r
-                INNER JOIN events e ON (
-                    e.created_at > NOW() - INTERVAL '1 hour'
-                    AND e.event_type IN (95, 101, 102, 105, 109)
-                    AND (
-                        e.data->'Authorized'->>'submission_or_share_id' = r.wp_id
-                        OR e.data->'Refined'->>'submission_or_share_id' = r.wp_id
-                        OR e.data->'WorkReportBuilt'->>'submission_or_share_id' = r.wp_id
-                        OR e.data->'GuaranteeBuilt'->>'submission_id' = r.wp_id
-                        OR e.data->'GuaranteesDistributed'->>'submission_id' = r.wp_id
-                    )
+                    WHERE event_type = 94
+                    AND CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) = $1
+                    AND created_at > NOW() - INTERVAL '1 hour'
+                ),
+                latest_stage AS (
+                    SELECT DISTINCT ON (r.wp_id)
+                        r.wp_id,
+                        r.submitted_at,
+                        r.node_id,
+                        COALESCE(e.event_type, 94) as event_type,
+                        COALESCE(e.timestamp, r.submitted_at) as last_update,
+                        e.data as stage_data
+                    FROM received r
+                    LEFT JOIN LATERAL (
+                        SELECT event_type, timestamp, data
+                        FROM events
+                        WHERE created_at > NOW() - INTERVAL '1 hour'
+                        AND event_type IN (95, 101, 102, 105, 109, 92)
+                        AND (
+                            data->'Authorized'->>'submission_or_share_id' = r.wp_id
+                            OR data->'Refined'->>'submission_or_share_id' = r.wp_id
+                            OR data->'WorkReportBuilt'->>'submission_or_share_id' = r.wp_id
+                            OR data->'WorkPackageFailed'->>'submission_or_share_id' = r.wp_id
+                            OR data->'GuaranteeBuilt'->>'submission_id' = r.wp_id
+                            OR data->'GuaranteesDistributed'->>'submission_id' = r.wp_id
+                        )
+                        ORDER BY timestamp DESC
+                        LIMIT 1
+                    ) e ON true
+                    ORDER BY r.wp_id, COALESCE(e.timestamp, r.submitted_at) DESC
                 )
-                GROUP BY r.wp_id, r.start_time
+                SELECT jsonb_build_object(
+                    'hash', wp_id,
+                    'stage', CASE event_type
+                        WHEN 94 THEN 'received'
+                        WHEN 95 THEN 'authorized'
+                        WHEN 101 THEN 'refined'
+                        WHEN 102 THEN 'report_built'
+                        WHEN 105 THEN 'guarantee_built'
+                        WHEN 109 THEN 'distributed'
+                        WHEN 92 THEN 'failed'
+                        ELSE 'processing'
+                    END,
+                    'is_active', event_type NOT IN (109, 92),
+                    'last_update', last_update,
+                    'submitted_at', submitted_at,
+                    'submitting_node', node_id,
+                    'gas_used', CASE WHEN stage_data IS NOT NULL
+                        THEN COALESCE(
+                            CAST(stage_data->'Refined'->>'gas_used' AS BIGINT),
+                            NULL
+                        )
+                        ELSE NULL
+                    END,
+                    'elapsed_ms', EXTRACT(EPOCH FROM (last_update - submitted_at)) * 1000
+                )
+                FROM latest_stage
+                WHERE wp_id IS NOT NULL
+                ORDER BY submitted_at DESC
+                LIMIT 50
+                "#,
             )
-            SELECT
-                COALESCE(AVG(EXTRACT(EPOCH FROM (end_time - start_time)) * 1000), 0)::FLOAT8 as avg_processing_ms,
-                COUNT(*) as completed_count
-            FROM wp_times
-            "#,
-        )
-        .bind(core_index)
-        .fetch_one(&self.pool)
-        .await?;
+            .bind(core_index)
+            .fetch_all(&self.pool),
+
+            // Q2: Historical processing time for this core
+            sqlx::query(
+                r#"
+                WITH received AS (
+                    SELECT
+                        (data->'WorkPackageReceived'->>'submission_or_share_id') as wp_id,
+                        timestamp as start_time
+                    FROM events
+                    WHERE event_type = 94
+                    AND CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) = $1
+                    AND created_at > NOW() - INTERVAL '1 hour'
+                ),
+                wp_times AS (
+                    SELECT
+                        r.wp_id,
+                        r.start_time,
+                        MAX(e.timestamp) as end_time
+                    FROM received r
+                    INNER JOIN events e ON (
+                        e.created_at > NOW() - INTERVAL '1 hour'
+                        AND e.event_type IN (95, 101, 102, 105, 109)
+                        AND (
+                            e.data->'Authorized'->>'submission_or_share_id' = r.wp_id
+                            OR e.data->'Refined'->>'submission_or_share_id' = r.wp_id
+                            OR e.data->'WorkReportBuilt'->>'submission_or_share_id' = r.wp_id
+                            OR e.data->'GuaranteeBuilt'->>'submission_id' = r.wp_id
+                            OR e.data->'GuaranteesDistributed'->>'submission_id' = r.wp_id
+                        )
+                    )
+                    GROUP BY r.wp_id, r.start_time
+                )
+                SELECT
+                    COALESCE(AVG(EXTRACT(EPOCH FROM (end_time - start_time)) * 1000), 0)::FLOAT8 as avg_processing_ms,
+                    COUNT(*) as completed_count
+                FROM wp_times
+                "#,
+            )
+            .bind(core_index)
+            .fetch_one(&self.pool),
+        )?;
 
         let active_count = work_packages
             .iter()
@@ -4913,47 +4915,145 @@ impl EventStore {
         &self,
         core_index: i32,
     ) -> Result<serde_json::Value, sqlx::Error> {
-        // Get processing metrics for this core (1 hour window).
-        // Start from WorkPackageReceived (94) which has the core field,
-        // then count downstream events linked via submission_or_share_id.
-        let metrics = sqlx::query(
-            r#"
-            WITH core_wp_ids AS (
-                SELECT DISTINCT (data->'WorkPackageReceived'->>'submission_or_share_id') as wp_id
+        // Run all 4 independent queries concurrently for this core (1 hour window).
+        // Q1: Pipeline counts, Q2: Gas metrics, Q3: Latency metrics, Q4: 24h WP count
+        let (metrics, gas, latency, wps_24h) = tokio::try_join!(
+            // Q1: Pipeline counts — start from WorkPackageReceived (94) which has the core field,
+            // then count downstream events linked via submission_or_share_id.
+            sqlx::query(
+                r#"
+                WITH core_wp_ids AS (
+                    SELECT DISTINCT (data->'WorkPackageReceived'->>'submission_or_share_id') as wp_id
+                    FROM events
+                    WHERE event_type = 94
+                    AND CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) = $1
+                    AND created_at > NOW() - INTERVAL '1 hour'
+                ),
+                core_events AS (
+                    SELECT e.event_type, e.node_id, e.data
+                    FROM events e
+                    INNER JOIN core_wp_ids c ON (
+                        e.data->'WorkPackageReceived'->>'submission_or_share_id' = c.wp_id
+                        OR e.data->'Authorized'->>'submission_or_share_id' = c.wp_id
+                        OR e.data->'Refined'->>'submission_or_share_id' = c.wp_id
+                        OR e.data->'WorkReportBuilt'->>'submission_or_share_id' = c.wp_id
+                        OR e.data->'WorkPackageFailed'->>'submission_or_share_id' = c.wp_id
+                        OR e.data->'GuaranteeBuilt'->>'submission_id' = c.wp_id
+                        OR e.data->'GuaranteesDistributed'->>'submission_id' = c.wp_id
+                    )
+                    WHERE e.event_type IN (92, 94, 95, 101, 102, 105, 109)
+                    AND e.created_at > NOW() - INTERVAL '1 hour'
+                )
+                SELECT
+                    COUNT(*) FILTER (WHERE event_type = 94) as wps_received,
+                    COUNT(*) FILTER (WHERE event_type = 101) as refinements_completed,
+                    COUNT(*) FILTER (WHERE event_type = 92) as refinements_failed,
+                    COUNT(*) FILTER (WHERE event_type = 102) as reports_built,
+                    COUNT(*) FILTER (WHERE event_type = 105) as guarantees_built,
+                    COUNT(*) FILTER (WHERE event_type = 109) as guarantees_distributed,
+                    COUNT(DISTINCT node_id) as active_validators
+                FROM core_events
+                "#,
+            )
+            .bind(core_index)
+            .fetch_one(&self.pool),
+
+            // Q2: Gas usage from Refined (101) events — costs[].total.gas_used
+            // Also get gas limits from WorkPackageReceived (94) — outline.work_items[].refine_gas_limit
+            sqlx::query(
+                r#"
+                WITH core_wp_ids AS (
+                    SELECT DISTINCT (data->'WorkPackageReceived'->>'submission_or_share_id') as wp_id
+                    FROM events
+                    WHERE event_type = 94
+                    AND CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) = $1
+                    AND created_at > NOW() - INTERVAL '1 hour'
+                ),
+                refined_gas AS (
+                    SELECT
+                        (SELECT COALESCE(SUM((c->'total'->>'gas_used')::BIGINT), 0)
+                         FROM jsonb_array_elements(e.data->'Refined'->'costs') c
+                        ) as gas_used
+                    FROM events e
+                    INNER JOIN core_wp_ids c ON e.data->'Refined'->>'submission_or_share_id' = c.wp_id
+                    WHERE e.event_type = 101
+                    AND e.created_at > NOW() - INTERVAL '1 hour'
+                ),
+                wp_gas_limits AS (
+                    SELECT
+                        (SELECT COALESCE(SUM((wi->>'refine_gas_limit')::BIGINT), 0)
+                         FROM jsonb_array_elements(e.data->'WorkPackageReceived'->'outline'->'work_items') wi
+                        ) as gas_limit
+                    FROM events e
+                    WHERE e.event_type = 94
+                    AND CAST(e.data->'WorkPackageReceived'->>'core' AS INTEGER) = $1
+                    AND e.created_at > NOW() - INTERVAL '1 hour'
+                )
+                SELECT
+                    COALESCE(AVG(rg.gas_used), 0)::FLOAT8 as avg_gas_used,
+                    COALESCE(SUM(rg.gas_used), 0)::BIGINT as total_gas_used,
+                    COALESCE(AVG(wl.gas_limit), 0)::FLOAT8 as avg_gas_limit
+                FROM refined_gas rg
+                FULL OUTER JOIN (SELECT AVG(gas_limit) as gas_limit FROM wp_gas_limits) wl ON true
+                "#,
+            )
+            .bind(core_index)
+            .fetch_one(&self.pool),
+
+            // Q3: Latency metrics using created_at (wall clock), NOT timestamp (JCE epoch).
+            // Measures time from WorkPackageReceived to each downstream stage.
+            sqlx::query(
+                r#"
+                WITH core_received AS (
+                    SELECT
+                        (data->'WorkPackageReceived'->>'submission_or_share_id') as wp_id,
+                        created_at as received_at
+                    FROM events
+                    WHERE event_type = 94
+                    AND CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) = $1
+                    AND created_at > NOW() - INTERVAL '1 hour'
+                ),
+                wp_durations AS (
+                    SELECT
+                        EXTRACT(EPOCH FROM (MAX(e.created_at) - r.received_at)) * 1000 as completion_time_ms
+                    FROM core_received r
+                    INNER JOIN events e ON (
+                        e.created_at > NOW() - INTERVAL '1 hour'
+                        AND e.event_type IN (95, 101, 102, 105, 109)
+                        AND (
+                            e.data->'Authorized'->>'submission_or_share_id' = r.wp_id
+                            OR e.data->'Refined'->>'submission_or_share_id' = r.wp_id
+                            OR e.data->'WorkReportBuilt'->>'submission_or_share_id' = r.wp_id
+                            OR e.data->'GuaranteeBuilt'->>'submission_id' = r.wp_id
+                            OR e.data->'GuaranteesDistributed'->>'submission_id' = r.wp_id
+                        )
+                    )
+                    GROUP BY r.wp_id, r.received_at
+                )
+                SELECT
+                    COALESCE(AVG(completion_time_ms), 0)::FLOAT8 as avg_completion_ms,
+                    COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY completion_time_ms), 0)::FLOAT8 as p95_completion_ms,
+                    COUNT(*) as sample_count
+                FROM wp_durations
+                WHERE completion_time_ms > 0 AND completion_time_ms < 300000
+                "#,
+            )
+            .bind(core_index)
+            .fetch_one(&self.pool),
+
+            // Q4: 24h WP count
+            sqlx::query_scalar::<_, i64>(
+                r#"
+                SELECT COUNT(*)
                 FROM events
                 WHERE event_type = 94
                 AND CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) = $1
-                AND created_at > NOW() - INTERVAL '1 hour'
-            ),
-            core_events AS (
-                SELECT e.event_type, e.node_id, e.data
-                FROM events e
-                INNER JOIN core_wp_ids c ON (
-                    e.data->'WorkPackageReceived'->>'submission_or_share_id' = c.wp_id
-                    OR e.data->'Authorized'->>'submission_or_share_id' = c.wp_id
-                    OR e.data->'Refined'->>'submission_or_share_id' = c.wp_id
-                    OR e.data->'WorkReportBuilt'->>'submission_or_share_id' = c.wp_id
-                    OR e.data->'WorkPackageFailed'->>'submission_or_share_id' = c.wp_id
-                    OR e.data->'GuaranteeBuilt'->>'submission_id' = c.wp_id
-                    OR e.data->'GuaranteesDistributed'->>'submission_id' = c.wp_id
-                )
-                WHERE e.event_type IN (92, 94, 95, 101, 102, 105, 109)
-                AND e.created_at > NOW() - INTERVAL '1 hour'
+                AND created_at > NOW() - INTERVAL '24 hours'
+                "#,
             )
-            SELECT
-                COUNT(*) FILTER (WHERE event_type = 94) as wps_received,
-                COUNT(*) FILTER (WHERE event_type = 101) as refinements_completed,
-                COUNT(*) FILTER (WHERE event_type = 92) as refinements_failed,
-                COUNT(*) FILTER (WHERE event_type = 102) as reports_built,
-                COUNT(*) FILTER (WHERE event_type = 105) as guarantees_built,
-                COUNT(*) FILTER (WHERE event_type = 109) as guarantees_distributed,
-                COUNT(DISTINCT node_id) as active_validators
-            FROM core_events
-            "#,
-        )
-        .bind(core_index)
-        .fetch_one(&self.pool)
-        .await?;
+            .bind(core_index)
+            .fetch_one(&self.pool),
+        )?;
 
         let wps_received: i64 = metrics.get("wps_received");
         let refinements_completed: i64 = metrics.get("refinements_completed");
@@ -4979,49 +5079,6 @@ impl EventStore {
             100.0
         };
 
-        // Get gas usage from Refined (101) events — costs[].total.gas_used
-        // Also get gas limits from WorkPackageReceived (94) — outline.work_items[].refine_gas_limit
-        let gas = sqlx::query(
-            r#"
-            WITH core_wp_ids AS (
-                SELECT DISTINCT (data->'WorkPackageReceived'->>'submission_or_share_id') as wp_id
-                FROM events
-                WHERE event_type = 94
-                AND CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) = $1
-                AND created_at > NOW() - INTERVAL '1 hour'
-            ),
-            refined_gas AS (
-                SELECT
-                    (SELECT COALESCE(SUM((c->'total'->>'gas_used')::BIGINT), 0)
-                     FROM jsonb_array_elements(e.data->'Refined'->'costs') c
-                    ) as gas_used
-                FROM events e
-                INNER JOIN core_wp_ids c ON e.data->'Refined'->>'submission_or_share_id' = c.wp_id
-                WHERE e.event_type = 101
-                AND e.created_at > NOW() - INTERVAL '1 hour'
-            ),
-            wp_gas_limits AS (
-                SELECT
-                    (SELECT COALESCE(SUM((wi->>'refine_gas_limit')::BIGINT), 0)
-                     FROM jsonb_array_elements(e.data->'WorkPackageReceived'->'outline'->'work_items') wi
-                    ) as gas_limit
-                FROM events e
-                WHERE e.event_type = 94
-                AND CAST(e.data->'WorkPackageReceived'->>'core' AS INTEGER) = $1
-                AND e.created_at > NOW() - INTERVAL '1 hour'
-            )
-            SELECT
-                COALESCE(AVG(rg.gas_used), 0)::FLOAT8 as avg_gas_used,
-                COALESCE(SUM(rg.gas_used), 0)::BIGINT as total_gas_used,
-                COALESCE(AVG(wl.gas_limit), 0)::FLOAT8 as avg_gas_limit
-            FROM refined_gas rg
-            FULL OUTER JOIN (SELECT AVG(gas_limit) as gas_limit FROM wp_gas_limits) wl ON true
-            "#,
-        )
-        .bind(core_index)
-        .fetch_one(&self.pool)
-        .await?;
-
         let avg_gas_used: f64 = gas.get("avg_gas_used");
         let avg_gas_limit: f64 = gas.get("avg_gas_limit");
         let gas_utilization_pct = if avg_gas_limit > 0.0 {
@@ -5030,65 +5087,9 @@ impl EventStore {
             0.0
         };
 
-        // Get latency metrics using created_at (wall clock), NOT timestamp (JCE epoch).
-        // Measures time from WorkPackageReceived to each downstream stage.
-        let latency = sqlx::query(
-            r#"
-            WITH core_received AS (
-                SELECT
-                    (data->'WorkPackageReceived'->>'submission_or_share_id') as wp_id,
-                    created_at as received_at
-                FROM events
-                WHERE event_type = 94
-                AND CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) = $1
-                AND created_at > NOW() - INTERVAL '1 hour'
-            ),
-            wp_durations AS (
-                SELECT
-                    EXTRACT(EPOCH FROM (MAX(e.created_at) - r.received_at)) * 1000 as completion_time_ms
-                FROM core_received r
-                INNER JOIN events e ON (
-                    e.created_at > NOW() - INTERVAL '1 hour'
-                    AND e.event_type IN (95, 101, 102, 105, 109)
-                    AND (
-                        e.data->'Authorized'->>'submission_or_share_id' = r.wp_id
-                        OR e.data->'Refined'->>'submission_or_share_id' = r.wp_id
-                        OR e.data->'WorkReportBuilt'->>'submission_or_share_id' = r.wp_id
-                        OR e.data->'GuaranteeBuilt'->>'submission_id' = r.wp_id
-                        OR e.data->'GuaranteesDistributed'->>'submission_id' = r.wp_id
-                    )
-                )
-                GROUP BY r.wp_id, r.received_at
-            )
-            SELECT
-                COALESCE(AVG(completion_time_ms), 0)::FLOAT8 as avg_completion_ms,
-                COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY completion_time_ms), 0)::FLOAT8 as p95_completion_ms,
-                COUNT(*) as sample_count
-            FROM wp_durations
-            WHERE completion_time_ms > 0 AND completion_time_ms < 300000
-            "#,
-        )
-        .bind(core_index)
-        .fetch_one(&self.pool)
-        .await?;
-
         let avg_completion_ms: f64 = latency.get("avg_completion_ms");
         let p95_completion_ms: f64 = latency.get("p95_completion_ms");
         let sample_count: i64 = latency.get("sample_count");
-
-        // 24h WP count
-        let wps_24h: i64 = sqlx::query_scalar(
-            r#"
-            SELECT COUNT(*)
-            FROM events
-            WHERE event_type = 94
-            AND CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) = $1
-            AND created_at > NOW() - INTERVAL '24 hours'
-            "#,
-        )
-        .bind(core_index)
-        .fetch_one(&self.pool)
-        .await?;
 
         // Throughput: WPs received per second in the 1h window
         let throughput = wps_received as f64 / 3600.0;
@@ -5246,110 +5247,112 @@ impl EventStore {
         &self,
         core_index: i32,
     ) -> Result<serde_json::Value, sqlx::Error> {
-        // Find slow validators based on processing times.
-        // Start from WorkPackageReceived (94) which has the core field,
-        // then find downstream events linked via submission_or_share_id.
-        let slow_validators: Vec<serde_json::Value> = sqlx::query_scalar(
-            r#"
-            WITH core_wp_ids AS (
-                SELECT DISTINCT (data->'WorkPackageReceived'->>'submission_or_share_id') as wp_id
-                FROM events
-                WHERE event_type = 94
-                AND CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) = $1
-                AND created_at > NOW() - INTERVAL '1 hour'
-            ),
-            core_events AS (
-                SELECT e.node_id, e.event_type, e.timestamp
-                FROM events e
-                INNER JOIN core_wp_ids c ON (
-                    e.data->'WorkPackageReceived'->>'submission_or_share_id' = c.wp_id
-                    OR e.data->'Authorized'->>'submission_or_share_id' = c.wp_id
-                    OR e.data->'Refined'->>'submission_or_share_id' = c.wp_id
-                    OR e.data->'WorkReportBuilt'->>'submission_or_share_id' = c.wp_id
-                    OR e.data->'WorkPackageFailed'->>'submission_or_share_id' = c.wp_id
-                    OR e.data->'GuaranteeBuilt'->>'submission_id' = c.wp_id
-                    OR e.data->'GuaranteesDistributed'->>'submission_id' = c.wp_id
+        // Run both independent queries concurrently:
+        // Q1: Find slow validators based on processing times.
+        // Q2: Get overall bottleneck statistics for this core.
+        let (slow_validators, bottleneck_stats) = tokio::try_join!(
+            // Q1: Slow validators — start from WorkPackageReceived (94) which has the core field,
+            // then find downstream events linked via submission_or_share_id.
+            sqlx::query_scalar::<_, serde_json::Value>(
+                r#"
+                WITH core_wp_ids AS (
+                    SELECT DISTINCT (data->'WorkPackageReceived'->>'submission_or_share_id') as wp_id
+                    FROM events
+                    WHERE event_type = 94
+                    AND CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) = $1
+                    AND created_at > NOW() - INTERVAL '1 hour'
+                ),
+                core_events AS (
+                    SELECT e.node_id, e.event_type, e.timestamp
+                    FROM events e
+                    INNER JOIN core_wp_ids c ON (
+                        e.data->'WorkPackageReceived'->>'submission_or_share_id' = c.wp_id
+                        OR e.data->'Authorized'->>'submission_or_share_id' = c.wp_id
+                        OR e.data->'Refined'->>'submission_or_share_id' = c.wp_id
+                        OR e.data->'WorkReportBuilt'->>'submission_or_share_id' = c.wp_id
+                        OR e.data->'WorkPackageFailed'->>'submission_or_share_id' = c.wp_id
+                        OR e.data->'GuaranteeBuilt'->>'submission_id' = c.wp_id
+                        OR e.data->'GuaranteesDistributed'->>'submission_id' = c.wp_id
+                    )
+                    WHERE e.event_type IN (94, 95, 101, 102, 105, 109, 92)
+                    AND e.created_at > NOW() - INTERVAL '1 hour'
+                ),
+                event_lags AS (
+                    SELECT
+                        node_id,
+                        event_type,
+                        timestamp,
+                        LAG(timestamp) OVER (PARTITION BY node_id ORDER BY timestamp) as prev_timestamp
+                    FROM core_events
+                ),
+                validator_times AS (
+                    SELECT
+                        node_id,
+                        COUNT(*) as event_count,
+                        COUNT(*) FILTER (WHERE event_type IN (92)) as failure_count,
+                        AVG(EXTRACT(EPOCH FROM (timestamp - prev_timestamp)) * 1000) as avg_processing_ms
+                    FROM event_lags
+                    WHERE prev_timestamp IS NOT NULL
+                    GROUP BY node_id
+                    HAVING COUNT(*) > 5
+                ),
+                network_avg AS (
+                    SELECT AVG(avg_processing_ms) as network_avg_ms FROM validator_times
                 )
-                WHERE e.event_type IN (94, 95, 101, 102, 105, 109, 92)
-                AND e.created_at > NOW() - INTERVAL '1 hour'
-            ),
-            event_lags AS (
-                SELECT
-                    node_id,
-                    event_type,
-                    timestamp,
-                    LAG(timestamp) OVER (PARTITION BY node_id ORDER BY timestamp) as prev_timestamp
-                FROM core_events
-            ),
-            validator_times AS (
-                SELECT
-                    node_id,
-                    COUNT(*) as event_count,
-                    COUNT(*) FILTER (WHERE event_type IN (92)) as failure_count,
-                    AVG(EXTRACT(EPOCH FROM (timestamp - prev_timestamp)) * 1000) as avg_processing_ms
-                FROM event_lags
-                WHERE prev_timestamp IS NOT NULL
-                GROUP BY node_id
-                HAVING COUNT(*) > 5
-            ),
-            network_avg AS (
-                SELECT AVG(avg_processing_ms) as network_avg_ms FROM validator_times
+                SELECT jsonb_build_object(
+                    'node_id', vt.node_id,
+                    'avg_processing_ms', vt.avg_processing_ms,
+                    'event_count', vt.event_count,
+                    'failure_count', vt.failure_count,
+                    'failure_rate', ROUND((vt.failure_count::numeric / vt.event_count)::numeric, 3),
+                    'slowdown_factor', ROUND((vt.avg_processing_ms / NULLIF(na.network_avg_ms, 0))::numeric, 2),
+                    'is_bottleneck', vt.avg_processing_ms > na.network_avg_ms * 1.5 OR vt.failure_count::float / vt.event_count > 0.1
+                )
+                FROM validator_times vt
+                CROSS JOIN network_avg na
+                WHERE vt.avg_processing_ms > na.network_avg_ms * 1.2 OR vt.failure_count::float / vt.event_count > 0.05
+                ORDER BY vt.avg_processing_ms DESC
+                LIMIT 10
+                "#,
             )
-            SELECT jsonb_build_object(
-                'node_id', vt.node_id,
-                'avg_processing_ms', vt.avg_processing_ms,
-                'event_count', vt.event_count,
-                'failure_count', vt.failure_count,
-                'failure_rate', ROUND((vt.failure_count::numeric / vt.event_count)::numeric, 3),
-                'slowdown_factor', ROUND((vt.avg_processing_ms / NULLIF(na.network_avg_ms, 0))::numeric, 2),
-                'is_bottleneck', vt.avg_processing_ms > na.network_avg_ms * 1.5 OR vt.failure_count::float / vt.event_count > 0.1
-            )
-            FROM validator_times vt
-            CROSS JOIN network_avg na
-            WHERE vt.avg_processing_ms > na.network_avg_ms * 1.2 OR vt.failure_count::float / vt.event_count > 0.05
-            ORDER BY vt.avg_processing_ms DESC
-            LIMIT 10
-            "#,
-        )
-        .bind(core_index)
-        .fetch_all(&self.pool)
-        .await?;
+            .bind(core_index)
+            .fetch_all(&self.pool),
 
-        // Get overall bottleneck statistics for this core
-        let bottleneck_stats = sqlx::query(
-            r#"
-            WITH core_wp_ids AS (
-                SELECT DISTINCT (data->'WorkPackageReceived'->>'submission_or_share_id') as wp_id
-                FROM events
-                WHERE event_type = 94
-                AND CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) = $1
-                AND created_at > NOW() - INTERVAL '1 hour'
-            ),
-            core_events AS (
-                SELECT e.event_type, e.node_id
-                FROM events e
-                INNER JOIN core_wp_ids c ON (
-                    e.data->'WorkPackageReceived'->>'submission_or_share_id' = c.wp_id
-                    OR e.data->'Authorized'->>'submission_or_share_id' = c.wp_id
-                    OR e.data->'Refined'->>'submission_or_share_id' = c.wp_id
-                    OR e.data->'WorkReportBuilt'->>'submission_or_share_id' = c.wp_id
-                    OR e.data->'WorkPackageFailed'->>'submission_or_share_id' = c.wp_id
-                    OR e.data->'GuaranteeBuilt'->>'submission_id' = c.wp_id
-                    OR e.data->'GuaranteesDistributed'->>'submission_id' = c.wp_id
+            // Q2: Overall bottleneck statistics for this core
+            sqlx::query(
+                r#"
+                WITH core_wp_ids AS (
+                    SELECT DISTINCT (data->'WorkPackageReceived'->>'submission_or_share_id') as wp_id
+                    FROM events
+                    WHERE event_type = 94
+                    AND CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) = $1
+                    AND created_at > NOW() - INTERVAL '1 hour'
+                ),
+                core_events AS (
+                    SELECT e.event_type, e.node_id
+                    FROM events e
+                    INNER JOIN core_wp_ids c ON (
+                        e.data->'WorkPackageReceived'->>'submission_or_share_id' = c.wp_id
+                        OR e.data->'Authorized'->>'submission_or_share_id' = c.wp_id
+                        OR e.data->'Refined'->>'submission_or_share_id' = c.wp_id
+                        OR e.data->'WorkReportBuilt'->>'submission_or_share_id' = c.wp_id
+                        OR e.data->'WorkPackageFailed'->>'submission_or_share_id' = c.wp_id
+                        OR e.data->'GuaranteeBuilt'->>'submission_id' = c.wp_id
+                        OR e.data->'GuaranteesDistributed'->>'submission_id' = c.wp_id
+                    )
+                    WHERE e.event_type IN (94, 95, 101, 102, 105, 109, 92)
+                    AND e.created_at > NOW() - INTERVAL '1 hour'
                 )
-                WHERE e.event_type IN (94, 95, 101, 102, 105, 109, 92)
-                AND e.created_at > NOW() - INTERVAL '1 hour'
+                SELECT
+                    COUNT(*) as total_events,
+                    COUNT(*) FILTER (WHERE event_type = 92) as total_failures,
+                    COUNT(DISTINCT node_id) as validator_count
+                FROM core_events
+                "#,
             )
-            SELECT
-                COUNT(*) as total_events,
-                COUNT(*) FILTER (WHERE event_type = 92) as total_failures,
-                COUNT(DISTINCT node_id) as validator_count
-            FROM core_events
-            "#,
-        )
-        .bind(core_index)
-        .fetch_one(&self.pool)
-        .await?;
+            .bind(core_index)
+            .fetch_one(&self.pool),
+        )?;
 
         let total_events: i64 = bottleneck_stats.get("total_events");
         let total_failures: i64 = bottleneck_stats.get("total_failures");

@@ -941,13 +941,15 @@ async fn get_core_guarantors(
     Path(core_index): Path<i32>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_core_guarantors(core_index).await {
-        Ok(guarantors) => Ok(Json(guarantors)),
-        Err(e) => {
+    let key = format!("core_guarantors_{}", core_index);
+    let result = cache_or_compute(&state.cache, &key, || async {
+        state.store.get_core_guarantors(core_index).await.map_err(|e| {
             error!("Failed to get core {} guarantors: {}", core_index, e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+    })
+    .await?;
+    Ok((cache_headers(2), Json(result)))
 }
 
 /// Get work packages currently being processed on a specific core.
@@ -955,13 +957,15 @@ async fn get_core_work_packages(
     Path(core_index): Path<i32>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_core_work_packages(core_index).await {
-        Ok(work_packages) => Ok(Json(work_packages)),
-        Err(e) => {
+    let key = format!("core_work_packages_{}", core_index);
+    let result = cache_or_compute(&state.cache, &key, || async {
+        state.store.get_core_work_packages(core_index).await.map_err(|e| {
             error!("Failed to get core {} work packages: {}", core_index, e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+    })
+    .await?;
+    Ok((cache_headers(2), Json(result)))
 }
 
 /// Get enhanced work package journey with node info, timing, and error details.
@@ -1145,13 +1149,15 @@ async fn get_core_validators(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    match state.store.get_core_validators(core_index).await {
-        Ok(validators) => Ok(Json(validators)),
-        Err(e) => {
+    let key = format!("core_validators_{}", core_index);
+    let result = cache_or_compute(&state.cache, &key, || async {
+        state.store.get_core_validators(core_index).await.map_err(|e| {
             error!("Failed to get core {} validators: {}", core_index, e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+    })
+    .await?;
+    Ok((cache_headers(2), Json(result)))
 }
 
 /// Get real-time performance metrics for a specific core.
@@ -1164,13 +1170,15 @@ async fn get_core_metrics(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    match state.store.get_core_metrics(core_index).await {
-        Ok(metrics) => Ok(Json(metrics)),
-        Err(e) => {
+    let key = format!("core_metrics_{}", core_index);
+    let result = cache_or_compute(&state.cache, &key, || async {
+        state.store.get_core_metrics(core_index).await.map_err(|e| {
             error!("Failed to get core {} metrics: {}", core_index, e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+    })
+    .await?;
+    Ok((cache_headers(2), Json(result)))
 }
 
 /// Get bottleneck analysis for a specific core.
@@ -1183,13 +1191,15 @@ async fn get_core_bottlenecks(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    match state.store.get_core_bottlenecks(core_index).await {
-        Ok(bottlenecks) => Ok(Json(bottlenecks)),
-        Err(e) => {
+    let key = format!("core_bottlenecks_{}", core_index);
+    let result = cache_or_compute(&state.cache, &key, || async {
+        state.store.get_core_bottlenecks(core_index).await.map_err(|e| {
             error!("Failed to get core {} bottlenecks: {}", core_index, e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+    })
+    .await?;
+    Ok((cache_headers(2), Json(result)))
 }
 
 /// Get guarantors for a core with import sharing data.
@@ -1202,20 +1212,22 @@ async fn get_core_guarantors_enhanced(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    match state
-        .store
-        .get_core_guarantors_with_sharing(core_index)
-        .await
-    {
-        Ok(guarantors) => Ok(Json(guarantors)),
-        Err(e) => {
-            error!(
-                "Failed to get core {} guarantors with sharing: {}",
-                core_index, e
-            );
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+    let key = format!("core_guarantors_enhanced_{}", core_index);
+    let result = cache_or_compute(&state.cache, &key, || async {
+        state
+            .store
+            .get_core_guarantors_with_sharing(core_index)
+            .await
+            .map_err(|e| {
+                error!(
+                    "Failed to get core {} guarantors with sharing: {}",
+                    core_index, e
+                );
+                StatusCode::INTERNAL_SERVER_ERROR
+            })
+    })
+    .await?;
+    Ok((cache_headers(2), Json(result)))
 }
 
 /// Get audit progress for a specific work package.
