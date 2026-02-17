@@ -943,10 +943,14 @@ async fn get_core_guarantors(
 ) -> Result<impl IntoResponse, StatusCode> {
     let key = format!("core_guarantors_{}", core_index);
     let result = cache_or_compute(&state.cache, &key, || async {
-        state.store.get_core_guarantors(core_index).await.map_err(|e| {
-            error!("Failed to get core {} guarantors: {}", core_index, e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+        state
+            .store
+            .get_core_guarantors(core_index)
+            .await
+            .map_err(|e| {
+                error!("Failed to get core {} guarantors: {}", core_index, e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })
     })
     .await?;
     Ok((cache_headers(2), Json(result)))
@@ -959,10 +963,14 @@ async fn get_core_work_packages(
 ) -> Result<impl IntoResponse, StatusCode> {
     let key = format!("core_work_packages_{}", core_index);
     let result = cache_or_compute(&state.cache, &key, || async {
-        state.store.get_core_work_packages(core_index).await.map_err(|e| {
-            error!("Failed to get core {} work packages: {}", core_index, e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+        state
+            .store
+            .get_core_work_packages(core_index)
+            .await
+            .map_err(|e| {
+                error!("Failed to get core {} work packages: {}", core_index, e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })
     })
     .await?;
     Ok((cache_headers(2), Json(result)))
@@ -1151,10 +1159,14 @@ async fn get_core_validators(
 
     let key = format!("core_validators_{}", core_index);
     let result = cache_or_compute(&state.cache, &key, || async {
-        state.store.get_core_validators(core_index).await.map_err(|e| {
-            error!("Failed to get core {} validators: {}", core_index, e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+        state
+            .store
+            .get_core_validators(core_index)
+            .await
+            .map_err(|e| {
+                error!("Failed to get core {} validators: {}", core_index, e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })
     })
     .await?;
     Ok((cache_headers(2), Json(result)))
@@ -1193,10 +1205,14 @@ async fn get_core_bottlenecks(
 
     let key = format!("core_bottlenecks_{}", core_index);
     let result = cache_or_compute(&state.cache, &key, || async {
-        state.store.get_core_bottlenecks(core_index).await.map_err(|e| {
-            error!("Failed to get core {} bottlenecks: {}", core_index, e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+        state
+            .store
+            .get_core_bottlenecks(core_index)
+            .await
+            .map_err(|e| {
+                error!("Failed to get core {} bottlenecks: {}", core_index, e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })
     })
     .await?;
     Ok((cache_headers(2), Json(result)))
