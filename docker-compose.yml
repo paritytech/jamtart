@@ -1,7 +1,7 @@
 services:
   # PostgreSQL database
   postgres:
-    image: postgres:18-alpine
+    image: timescale/timescaledb:latest-pg16
     container_name: tart-postgres
     shm_size: 512mb
     environment:
