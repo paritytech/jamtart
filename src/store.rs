@@ -1567,9 +1567,8 @@ impl EventStore {
             interval = interval,
             secondary_interval = secondary_interval
         );
-        let work_packages: Vec<serde_json::Value> = sqlx::query_scalar(&query)
-            .fetch_all(&self.pool)
-            .await?;
+        let work_packages: Vec<serde_json::Value> =
+            sqlx::query_scalar(&query).fetch_all(&self.pool).await?;
 
         // Compute summary + failure breakdown from the result set
         let mut total = 0i64;
@@ -1617,28 +1616,60 @@ impl EventStore {
 
             // Count "reached" by checking stage timestamps (non-null = reached)
             if let Some(stages) = wp.get("stages") {
-                if !stages.get("received").unwrap_or(&serde_json::Value::Null).is_null() {
+                if !stages
+                    .get("received")
+                    .unwrap_or(&serde_json::Value::Null)
+                    .is_null()
+                {
                     reached_received += 1;
                 }
-                if !stages.get("authorized").unwrap_or(&serde_json::Value::Null).is_null() {
+                if !stages
+                    .get("authorized")
+                    .unwrap_or(&serde_json::Value::Null)
+                    .is_null()
+                {
                     reached_authorized += 1;
                 }
-                if !stages.get("refined").unwrap_or(&serde_json::Value::Null).is_null() {
+                if !stages
+                    .get("refined")
+                    .unwrap_or(&serde_json::Value::Null)
+                    .is_null()
+                {
                     reached_refined += 1;
                 }
-                if !stages.get("report_built").unwrap_or(&serde_json::Value::Null).is_null() {
+                if !stages
+                    .get("report_built")
+                    .unwrap_or(&serde_json::Value::Null)
+                    .is_null()
+                {
                     reached_report_built += 1;
                 }
-                if !stages.get("guarantee_built").unwrap_or(&serde_json::Value::Null).is_null() {
+                if !stages
+                    .get("guarantee_built")
+                    .unwrap_or(&serde_json::Value::Null)
+                    .is_null()
+                {
                     reached_guarantee_built += 1;
                 }
-                if !stages.get("distributed").unwrap_or(&serde_json::Value::Null).is_null() {
+                if !stages
+                    .get("distributed")
+                    .unwrap_or(&serde_json::Value::Null)
+                    .is_null()
+                {
                     reached_distributed += 1;
                 }
-                if !stages.get("guarantee_received").unwrap_or(&serde_json::Value::Null).is_null() {
+                if !stages
+                    .get("guarantee_received")
+                    .unwrap_or(&serde_json::Value::Null)
+                    .is_null()
+                {
                     reached_guarantee_received += 1;
                 }
-                if !stages.get("included").unwrap_or(&serde_json::Value::Null).is_null() {
+                if !stages
+                    .get("included")
+                    .unwrap_or(&serde_json::Value::Null)
+                    .is_null()
+                {
                     reached_included += 1;
                 }
             }
@@ -1656,10 +1687,26 @@ impl EventStore {
             ("received", "authorized", "received_to_authorized"),
             ("authorized", "refined", "authorized_to_refined"),
             ("refined", "report_built", "refined_to_report_built"),
-            ("report_built", "guarantee_built", "report_built_to_guarantee_built"),
-            ("guarantee_built", "distributed", "guarantee_built_to_distributed"),
-            ("distributed", "guarantee_received", "distributed_to_guarantee_received"),
-            ("guarantee_received", "included", "guarantee_received_to_included"),
+            (
+                "report_built",
+                "guarantee_built",
+                "report_built_to_guarantee_built",
+            ),
+            (
+                "guarantee_built",
+                "distributed",
+                "guarantee_built_to_distributed",
+            ),
+            (
+                "distributed",
+                "guarantee_received",
+                "distributed_to_guarantee_received",
+            ),
+            (
+                "guarantee_received",
+                "included",
+                "guarantee_received_to_included",
+            ),
         ];
 
         let mut stage_duration_percentiles = serde_json::Map::new();
