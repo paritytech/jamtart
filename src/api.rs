@@ -34,6 +34,70 @@ struct HealthResponse {
 
 const MAX_QUERY_LIMIT: i64 = 1000;
 
+/// Supported time range durations for telemetry queries.
+/// Only preset values are accepted to keep cache cardinality bounded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+pub enum DurationPreset {
+    #[serde(rename = "5m")]
+    FiveMin,
+    #[serde(rename = "15m")]
+    FifteenMin,
+    #[serde(rename = "1h")]
+    OneHour,
+    #[serde(rename = "6h")]
+    SixHours,
+    #[serde(rename = "24h")]
+    TwentyFourHours,
+}
+
+impl DurationPreset {
+    /// Returns the PostgreSQL interval string for this duration.
+    pub fn as_pg_interval(&self) -> &'static str {
+        match self {
+            Self::FiveMin => "5 minutes",
+            Self::FifteenMin => "15 minutes",
+            Self::OneHour => "1 hour",
+            Self::SixHours => "6 hours",
+            Self::TwentyFourHours => "24 hours",
+        }
+    }
+
+    /// Returns a short suffix for cache key construction.
+    pub fn cache_suffix(&self) -> &'static str {
+        match self {
+            Self::FiveMin => "5m",
+            Self::FifteenMin => "15m",
+            Self::OneHour => "1h",
+            Self::SixHours => "6h",
+            Self::TwentyFourHours => "24h",
+        }
+    }
+
+    /// Returns a secondary (longer) window for dual-interval queries.
+    /// 5m→1h, 15m→3h, 1h→24h, 6h→24h, 24h→24h
+    pub fn secondary_interval(&self) -> &'static str {
+        match self {
+            Self::FiveMin => "1 hour",
+            Self::FifteenMin => "3 hours",
+            Self::OneHour => "24 hours",
+            Self::SixHours => "24 hours",
+            Self::TwentyFourHours => "24 hours",
+        }
+    }
+}
+
+impl std::fmt::Display for DurationPreset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.cache_suffix())
+    }
+}
+
+/// Query parameter for duration-aware endpoints.
+#[derive(Debug, Deserialize)]
+pub struct DurationQuery {
+    pub duration: Option<DurationPreset>,
+}
+
 /// No-cache headers for real-time endpoints polled at high frequency.
 fn no_cache_headers() -> HeaderMap {
     let mut headers = HeaderMap::new();
@@ -269,12 +333,21 @@ async fn detailed_health_check(
     Ok((status_code, Json(health_report)))
 }
 
-async fn get_stats(State(state): State<ApiState>) -> Result<impl IntoResponse, StatusCode> {
-    let result = cache_or_compute(&state.cache, "stats", || async {
-        state.store.get_stats().await.map_err(|e| {
-            error!("Failed to get stats: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+async fn get_stats(
+    Query(dq): Query<DurationQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let duration = dq.duration.unwrap_or(DurationPreset::OneHour);
+    let cache_key = format!("stats_{}", duration.cache_suffix());
+    let result = cache_or_compute(&state.cache, &cache_key, || async {
+        state
+            .store
+            .get_stats(duration.as_pg_interval(), duration.secondary_interval())
+            .await
+            .map_err(|e| {
+                error!("Failed to get stats: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })
     })
     .await?;
     Ok((cache_headers(2), Json(result)))
@@ -403,25 +476,41 @@ async fn get_recent_events(
 
 /// Get work package statistics aggregated from telemetry events
 async fn get_workpackage_stats(
+    Query(dq): Query<DurationQuery>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let result = cache_or_compute(&state.cache, "workpackage_stats", || async {
-        state.store.get_workpackage_stats().await.map_err(|e| {
-            error!("Failed to get workpackage stats: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+    let duration = dq.duration.unwrap_or(DurationPreset::TwentyFourHours);
+    let cache_key = format!("workpackage_stats_{}", duration.cache_suffix());
+    let result = cache_or_compute(&state.cache, &cache_key, || async {
+        state
+            .store
+            .get_workpackage_stats(duration.as_pg_interval())
+            .await
+            .map_err(|e| {
+                error!("Failed to get workpackage stats: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })
     })
     .await?;
     Ok((cache_headers(2), Json(result)))
 }
 
 /// Get block statistics aggregated from telemetry events
-async fn get_block_stats(State(state): State<ApiState>) -> Result<impl IntoResponse, StatusCode> {
-    let result = cache_or_compute(&state.cache, "block_stats", || async {
-        state.store.get_block_stats().await.map_err(|e| {
-            error!("Failed to get block stats: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+async fn get_block_stats(
+    Query(dq): Query<DurationQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let duration = dq.duration.unwrap_or(DurationPreset::OneHour);
+    let cache_key = format!("block_stats_{}", duration.cache_suffix());
+    let result = cache_or_compute(&state.cache, &cache_key, || async {
+        state
+            .store
+            .get_block_stats(duration.as_pg_interval())
+            .await
+            .map_err(|e| {
+                error!("Failed to get block stats: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })
     })
     .await?;
     Ok((cache_headers(2), Json(result)))
@@ -449,13 +538,20 @@ async fn get_node_status(
 
 /// Get guarantee distribution statistics
 async fn get_guarantee_stats(
+    Query(dq): Query<DurationQuery>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let result = cache_or_compute(&state.cache, "guarantee_stats", || async {
-        state.store.get_guarantee_stats().await.map_err(|e| {
-            error!("Failed to get guarantee stats: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+    let duration = dq.duration.unwrap_or(DurationPreset::TwentyFourHours);
+    let cache_key = format!("guarantee_stats_{}", duration.cache_suffix());
+    let result = cache_or_compute(&state.cache, &cache_key, || async {
+        state
+            .store
+            .get_guarantee_stats(duration.as_pg_interval(), duration.secondary_interval())
+            .await
+            .map_err(|e| {
+                error!("Failed to get guarantee stats: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })
     })
     .await?;
     Ok((cache_headers(2), Json(result)))
@@ -514,15 +610,23 @@ async fn get_workpackage_journey(
 
 /// Get list of active work packages
 async fn get_active_workpackages(
+    Query(dq): Query<DurationQuery>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_active_workpackages().await {
-        Ok(result) => Ok((no_cache_headers(), Json(result))),
-        Err(e) => {
-            error!("Failed to get active workpackages: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+    let duration = dq.duration.unwrap_or(DurationPreset::OneHour);
+    let cache_key = format!("active_wps_{}", duration.cache_suffix());
+    let result = cache_or_compute(&state.cache, &cache_key, || async {
+        state
+            .store
+            .get_active_workpackages(duration.as_pg_interval(), duration.secondary_interval())
+            .await
+            .map_err(|e| {
+                error!("Failed to get active workpackages: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })
+    })
+    .await?;
+    Ok((cache_headers(2), Json(result)))
 }
 
 /// Get core status aggregation.
@@ -530,8 +634,15 @@ async fn get_active_workpackages(
 /// Uses rolling-window accumulated per-core data from JAM RPC (real pi_C
 /// stats: gas_used, da_load, popularity, etc.) combined with aggregate
 /// telemetry from the DB (guarantee/WP pipeline counts).
-async fn get_cores_status(State(state): State<ApiState>) -> Result<impl IntoResponse, StatusCode> {
-    let result = cache_or_compute(&state.cache, "cores_status", || async {
+async fn get_cores_status(
+    Query(dq): Query<DurationQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let duration = dq.duration.unwrap_or(DurationPreset::OneHour);
+    let cache_key = format!("cores_status_{}", duration.cache_suffix());
+    let interval = duration.as_pg_interval();
+    let secondary = duration.secondary_interval();
+    let result = cache_or_compute(&state.cache, &cache_key, || async {
         // Per-core accumulated stats from JAM RPC rolling window
         let (window_stats, core_count, current_slot) = if let Some(ref jam_rpc) = state.jam_rpc {
             let ws = jam_rpc.get_core_window_stats().await;
@@ -570,10 +681,14 @@ async fn get_cores_status(State(state): State<ApiState>) -> Result<impl IntoResp
         };
 
         // Aggregate telemetry from DB
-        let telemetry = state.store.get_cores_telemetry_agg().await.map_err(|e| {
-            error!("Failed to get cores telemetry: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        let telemetry = state
+            .store
+            .get_cores_telemetry_agg(interval, secondary)
+            .await
+            .map_err(|e| {
+                error!("Failed to get cores telemetry: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
 
         let guarantees_last_hour = telemetry["guarantees_last_hour"].as_i64().unwrap_or(0);
         let wp_last_hour = telemetry["work_packages_last_hour"].as_i64().unwrap_or(0);
@@ -648,7 +763,8 @@ async fn get_cores_status(State(state): State<ApiState>) -> Result<impl IntoResp
             // No JAM RPC: build cores from telemetry only.
             // Count per-core WPs from events that have a core field (93, 94).
             let per_core_wp: Vec<(Option<i64>, i64)> = sqlx::query_as(
-                r#"
+                &format!(
+                    r#"
                 SELECT
                     COALESCE(
                         (data->'WorkPackageReceived'->>'core')::bigint,
@@ -657,10 +773,12 @@ async fn get_cores_status(State(state): State<ApiState>) -> Result<impl IntoResp
                     COUNT(*) as cnt
                 FROM events
                 WHERE event_type IN (93, 94)
-                AND created_at > NOW() - INTERVAL '1 hour'
+                AND created_at > NOW() - INTERVAL '{}'
                 GROUP BY core_idx
                 ORDER BY core_idx
                 "#,
+                    interval
+                ),
             )
             .fetch_all(state.store.pool())
             .await
@@ -771,13 +889,20 @@ async fn get_core_guarantees(
 
 /// Get execution cost metrics
 async fn get_execution_metrics(
+    Query(dq): Query<DurationQuery>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let result = cache_or_compute(&state.cache, "execution_metrics", || async {
-        state.store.get_execution_metrics().await.map_err(|e| {
-            error!("Failed to get execution metrics: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+    let duration = dq.duration.unwrap_or(DurationPreset::OneHour);
+    let cache_key = format!("execution_metrics_{}", duration.cache_suffix());
+    let result = cache_or_compute(&state.cache, &cache_key, || async {
+        state
+            .store
+            .get_execution_metrics(duration.as_pg_interval())
+            .await
+            .map_err(|e| {
+                error!("Failed to get execution metrics: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })
     })
     .await?;
     Ok((cache_headers(2), Json(result)))
@@ -959,13 +1084,15 @@ async fn get_core_guarantors(
 /// Get work packages currently being processed on a specific core.
 async fn get_core_work_packages(
     Path(core_index): Path<i32>,
+    Query(dq): Query<DurationQuery>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let key = format!("core_work_packages_{}", core_index);
+    let duration = dq.duration.unwrap_or(DurationPreset::OneHour);
+    let key = format!("core_work_packages_{}_{}", core_index, duration.cache_suffix());
     let result = cache_or_compute(&state.cache, &key, || async {
         state
             .store
-            .get_core_work_packages(core_index)
+            .get_core_work_packages(core_index, duration.as_pg_interval())
             .await
             .map_err(|e| {
                 error!("Failed to get core {} work packages: {}", core_index, e);
@@ -992,13 +1119,20 @@ async fn get_workpackage_journey_enhanced(
 
 /// Get enhanced DA stats with read/write operations and latency metrics.
 async fn get_da_stats_enhanced(
+    Query(dq): Query<DurationQuery>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let result = cache_or_compute(&state.cache, "da_stats_enhanced", || async {
-        state.store.get_da_stats_enhanced().await.map_err(|e| {
-            error!("Failed to get enhanced DA stats: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+    let duration = dq.duration.unwrap_or(DurationPreset::OneHour);
+    let cache_key = format!("da_stats_enhanced_{}", duration.cache_suffix());
+    let result = cache_or_compute(&state.cache, &cache_key, || async {
+        state
+            .store
+            .get_da_stats_enhanced(duration.as_pg_interval(), duration.secondary_interval())
+            .await
+            .map_err(|e| {
+                error!("Failed to get enhanced DA stats: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })
     })
     .await?;
     Ok((cache_headers(2), Json(result)))
@@ -1009,12 +1143,21 @@ async fn get_da_stats_enhanced(
 // ============================================================================
 
 /// Get failure rate analytics across the system.
-async fn get_failure_rates(State(state): State<ApiState>) -> Result<impl IntoResponse, StatusCode> {
-    let result = cache_or_compute(&state.cache, "failure_rates", || async {
-        state.store.get_failure_rates().await.map_err(|e| {
-            error!("Failed to get failure rates: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+async fn get_failure_rates(
+    Query(dq): Query<DurationQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let duration = dq.duration.unwrap_or(DurationPreset::OneHour);
+    let cache_key = format!("failure_rates_{}", duration.cache_suffix());
+    let result = cache_or_compute(&state.cache, &cache_key, || async {
+        state
+            .store
+            .get_failure_rates(duration.as_pg_interval())
+            .await
+            .map_err(|e| {
+                error!("Failed to get failure rates: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })
     })
     .await?;
     Ok((cache_headers(2), Json(result)))
@@ -1022,13 +1165,20 @@ async fn get_failure_rates(State(state): State<ApiState>) -> Result<impl IntoRes
 
 /// Get block propagation analytics.
 async fn get_block_propagation(
+    Query(dq): Query<DurationQuery>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let result = cache_or_compute(&state.cache, "block_propagation", || async {
-        state.store.get_block_propagation().await.map_err(|e| {
-            error!("Failed to get block propagation: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+    let duration = dq.duration.unwrap_or(DurationPreset::OneHour);
+    let cache_key = format!("block_propagation_{}", duration.cache_suffix());
+    let result = cache_or_compute(&state.cache, &cache_key, || async {
+        state
+            .store
+            .get_block_propagation(duration.as_pg_interval())
+            .await
+            .map_err(|e| {
+                error!("Failed to get block propagation: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })
     })
     .await?;
     Ok((cache_headers(2), Json(result)))
@@ -1036,13 +1186,20 @@ async fn get_block_propagation(
 
 /// Get network health and congestion metrics.
 async fn get_network_health(
+    Query(dq): Query<DurationQuery>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let result = cache_or_compute(&state.cache, "network_health", || async {
-        state.store.get_network_health().await.map_err(|e| {
-            error!("Failed to get network health: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+    let duration = dq.duration.unwrap_or(DurationPreset::OneHour);
+    let cache_key = format!("network_health_{}", duration.cache_suffix());
+    let result = cache_or_compute(&state.cache, &cache_key, || async {
+        state
+            .store
+            .get_network_health(duration.as_pg_interval(), duration.secondary_interval())
+            .await
+            .map_err(|e| {
+                error!("Failed to get network health: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })
     })
     .await?;
     Ok((cache_headers(2), Json(result)))
@@ -1050,12 +1207,15 @@ async fn get_network_health(
 
 /// Get guarantor statistics aggregated by guarantor.
 async fn get_guarantees_by_guarantor(
+    Query(dq): Query<DurationQuery>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let result = cache_or_compute(&state.cache, "guarantees_by_guarantor", || async {
+    let duration = dq.duration.unwrap_or(DurationPreset::TwentyFourHours);
+    let cache_key = format!("guarantees_by_guarantor_{}", duration.cache_suffix());
+    let result = cache_or_compute(&state.cache, &cache_key, || async {
         state
             .store
-            .get_guarantees_by_guarantor()
+            .get_guarantees_by_guarantor(duration.as_pg_interval(), duration.secondary_interval())
             .await
             .map_err(|e| {
                 error!("Failed to get guarantees by guarantor: {}", e);
@@ -1150,6 +1310,7 @@ async fn get_connections_timeline(
 /// Get validators assigned to a specific core with node IDs and client info.
 async fn get_core_validators(
     Path(core_index): Path<i32>,
+    Query(dq): Query<DurationQuery>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
     if core_index < 0 {
@@ -1157,11 +1318,12 @@ async fn get_core_validators(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let key = format!("core_validators_{}", core_index);
+    let duration = dq.duration.unwrap_or(DurationPreset::OneHour);
+    let key = format!("core_validators_{}_{}", core_index, duration.cache_suffix());
     let result = cache_or_compute(&state.cache, &key, || async {
         state
             .store
-            .get_core_validators(core_index)
+            .get_core_validators(core_index, duration.as_pg_interval(), duration.secondary_interval())
             .await
             .map_err(|e| {
                 error!("Failed to get core {} validators: {}", core_index, e);
@@ -1175,6 +1337,7 @@ async fn get_core_validators(
 /// Get real-time performance metrics for a specific core.
 async fn get_core_metrics(
     Path(core_index): Path<i32>,
+    Query(dq): Query<DurationQuery>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
     if core_index < 0 {
@@ -1182,12 +1345,17 @@ async fn get_core_metrics(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let key = format!("core_metrics_{}", core_index);
+    let duration = dq.duration.unwrap_or(DurationPreset::OneHour);
+    let key = format!("core_metrics_{}_{}", core_index, duration.cache_suffix());
     let result = cache_or_compute(&state.cache, &key, || async {
-        state.store.get_core_metrics(core_index).await.map_err(|e| {
-            error!("Failed to get core {} metrics: {}", core_index, e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+        state
+            .store
+            .get_core_metrics(core_index, duration.as_pg_interval(), duration.secondary_interval())
+            .await
+            .map_err(|e| {
+                error!("Failed to get core {} metrics: {}", core_index, e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })
     })
     .await?;
     Ok((cache_headers(2), Json(result)))
@@ -1196,6 +1364,7 @@ async fn get_core_metrics(
 /// Get bottleneck analysis for a specific core.
 async fn get_core_bottlenecks(
     Path(core_index): Path<i32>,
+    Query(dq): Query<DurationQuery>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
     if core_index < 0 {
@@ -1203,11 +1372,12 @@ async fn get_core_bottlenecks(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let key = format!("core_bottlenecks_{}", core_index);
+    let duration = dq.duration.unwrap_or(DurationPreset::OneHour);
+    let key = format!("core_bottlenecks_{}_{}", core_index, duration.cache_suffix());
     let result = cache_or_compute(&state.cache, &key, || async {
         state
             .store
-            .get_core_bottlenecks(core_index)
+            .get_core_bottlenecks(core_index, duration.as_pg_interval())
             .await
             .map_err(|e| {
                 error!("Failed to get core {} bottlenecks: {}", core_index, e);
@@ -1221,6 +1391,7 @@ async fn get_core_bottlenecks(
 /// Get guarantors for a core with import sharing data.
 async fn get_core_guarantors_enhanced(
     Path(core_index): Path<i32>,
+    Query(dq): Query<DurationQuery>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
     if core_index < 0 {
@@ -1228,11 +1399,20 @@ async fn get_core_guarantors_enhanced(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let key = format!("core_guarantors_enhanced_{}", core_index);
+    let duration = dq.duration.unwrap_or(DurationPreset::TwentyFourHours);
+    let key = format!(
+        "core_guarantors_enhanced_{}_{}",
+        core_index,
+        duration.cache_suffix()
+    );
     let result = cache_or_compute(&state.cache, &key, || async {
         state
             .store
-            .get_core_guarantors_with_sharing(core_index)
+            .get_core_guarantors_with_sharing(
+                core_index,
+                duration.as_pg_interval(),
+                duration.secondary_interval(),
+            )
             .await
             .map_err(|e| {
                 error!(
@@ -1888,7 +2068,7 @@ async fn websocket_connection(mut socket: WebSocket, state: ApiState) {
             // Periodic stats updates (read from cache to avoid N*DB queries for N WS clients)
             _ = stats_interval.tick() => {
                 let stats_result = cache_or_compute(&state.cache, "stats", || async {
-                    state.store.get_stats().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+                    state.store.get_stats("1 hour", "24 hours").await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
                 }).await;
 
                 if let Ok(db_stats) = stats_result {

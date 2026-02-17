@@ -32,7 +32,7 @@ const PARTITION_CHECK_INTERVAL_SECS: u64 = 3600; // 1 hour
 ///
 /// # async fn example() -> Result<(), sqlx::Error> {
 /// let store = Arc::new(EventStore::new("postgres://localhost/tart").await?);
-/// let stats = store.get_stats().await?;
+/// let stats = store.get_stats("1 hour", "24 hours").await?;
 /// # Ok(())
 /// # }
 /// ```
@@ -725,7 +725,7 @@ impl EventStore {
     ///
     /// Performance impact: Reduces database load from 3 queries every request to 1 lightweight
     /// cache check per request, with full recompute only every 5 seconds.
-    pub async fn get_stats(&self) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn get_stats(&self, interval: &str, _secondary_interval: &str) -> Result<serde_json::Value, sqlx::Error> {
         const CACHE_TTL_SECONDS: i64 = 5;
         const CACHE_KEY: &str = "system_stats";
 
@@ -750,10 +750,9 @@ impl EventStore {
         // Cache miss or expired - recompute stats
         // Use time-bounded queries to avoid full table scans on 10M+ rows.
         // The max slot is always from recent events; scanning last 10 minutes is sufficient.
+        let q_total_blocks = format!("SELECT COUNT(*) FROM events WHERE event_type = 42 AND created_at > NOW() - INTERVAL '{}'", interval);
         let (total_blocks, best_block_opt, finalized_block_opt) = tokio::try_join!(
-            sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM events WHERE event_type = 42 AND created_at > NOW() - INTERVAL '1 hour'"
-            )
+            sqlx::query_scalar::<_, i64>(&q_total_blocks)
                 .fetch_one(&self.pool),
             sqlx::query_scalar::<_, Option<i64>>(
                 r#"
@@ -813,13 +812,13 @@ impl EventStore {
     }
 
     /// Get work package statistics aggregated from telemetry events.
-    pub async fn get_workpackage_stats(&self) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn get_workpackage_stats(&self, interval: &str) -> Result<serde_json::Value, sqlx::Error> {
         // Work package event types:
         // 90 = WorkPackageSubmission, 91 = WorkPackageBeingShared, 92 = WorkPackageFailed
         // 93 = DuplicateWorkPackage, 94 = WorkPackageReceived, 101 = Refined
         // 102 = WorkReportBuilt, 105 = GuaranteeBuilt
         // Time-bounded to 24h for performance (avoids full-table scan of 8M+ events)
-        let row = sqlx::query(
+        let row = sqlx::query(&format!(
             r#"
             SELECT
                 COUNT(*) FILTER (WHERE event_type = 90) as submissions,
@@ -832,9 +831,10 @@ impl EventStore {
                 COUNT(*) FILTER (WHERE event_type = 105) as guarantees_built
             FROM events
             WHERE event_type IN (90, 91, 92, 93, 94, 101, 102, 105)
-            AND created_at > NOW() - INTERVAL '24 hours'
+            AND created_at > NOW() - INTERVAL '{}'
             "#,
-        )
+            interval
+        ))
         .fetch_one(&self.pool)
         .await?;
 
@@ -885,13 +885,13 @@ impl EventStore {
     }
 
     /// Get block statistics aggregated from telemetry events.
-    pub async fn get_block_stats(&self) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn get_block_stats(&self, interval: &str) -> Result<serde_json::Value, sqlx::Error> {
         // Block event types:
         // 40 = Authoring, 41 = AuthoringFailed, 42 = Authored
         // 43 = Importing, 44 = BlockVerificationFailed, 45 = BlockVerified
         // 46 = BlockExecutionFailed, 47 = BlockExecuted
         // 11 = BestBlockChanged, 12 = FinalizedBlockChanged
-        let row = sqlx::query(
+        let row = sqlx::query(&format!(
             r#"
             SELECT
                 COUNT(*) FILTER (WHERE event_type = 40) as authoring_started,
@@ -908,28 +908,30 @@ impl EventStore {
                 MAX(CAST(data->'FinalizedBlockChanged'->>'slot' AS BIGINT)) FILTER (WHERE event_type = 12) as finalized_slot
             FROM events
             WHERE event_type IN (40, 41, 42, 43, 44, 45, 46, 47, 11, 12)
-            AND created_at > NOW() - INTERVAL '1 hour'
+            AND created_at > NOW() - INTERVAL '{}'
             "#,
-        )
+            interval
+        ))
         .fetch_one(&self.pool)
         .await?;
 
         // Get per-node authoring stats
-        let authoring_by_node: Vec<(String, i64)> = sqlx::query_as(
+        let authoring_by_node: Vec<(String, i64)> = sqlx::query_as(&format!(
             r#"
             SELECT node_id, COUNT(*) as blocks_authored
             FROM events
             WHERE event_type = 42
-            AND created_at > NOW() - INTERVAL '1 hour'
+            AND created_at > NOW() - INTERVAL '{}'
             GROUP BY node_id
             ORDER BY blocks_authored DESC
             "#,
-        )
+            interval
+        ))
         .fetch_all(&self.pool)
         .await?;
 
         // Get recent blocks (last 50 authored)
-        let recent_authored: Vec<serde_json::Value> = sqlx::query_scalar(
+        let recent_authored: Vec<serde_json::Value> = sqlx::query_scalar(&format!(
             r#"
             SELECT jsonb_build_object(
                 'node_id', node_id,
@@ -939,11 +941,12 @@ impl EventStore {
             )
             FROM events
             WHERE event_type = 42
-            AND created_at > NOW() - INTERVAL '1 hour'
+            AND created_at > NOW() - INTERVAL '{}'
             ORDER BY created_at DESC
             LIMIT 50
             "#,
-        )
+            interval
+        ))
         .fetch_all(&self.pool)
         .await?;
 
@@ -1396,13 +1399,13 @@ impl EventStore {
     }
 
     /// Get list of active work packages (in progress through the pipeline).
-    pub async fn get_active_workpackages(&self) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn get_active_workpackages(&self, interval: &str, secondary_interval: &str) -> Result<serde_json::Value, sqlx::Error> {
         // Unified single-CTE query: anchors on ALL WP-related events, not just event 94.
         // Event 94 (WorkPackageReceived) is rarely emitted — anchoring only on it causes
         // empty results when none exist in the time window.
         // Uses submission_or_share_id (events 92, 94, 95, 101, 102) and submission_id
         // (events 105, 109) to group all stages by work package.
-        let work_packages: Vec<serde_json::Value> = sqlx::query_scalar(
+        let work_packages: Vec<serde_json::Value> = sqlx::query_scalar(&format!(
             r#"
             WITH all_wp_events AS (
                 -- Collect ALL work-package-related events, extract a unified wp_id
@@ -1419,7 +1422,7 @@ impl EventStore {
                     ) as wp_id
                 FROM events
                 WHERE event_type IN (92, 94, 95, 101, 102, 105, 109)
-                AND created_at > NOW() - INTERVAL '2 hours'
+                AND created_at > NOW() - INTERVAL '{interval}'
             ),
             -- Fallback: each node's core from their most recent WorkPackageReceived
             node_cores AS (
@@ -1428,7 +1431,7 @@ impl EventStore {
                     CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) as core_index
                 FROM events
                 WHERE event_type = 94
-                AND created_at > NOW() - INTERVAL '1 day'
+                AND created_at > NOW() - INTERVAL '{secondary_interval}'
                 AND data->'WorkPackageReceived'->>'core' IS NOT NULL
                 ORDER BY node_id, created_at DESC
             ),
@@ -1504,7 +1507,9 @@ impl EventStore {
             ORDER BY COALESCE(received_at, first_seen_at) DESC
             LIMIT 100
             "#,
-        )
+            interval = interval,
+            secondary_interval = secondary_interval
+        ))
         .fetch_all(&self.pool)
         .await?;
 
@@ -1555,28 +1560,31 @@ impl EventStore {
     /// Returns totals only — per-core attribution is not possible from
     /// telemetry because PolkaJam v0.1.26 doesn't emit a core field.
     /// The API handler merges these with real per-core data from JAM RPC.
-    pub async fn get_cores_telemetry_agg(&self) -> Result<serde_json::Value, sqlx::Error> {
-        let agg: (i64, i64, Option<chrono::DateTime<chrono::Utc>>) = sqlx::query_as(
+    pub async fn get_cores_telemetry_agg(&self, interval: &str, secondary_interval: &str) -> Result<serde_json::Value, sqlx::Error> {
+        let agg: (i64, i64, Option<chrono::DateTime<chrono::Utc>>) = sqlx::query_as(&format!(
             r#"
             SELECT
                 COUNT(*) as total_guarantees,
-                COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '1 hour') as guarantees_last_hour,
+                COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '{interval}') as guarantees_last_hour,
                 MAX(timestamp) as last_activity
             FROM events
             WHERE event_type = 105
-            AND created_at > NOW() - INTERVAL '24 hours'
+            AND created_at > NOW() - INTERVAL '{secondary_interval}'
             "#,
-        )
+            interval = interval,
+            secondary_interval = secondary_interval
+        ))
         .fetch_one(&self.pool)
         .await?;
 
-        let wp_agg: (i64,) = sqlx::query_as(
+        let wp_agg: (i64,) = sqlx::query_as(&format!(
             r#"
             SELECT COUNT(*) FROM events
             WHERE event_type IN (101, 102)
-            AND created_at > NOW() - INTERVAL '1 hour'
+            AND created_at > NOW() - INTERVAL '{}'
             "#,
-        )
+            interval
+        ))
         .fetch_one(&self.pool)
         .await?;
 
@@ -1676,10 +1684,10 @@ impl EventStore {
     }
 
     /// Get execution cost metrics from Refined/Executed/Authorized events.
-    pub async fn get_execution_metrics(&self) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn get_execution_metrics(&self, interval: &str) -> Result<serde_json::Value, sqlx::Error> {
         // Get refinement stats from event type 101 (Refined)
         // costs is a JSON array; each element has total.gas_used and total.elapsed_ns
-        let refinement = sqlx::query(
+        let refinement = sqlx::query(&format!(
             r#"
             SELECT
                 COUNT(DISTINCT e.id) as count,
@@ -1688,15 +1696,16 @@ impl EventStore {
                 COALESCE(AVG(CAST(c->'total'->>'elapsed_ns' AS BIGINT)), 0)::FLOAT8 as avg_time_ns
             FROM events e, jsonb_array_elements(e.data->'Refined'->'costs') c
             WHERE e.event_type = 101
-            AND e.created_at > NOW() - INTERVAL '1 hour'
+            AND e.created_at > NOW() - INTERVAL '{}'
             "#,
-        )
+            interval
+        ))
         .fetch_one(&self.pool)
         .await?;
 
         // Get authorization stats from event type 95 (Authorized)
         // cost is a single object with total.gas_used and total.elapsed_ns
-        let authorization = sqlx::query(
+        let authorization = sqlx::query(&format!(
             r#"
             SELECT
                 COUNT(*) as count,
@@ -1705,16 +1714,17 @@ impl EventStore {
                 COALESCE(AVG(CAST(data->'Authorized'->'cost'->'total'->>'elapsed_ns' AS BIGINT)), 0)::FLOAT8 as avg_time_ns
             FROM events
             WHERE event_type = 95
-            AND created_at > NOW() - INTERVAL '1 hour'
+            AND created_at > NOW() - INTERVAL '{}'
             "#,
-        )
+            interval
+        ))
         .fetch_one(&self.pool)
         .await?;
 
         // Get accumulation stats from event type 47 (BlockExecuted)
         // accumulate_costs is a JSON array of [service_id, cost_object] pairs
         // cost_object has total.gas_used and total.elapsed_ns
-        let accumulation = sqlx::query(
+        let accumulation = sqlx::query(&format!(
             r#"
             SELECT
                 COUNT(DISTINCT e.id) as count,
@@ -1723,9 +1733,10 @@ impl EventStore {
                 COALESCE(AVG(CAST(pair->1->'total'->>'elapsed_ns' AS BIGINT)), 0)::FLOAT8 as avg_time_ns
             FROM events e, jsonb_array_elements(e.data->'BlockExecuted'->'accumulate_costs') pair
             WHERE e.event_type = 47
-            AND e.created_at > NOW() - INTERVAL '1 hour'
+            AND e.created_at > NOW() - INTERVAL '{}'
             "#,
-        )
+            interval
+        ))
         .fetch_one(&self.pool)
         .await?;
 
@@ -1791,13 +1802,13 @@ impl EventStore {
     }
 
     /// Get guarantee distribution statistics.
-    pub async fn get_guarantee_stats(&self) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn get_guarantee_stats(&self, _interval: &str, secondary_interval: &str) -> Result<serde_json::Value, sqlx::Error> {
         // Guarantee event types:
         // 105 = GuaranteeBuilt, 106 = SendingGuarantee, 107 = GuaranteeSendFailed
         // 108 = GuaranteeSent, 109 = GuaranteesDistributed
         // 110 = ReceivingGuarantee, 111 = GuaranteeReceiveFailed, 112 = GuaranteeReceived
         // 113 = GuaranteeDiscarded
-        let row = sqlx::query(
+        let row = sqlx::query(&format!(
             r#"
             SELECT
                 COUNT(*) FILTER (WHERE event_type = 105) as built,
@@ -1811,28 +1822,30 @@ impl EventStore {
                 COUNT(*) FILTER (WHERE event_type = 113) as discarded
             FROM events
             WHERE event_type IN (105, 106, 107, 108, 109, 110, 111, 112, 113)
-            AND created_at > NOW() - INTERVAL '24 hours'
+            AND created_at > NOW() - INTERVAL '{}'
             "#,
-        )
+            secondary_interval
+        ))
         .fetch_one(&self.pool)
         .await?;
 
         // Get guarantees by node (who is building them)
-        let by_node: Vec<(String, i64)> = sqlx::query_as(
+        let by_node: Vec<(String, i64)> = sqlx::query_as(&format!(
             r#"
             SELECT node_id, COUNT(*) as guarantees_built
             FROM events
             WHERE event_type = 105
-            AND created_at > NOW() - INTERVAL '24 hours'
+            AND created_at > NOW() - INTERVAL '{}'
             GROUP BY node_id
             ORDER BY guarantees_built DESC
             "#,
-        )
+            secondary_interval
+        ))
         .fetch_all(&self.pool)
         .await?;
 
         // Get recent guarantee events
-        let recent: Vec<serde_json::Value> = sqlx::query_scalar(
+        let recent: Vec<serde_json::Value> = sqlx::query_scalar(&format!(
             r#"
             SELECT jsonb_build_object(
                 'node_id', node_id,
@@ -1842,11 +1855,12 @@ impl EventStore {
             )
             FROM events
             WHERE event_type IN (105, 112, 113)
-            AND created_at > NOW() - INTERVAL '24 hours'
+            AND created_at > NOW() - INTERVAL '{}'
             ORDER BY created_at DESC
             LIMIT 50
             "#,
-        )
+            secondary_interval
+        ))
         .fetch_all(&self.pool)
         .await?;
 
@@ -3276,9 +3290,9 @@ impl EventStore {
     }
 
     /// Get enhanced DA stats with read/write operations and latency metrics.
-    pub async fn get_da_stats_enhanced(&self) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn get_da_stats_enhanced(&self, interval: &str, secondary_interval: &str) -> Result<serde_json::Value, sqlx::Error> {
         // Get per-node DA operation metrics
-        let by_node: Vec<serde_json::Value> = sqlx::query_scalar(
+        let by_node: Vec<serde_json::Value> = sqlx::query_scalar(&format!(
             r#"
             WITH shard_ops AS (
                 SELECT
@@ -3290,7 +3304,7 @@ impl EventStore {
                     SUM(CASE WHEN event_type = 124 THEN COALESCE(CAST(data->'ShardTransferred'->>'size' AS BIGINT), 0) ELSE 0 END) as bytes_transferred
                 FROM events
                 WHERE event_type IN (121, 123, 124)
-                AND created_at > NOW() - INTERVAL '1 hour'
+                AND created_at > NOW() - INTERVAL '{interval}'
                 GROUP BY node_id
             ),
             preimage_ops AS (
@@ -3301,7 +3315,7 @@ impl EventStore {
                     COUNT(*) FILTER (WHERE event_type = 192) as preimages_in_pool
                 FROM events
                 WHERE event_type IN (190, 191, 192)
-                AND created_at > NOW() - INTERVAL '1 hour'
+                AND created_at > NOW() - INTERVAL '{interval}'
                 GROUP BY node_id
             ),
             latency_calc AS (
@@ -3315,7 +3329,7 @@ impl EventStore {
                     AND t.timestamp > r.timestamp
                     AND t.timestamp < r.timestamp + INTERVAL '10 seconds'
                 WHERE r.event_type = 121
-                AND r.created_at > NOW() - INTERVAL '1 hour'
+                AND r.created_at > NOW() - INTERVAL '{interval}'
                 GROUP BY r.node_id
             ),
             current_shards AS (
@@ -3325,7 +3339,7 @@ impl EventStore {
                     SUM(COALESCE(CAST(data->'ShardStored'->>'size' AS BIGINT), 0)) as shard_size_bytes
                 FROM events
                 WHERE event_type = 123
-                AND created_at > NOW() - INTERVAL '24 hours'
+                AND created_at > NOW() - INTERVAL '{secondary_interval}'
                 GROUP BY node_id
             )
             SELECT jsonb_build_object(
@@ -3353,12 +3367,14 @@ impl EventStore {
             WHERE COALESCE(so.node_id, po.node_id, cs.node_id) IS NOT NULL
             ORDER BY COALESCE(cs.num_shards, 0) DESC
             "#,
-        )
+            interval = interval,
+            secondary_interval = secondary_interval
+        ))
         .fetch_all(&self.pool)
         .await?;
 
         // Get network-wide totals
-        let totals = sqlx::query(
+        let totals = sqlx::query(&format!(
             r#"
             SELECT
                 COUNT(*) FILTER (WHERE event_type = 121) as total_read_ops,
@@ -3369,9 +3385,10 @@ impl EventStore {
                 COALESCE(SUM(CASE WHEN event_type = 124 THEN COALESCE(CAST(data->'ShardTransferred'->>'size' AS BIGINT), 0) ELSE 0 END), 0)::BIGINT as total_bytes_transferred
             FROM events
             WHERE event_type IN (121, 123, 124)
-            AND created_at > NOW() - INTERVAL '1 hour'
+            AND created_at > NOW() - INTERVAL '{}'
             "#,
-        )
+            interval
+        ))
         .fetch_one(&self.pool)
         .await?;
 
@@ -3406,7 +3423,7 @@ impl EventStore {
         }).collect();
 
         // Per-shard activity distribution
-        let shard_distribution: Vec<serde_json::Value> = sqlx::query_scalar(
+        let shard_distribution: Vec<serde_json::Value> = sqlx::query_scalar(&format!(
             r#"
             SELECT jsonb_build_object(
                 'shard_index', shard_idx,
@@ -3427,13 +3444,14 @@ impl EventStore {
                     COUNT(DISTINCT node_id) as node_count
                 FROM events
                 WHERE event_type IN (120, 124)
-                AND created_at > NOW() - INTERVAL '1 hour'
+                AND created_at > NOW() - INTERVAL '{}'
                 GROUP BY shard_idx
                 ORDER BY shard_idx
             ) sub
             WHERE shard_idx IS NOT NULL
             "#,
-        )
+            interval
+        ))
         .fetch_all(&self.pool)
         .await?;
 
@@ -3484,15 +3502,12 @@ impl EventStore {
     pub async fn get_core_work_packages(
         &self,
         core_index: i32,
+        interval: &str,
     ) -> Result<serde_json::Value, sqlx::Error> {
         // Run both independent queries concurrently:
         // Q1: Active work packages for this core
         // Q2: Historical processing time for this core
-        let (work_packages, processing_stats) = tokio::try_join!(
-            // Q1: Active work packages — only WorkPackageReceived (94) carries the core field,
-            // so we start there and join downstream events via submission_or_share_id.
-            sqlx::query_scalar::<_, serde_json::Value>(
-                r#"
+        let q1_sql = format!(r#"
                 WITH received AS (
                     SELECT
                         node_id,
@@ -3501,7 +3516,7 @@ impl EventStore {
                     FROM events
                     WHERE event_type = 94
                     AND CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) = $1
-                    AND created_at > NOW() - INTERVAL '1 hour'
+                    AND created_at > NOW() - INTERVAL '{interval}'
                 ),
                 latest_stage AS (
                     SELECT DISTINCT ON (r.wp_id)
@@ -3515,7 +3530,7 @@ impl EventStore {
                     LEFT JOIN LATERAL (
                         SELECT event_type, timestamp, data
                         FROM events
-                        WHERE created_at > NOW() - INTERVAL '1 hour'
+                        WHERE created_at > NOW() - INTERVAL '{interval}'
                         AND event_type IN (95, 101, 102, 105, 109, 92)
                         AND (
                             data->'Authorized'->>'submission_or_share_id' = r.wp_id
@@ -3560,13 +3575,9 @@ impl EventStore {
                 ORDER BY submitted_at DESC
                 LIMIT 50
                 "#,
-            )
-            .bind(core_index)
-            .fetch_all(&self.pool),
-
-            // Q2: Historical processing time for this core
-            sqlx::query(
-                r#"
+                interval = interval
+        );
+        let q2_sql = format!(r#"
                 WITH received AS (
                     SELECT
                         (data->'WorkPackageReceived'->>'submission_or_share_id') as wp_id,
@@ -3574,7 +3585,7 @@ impl EventStore {
                     FROM events
                     WHERE event_type = 94
                     AND CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) = $1
-                    AND created_at > NOW() - INTERVAL '1 hour'
+                    AND created_at > NOW() - INTERVAL '{interval}'
                 ),
                 wp_times AS (
                     SELECT
@@ -3583,7 +3594,7 @@ impl EventStore {
                         MAX(e.timestamp) as end_time
                     FROM received r
                     INNER JOIN events e ON (
-                        e.created_at > NOW() - INTERVAL '1 hour'
+                        e.created_at > NOW() - INTERVAL '{interval}'
                         AND e.event_type IN (95, 101, 102, 105, 109)
                         AND (
                             e.data->'Authorized'->>'submission_or_share_id' = r.wp_id
@@ -3600,7 +3611,14 @@ impl EventStore {
                     COUNT(*) as completed_count
                 FROM wp_times
                 "#,
-            )
+                interval = interval
+        );
+        let (work_packages, processing_stats) = tokio::try_join!(
+            sqlx::query_scalar::<_, serde_json::Value>(&q1_sql)
+            .bind(core_index)
+            .fetch_all(&self.pool),
+
+            sqlx::query(&q2_sql)
             .bind(core_index)
             .fetch_one(&self.pool),
         )?;
@@ -3629,7 +3647,7 @@ impl EventStore {
     // ========================================================================
 
     /// Get failure rate analytics across the system.
-    pub async fn get_failure_rates(&self) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn get_failure_rates(&self, interval: &str) -> Result<serde_json::Value, sqlx::Error> {
         // Define failure event types (JIP-3 spec):
         // 41=BlockAuthoringFailed, 44=BlockSealingFailed, 46=BlockAuthoringTimedOut
         // 81=TicketGenerationFailed, 83=TicketTransferFailed
@@ -3639,15 +3657,16 @@ impl EventStore {
         let failure_types = vec![41, 44, 46, 81, 83, 92, 99, 107, 111, 113, 122, 127];
 
         // Overall failure stats
-        let overall = sqlx::query(
+        let overall = sqlx::query(&format!(
             r#"
             SELECT
                 COUNT(*) as total_events,
                 COUNT(*) FILTER (WHERE event_type = ANY($1)) as failed_events
             FROM events
-            WHERE created_at > NOW() - INTERVAL '1 hour'
+            WHERE created_at > NOW() - INTERVAL '{}'
             "#,
-        )
+            interval
+        ))
         .bind(&failure_types)
         .fetch_one(&self.pool)
         .await?;
@@ -3656,7 +3675,7 @@ impl EventStore {
         let failed: i64 = overall.get("failed_events");
 
         // By category
-        let by_category: Vec<serde_json::Value> = sqlx::query_scalar(
+        let by_category: Vec<serde_json::Value> = sqlx::query_scalar(&format!(
             r#"
             SELECT jsonb_build_object(
                 'category', category,
@@ -3669,34 +3688,35 @@ impl EventStore {
                     'block_authoring' as category,
                     COUNT(*) FILTER (WHERE event_type IN (40, 41, 42, 44, 46)) as attempts,
                     COUNT(*) FILTER (WHERE event_type IN (41, 44, 46)) as failures
-                FROM events WHERE created_at > NOW() - INTERVAL '1 hour'
+                FROM events WHERE created_at > NOW() - INTERVAL '{interval}'
                 UNION ALL
                 SELECT
                     'work_package' as category,
                     COUNT(*) FILTER (WHERE event_type IN (94, 95, 101, 102, 92, 99)) as attempts,
                     COUNT(*) FILTER (WHERE event_type IN (92, 99)) as failures
-                FROM events WHERE created_at > NOW() - INTERVAL '1 hour'
+                FROM events WHERE created_at > NOW() - INTERVAL '{interval}'
                 UNION ALL
                 SELECT
                     'ticket_generation' as category,
                     COUNT(*) FILTER (WHERE event_type IN (80, 81, 82, 83, 84)) as attempts,
                     COUNT(*) FILTER (WHERE event_type IN (81, 83)) as failures
-                FROM events WHERE created_at > NOW() - INTERVAL '1 hour'
+                FROM events WHERE created_at > NOW() - INTERVAL '{interval}'
                 UNION ALL
                 SELECT
                     'guarantee' as category,
                     COUNT(*) FILTER (WHERE event_type IN (105, 106, 107, 108, 109)) as attempts,
                     COUNT(*) FILTER (WHERE event_type = 107) as failures
-                FROM events WHERE created_at > NOW() - INTERVAL '1 hour'
+                FROM events WHERE created_at > NOW() - INTERVAL '{interval}'
             ) categories
             WHERE attempts > 0
             "#,
-        )
+            interval = interval
+        ))
         .fetch_all(&self.pool)
         .await?;
 
         // By node (top offenders)
-        let by_node: Vec<serde_json::Value> = sqlx::query_scalar(
+        let by_node: Vec<serde_json::Value> = sqlx::query_scalar(&format!(
             r#"
             WITH node_failures AS (
                 SELECT
@@ -3705,7 +3725,7 @@ impl EventStore {
                     COUNT(*) FILTER (WHERE event_type = ANY($1)) as failures,
                     MODE() WITHIN GROUP (ORDER BY event_type) FILTER (WHERE event_type = ANY($1)) as most_common_failure
                 FROM events
-                WHERE created_at > NOW() - INTERVAL '1 hour'
+                WHERE created_at > NOW() - INTERVAL '{}'
                 GROUP BY node_id
                 HAVING COUNT(*) FILTER (WHERE event_type = ANY($1)) > 0
             )
@@ -3720,13 +3740,14 @@ impl EventStore {
             ORDER BY failures DESC
             LIMIT 20
             "#,
-        )
+            interval
+        ))
         .bind(&failure_types)
         .fetch_all(&self.pool)
         .await?;
 
         // Recent failures (last 10)
-        let recent_failures: Vec<serde_json::Value> = sqlx::query_scalar(
+        let recent_failures: Vec<serde_json::Value> = sqlx::query_scalar(&format!(
             r#"
             SELECT jsonb_build_object(
                 'event_type', event_type,
@@ -3757,11 +3778,12 @@ impl EventStore {
             )
             FROM events
             WHERE event_type = ANY($1)
-            AND created_at > NOW() - INTERVAL '1 hour'
+            AND created_at > NOW() - INTERVAL '{}'
             ORDER BY timestamp DESC
             LIMIT 20
             "#,
-        )
+            interval
+        ))
         .bind(&failure_types)
         .fetch_all(&self.pool)
         .await?;
@@ -3780,9 +3802,9 @@ impl EventStore {
     }
 
     /// Get block propagation analytics.
-    pub async fn get_block_propagation(&self) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn get_block_propagation(&self, interval: &str) -> Result<serde_json::Value, sqlx::Error> {
         // Calculate propagation times from BlockAnnounced (62) to BlockTransferred (68)
-        let propagation_stats = sqlx::query(
+        let propagation_stats = sqlx::query(&format!(
             r#"
             WITH block_times AS (
                 SELECT
@@ -3791,7 +3813,7 @@ impl EventStore {
                     MIN(timestamp) as announced_at
                 FROM events
                 WHERE event_type = 62
-                AND created_at > NOW() - INTERVAL '1 hour'
+                AND created_at > NOW() - INTERVAL '{interval}'
                 GROUP BY data->'BlockAnnounced'->>'slot', node_id
             ),
             transfer_times AS (
@@ -3801,7 +3823,7 @@ impl EventStore {
                     MIN(timestamp) as transferred_at
                 FROM events
                 WHERE event_type = 68
-                AND created_at > NOW() - INTERVAL '1 hour'
+                AND created_at > NOW() - INTERVAL '{interval}'
                 GROUP BY data->'BlockTransferred'->>'slot', node_id
             ),
             propagation AS (
@@ -3822,12 +3844,13 @@ impl EventStore {
             FROM propagation
             WHERE propagation_ms > 0 AND propagation_ms < 60000
             "#,
-        )
+            interval = interval
+        ))
         .fetch_one(&self.pool)
         .await?;
 
         // Per-node receive delays
-        let by_node: Vec<serde_json::Value> = sqlx::query_scalar(
+        let by_node: Vec<serde_json::Value> = sqlx::query_scalar(&format!(
             r#"
             WITH node_blocks AS (
                 SELECT
@@ -3836,7 +3859,7 @@ impl EventStore {
                     COUNT(DISTINCT data->'BlockTransferred'->>'slot') FILTER (WHERE event_type = 68) as blocks_received
                 FROM events
                 WHERE event_type IN (62, 68)
-                AND created_at > NOW() - INTERVAL '1 hour'
+                AND created_at > NOW() - INTERVAL '{}'
                 GROUP BY node_id
             )
             SELECT jsonb_build_object(
@@ -3850,7 +3873,8 @@ impl EventStore {
             ORDER BY blocks_announced DESC
             LIMIT 50
             "#,
-        )
+            interval
+        ))
         .fetch_all(&self.pool)
         .await?;
 
@@ -3868,8 +3892,8 @@ impl EventStore {
     }
 
     /// Get guarantor statistics aggregated by guarantor.
-    pub async fn get_guarantees_by_guarantor(&self) -> Result<serde_json::Value, sqlx::Error> {
-        let guarantors: Vec<serde_json::Value> = sqlx::query_scalar(
+    pub async fn get_guarantees_by_guarantor(&self, interval: &str, secondary_interval: &str) -> Result<serde_json::Value, sqlx::Error> {
+        let guarantors: Vec<serde_json::Value> = sqlx::query_scalar(&format!(
             r#"
             WITH guarantee_events AS (
                 SELECT
@@ -3879,13 +3903,13 @@ impl EventStore {
                     CAST(data->'GuaranteeBuilt'->'outline'->>'core' AS INTEGER) as core_index
                 FROM events
                 WHERE event_type = 105
-                AND created_at > NOW() - INTERVAL '24 hours'
+                AND created_at > NOW() - INTERVAL '{secondary_interval}'
             ),
             guarantor_stats AS (
                 SELECT
                     node_id,
                     COUNT(*) as total_guarantees,
-                    COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '1 hour') as guarantees_last_hour,
+                    COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '{interval}') as guarantees_last_hour,
                     array_agg(DISTINCT core_index) as cores_active,
                     MODE() WITHIN GROUP (ORDER BY core_index) as primary_core,
                     MAX(timestamp) as last_guarantee
@@ -3900,7 +3924,7 @@ impl EventStore {
                     COUNT(*) FILTER (WHERE event_type IN (109, 110)) as failed
                 FROM events
                 WHERE event_type IN (105, 108, 109, 110)
-                AND created_at > NOW() - INTERVAL '24 hours'
+                AND created_at > NOW() - INTERVAL '{secondary_interval}'
                 GROUP BY node_id
             )
             SELECT jsonb_build_object(
@@ -3920,7 +3944,9 @@ impl EventStore {
             LEFT JOIN success_rates sr ON gs.node_id = sr.node_id
             ORDER BY gs.total_guarantees DESC
             "#,
-        )
+            interval = interval,
+            secondary_interval = secondary_interval
+        ))
         .fetch_all(&self.pool)
         .await?;
 
@@ -3949,26 +3975,27 @@ impl EventStore {
 
     /// Get network health and congestion metrics.
     /// Returns shape matching ApiNetworkHealth: overall_health, health_score, components[], alerts[].
-    pub async fn get_network_health(&self) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn get_network_health(&self, interval: &str, _secondary_interval: &str) -> Result<serde_json::Value, sqlx::Error> {
         // Gather raw metrics for health scoring
-        let stats = sqlx::query(
+        let stats = sqlx::query(&format!(
             r#"
             SELECT
                 COUNT(DISTINCT node_id) FILTER (WHERE created_at > NOW() - INTERVAL '1 minute') as active_nodes_1m,
-                COUNT(DISTINCT node_id) FILTER (WHERE created_at > NOW() - INTERVAL '1 hour') as active_nodes_1h,
+                COUNT(DISTINCT node_id) FILTER (WHERE created_at > NOW() - INTERVAL '{interval}') as active_nodes_1h,
                 COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '1 minute') as events_last_minute,
-                COUNT(*) FILTER (WHERE event_type = 42 AND created_at > NOW() - INTERVAL '1 hour') as blocks_authored_1h,
-                COUNT(*) FILTER (WHERE event_type = 41 AND created_at > NOW() - INTERVAL '1 hour') as authoring_failures_1h,
-                COUNT(*) FILTER (WHERE event_type = 40 AND created_at > NOW() - INTERVAL '1 hour') as authoring_attempts_1h,
-                COUNT(*) FILTER (WHERE event_type IN (120,124) AND created_at > NOW() - INTERVAL '1 hour') as da_ops_1h,
-                COUNT(*) FILTER (WHERE event_type = 122 AND created_at > NOW() - INTERVAL '1 hour') as da_failures_1h,
-                COUNT(*) FILTER (WHERE event_type IN (105) AND created_at > NOW() - INTERVAL '1 hour') as guarantees_1h,
-                COUNT(*) FILTER (WHERE event_type IN (92) AND created_at > NOW() - INTERVAL '1 hour') as wp_failures_1h,
-                COUNT(*) FILTER (WHERE event_type IN (94) AND created_at > NOW() - INTERVAL '1 hour') as wp_received_1h
+                COUNT(*) FILTER (WHERE event_type = 42 AND created_at > NOW() - INTERVAL '{interval}') as blocks_authored_1h,
+                COUNT(*) FILTER (WHERE event_type = 41 AND created_at > NOW() - INTERVAL '{interval}') as authoring_failures_1h,
+                COUNT(*) FILTER (WHERE event_type = 40 AND created_at > NOW() - INTERVAL '{interval}') as authoring_attempts_1h,
+                COUNT(*) FILTER (WHERE event_type IN (120,124) AND created_at > NOW() - INTERVAL '{interval}') as da_ops_1h,
+                COUNT(*) FILTER (WHERE event_type = 122 AND created_at > NOW() - INTERVAL '{interval}') as da_failures_1h,
+                COUNT(*) FILTER (WHERE event_type IN (105) AND created_at > NOW() - INTERVAL '{interval}') as guarantees_1h,
+                COUNT(*) FILTER (WHERE event_type IN (92) AND created_at > NOW() - INTERVAL '{interval}') as wp_failures_1h,
+                COUNT(*) FILTER (WHERE event_type IN (94) AND created_at > NOW() - INTERVAL '{interval}') as wp_received_1h
             FROM events
-            WHERE created_at > NOW() - INTERVAL '1 hour'
+            WHERE created_at > NOW() - INTERVAL '{interval}'
             "#,
-        )
+            interval = interval
+        ))
         .fetch_one(&self.pool)
         .await?;
 
@@ -4806,18 +4833,20 @@ impl EventStore {
     pub async fn get_core_validators(
         &self,
         core_index: i32,
+        interval: &str,
+        _secondary_interval: &str,
     ) -> Result<serde_json::Value, sqlx::Error> {
         // Get validators who have processed work packages for this core.
         // Start from WorkPackageReceived (94) which has the core field,
         // then find all nodes that participated via submission_or_share_id linkage.
         let validators: Vec<serde_json::Value> = sqlx::query_scalar(
-            r#"
+            &format!(r#"
             WITH core_wp_ids AS (
                 SELECT DISTINCT (data->'WorkPackageReceived'->>'submission_or_share_id') as wp_id
                 FROM events
                 WHERE event_type = 94
                 AND CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) = $1
-                AND created_at > NOW() - INTERVAL '1 hour'
+                AND created_at > NOW() - INTERVAL '{interval}'
             ),
             core_events AS (
                 SELECT e.node_id, e.event_type, e.timestamp
@@ -4832,7 +4861,7 @@ impl EventStore {
                     OR e.data->'GuaranteesDistributed'->>'submission_id' = c.wp_id
                 )
                 WHERE e.event_type IN (94, 95, 101, 102, 105, 109, 92)
-                AND e.created_at > NOW() - INTERVAL '1 hour'
+                AND e.created_at > NOW() - INTERVAL '{interval}'
             ),
             validator_activity AS (
                 SELECT
@@ -4862,7 +4891,8 @@ impl EventStore {
             WHERE va.event_count > 0
             ORDER BY va.event_count DESC
             "#,
-        )
+            interval = interval
+        ))
         .bind(core_index)
         .fetch_all(&self.pool)
         .await?;
@@ -4914,20 +4944,18 @@ impl EventStore {
     pub async fn get_core_metrics(
         &self,
         core_index: i32,
+        interval: &str,
+        secondary_interval: &str,
     ) -> Result<serde_json::Value, sqlx::Error> {
-        // Run all 4 independent queries concurrently for this core (1 hour window).
-        // Q1: Pipeline counts, Q2: Gas metrics, Q3: Latency metrics, Q4: 24h WP count
-        let (metrics, gas, latency, wps_24h) = tokio::try_join!(
-            // Q1: Pipeline counts — start from WorkPackageReceived (94) which has the core field,
-            // then count downstream events linked via submission_or_share_id.
-            sqlx::query(
-                r#"
+        // Run all 4 independent queries concurrently for this core.
+        // Pre-compute format strings to avoid temporary lifetime issues in try_join!
+        let q1_pipeline = format!(r#"
                 WITH core_wp_ids AS (
                     SELECT DISTINCT (data->'WorkPackageReceived'->>'submission_or_share_id') as wp_id
                     FROM events
                     WHERE event_type = 94
                     AND CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) = $1
-                    AND created_at > NOW() - INTERVAL '1 hour'
+                    AND created_at > NOW() - INTERVAL '{interval}'
                 ),
                 core_events AS (
                     SELECT e.event_type, e.node_id, e.data
@@ -4942,7 +4970,7 @@ impl EventStore {
                         OR e.data->'GuaranteesDistributed'->>'submission_id' = c.wp_id
                     )
                     WHERE e.event_type IN (92, 94, 95, 101, 102, 105, 109)
-                    AND e.created_at > NOW() - INTERVAL '1 hour'
+                    AND e.created_at > NOW() - INTERVAL '{interval}'
                 )
                 SELECT
                     COUNT(*) FILTER (WHERE event_type = 94) as wps_received,
@@ -4954,20 +4982,15 @@ impl EventStore {
                     COUNT(DISTINCT node_id) as active_validators
                 FROM core_events
                 "#,
-            )
-            .bind(core_index)
-            .fetch_one(&self.pool),
-
-            // Q2: Gas usage from Refined (101) events — costs[].total.gas_used
-            // Also get gas limits from WorkPackageReceived (94) — outline.work_items[].refine_gas_limit
-            sqlx::query(
-                r#"
+                interval = interval
+            );
+        let q2_gas = format!(r#"
                 WITH core_wp_ids AS (
                     SELECT DISTINCT (data->'WorkPackageReceived'->>'submission_or_share_id') as wp_id
                     FROM events
                     WHERE event_type = 94
                     AND CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) = $1
-                    AND created_at > NOW() - INTERVAL '1 hour'
+                    AND created_at > NOW() - INTERVAL '{interval}'
                 ),
                 refined_gas AS (
                     SELECT
@@ -4977,7 +5000,7 @@ impl EventStore {
                     FROM events e
                     INNER JOIN core_wp_ids c ON e.data->'Refined'->>'submission_or_share_id' = c.wp_id
                     WHERE e.event_type = 101
-                    AND e.created_at > NOW() - INTERVAL '1 hour'
+                    AND e.created_at > NOW() - INTERVAL '{interval}'
                 ),
                 wp_gas_limits AS (
                     SELECT
@@ -4987,7 +5010,7 @@ impl EventStore {
                     FROM events e
                     WHERE e.event_type = 94
                     AND CAST(e.data->'WorkPackageReceived'->>'core' AS INTEGER) = $1
-                    AND e.created_at > NOW() - INTERVAL '1 hour'
+                    AND e.created_at > NOW() - INTERVAL '{interval}'
                 )
                 SELECT
                     COALESCE(AVG(rg.gas_used), 0)::FLOAT8 as avg_gas_used,
@@ -4996,14 +5019,9 @@ impl EventStore {
                 FROM refined_gas rg
                 FULL OUTER JOIN (SELECT AVG(gas_limit) as gas_limit FROM wp_gas_limits) wl ON true
                 "#,
-            )
-            .bind(core_index)
-            .fetch_one(&self.pool),
-
-            // Q3: Latency metrics using created_at (wall clock), NOT timestamp (JCE epoch).
-            // Measures time from WorkPackageReceived to each downstream stage.
-            sqlx::query(
-                r#"
+                interval = interval
+            );
+        let q3_latency = format!(r#"
                 WITH core_received AS (
                     SELECT
                         (data->'WorkPackageReceived'->>'submission_or_share_id') as wp_id,
@@ -5011,14 +5029,14 @@ impl EventStore {
                     FROM events
                     WHERE event_type = 94
                     AND CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) = $1
-                    AND created_at > NOW() - INTERVAL '1 hour'
+                    AND created_at > NOW() - INTERVAL '{interval}'
                 ),
                 wp_durations AS (
                     SELECT
                         EXTRACT(EPOCH FROM (MAX(e.created_at) - r.received_at)) * 1000 as completion_time_ms
                     FROM core_received r
                     INNER JOIN events e ON (
-                        e.created_at > NOW() - INTERVAL '1 hour'
+                        e.created_at > NOW() - INTERVAL '{interval}'
                         AND e.event_type IN (95, 101, 102, 105, 109)
                         AND (
                             e.data->'Authorized'->>'submission_or_share_id' = r.wp_id
@@ -5037,22 +5055,17 @@ impl EventStore {
                 FROM wp_durations
                 WHERE completion_time_ms > 0 AND completion_time_ms < 300000
                 "#,
-            )
-            .bind(core_index)
-            .fetch_one(&self.pool),
-
-            // Q4: 24h WP count
-            sqlx::query_scalar::<_, i64>(
-                r#"
-                SELECT COUNT(*)
-                FROM events
-                WHERE event_type = 94
-                AND CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) = $1
-                AND created_at > NOW() - INTERVAL '24 hours'
-                "#,
-            )
-            .bind(core_index)
-            .fetch_one(&self.pool),
+                interval = interval
+            );
+        let q4_wps_24h = format!(
+                "SELECT COUNT(*) FROM events WHERE event_type = 94 AND CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) = $1 AND created_at > NOW() - INTERVAL '{}'",
+                secondary_interval
+            );
+        let (metrics, gas, latency, wps_24h) = tokio::try_join!(
+            sqlx::query(&q1_pipeline).bind(core_index).fetch_one(&self.pool),
+            sqlx::query(&q2_gas).bind(core_index).fetch_one(&self.pool),
+            sqlx::query(&q3_latency).bind(core_index).fetch_one(&self.pool),
+            sqlx::query_scalar::<_, i64>(&q4_wps_24h).bind(core_index).fetch_one(&self.pool),
         )?;
 
         let wps_received: i64 = metrics.get("wps_received");
@@ -5246,21 +5259,16 @@ impl EventStore {
     pub async fn get_core_bottlenecks(
         &self,
         core_index: i32,
+        interval: &str,
     ) -> Result<serde_json::Value, sqlx::Error> {
-        // Run both independent queries concurrently:
-        // Q1: Find slow validators based on processing times.
-        // Q2: Get overall bottleneck statistics for this core.
-        let (slow_validators, bottleneck_stats) = tokio::try_join!(
-            // Q1: Slow validators — start from WorkPackageReceived (94) which has the core field,
-            // then find downstream events linked via submission_or_share_id.
-            sqlx::query_scalar::<_, serde_json::Value>(
-                r#"
+        // Pre-compute format strings to avoid temporary lifetime issues in try_join!
+        let q1_slow = format!(r#"
                 WITH core_wp_ids AS (
                     SELECT DISTINCT (data->'WorkPackageReceived'->>'submission_or_share_id') as wp_id
                     FROM events
                     WHERE event_type = 94
                     AND CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) = $1
-                    AND created_at > NOW() - INTERVAL '1 hour'
+                    AND created_at > NOW() - INTERVAL '{interval}'
                 ),
                 core_events AS (
                     SELECT e.node_id, e.event_type, e.timestamp
@@ -5275,7 +5283,7 @@ impl EventStore {
                         OR e.data->'GuaranteesDistributed'->>'submission_id' = c.wp_id
                     )
                     WHERE e.event_type IN (94, 95, 101, 102, 105, 109, 92)
-                    AND e.created_at > NOW() - INTERVAL '1 hour'
+                    AND e.created_at > NOW() - INTERVAL '{interval}'
                 ),
                 event_lags AS (
                     SELECT
@@ -5314,19 +5322,15 @@ impl EventStore {
                 ORDER BY vt.avg_processing_ms DESC
                 LIMIT 10
                 "#,
-            )
-            .bind(core_index)
-            .fetch_all(&self.pool),
-
-            // Q2: Overall bottleneck statistics for this core
-            sqlx::query(
-                r#"
+                interval = interval
+            );
+        let q2_stats = format!(r#"
                 WITH core_wp_ids AS (
                     SELECT DISTINCT (data->'WorkPackageReceived'->>'submission_or_share_id') as wp_id
                     FROM events
                     WHERE event_type = 94
                     AND CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) = $1
-                    AND created_at > NOW() - INTERVAL '1 hour'
+                    AND created_at > NOW() - INTERVAL '{interval}'
                 ),
                 core_events AS (
                     SELECT e.event_type, e.node_id
@@ -5341,7 +5345,7 @@ impl EventStore {
                         OR e.data->'GuaranteesDistributed'->>'submission_id' = c.wp_id
                     )
                     WHERE e.event_type IN (94, 95, 101, 102, 105, 109, 92)
-                    AND e.created_at > NOW() - INTERVAL '1 hour'
+                    AND e.created_at > NOW() - INTERVAL '{interval}'
                 )
                 SELECT
                     COUNT(*) as total_events,
@@ -5349,7 +5353,13 @@ impl EventStore {
                     COUNT(DISTINCT node_id) as validator_count
                 FROM core_events
                 "#,
-            )
+                interval = interval
+            );
+        let (slow_validators, bottleneck_stats) = tokio::try_join!(
+            sqlx::query_scalar::<_, serde_json::Value>(&q1_slow)
+            .bind(core_index)
+            .fetch_all(&self.pool),
+            sqlx::query(&q2_stats)
             .bind(core_index)
             .fetch_one(&self.pool),
         )?;
@@ -5409,18 +5419,20 @@ impl EventStore {
     pub async fn get_core_guarantors_with_sharing(
         &self,
         core_index: i32,
+        interval: &str,
+        secondary_interval: &str,
     ) -> Result<serde_json::Value, sqlx::Error> {
         // Get guarantors with their activity.
         // Start from WorkPackageReceived (94) which has the core field,
         // then find GuaranteeBuilt events linked via submission_id.
-        let guarantors: Vec<serde_json::Value> = sqlx::query_scalar(
+        let guarantors: Vec<serde_json::Value> = sqlx::query_scalar(&format!(
             r#"
             WITH core_wp_ids AS (
                 SELECT DISTINCT (data->'WorkPackageReceived'->>'submission_or_share_id') as wp_id
                 FROM events
                 WHERE event_type = 94
                 AND CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) = $1
-                AND created_at > NOW() - INTERVAL '24 hours'
+                AND created_at > NOW() - INTERVAL '{secondary_interval}'
             ),
             guarantee_activity AS (
                 SELECT
@@ -5430,7 +5442,7 @@ impl EventStore {
                 FROM events e
                 INNER JOIN core_wp_ids c ON e.data->'GuaranteeBuilt'->>'submission_id' = c.wp_id
                 WHERE e.event_type = 105
-                AND e.created_at > NOW() - INTERVAL '24 hours'
+                AND e.created_at > NOW() - INTERVAL '{secondary_interval}'
                 GROUP BY e.node_id
             ),
             shard_activity AS (
@@ -5443,7 +5455,7 @@ impl EventStore {
                     COALESCE(SUM(CAST(data->'ShardTransferred'->>'size' AS BIGINT)) FILTER (WHERE event_type = 124), 0) as bytes_transferred
                 FROM events
                 WHERE event_type IN (121, 123, 124)
-                AND created_at > NOW() - INTERVAL '24 hours'
+                AND created_at > NOW() - INTERVAL '{secondary_interval}'
                 GROUP BY node_id
             ),
             import_exports AS (
@@ -5458,7 +5470,7 @@ impl EventStore {
                     AND e1.event_type = 124
                     AND e2.timestamp < e1.timestamp
                     AND e1.timestamp < e2.timestamp + INTERVAL '10 seconds'
-                WHERE e1.created_at > NOW() - INTERVAL '1 hour'
+                WHERE e1.created_at > NOW() - INTERVAL '{interval}'
                 GROUP BY e1.node_id, e2.node_id
             )
             SELECT jsonb_build_object(
@@ -5484,13 +5496,15 @@ impl EventStore {
             LEFT JOIN shard_activity sa ON ga.node_id = sa.node_id
             ORDER BY ga.guarantee_count DESC
             "#,
-        )
+            interval = interval,
+            secondary_interval = secondary_interval
+        ))
         .bind(core_index)
         .fetch_all(&self.pool)
         .await?;
 
         // Get import sharing matrix
-        let import_sharing: Vec<serde_json::Value> = sqlx::query_scalar(
+        let import_sharing: Vec<serde_json::Value> = sqlx::query_scalar(&format!(
             r#"
             WITH transfers AS (
                 SELECT
@@ -5500,7 +5514,7 @@ impl EventStore {
                     COALESCE(SUM(CAST(data->'ShardTransferred'->>'size' AS BIGINT)), 0) as bytes
                 FROM events
                 WHERE event_type = 124
-                AND created_at > NOW() - INTERVAL '1 hour'
+                AND created_at > NOW() - INTERVAL '{}'
                 AND data->'ShardTransferred'->>'to_peer' IS NOT NULL
                 GROUP BY node_id, data->'ShardTransferred'->>'to_peer'
             )
@@ -5515,7 +5529,8 @@ impl EventStore {
             ORDER BY count DESC
             LIMIT 50
             "#,
-        )
+            interval
+        ))
         .fetch_all(&self.pool)
         .await?;
 
