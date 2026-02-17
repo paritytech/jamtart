@@ -150,6 +150,43 @@ pub struct NetworkTotals {
     pub total_extrinsics: u32,
 }
 
+/// Rolling-window per-core statistics accumulated from JAM RPC subscription
+/// updates.  Each subscription event delivers one block's `pi_C` snapshot;
+/// we keep the last `WINDOW_SLOTS` samples so callers get stable cumulative
+/// metrics instead of flickering per-block values.
+#[derive(Debug, Clone, Serialize)]
+pub struct CoreWindowStats {
+    pub core_index: u16,
+    /// Sum of refinement gas across all blocks in the window.
+    pub gas_used: u64,
+    /// Sum of DA load (bundle + segment footprint) across the window.
+    pub da_load: u64,
+    /// Average assurance count (popularity) across blocks *with* activity.
+    pub popularity_avg: f64,
+    /// Total import segments across the window.
+    pub imports: u64,
+    /// Total extrinsic count across the window.
+    pub extrinsic_count: u64,
+    /// Total extrinsic bytes across the window.
+    pub extrinsic_size: u64,
+    /// Number of blocks in the window where this core had a guarantee.
+    pub active_blocks: u32,
+    /// Total blocks in the window.
+    pub window_blocks: u32,
+    /// Most recent slot with non-zero activity (0 if never active).
+    pub last_active_slot: u32,
+}
+
+/// One block's per-core snapshot from the JAM RPC subscription.
+#[derive(Debug, Clone)]
+struct CoreSample {
+    slot: u32,
+    records: Vec<CoreActivity>,
+}
+
+/// Number of recent blocks to accumulate (roughly one epoch at 6s/slot).
+const WINDOW_SLOTS: usize = 600;
+
 /// JAM RPC client that maintains a connection to a JAM node
 pub struct JamRpcClient {
     rpc_url: String,
@@ -158,6 +195,8 @@ pub struct JamRpcClient {
     stats: Arc<RwLock<Option<NetworkStats>>>,
     /// Protocol parameters
     params: Arc<RwLock<Option<ProtocolParams>>>,
+    /// Rolling window of per-block core samples for accumulation
+    core_samples: Arc<RwLock<std::collections::VecDeque<CoreSample>>>,
 }
 
 /// Protocol parameters from the chain
@@ -179,6 +218,9 @@ impl JamRpcClient {
             client: None,
             stats: Arc::new(RwLock::new(None)),
             params: Arc::new(RwLock::new(None)),
+            core_samples: Arc::new(RwLock::new(std::collections::VecDeque::with_capacity(
+                WINDOW_SLOTS + 1,
+            ))),
         }
     }
 
@@ -224,6 +266,84 @@ impl JamRpcClient {
     /// Check if connected
     pub fn is_connected(&self) -> bool {
         self.client.is_some()
+    }
+
+    /// Record one block's per-core stats into the rolling window.
+    async fn record_core_sample(&self, slot: u32, cores: Vec<CoreActivity>) {
+        let mut samples = self.core_samples.write().await;
+        // Deduplicate by slot (subscription may fire more than once)
+        if samples.back().map(|s| s.slot) == Some(slot) {
+            return;
+        }
+        samples.push_back(CoreSample {
+            slot,
+            records: cores,
+        });
+        while samples.len() > WINDOW_SLOTS {
+            samples.pop_front();
+        }
+    }
+
+    /// Compute accumulated per-core stats over the rolling window.
+    pub async fn get_core_window_stats(&self) -> Vec<CoreWindowStats> {
+        let samples = self.core_samples.read().await;
+        let params = self.params.read().await;
+        let core_count = params.as_ref().map(|p| p.core_count).unwrap_or(0) as usize;
+        if core_count == 0 || samples.is_empty() {
+            return Vec::new();
+        }
+
+        let window_blocks = samples.len() as u32;
+
+        // Accumulators per core
+        let mut gas: Vec<u64> = vec![0; core_count];
+        let mut da: Vec<u64> = vec![0; core_count];
+        let mut pop_sum: Vec<u64> = vec![0; core_count];
+        let mut pop_count: Vec<u32> = vec![0; core_count];
+        let mut imports: Vec<u64> = vec![0; core_count];
+        let mut xt_count: Vec<u64> = vec![0; core_count];
+        let mut xt_size: Vec<u64> = vec![0; core_count];
+        let mut active_blocks: Vec<u32> = vec![0; core_count];
+        let mut last_active_slot: Vec<u32> = vec![0; core_count];
+
+        for sample in samples.iter() {
+            for ca in &sample.records {
+                let i = ca.core_index as usize;
+                if i >= core_count {
+                    continue;
+                }
+                gas[i] += ca.gas_used;
+                da[i] += ca.da_load as u64;
+                imports[i] += ca.imports as u64;
+                xt_count[i] += ca.extrinsic_count as u64;
+                xt_size[i] += ca.extrinsic_size as u64;
+                if ca.gas_used > 0 || ca.popularity > 0 || ca.da_load > 0 {
+                    active_blocks[i] += 1;
+                    pop_sum[i] += ca.popularity as u64;
+                    pop_count[i] += 1;
+                    last_active_slot[i] = sample.slot;
+                }
+            }
+        }
+
+        (0..core_count)
+            .map(|i| CoreWindowStats {
+                core_index: i as u16,
+                gas_used: gas[i],
+                da_load: da[i],
+                popularity_avg: if pop_count[i] > 0 {
+                    pop_sum[i] as f64 / pop_count[i] as f64
+                } else {
+                    0.0
+                },
+                imports: imports[i],
+                extrinsic_count: xt_count[i],
+                extrinsic_size: xt_size[i],
+                active_blocks: active_blocks[i],
+                window_blocks,
+                last_active_slot: last_active_slot[i],
+            })
+            .collect()
     }
 
     /// Get the current protocol parameters
@@ -500,6 +620,11 @@ impl JamRpcClient {
                             cores,
                             totals,
                         };
+
+                        // Record per-core sample into rolling window
+                        client
+                            .record_core_sample(slot, network_stats.cores.clone())
+                            .await;
 
                         debug!(
                             "Stats update: slot={}, {} active services, {} cores",

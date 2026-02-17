@@ -90,16 +90,31 @@ impl RateLimiter {
         }
     }
 
-    /// Record a connection being closed
+    /// Record a connection being closed.
+    /// Uses compare_exchange loop to avoid brief underflow window where counter
+    /// wraps to usize::MAX, which would reject all new connections.
     pub fn connection_closed(&self) {
-        let prev = self.connection_count.fetch_sub(1, Ordering::Relaxed);
-        // Saturate at 0 to avoid underflow (fetch_sub already happened)
-        if prev == 0 {
-            // Was already 0, undo the subtract
-            self.connection_count.fetch_add(1, Ordering::Relaxed);
-            metrics::gauge!("telemetry_active_connections").set(0.0);
-        } else {
-            metrics::gauge!("telemetry_active_connections").set((prev - 1) as f64);
+        loop {
+            let current = self.connection_count.load(Ordering::Acquire);
+            if current == 0 {
+                metrics::gauge!("telemetry_active_connections").set(0.0);
+                return;
+            }
+            match self.connection_count.compare_exchange(
+                current,
+                current - 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    metrics::gauge!("telemetry_active_connections").set((current - 1) as f64);
+                    return;
+                }
+                Err(_) => {
+                    std::hint::spin_loop();
+                    continue;
+                }
+            }
         }
     }
 

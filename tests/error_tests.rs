@@ -333,6 +333,7 @@ fn test_complex_nested_structures() {
     // Test WorkPackageSummary with maximum nesting
     let summary = WorkPackageSummary {
         work_package_size: u32::MAX,
+        work_package_hash: [0xBB; 32],
         anchor: [0xFF; 32],
         lookup_anchor_slot: u32::MAX,
         prerequisites: vec![[0xAA; 32]; 100], // Many prerequisites

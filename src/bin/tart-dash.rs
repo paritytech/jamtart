@@ -97,16 +97,161 @@ struct HealthInfo {
     database_size_bytes: Option<u64>,
 }
 
+// --- Enhanced data types for metrics tab ---
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct RateWindow {
+    #[serde(default)]
+    events: i64,
+    #[serde(default)]
+    blocks: i64,
+    #[serde(default)]
+    finalized: i64,
+    #[serde(default)]
+    events_per_second: f64,
+    #[serde(default)]
+    blocks_per_second: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct LiveCounters {
+    #[serde(default)]
+    latest_slot: Option<i64>,
+    #[serde(default)]
+    finalized_slot: Option<i64>,
+    #[serde(default)]
+    active_nodes: i64,
+    #[serde(default)]
+    last_10s: RateWindow,
+    #[serde(default)]
+    last_1m: RateWindow,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct CoreStatusEntry {
+    #[serde(default)]
+    core_index: i64,
+    #[serde(default)]
+    active_work_packages: i64,
+    #[serde(default)]
+    work_packages_last_hour: i64,
+    #[serde(default)]
+    guarantees_last_hour: i64,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    utilization_pct: f64,
+    #[serde(default)]
+    gas_used: u64,
+    #[serde(default)]
+    da_load: u64,
+    #[serde(default)]
+    active_blocks: u32,
+    #[serde(default)]
+    window_blocks: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct CoresSummary {
+    #[serde(default)]
+    total_cores: usize,
+    #[serde(default)]
+    active_cores: i64,
+    #[serde(default)]
+    idle_cores: i64,
+    #[serde(default)]
+    stale_cores: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct CoresStatusResponse {
+    #[serde(default)]
+    cores: Vec<CoreStatusEntry>,
+    #[serde(default)]
+    summary: CoresSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct WorkPackageTotals {
+    #[serde(default)]
+    submissions: i64,
+    #[serde(default)]
+    being_shared: i64,
+    #[serde(default)]
+    failed: i64,
+    #[serde(default)]
+    duplicates: i64,
+    #[serde(default)]
+    received: i64,
+    #[serde(default)]
+    refined: i64,
+    #[serde(default)]
+    work_reports_built: i64,
+    #[serde(default)]
+    guarantees_built: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct WorkPackageStatsResponse {
+    #[serde(default)]
+    totals: WorkPackageTotals,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct GuaranteeTotals {
+    #[serde(default)]
+    built: i64,
+    #[serde(default)]
+    sending: i64,
+    #[serde(default)]
+    send_failed: i64,
+    #[serde(default)]
+    sent: i64,
+    #[serde(default)]
+    distributed: i64,
+    #[serde(default)]
+    receiving: i64,
+    #[serde(default)]
+    receive_failed: i64,
+    #[serde(default)]
+    received: i64,
+    #[serde(default)]
+    discarded: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct GuaranteeSuccessRates {
+    #[serde(default)]
+    send_success_rate: String,
+    #[serde(default)]
+    receive_success_rate: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct GuaranteeStatsResponse {
+    #[serde(default)]
+    totals: GuaranteeTotals,
+    #[serde(default)]
+    success_rates: GuaranteeSuccessRates,
+}
+
+// --- Dashboard state ---
+
 #[derive(Clone)]
 struct DashboardData {
     nodes: Vec<NodeInfo>,
     events: Vec<EventInfo>,
     stats: StatsInfo,
     health: HealthInfo,
+    live: LiveCounters,
+    cores: CoresStatusResponse,
+    work_packages: WorkPackageStatsResponse,
+    guarantees: GuaranteeStatsResponse,
     #[allow(dead_code)]
     last_update: Instant,
     update_count: u64,
     error: Option<String>,
+    enhanced_errors: Vec<String>,
 }
 
 impl Default for DashboardData {
@@ -126,9 +271,14 @@ impl Default for DashboardData {
                 components: std::collections::HashMap::new(),
                 database_size_bytes: None,
             },
+            live: LiveCounters::default(),
+            cores: CoresStatusResponse::default(),
+            work_packages: WorkPackageStatsResponse::default(),
+            guarantees: GuaranteeStatsResponse::default(),
             last_update: Instant::now(),
             update_count: 0,
             error: None,
+            enhanced_errors: Vec::new(),
         }
     }
 }
@@ -150,7 +300,7 @@ struct App {
     data: Arc<Mutex<DashboardData>>,
     nodes_scroll: usize,
     events_scroll: usize,
-    selected_panel: usize, // 0 = nodes, 1 = events
+    selected_panel: usize, // 0 = events, 1 = nodes, 2 = metrics
 }
 
 impl App {
@@ -159,7 +309,7 @@ impl App {
             data,
             nodes_scroll: 0,
             events_scroll: 0,
-            selected_panel: 1, // Start with events selected
+            selected_panel: 0, // Start with events selected
         }
     }
 
@@ -167,51 +317,51 @@ impl App {
         match key {
             KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => return true,
             KeyCode::Tab => {
-                self.selected_panel = (self.selected_panel + 1) % 2;
+                self.selected_panel = (self.selected_panel + 1) % 3;
             }
             KeyCode::Up => match self.selected_panel {
-                0 => self.nodes_scroll = self.nodes_scroll.saturating_sub(1),
-                1 => self.events_scroll = self.events_scroll.saturating_sub(1),
+                0 => self.events_scroll = self.events_scroll.saturating_sub(1),
+                1 => self.nodes_scroll = self.nodes_scroll.saturating_sub(1),
                 _ => {}
             },
             KeyCode::Down => {
                 let data = safe_lock(&self.data);
                 match self.selected_panel {
                     0 => {
-                        if self.nodes_scroll < data.nodes.len().saturating_sub(1) {
-                            self.nodes_scroll += 1;
+                        if self.events_scroll < data.events.len().saturating_sub(1) {
+                            self.events_scroll += 1;
                         }
                     }
                     1 => {
-                        if self.events_scroll < data.events.len().saturating_sub(1) {
-                            self.events_scroll += 1;
+                        if self.nodes_scroll < data.nodes.len().saturating_sub(1) {
+                            self.nodes_scroll += 1;
                         }
                     }
                     _ => {}
                 }
             }
             KeyCode::PageUp => match self.selected_panel {
-                0 => self.nodes_scroll = self.nodes_scroll.saturating_sub(10),
-                1 => self.events_scroll = self.events_scroll.saturating_sub(10),
+                0 => self.events_scroll = self.events_scroll.saturating_sub(10),
+                1 => self.nodes_scroll = self.nodes_scroll.saturating_sub(10),
                 _ => {}
             },
             KeyCode::PageDown => {
                 let data = safe_lock(&self.data);
                 match self.selected_panel {
                     0 => {
-                        self.nodes_scroll =
-                            (self.nodes_scroll + 10).min(data.nodes.len().saturating_sub(1));
-                    }
-                    1 => {
                         self.events_scroll =
                             (self.events_scroll + 10).min(data.events.len().saturating_sub(1));
+                    }
+                    1 => {
+                        self.nodes_scroll =
+                            (self.nodes_scroll + 10).min(data.nodes.len().saturating_sub(1));
                     }
                     _ => {}
                 }
             }
             KeyCode::Home => match self.selected_panel {
-                0 => self.nodes_scroll = 0,
-                1 => self.events_scroll = 0,
+                0 => self.events_scroll = 0,
+                1 => self.nodes_scroll = 0,
                 _ => {}
             },
             _ => {}
@@ -225,25 +375,73 @@ fn fetch_data(api_base: &str) -> Result<DashboardData> {
         .timeout(Duration::from_secs(5))
         .build()?;
 
-    // Fetch all data
-    let health_url = format!("{}/api/health/detailed", api_base);
-    let stats_url = format!("{}/api/stats", api_base);
-    let nodes_url = format!("{}/api/nodes", api_base);
-    let events_url = format!("{}/api/events?limit=50", api_base);
+    // Core data (required)
+    let health = client
+        .get(format!("{}/api/health/detailed", api_base))
+        .send()?
+        .json::<HealthInfo>()?;
+    let stats = client
+        .get(format!("{}/api/stats", api_base))
+        .send()?
+        .json::<StatsInfo>()?;
+    let nodes_resp = client
+        .get(format!("{}/api/nodes", api_base))
+        .send()?
+        .json::<NodesResponse>()?;
+    let events_resp = client
+        .get(format!("{}/api/events?limit=50", api_base))
+        .send()?
+        .json::<EventsResponse>()?;
 
-    let health = client.get(&health_url).send()?.json::<HealthInfo>()?;
-    let stats = client.get(&stats_url).send()?.json::<StatsInfo>()?;
-    let nodes_resp = client.get(&nodes_url).send()?.json::<NodesResponse>()?;
-    let events_resp = client.get(&events_url).send()?.json::<EventsResponse>()?;
+    // Enhanced data (optional — gracefully degrade if endpoints unavailable)
+    let mut enhanced_errors = Vec::new();
+
+    let live = client
+        .get(format!("{}/api/metrics/live", api_base))
+        .send()
+        .and_then(|r| r.json::<LiveCounters>())
+        .unwrap_or_else(|e| {
+            enhanced_errors.push(format!("metrics/live: {e}"));
+            LiveCounters::default()
+        });
+    let cores = client
+        .get(format!("{}/api/cores/status", api_base))
+        .send()
+        .and_then(|r| r.json::<CoresStatusResponse>())
+        .unwrap_or_else(|e| {
+            enhanced_errors.push(format!("cores/status: {e}"));
+            CoresStatusResponse::default()
+        });
+    let work_packages = client
+        .get(format!("{}/api/workpackages", api_base))
+        .send()
+        .and_then(|r| r.json::<WorkPackageStatsResponse>())
+        .unwrap_or_else(|e| {
+            enhanced_errors.push(format!("workpackages: {e}"));
+            WorkPackageStatsResponse::default()
+        });
+    let guarantees = client
+        .get(format!("{}/api/guarantees", api_base))
+        .send()
+        .and_then(|r| r.json::<GuaranteeStatsResponse>())
+        .unwrap_or_else(|e| {
+            enhanced_errors.push(format!("guarantees: {e}"));
+            GuaranteeStatsResponse::default()
+        });
 
     Ok(DashboardData {
         nodes: nodes_resp.nodes,
         events: events_resp.events,
         stats,
         health,
+        live,
+        cores,
+        work_packages,
+        guarantees,
         last_update: Instant::now(),
         update_count: 0,
         error: None,
+        enhanced_errors,
     })
 }
 
@@ -379,7 +577,12 @@ fn ui(f: &mut Frame, app: &App) {
             Span::styled(" │ ", Style::default().fg(Color::White)),
             Span::styled(
                 {
-                    if data.health.uptime_seconds > 0.0 {
+                    // Use 10s live rate when available, fall back to lifetime average
+                    if data.live.last_10s.events_per_second > 0.0
+                        || data.live.last_1m.events_per_second > 0.0
+                    {
+                        format!("{:.1} events/s", data.live.last_10s.events_per_second)
+                    } else if data.health.uptime_seconds > 0.0 {
                         let total_events: u64 = data.nodes.iter().map(|n| n.event_count).sum();
                         format!(
                             "{:.1} events/s",
@@ -403,7 +606,7 @@ fn ui(f: &mut Frame, app: &App) {
             Span::styled(" ", Style::default().fg(Color::Rgb(50, 50, 50))),
             Span::styled(" ▒██▒ ░ ", tart_style),
             Span::styled(
-                "═".repeat(chunks[0].width as usize - 38),
+                "═".repeat((chunks[0].width as usize).saturating_sub(38)),
                 Style::default().fg(Color::Rgb(100, 100, 100)),
             ),
         ]),
@@ -418,7 +621,7 @@ fn ui(f: &mut Frame, app: &App) {
     let content_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage(60), // Top area (stats + events)
+            Constraint::Percentage(60), // Top area (stats + events/metrics)
             Constraint::Percentage(40), // Bottom area (nodes)
         ])
         .split(chunks[1]);
@@ -432,26 +635,36 @@ fn ui(f: &mut Frame, app: &App) {
     // Left side - Stats
     render_stats(f, top_chunks[0], &data);
 
-    // Right side - Events (swapped)
-    render_events(
-        f,
-        top_chunks[1],
-        &data,
-        app.events_scroll,
-        app.selected_panel == 1,
-    );
+    // Right side - Events or Metrics tab
+    if app.selected_panel == 2 {
+        render_metrics(f, top_chunks[1], &data, true);
+    } else {
+        render_events(
+            f,
+            top_chunks[1],
+            &data,
+            app.events_scroll,
+            app.selected_panel == 0,
+        );
+    }
 
-    // Bottom - Nodes (swapped)
+    // Bottom - Nodes
     render_nodes(
         f,
         content_chunks[1],
         &data,
         app.nodes_scroll,
-        app.selected_panel == 0,
+        app.selected_panel == 1,
     );
 
     // Footer
-    render_footer(f, chunks[2], &data);
+    render_footer(f, chunks[2], &data, app.selected_panel);
+}
+
+/// Safe padding: returns spaces to right-align a value within a fixed-width box.
+/// Returns empty string if the value is already wider than the box.
+fn pad(box_width: usize, prefix_len: usize, value_len: usize) -> String {
+    " ".repeat(box_width.saturating_sub(prefix_len).saturating_sub(value_len).saturating_sub(1))
 }
 
 fn render_stats(f: &mut Frame, area: Rect, data: &DashboardData) {
@@ -490,7 +703,7 @@ fn render_stats(f: &mut Frame, area: Rect, data: &DashboardData) {
                     "◆ status:  ",
                     Style::default().fg(Color::Rgb(255, 255, 150)),
                 ),
-                Span::styled(" ".repeat(30 - 2 - 11 - 6 - 1), Style::default()), // All status texts are 6 chars
+                Span::styled(pad(30 - 2, 11, 6), Style::default()), // All status texts are 6 chars
                 Span::styled(
                     status_text,
                     Style::default()
@@ -515,10 +728,7 @@ fn render_stats(f: &mut Frame, area: Rect, data: &DashboardData) {
                     "◆ modules: ",
                     Style::default().fg(Color::Rgb(255, 255, 150)),
                 ),
-                Span::styled(
-                    " ".repeat(30 - 2 - 11 - comp_status.len() - 1),
-                    Style::default(),
-                ),
+                Span::styled(pad(30 - 2, 11, comp_status.len()), Style::default()),
                 Span::styled(
                     comp_status,
                     Style::default()
@@ -534,10 +744,7 @@ fn render_stats(f: &mut Frame, area: Rect, data: &DashboardData) {
                 "◆ version: ",
                 Style::default().fg(Color::Rgb(255, 255, 150)),
             ),
-            Span::styled(
-                " ".repeat(30 - 2 - 11 - data.health.version.len() - 1),
-                Style::default(),
-            ), // Padding before value
+            Span::styled(pad(30 - 2, 11, data.health.version.len()), Style::default()),
             Span::styled(
                 &data.health.version,
                 Style::default()
@@ -568,10 +775,7 @@ fn render_stats(f: &mut Frame, area: Rect, data: &DashboardData) {
                     "◆ db size: ",
                     Style::default().fg(Color::Rgb(255, 255, 150)),
                 ),
-                Span::styled(
-                    " ".repeat(30 - 2 - 11 - db_size.len() - 1),
-                    Style::default(),
-                ),
+                Span::styled(pad(30 - 2, 11, db_size.len()), Style::default()),
                 Span::styled(
                     db_size,
                     Style::default()
@@ -611,11 +815,9 @@ fn render_stats(f: &mut Frame, area: Rect, data: &DashboardData) {
                 Style::default().fg(Color::Rgb(150, 255, 255)),
             ),
             Span::styled(
-                " ".repeat(
-                    30 - 2 - 11 - format!("{:3}/{}", connected_nodes, total_nodes).len() - 1,
-                ),
+                pad(30 - 2, 11, format!("{:3}/{}", connected_nodes, total_nodes).len()),
                 Style::default(),
-            ), // Padding before value
+            ),
             Span::styled(
                 format!("{:3}/{}", connected_nodes, total_nodes),
                 Style::default()
@@ -631,9 +833,9 @@ fn render_stats(f: &mut Frame, area: Rect, data: &DashboardData) {
                 Style::default().fg(Color::Rgb(150, 255, 255)),
             ),
             Span::styled(
-                " ".repeat(30 - 2 - 11 - total_events.to_string().len() - 1),
+                pad(30 - 2, 11, total_events.to_string().len()),
                 Style::default(),
-            ), // Padding before value
+            ),
             Span::styled(
                 format!("{}", total_events),
                 Style::default()
@@ -649,9 +851,9 @@ fn render_stats(f: &mut Frame, area: Rect, data: &DashboardData) {
                 Style::default().fg(Color::Rgb(150, 255, 255)),
             ),
             Span::styled(
-                " ".repeat(30 - 2 - 11 - data.stats.total_blocks_authored.to_string().len() - 1),
+                pad(30 - 2, 11, data.stats.total_blocks_authored.to_string().len()),
                 Style::default(),
-            ), // Padding before value
+            ),
             Span::styled(
                 format!("{}", data.stats.total_blocks_authored),
                 Style::default()
@@ -686,9 +888,9 @@ fn render_stats(f: &mut Frame, area: Rect, data: &DashboardData) {
                 Style::default().fg(Color::Rgb(255, 200, 100)),
             ),
             Span::styled(
-                " ".repeat(30 - 2 - 12 - data.stats.best_block.to_string().len() - 1),
+                pad(30 - 2, 12, data.stats.best_block.to_string().len()),
                 Style::default(),
-            ), // Padding before value
+            ),
             Span::styled(
                 format!("{}", data.stats.best_block),
                 Style::default()
@@ -704,9 +906,9 @@ fn render_stats(f: &mut Frame, area: Rect, data: &DashboardData) {
                 Style::default().fg(Color::Rgb(255, 200, 100)),
             ),
             Span::styled(
-                " ".repeat(30 - 2 - 12 - data.stats.finalized_block.to_string().len() - 1),
+                pad(30 - 2, 12, data.stats.finalized_block.to_string().len()),
                 Style::default(),
-            ), // Padding before value
+            ),
             Span::styled(
                 format!("{}", data.stats.finalized_block),
                 Style::default()
@@ -760,7 +962,7 @@ fn render_nodes(f: &mut Frame, area: Rect, data: &DashboardData, scroll: usize, 
     let rows: Vec<Row> = nodes
         .iter()
         .skip(scroll)
-        .take(area.height as usize - 4)
+        .take((area.height as usize).saturating_sub(4))
         .map(|node| {
             let status = if node.is_connected {
                 Cell::from("● online").style(
@@ -772,7 +974,7 @@ fn render_nodes(f: &mut Frame, area: Rect, data: &DashboardData, scroll: usize, 
                 Cell::from("○ offline").style(Style::default().fg(Color::Rgb(100, 100, 100)))
             };
 
-            let node_id_display = format!("({}...)", &node.node_id[..16].to_lowercase());
+            let node_id_display = format!("({}...)", node.node_id.get(..16).unwrap_or(&node.node_id).to_lowercase());
 
             Row::new(vec![
                 Cell::from(Line::from(vec![
@@ -974,7 +1176,7 @@ fn render_events(
         .events
         .iter()
         .skip(scroll)
-        .take(area.height as usize - 3)
+        .take((area.height as usize).saturating_sub(3))
         .map(|event| {
             let name = event_names
                 .iter()
@@ -986,7 +1188,7 @@ fn render_events(
             let time = DateTime::parse_from_rfc3339(&event.timestamp)
                 .ok()
                 .map(|dt| dt.with_timezone(&Local).format("%H:%M:%S").to_string())
-                .unwrap_or_else(|| event.timestamp[11..19].to_string());
+                .unwrap_or_else(|| event.timestamp.get(11..19).unwrap_or(&event.timestamp).to_string());
 
             // Categorize events and assign colors/prefixes - Y2K vibrant theme
             let (prefix, color, emoji) = match event.event_type {
@@ -1011,7 +1213,7 @@ fn render_events(
                 // Segment events - bright magenta
                 160..=178 => ("SEGM ", Color::Rgb(255, 0, 255), "🔗"),
                 // Preimage events - bright yellow
-                190..=199 => ("PREIM", Color::Rgb(255, 255, 0), "🖼️"),
+                190..=199 => ("PREIM", Color::Rgb(255, 255, 0), "🖼\u{fe0f}"),
                 // Unknown - dim white
                 _ => ("UNKN ", Color::Rgb(200, 200, 200), "❓"),
             };
@@ -1028,7 +1230,7 @@ fn render_events(
                     Style::default().fg(color).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!("({}...) ", &event.node_id[..12].to_lowercase()),
+                    format!("({}...) ", event.node_id.get(..12).unwrap_or(&event.node_id).to_lowercase()),
                     Style::default().fg(Color::Rgb(128, 128, 128)),
                 ),
                 Span::styled(emoji, Style::default()),
@@ -1069,10 +1271,442 @@ fn render_events(
     f.render_widget(events, area);
 }
 
-fn render_footer(f: &mut Frame, area: Rect, data: &DashboardData) {
+fn render_metrics(f: &mut Frame, area: Rect, data: &DashboardData, is_selected: bool) {
+    let border_color = if is_selected {
+        Color::Rgb(0, 255, 255)
+    } else {
+        Color::Rgb(100, 200, 255)
+    };
+    let border_style = Style::default()
+        .fg(border_color)
+        .add_modifier(Modifier::BOLD);
+
+    let label_style = Style::default().fg(Color::Rgb(150, 150, 150));
+    let dim_style = Style::default().fg(Color::Rgb(100, 100, 100));
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5), // Throughput
+            Constraint::Length(5), // Pipeline
+            Constraint::Length(5), // Guarantees
+            Constraint::Min(4),    // Cores (gets remaining space)
+        ])
+        .split(area);
+
+    // --- Throughput ---
+    let eps_10s = data.live.last_10s.events_per_second;
+    let bps_10s = data.live.last_10s.blocks_per_second;
+    let eps_1m = data.live.last_1m.events_per_second;
+    let bps_1m = data.live.last_1m.blocks_per_second;
+    let latest_slot = data
+        .live
+        .latest_slot
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "-".into());
+    let final_slot = data
+        .live
+        .finalized_slot
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "-".into());
+
+    let throughput = Paragraph::new(vec![
+        Line::from(vec![
+            Span::styled("  10s ", label_style),
+            Span::styled(
+                format!("{:6.1}", eps_10s),
+                Style::default()
+                    .fg(Color::Rgb(0, 255, 255))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" ev/s ", label_style),
+            Span::styled(
+                format!("{:5.2}", bps_10s),
+                Style::default()
+                    .fg(Color::Rgb(0, 255, 100))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" blk/s", label_style),
+            Span::styled("  │  ", dim_style),
+            Span::styled("1m ", label_style),
+            Span::styled(
+                format!("{:6.1}", eps_1m),
+                Style::default()
+                    .fg(Color::Rgb(0, 200, 200))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" ev/s ", label_style),
+            Span::styled(
+                format!("{:5.2}", bps_1m),
+                Style::default()
+                    .fg(Color::Rgb(0, 200, 80))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" blk/s", label_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  slot ", label_style),
+            Span::styled(
+                format!("{:>6}", latest_slot),
+                Style::default()
+                    .fg(Color::Rgb(255, 255, 0))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" latest", label_style),
+            Span::styled("  │  ", dim_style),
+            Span::styled("slot ", label_style),
+            Span::styled(
+                format!("{:>6}", final_slot),
+                Style::default()
+                    .fg(Color::Rgb(255, 165, 0))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" finalized", label_style),
+        ]),
+        Line::from(vec![Span::styled("", Style::default())]),
+    ])
+    .block(
+        Block::default()
+            .title(" throughput ")
+            .borders(Borders::ALL)
+            .border_style(border_style),
+    )
+    .style(Style::default().bg(Color::Black));
+    f.render_widget(throughput, chunks[0]);
+
+    // --- Work Package Pipeline ---
+    let wp = &data.work_packages.totals;
+    let pipeline = Paragraph::new(vec![
+        Line::from(vec![
+            Span::styled("  submit ", label_style),
+            Span::styled(
+                format!("{:>6}", wp.submissions),
+                Style::default()
+                    .fg(Color::Rgb(191, 0, 255))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  recv ", label_style),
+            Span::styled(
+                format!("{:>6}", wp.received),
+                Style::default()
+                    .fg(Color::Rgb(150, 100, 255))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  refined ", label_style),
+            Span::styled(
+                format!("{:>6}", wp.refined),
+                Style::default()
+                    .fg(Color::Rgb(100, 200, 255))
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  report ", label_style),
+            Span::styled(
+                format!("{:>6}", wp.work_reports_built),
+                Style::default()
+                    .fg(Color::Rgb(0, 255, 200))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  guar ", label_style),
+            Span::styled(
+                format!("{:>6}", wp.guarantees_built),
+                Style::default()
+                    .fg(Color::Rgb(0, 255, 100))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  failed  ", label_style),
+            Span::styled(
+                format!("{:>6}", wp.failed),
+                Style::default()
+                    .fg(if wp.failed > 0 {
+                        Color::Rgb(255, 80, 80)
+                    } else {
+                        Color::Rgb(100, 100, 100)
+                    })
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![Span::styled("", Style::default())]),
+    ])
+    .block(
+        Block::default()
+            .title(" work package pipeline (24h) ")
+            .borders(Borders::ALL)
+            .border_style(border_style),
+    )
+    .style(Style::default().bg(Color::Black));
+    f.render_widget(pipeline, chunks[1]);
+
+    // --- Guarantee Health ---
+    let gt = &data.guarantees.totals;
+    let sr = &data.guarantees.success_rates;
+    let send_rate = if sr.send_success_rate.is_empty() {
+        "-".to_string()
+    } else {
+        sr.send_success_rate.clone()
+    };
+    let recv_rate = if sr.receive_success_rate.is_empty() {
+        "-".to_string()
+    } else {
+        sr.receive_success_rate.clone()
+    };
+
+    let guarantees = Paragraph::new(vec![
+        Line::from(vec![
+            Span::styled("  built ", label_style),
+            Span::styled(
+                format!("{:>6}", gt.built),
+                Style::default()
+                    .fg(Color::Rgb(0, 255, 200))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  sent ", label_style),
+            Span::styled(
+                format!("{:>6}", gt.sent),
+                Style::default()
+                    .fg(Color::Rgb(0, 200, 255))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  distributed ", label_style),
+            Span::styled(
+                format!("{:>6}", gt.distributed),
+                Style::default()
+                    .fg(Color::Rgb(0, 255, 100))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  disc ", label_style),
+            Span::styled(
+                format!("{:>4}", gt.discarded),
+                Style::default()
+                    .fg(if gt.discarded > 0 {
+                        Color::Rgb(255, 200, 0)
+                    } else {
+                        Color::Rgb(100, 100, 100)
+                    })
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  send success ", label_style),
+            Span::styled(
+                format!("{:>7}", send_rate),
+                Style::default()
+                    .fg(Color::Rgb(0, 255, 100))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("    recv success ", label_style),
+            Span::styled(
+                format!("{:>7}", recv_rate),
+                Style::default()
+                    .fg(Color::Rgb(0, 255, 100))
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![Span::styled("", Style::default())]),
+    ])
+    .block(
+        Block::default()
+            .title(" guarantee health ")
+            .borders(Borders::ALL)
+            .border_style(border_style),
+    )
+    .style(Style::default().bg(Color::Black));
+    f.render_widget(guarantees, chunks[2]);
+
+    // --- Core Utilization ---
+    let summary = &data.cores.summary;
+    let has_core_data = !data.cores.cores.is_empty();
+    let core_error = data
+        .enhanced_errors
+        .iter()
+        .find(|e| e.starts_with("cores/"))
+        .cloned();
+
+    if has_core_data {
+        let core_header_cells = vec![
+            Cell::from("core").style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("status").style(
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("util%").style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("gas").style(
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("da").style(
+                Style::default()
+                    .fg(Color::Rgb(0, 200, 255))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("blocks").style(
+                Style::default()
+                    .fg(Color::Rgb(191, 0, 255))
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ];
+        let core_header = Row::new(core_header_cells)
+            .style(Style::default().bg(Color::Rgb(0, 20, 40)))
+            .height(1);
+
+        let mut cores = data.cores.cores.clone();
+        cores.sort_by_key(|c| c.core_index);
+
+        let core_rows: Vec<Row> = cores
+            .iter()
+            .take(chunks[3].height.saturating_sub(4) as usize)
+            .map(|core| {
+                let (status_text, status_color) = match core.status.as_str() {
+                    "active" => ("● active", Color::Rgb(0, 255, 0)),
+                    "idle" => ("○ idle", Color::Rgb(100, 100, 100)),
+                    "stale" => ("◆ stale", Color::Rgb(255, 200, 0)),
+                    _ => ("? unknown", Color::Rgb(150, 150, 150)),
+                };
+
+                let util_color = if core.utilization_pct >= 50.0 {
+                    Color::Rgb(0, 255, 0)
+                } else if core.utilization_pct > 0.0 {
+                    Color::Rgb(255, 255, 100)
+                } else {
+                    Color::Rgb(100, 100, 100)
+                };
+
+                let gas_str = if core.gas_used >= 1_000_000 {
+                    format!("{:.1}M", core.gas_used as f64 / 1_000_000.0)
+                } else if core.gas_used >= 1_000 {
+                    format!("{:.1}K", core.gas_used as f64 / 1_000.0)
+                } else {
+                    format!("{}", core.gas_used)
+                };
+
+                let gas_color = if core.gas_used > 0 {
+                    Color::Rgb(0, 255, 100)
+                } else {
+                    Color::Rgb(100, 100, 100)
+                };
+
+                let da_str = if core.da_load >= 1_000_000 {
+                    format!("{:.1}M", core.da_load as f64 / 1_000_000.0)
+                } else if core.da_load >= 1_000 {
+                    format!("{:.1}K", core.da_load as f64 / 1_000.0)
+                } else {
+                    format!("{}", core.da_load)
+                };
+
+                let da_color = if core.da_load > 0 {
+                    Color::Rgb(0, 200, 255)
+                } else {
+                    Color::Rgb(100, 100, 100)
+                };
+
+                let blocks_str = format!("{}/{}", core.active_blocks, core.window_blocks);
+                let blocks_color = if core.active_blocks > 0 {
+                    Color::Rgb(191, 0, 255)
+                } else {
+                    Color::Rgb(100, 100, 100)
+                };
+
+                Row::new(vec![
+                    Cell::from(format!("C{}", core.core_index)).style(
+                        Style::default()
+                            .fg(Color::Rgb(150, 255, 255))
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Cell::from(status_text).style(Style::default().fg(status_color)),
+                    Cell::from(format!("{:>5.1}%", core.utilization_pct)).style(
+                        Style::default()
+                            .fg(util_color)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Cell::from(format!("{:>6}", gas_str)).style(
+                        Style::default()
+                            .fg(gas_color)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Cell::from(format!("{:>6}", da_str)).style(
+                        Style::default()
+                            .fg(da_color)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Cell::from(format!("{:>7}", blocks_str)).style(
+                        Style::default()
+                            .fg(blocks_color)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ])
+            })
+            .collect();
+
+        let core_title = format!(
+            " cores ({} total: {} active, {} idle) ",
+            summary.total_cores, summary.active_cores, summary.idle_cores
+        );
+
+        let core_table = Table::new(
+            core_rows,
+            &[
+                Constraint::Length(5),
+                Constraint::Length(10),
+                Constraint::Length(8),
+                Constraint::Length(8),
+                Constraint::Length(8),
+                Constraint::Length(9),
+            ],
+        )
+        .header(core_header)
+        .block(
+            Block::default()
+                .title(core_title)
+                .borders(Borders::ALL)
+                .border_style(border_style)
+                .style(Style::default().bg(Color::Black)),
+        )
+        .style(Style::default().bg(Color::Black));
+
+        f.render_widget(core_table, chunks[3]);
+    } else {
+        let msg = if let Some(err) = core_error {
+            format!(" cores  (error: {}) ", err)
+        } else {
+            " cores  (no active cores in last 24h) ".to_string()
+        };
+        let empty = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Waiting for work package events...",
+                Style::default().fg(Color::Rgb(100, 100, 100)),
+            )),
+        ])
+        .block(
+            Block::default()
+                .title(msg)
+                .borders(Borders::ALL)
+                .border_style(
+                    Style::default()
+                        .fg(Color::Rgb(255, 200, 0))
+                        .add_modifier(Modifier::BOLD),
+                ),
+        )
+        .style(Style::default().bg(Color::Black));
+        f.render_widget(empty, chunks[3]);
+    }
+}
+
+fn render_footer(f: &mut Frame, area: Rect, data: &DashboardData, selected_panel: usize) {
     let width = area.width as usize;
-    let top_border = format!("╔{}╗", "═".repeat(width - 2));
-    let bottom_border = format!("╚{}╝", "═".repeat(width - 2));
+    let top_border = format!("╔{}╗", "═".repeat(width.saturating_sub(2)));
+    let bottom_border = format!("╚{}╝", "═".repeat(width.saturating_sub(2)));
 
     let footer_content = if let Some(error) = &data.error {
         let error_line_width = 2 + 9 + error.len() + 1; // "║ " + "⚠ ERROR: " + error + "║"
@@ -1102,22 +1736,44 @@ fn render_footer(f: &mut Frame, area: Rect, data: &DashboardData) {
             )]),
         ]
     } else {
-        // Calculate nav content width
+        // Tab label styles
+        let active_tab = Style::default()
+            .fg(Color::Rgb(0, 255, 255))
+            .add_modifier(Modifier::BOLD);
+        let inactive_tab = Style::default().fg(Color::Rgb(100, 100, 100));
+
+        let events_style = if selected_panel == 0 {
+            active_tab
+        } else {
+            inactive_tab
+        };
+        let nodes_style = if selected_panel == 1 {
+            active_tab
+        } else {
+            inactive_tab
+        };
+        let metrics_style = if selected_panel == 2 {
+            active_tab
+        } else {
+            inactive_tab
+        };
+
         // "[HH:MM:SS] " = 11
         // "[q] quit  " = 10
-        // "[tab] switch  " = 14
-        // "[↑↓] scroll  " = 13 (arrows are 2 chars each)
-        // "[pgup/dn] page  " = 16
+        // "[tab] " = 6
+        // "events" = 6, "·" = 1, "nodes" = 5, "·" = 1, "metrics" = 7 = 20
+        // "  " = 2
+        // "[↑↓] scroll  " = 13
         // "[home] top" = 10
-        // Total content = 74 chars
-        let nav_content_chars = 74;
+        // Total content = 72 chars
+        let nav_content_chars = 72;
         let total_padding = if width > nav_content_chars + 2 {
-            width - nav_content_chars - 2 // Total padding available
+            width - nav_content_chars - 2
         } else {
             0
         };
         let left_padding = total_padding / 2;
-        let right_padding = total_padding - left_padding; // Handle odd widths
+        let right_padding = total_padding - left_padding;
 
         vec![
             Line::from(vec![Span::styled(
@@ -1150,7 +1806,13 @@ fn render_footer(f: &mut Frame, area: Rect, data: &DashboardData) {
                         .bg(Color::Rgb(0, 50, 50))
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(" switch  ", Style::default().fg(Color::White)),
+                Span::styled(" ", Style::default().fg(Color::White)),
+                Span::styled("events", events_style),
+                Span::styled("·", Style::default().fg(Color::Rgb(80, 80, 80))),
+                Span::styled("nodes", nodes_style),
+                Span::styled("·", Style::default().fg(Color::Rgb(80, 80, 80))),
+                Span::styled("metrics", metrics_style),
+                Span::styled("  ", Style::default().fg(Color::White)),
                 Span::styled(
                     "[↑↓]",
                     Style::default()
@@ -1159,14 +1821,6 @@ fn render_footer(f: &mut Frame, area: Rect, data: &DashboardData) {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(" scroll  ", Style::default().fg(Color::White)),
-                Span::styled(
-                    "[pgup/dn]",
-                    Style::default()
-                        .fg(Color::Magenta)
-                        .bg(Color::Rgb(50, 0, 50))
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" page  ", Style::default().fg(Color::White)),
                 Span::styled(
                     "[home]",
                     Style::default()

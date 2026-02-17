@@ -386,6 +386,7 @@ fn test_work_item_summary_encoding() {
 fn test_work_package_summary_encoding() {
     let summary = WorkPackageSummary {
         work_package_size: 1024 * 1024,
+        work_package_hash: [66u8; 32],
         anchor: [77u8; 32],
         lookup_anchor_slot: 98765,
         prerequisites: vec![[1u8; 32], [2u8; 32], [3u8; 32]],
@@ -405,6 +406,28 @@ fn test_work_package_summary_encoding() {
 
     // Verify structure
     assert!(buf.len() > 40); // At least size + anchor + slot
+}
+
+#[test]
+fn test_work_report_summary_encoding_decoding() {
+    let summary = WorkReportSummary {
+        work_report_hash: [0xABu8; 32],
+        bundle_size: 65536,
+        erasure_root: [0xCDu8; 32],
+        segments_root: [0xEFu8; 32],
+    };
+
+    let mut buf = BytesMut::new();
+    summary.encode(&mut buf).unwrap();
+    assert_eq!(buf.len(), 32 + 4 + 32 + 32); // hash + size + erasure + segments = 100
+    assert_eq!(summary.encoded_size(), 100);
+
+    let mut cursor = Cursor::new(&buf[..]);
+    let decoded = WorkReportSummary::decode(&mut cursor).unwrap();
+    assert_eq!(decoded.work_report_hash, summary.work_report_hash);
+    assert_eq!(decoded.bundle_size, summary.bundle_size);
+    assert_eq!(decoded.erasure_root, summary.erasure_root);
+    assert_eq!(decoded.segments_root, summary.segments_root);
 }
 
 #[test]

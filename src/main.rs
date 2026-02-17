@@ -132,8 +132,20 @@ async fn main() -> anyhow::Result<()> {
         metrics_exporter_prometheus::PrometheusBuilder::new().install_recorder()?;
 
     // Initialize optimized storage
-    info!("Connecting to database: {}", database_url);
+    let redacted_url = match url::Url::parse(&database_url) {
+        Ok(mut parsed) => {
+            if parsed.password().is_some() {
+                let _ = parsed.set_password(Some("***"));
+            }
+            parsed.to_string()
+        }
+        Err(_) => "***redacted***".to_string(),
+    };
+    info!("Connecting to database: {}", redacted_url);
     let store = Arc::new(EventStore::new(&database_url).await?);
+
+    // Create shutdown signal for TCP server
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     // Start optimized telemetry server
     info!("Starting optimized telemetry server on {}", telemetry_bind);
@@ -141,10 +153,10 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(TelemetryServer::new(&telemetry_bind, Arc::clone(&store)).await?);
     let telemetry_server_clone = Arc::clone(&telemetry_server);
 
-    // Spawn telemetry server task
+    // Spawn telemetry server task with shutdown support
     tokio::spawn(async move {
-        if let Err(e) = telemetry_server_clone.run().await {
-            eprintln!("Telemetry server error: {}", e);
+        if let Err(e) = telemetry_server_clone.run_until_shutdown(shutdown_rx).await {
+            error!("Telemetry server error: {}", e);
         }
     });
 
@@ -230,8 +242,10 @@ async fn main() -> anyhow::Result<()> {
                     info!("Warming cache with all aggregation endpoints (concurrent)...");
                 }
 
+                // Resolve core_count from JAM RPC params before concurrent queries
                 // Warm all cached endpoints concurrently — cycle time = max(query) not sum(queries)
-                // NOTE: live_counters is warmed for the SSE handler (reads from cache directly).
+                // NOTE: cores_status is computed in the API handler (merges JAM RPC + DB)
+                // and cached via cache_or_compute, so it's not warmed here.
                 // Real-time endpoints (realtime_metrics, active_workpackages, events/search)
                 // hit the DB directly — they must never serve stale data.
                 let (
@@ -240,7 +254,6 @@ async fn main() -> anyhow::Result<()> {
                     r_block_stats,
                     r_guarantee_stats,
                     r_da_stats,
-                    r_cores_status,
                     r_failure_rates,
                     r_block_propagation,
                     r_network_health,
@@ -248,13 +261,13 @@ async fn main() -> anyhow::Result<()> {
                     r_live_counters,
                     r_da_stats_enhanced,
                     r_execution_metrics,
+                    r_anomalies,
                 ) = tokio::join!(
                     store_clone.get_stats(),
                     store_clone.get_workpackage_stats(),
                     store_clone.get_block_stats(),
                     store_clone.get_guarantee_stats(),
                     store_clone.get_da_stats(),
-                    store_clone.get_cores_status(),
                     store_clone.get_failure_rates(),
                     store_clone.get_block_propagation(),
                     store_clone.get_network_health(),
@@ -262,6 +275,7 @@ async fn main() -> anyhow::Result<()> {
                     store_clone.get_live_counters(),
                     store_clone.get_da_stats_enhanced(),
                     store_clone.get_execution_metrics(),
+                    store_clone.detect_anomalies(),
                 );
 
                 // Insert results into cache, logging on first run
@@ -284,7 +298,6 @@ async fn main() -> anyhow::Result<()> {
                 cache_result!("block_stats", r_block_stats);
                 cache_result!("guarantee_stats", r_guarantee_stats);
                 cache_result!("da_stats", r_da_stats);
-                cache_result!("cores_status", r_cores_status);
                 cache_result!("failure_rates", r_failure_rates);
                 cache_result!("block_propagation", r_block_propagation);
                 cache_result!("network_health", r_network_health);
@@ -292,6 +305,18 @@ async fn main() -> anyhow::Result<()> {
                 cache_result!("live_counters", r_live_counters);
                 cache_result!("da_stats_enhanced", r_da_stats_enhanced);
                 cache_result!("execution_metrics", r_execution_metrics);
+
+                // Cache anomalies: wrap Vec<Value> in a JSON object for the WS handler
+                match r_anomalies {
+                    Ok(alerts) => {
+                        let value = serde_json::json!({"alerts": alerts});
+                        cache_clone.insert("anomalies".to_string(), value);
+                        if first {
+                            info!("Cache warmed: anomalies");
+                        }
+                    }
+                    Err(e) => warn!("Failed to warm cache for anomalies: {}", e),
+                }
 
                 if first {
                     info!("Initial cache warming complete (13 endpoints, concurrent)");
@@ -341,7 +366,7 @@ async fn main() -> anyhow::Result<()> {
     info!("Max events per second per node: 100 (+50 burst)");
     info!("Write batch size: 2000 events");
     info!("Write batch timeout: 5ms");
-    info!("Cache TTL: 3s, warm interval: 2s (15 endpoints, concurrent)");
+    info!("Cache TTL: 3s, warm interval: 2s (13 endpoints, concurrent)");
     info!("==========================================");
 
     // Graceful shutdown: flush pending data on SIGTERM/SIGINT
@@ -362,6 +387,9 @@ async fn main() -> anyhow::Result<()> {
                 _ = ctrl_c => info!("Received SIGINT, shutting down gracefully..."),
                 _ = terminate => info!("Received SIGTERM, shutting down gracefully..."),
             }
+
+            // Signal TCP server to stop accepting new connections
+            let _ = shutdown_tx.send(true);
 
             // Flush batch writer to prevent data loss
             info!("Flushing batch writer...");

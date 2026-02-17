@@ -497,6 +497,7 @@ impl Decode for WorkPackageSummary {
     fn decode(buf: &mut Cursor<&[u8]>) -> Result<Self, DecodingError> {
         Ok(WorkPackageSummary {
             work_package_size: u32::decode(buf)?,
+            work_package_hash: WorkPackageHash::decode(buf)?,
             anchor: HeaderHash::decode(buf)?,
             lookup_anchor_slot: Slot::decode(buf)?,
             prerequisites: Vec::<WorkPackageHash>::decode(buf)?,
@@ -508,6 +509,7 @@ impl Decode for WorkPackageSummary {
 impl Decode for WorkReportSummary {
     fn decode(buf: &mut Cursor<&[u8]>) -> Result<Self, DecodingError> {
         Ok(WorkReportSummary {
+            work_report_hash: WorkReportHash::decode(buf)?,
             bundle_size: u32::decode(buf)?,
             erasure_root: ErasureRoot::decode(buf)?,
             segments_root: SegmentsRoot::decode(buf)?,
@@ -612,7 +614,9 @@ impl Decode for Event {
                 let num_val_peers = u32::decode(buf)?;
                 let num_sync_peers = u32::decode(buf)?;
 
-                // Read num_guarantees as raw bytes (per-core guarantee count)
+                // TODO: JIP-3 specifies num_guarantees as [u8; C] (fixed-size array where
+                // C = core_count), but PolkaJam sends a varint length prefix before the
+                // byte array. We decode it as variable-length to match actual wire format.
                 let core_count = decode_variable_length(buf)? as usize;
                 let mut num_guarantees = vec![0u8; core_count];
                 if buf.remaining() < core_count {
@@ -1252,7 +1256,7 @@ pub fn decode_message_frame(data: &[u8]) -> Result<(u32, &[u8]), DecodingError> 
     let size_bytes = &data[..4];
     let msg_size = u32::from_le_bytes([size_bytes[0], size_bytes[1], size_bytes[2], size_bytes[3]]);
 
-    if msg_size > 10_000_000 {
+    if msg_size > 256_000 {
         return Err(DecodingError::MessageTooLarge(msg_size));
     }
 

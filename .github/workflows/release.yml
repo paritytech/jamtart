@@ -70,7 +70,7 @@ jobs:
       - name: Build binaries
         run: |
           cargo build --release --target ${{ matrix.target }} --bin tart-backend
-          cargo build --release --target ${{ matrix.target }} --bin tart-dash
+          cargo build --release --target ${{ matrix.target }} --features dashboard --bin tart-dash
 
       - name: Strip binaries
         run: |

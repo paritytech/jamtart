@@ -409,6 +409,7 @@ impl Encode for WorkItemSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkPackageSummary {
     pub work_package_size: u32,
+    pub work_package_hash: WorkPackageHash,
     pub anchor: HeaderHash,
     pub lookup_anchor_slot: Slot,
     pub prerequisites: Vec<WorkPackageHash>,
@@ -418,6 +419,7 @@ pub struct WorkPackageSummary {
 impl Encode for WorkPackageSummary {
     fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodingError> {
         self.work_package_size.encode(buf)?;
+        self.work_package_hash.encode(buf)?;
         self.anchor.encode(buf)?;
         self.lookup_anchor_slot.encode(buf)?;
         self.prerequisites.encode(buf)?;
@@ -426,12 +428,13 @@ impl Encode for WorkPackageSummary {
     }
 
     fn encoded_size(&self) -> usize {
-        4 + 32 + 4 + self.prerequisites.encoded_size() + self.work_items.encoded_size()
+        4 + 32 + 32 + 4 + self.prerequisites.encoded_size() + self.work_items.encoded_size()
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkReportSummary {
+    pub work_report_hash: WorkReportHash,
     pub bundle_size: u32,
     pub erasure_root: ErasureRoot,
     pub segments_root: SegmentsRoot,
@@ -439,6 +442,7 @@ pub struct WorkReportSummary {
 
 impl Encode for WorkReportSummary {
     fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodingError> {
+        self.work_report_hash.encode(buf)?;
         self.bundle_size.encode(buf)?;
         self.erasure_root.encode(buf)?;
         self.segments_root.encode(buf)?;
@@ -446,7 +450,7 @@ impl Encode for WorkReportSummary {
     }
 
     fn encoded_size(&self) -> usize {
-        4 + 32 + 32
+        32 + 4 + 32 + 32
     }
 }
 

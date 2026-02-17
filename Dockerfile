@@ -1,8 +1,8 @@
 # Build stage - use Debian-based nightly for glibc compatibility
 FROM rust:bookworm AS builder
 
-# Install nightly toolchain
-RUN rustup default nightly
+# Use stable toolchain (aligned with CI)
+RUN rustup default stable
 
 WORKDIR /app
 

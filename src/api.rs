@@ -525,13 +525,221 @@ async fn get_active_workpackages(
     }
 }
 
-/// Get core status aggregation
+/// Get core status aggregation.
+///
+/// Uses rolling-window accumulated per-core data from JAM RPC (real pi_C
+/// stats: gas_used, da_load, popularity, etc.) combined with aggregate
+/// telemetry from the DB (guarantee/WP pipeline counts).
 async fn get_cores_status(State(state): State<ApiState>) -> Result<impl IntoResponse, StatusCode> {
     let result = cache_or_compute(&state.cache, "cores_status", || async {
-        state.store.get_cores_status().await.map_err(|e| {
-            error!("Failed to get cores status: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+        // Per-core accumulated stats from JAM RPC rolling window
+        let (window_stats, core_count, current_slot) =
+            if let Some(ref jam_rpc) = state.jam_rpc {
+                let ws = jam_rpc.get_core_window_stats().await;
+                let params = jam_rpc.get_params().await;
+                let count = params.as_ref().map(|p| p.core_count).unwrap_or(0);
+                let slot = jam_rpc
+                    .get_stats()
+                    .await
+                    .map(|s| s.slot)
+                    .unwrap_or(0);
+                (ws, count, slot)
+            } else {
+                (vec![], 0u16, 0u32)
+            };
+
+        // Fallback: get core_count from connected node params if JAM RPC unavailable
+        let core_count = if core_count > 0 {
+            core_count
+        } else {
+            state
+                .telemetry_server
+                .get_connections()
+                .first()
+                .map(|c| c.info.params.core_count)
+                .unwrap_or(0)
+        };
+
+        // Fallback: get core_count from DB nodes table if no live connections
+        let core_count = if core_count > 0 {
+            core_count
+        } else {
+            let row: Option<(Option<serde_json::Value>,)> = sqlx::query_as(
+                "SELECT node_info->'params' FROM nodes LIMIT 1",
+            )
+            .fetch_optional(state.store.pool())
+            .await
+            .unwrap_or(None);
+
+            row.and_then(|(params,)| {
+                params?.get("core_count")?.as_u64().map(|v| v as u16)
+            })
+            .unwrap_or(0)
+        };
+
+        // Aggregate telemetry from DB
+        let telemetry = state
+            .store
+            .get_cores_telemetry_agg()
+            .await
+            .map_err(|e| {
+                error!("Failed to get cores telemetry: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+        let guarantees_last_hour = telemetry["guarantees_last_hour"].as_i64().unwrap_or(0);
+        let wp_last_hour = telemetry["work_packages_last_hour"].as_i64().unwrap_or(0);
+        let last_activity = telemetry.get("last_activity").cloned();
+
+        // Build per-core entries
+        let mut cores = Vec::new();
+        let mut active_count = 0i64;
+        let mut idle_count = 0i64;
+        let has_window_stats = !window_stats.is_empty();
+
+        if has_window_stats {
+            // JAM RPC available: use accumulated per-core window stats
+            let total_active_blocks: u32 = (0..core_count)
+                .map(|i| {
+                    window_stats
+                        .iter()
+                        .find(|w| w.core_index == i)
+                        .map(|w| w.active_blocks)
+                        .unwrap_or(0)
+                })
+                .sum();
+
+            for i in 0..core_count {
+                let ws = window_stats.iter().find(|w| w.core_index == i);
+                let gas = ws.map(|w| w.gas_used).unwrap_or(0);
+                let active_blocks = ws.map(|w| w.active_blocks).unwrap_or(0);
+                let window_blocks = ws.map(|w| w.window_blocks).unwrap_or(0);
+                let last_active = ws.map(|w| w.last_active_slot).unwrap_or(0);
+
+                // Distribute aggregate WP/guarantee counts proportionally
+                let (core_wp, core_guar) =
+                    if total_active_blocks > 0 && active_blocks > 0 {
+                        let share = active_blocks as f64 / total_active_blocks as f64;
+                        (
+                            (wp_last_hour as f64 * share).round() as i64,
+                            (guarantees_last_hour as f64 * share).round() as i64,
+                        )
+                    } else {
+                        (0, 0)
+                    };
+
+                let is_active = gas > 0;
+                if is_active { active_count += 1; } else { idle_count += 1; }
+
+                cores.push(serde_json::json!({
+                    "core_index": i,
+                    "status": if is_active { "active" } else { "idle" },
+                    "work_packages_last_hour": core_wp,
+                    "guarantees_last_hour": core_guar,
+                    "gas_used": gas,
+                    "da_load": ws.map(|w| w.da_load).unwrap_or(0),
+                    "popularity_avg": ws.map(|w| w.popularity_avg).unwrap_or(0.0),
+                    "imports": ws.map(|w| w.imports).unwrap_or(0),
+                    "extrinsic_count": ws.map(|w| w.extrinsic_count).unwrap_or(0),
+                    "extrinsic_size": ws.map(|w| w.extrinsic_size).unwrap_or(0),
+                    "active_blocks": active_blocks,
+                    "window_blocks": window_blocks,
+                    "utilization_pct": if window_blocks > 0 {
+                        (active_blocks as f64 / window_blocks as f64) * 100.0
+                    } else { 0.0 },
+                    "last_active_slot": last_active,
+                    "slots_since_active": if last_active > 0 {
+                        current_slot.saturating_sub(last_active)
+                    } else { 0 },
+                }));
+            }
+        } else {
+            // No JAM RPC: build cores from telemetry only.
+            // Count per-core WPs from events that have a core field (93, 94).
+            let per_core_wp: Vec<(Option<i64>, i64)> = sqlx::query_as(
+                r#"
+                SELECT
+                    COALESCE(
+                        (data->'WorkPackageReceived'->>'core')::bigint,
+                        (data->'DuplicateWorkPackage'->>'core')::bigint
+                    ) as core_idx,
+                    COUNT(*) as cnt
+                FROM events
+                WHERE event_type IN (93, 94)
+                AND created_at > NOW() - INTERVAL '1 hour'
+                GROUP BY core_idx
+                ORDER BY core_idx
+                "#,
+            )
+            .fetch_all(state.store.pool())
+            .await
+            .unwrap_or_default();
+
+            let mut core_wp_map = std::collections::HashMap::<u16, i64>::new();
+            for (core_idx, cnt) in &per_core_wp {
+                if let Some(c) = core_idx {
+                    if *c >= 0 && *c < core_count as i64 {
+                        core_wp_map.insert(*c as u16, *cnt);
+                    }
+                }
+            }
+
+            let has_activity = wp_last_hour > 0 || guarantees_last_hour > 0;
+
+            for i in 0..core_count {
+                let core_wp_events = core_wp_map.get(&i).copied().unwrap_or(0);
+
+                // If per-core event data exists, use it. Otherwise distribute
+                // aggregate telemetry evenly so the dashboard shows something.
+                let (core_wp, core_guar, is_active) = if !core_wp_map.is_empty() {
+                    let active = core_wp_events > 0;
+                    let n_active = core_wp_map.len().max(1) as i64;
+                    let guar = if active { guarantees_last_hour / n_active } else { 0 };
+                    (core_wp_events, guar, active)
+                } else if has_activity && core_count > 0 {
+                    // No per-core data; distribute evenly
+                    let wp = wp_last_hour / core_count as i64;
+                    let guar = guarantees_last_hour / core_count as i64;
+                    (wp, guar, wp > 0)
+                } else {
+                    (0, 0, false)
+                };
+
+                if is_active { active_count += 1; } else { idle_count += 1; }
+
+                cores.push(serde_json::json!({
+                    "core_index": i,
+                    "status": if is_active { "active" } else { "idle" },
+                    "work_packages_last_hour": core_wp,
+                    "guarantees_last_hour": core_guar,
+                    "gas_used": 0,
+                    "da_load": 0,
+                    "popularity_avg": 0.0,
+                    "imports": 0,
+                    "extrinsic_count": 0,
+                    "extrinsic_size": 0,
+                    "active_blocks": 0,
+                    "window_blocks": 0,
+                    "utilization_pct": 0.0,
+                    "last_active_slot": 0,
+                    "slots_since_active": 0,
+                }));
+            }
+        }
+
+        Ok(serde_json::json!({
+            "cores": cores,
+            "summary": {
+                "total_cores": core_count,
+                "active_cores": active_count,
+                "idle_cores": idle_count,
+            },
+            "telemetry": {
+                "guarantees_last_hour": guarantees_last_hour,
+                "work_packages_last_hour": wp_last_hour,
+                "last_activity": last_activity,
+            },
+        }))
     })
     .await?;
     Ok((cache_headers(2), Json(result)))
@@ -1441,7 +1649,7 @@ async fn websocket_connection(mut socket: WebSocket, state: ApiState) {
     // Alerts channel state
     let mut alerts_subscribed = false;
     let mut alerts_interval = tokio::time::interval(std::time::Duration::from_secs(10));
-    let mut last_alerts: Vec<serde_json::Value> = Vec::new();
+    let mut last_alerts: serde_json::Value = serde_json::json!(null);
 
     // Track performance metrics
     let mut events_received = 0u64;
@@ -1695,9 +1903,15 @@ async fn websocket_connection(mut socket: WebSocket, state: ApiState) {
                 }).await;
 
                 if let Ok(metrics) = metrics_result {
+                    // Enrich with core status from cache (pre-warmed every 2s)
+                    let mut data = (*metrics).clone();
+                    if let Some(cores) = state.cache.get("cores_status") {
+                        data["cores"] = (*cores).clone();
+                    }
+
                     let response = WebSocketResponse {
                         r#type: "metrics".to_string(),
-                        data: (*metrics).clone(),
+                        data,
                         timestamp: chrono::Utc::now(),
                     };
 
@@ -1709,27 +1923,32 @@ async fn websocket_connection(mut socket: WebSocket, state: ApiState) {
                 }
             }
 
-            // Alerts channel updates (if subscribed)
+            // Alerts channel updates (if subscribed) - read from cache instead of hitting DB
             _ = alerts_interval.tick(), if alerts_subscribed => {
-                if let Ok(alerts) = state.store.detect_anomalies().await {
-                    // Only send if there are new alerts
-                    if !alerts.is_empty() && alerts != last_alerts {
-                        let response = WebSocketResponse {
-                            r#type: "alert".to_string(),
-                            data: serde_json::json!({
-                                "alerts": alerts,
-                                "count": alerts.len()
-                            }),
-                            timestamp: chrono::Utc::now(),
-                        };
+                if let Some(cached_anomalies) = state.cache.get("anomalies") {
+                    // Only send if there are new alerts and they differ from last sent
+                    if *cached_anomalies != last_alerts {
+                        let alerts_array = cached_anomalies.get("alerts").cloned().unwrap_or(serde_json::json!([]));
+                        let count = alerts_array.as_array().map(|a| a.len()).unwrap_or(0);
 
-                        if let Some(msg) = serialize_ws_message(&response) {
-                            if socket.send(Message::Text(msg)).await.is_err() {
-                                break;
+                        if count > 0 {
+                            let response = WebSocketResponse {
+                                r#type: "alert".to_string(),
+                                data: serde_json::json!({
+                                    "alerts": alerts_array,
+                                    "count": count
+                                }),
+                                timestamp: chrono::Utc::now(),
+                            };
+
+                            if let Some(msg) = serialize_ws_message(&response) {
+                                if socket.send(Message::Text(msg)).await.is_err() {
+                                    break;
+                                }
                             }
                         }
 
-                        last_alerts = alerts;
+                        last_alerts = (*cached_anomalies).clone();
                     }
                 }
             }

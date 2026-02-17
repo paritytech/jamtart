@@ -838,22 +838,15 @@ impl EventStore {
         .fetch_one(&self.pool)
         .await?;
 
-        // Get per-core work package stats (last 24h)
-        let core_stats: Vec<(i32, i64)> = sqlx::query_as(
-            r#"
-            SELECT
-                CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) as core,
-                COUNT(*) as count
-            FROM events
-            WHERE event_type = 94
-            AND created_at > NOW() - INTERVAL '24 hours'
-            AND data->'WorkPackageReceived'->>'core' IS NOT NULL
-            GROUP BY core
-            ORDER BY core
-            "#,
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        // Per-core guarantee count.  PolkaJam doesn't emit a core field in
+        // telemetry events and guarantor lists aren't grouped by core, so we
+        // count total guarantees (core attribution unavailable from telemetry).
+        let total_guarantees = row.get::<i64, _>("guarantees_built");
+        let core_stats: Vec<(i64, i64)> = if total_guarantees > 0 {
+            vec![(0, total_guarantees)]
+        } else {
+            vec![]
+        };
 
         // Get recent work packages (last 100)
         let recent: Vec<serde_json::Value> = sqlx::query_scalar(
@@ -1315,7 +1308,7 @@ impl EventStore {
                 OR data->'ExtrinsicReceived'->>'hash' = $1
                 OR data->'ImportsReceived'->>'hash' = $1
                 OR data->'Refined'->>'hash' = $1
-                OR data->'WorkReportBuilt'->'outline'->>'hash' = $1
+                OR data->'WorkReportBuilt'->'outline'->>'work_report_hash' = $1
                 OR data->'GuaranteeBuilt'->'outline'->>'hash' = $1
                 OR data->'GuaranteeSending'->>'hash' = $1
                 OR data->'GuaranteeSent'->>'hash' = $1
@@ -1324,6 +1317,7 @@ impl EventStore {
                 OR data->'GuaranteeDiscarded'->>'hash' = $1
                 OR data->'WorkPackageHashMapped'->>'work_package_hash' = $1
             )
+            AND created_at > NOW() - INTERVAL '7 days'
             ORDER BY timestamp ASC
             LIMIT 100
             "#,
@@ -1556,78 +1550,41 @@ impl EventStore {
         }))
     }
 
-    /// Get core status aggregation - activity per core.
-    pub async fn get_cores_status(&self) -> Result<serde_json::Value, sqlx::Error> {
-        // Get work package and guarantee activity per core.
-        // Uses time-bounded scans on both sides to avoid full-table JSONB joins.
-        let cores: Vec<serde_json::Value> = sqlx::query_scalar(
+    /// Get aggregate telemetry stats for core status.
+    ///
+    /// Returns totals only — per-core attribution is not possible from
+    /// telemetry because PolkaJam v0.1.26 doesn't emit a core field.
+    /// The API handler merges these with real per-core data from JAM RPC.
+    pub async fn get_cores_telemetry_agg(&self) -> Result<serde_json::Value, sqlx::Error> {
+        let agg: (i64, i64, Option<chrono::DateTime<chrono::Utc>>) = sqlx::query_as(
             r#"
-            WITH core_activity AS (
-                SELECT
-                    CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) as core_index,
-                    COUNT(*) as wp_count,
-                    COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '1 hour') as wp_last_hour,
-                    MAX(timestamp) as last_activity
-                FROM events
-                WHERE event_type = 94
-                AND created_at > NOW() - INTERVAL '24 hours'
-                AND data->'WorkPackageReceived'->>'core' IS NOT NULL
-                GROUP BY CAST(data->'WorkPackageReceived'->>'core' AS INTEGER)
-            ),
-            guarantee_activity AS (
-                SELECT
-                    CAST(wr.data->'WorkPackageReceived'->>'core' AS INTEGER) as core_index,
-                    COUNT(*) as guarantees_last_hour
-                FROM events g
-                INNER JOIN events wr ON wr.event_type = 94
-                    AND wr.created_at > NOW() - INTERVAL '24 hours'
-                    AND wr.data->'WorkPackageReceived'->>'submission_or_share_id' = g.data->'GuaranteeBuilt'->>'submission_id'
-                WHERE g.event_type = 105
-                AND g.created_at > NOW() - INTERVAL '1 hour'
-                AND wr.data->'WorkPackageReceived'->>'core' IS NOT NULL
-                GROUP BY CAST(wr.data->'WorkPackageReceived'->>'core' AS INTEGER)
-            )
-            SELECT jsonb_build_object(
-                'core_index', COALESCE(ca.core_index, ga.core_index),
-                'active_work_packages', COALESCE(ca.wp_count, 0),
-                'work_packages_last_hour', COALESCE(ca.wp_last_hour, 0),
-                'guarantees_last_hour', COALESCE(ga.guarantees_last_hour, 0),
-                'last_activity', ca.last_activity,
-                'status', CASE
-                    WHEN ca.wp_last_hour > 0 OR ga.guarantees_last_hour > 0 THEN 'active'
-                    WHEN ca.last_activity > NOW() - INTERVAL '1 day' THEN 'idle'
-                    ELSE 'stale'
-                END
-            )
-            FROM core_activity ca
-            FULL OUTER JOIN guarantee_activity ga ON ca.core_index = ga.core_index
-            ORDER BY COALESCE(ca.core_index, ga.core_index)
+            SELECT
+                COUNT(*) as total_guarantees,
+                COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '1 hour') as guarantees_last_hour,
+                MAX(timestamp) as last_activity
+            FROM events
+            WHERE event_type = 105
+            AND created_at > NOW() - INTERVAL '24 hours'
             "#,
         )
-        .fetch_all(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
 
-        // Calculate summary
-        let mut active_count = 0;
-        let mut idle_count = 0;
-        let mut stale_count = 0;
-        for core in &cores {
-            match core.get("status").and_then(|s| s.as_str()) {
-                Some("active") => active_count += 1,
-                Some("idle") => idle_count += 1,
-                Some("stale") => stale_count += 1,
-                _ => {}
-            }
-        }
+        let wp_agg: (i64,) = sqlx::query_as(
+            r#"
+            SELECT COUNT(*) FROM events
+            WHERE event_type IN (101, 102)
+            AND created_at > NOW() - INTERVAL '1 hour'
+            "#,
+        )
+        .fetch_one(&self.pool)
+        .await?;
 
         Ok(serde_json::json!({
-            "cores": cores,
-            "summary": {
-                "total_cores": cores.len(),
-                "active_cores": active_count,
-                "idle_cores": idle_count,
-                "stale_cores": stale_count,
-            },
+            "guarantees_last_hour": agg.1,
+            "total_guarantees_24h": agg.0,
+            "work_packages_last_hour": wp_agg.0,
+            "last_activity": agg.2,
         }))
     }
 
@@ -1854,6 +1811,7 @@ impl EventStore {
                 COUNT(*) FILTER (WHERE event_type = 113) as discarded
             FROM events
             WHERE event_type IN (105, 106, 107, 108, 109, 110, 111, 112, 113)
+            AND created_at > NOW() - INTERVAL '24 hours'
             "#,
         )
         .fetch_one(&self.pool)
@@ -1865,6 +1823,7 @@ impl EventStore {
             SELECT node_id, COUNT(*) as guarantees_built
             FROM events
             WHERE event_type = 105
+            AND created_at > NOW() - INTERVAL '24 hours'
             GROUP BY node_id
             ORDER BY guarantees_built DESC
             "#,
@@ -1883,6 +1842,7 @@ impl EventStore {
             )
             FROM events
             WHERE event_type IN (105, 112, 113)
+            AND created_at > NOW() - INTERVAL '24 hours'
             ORDER BY created_at DESC
             LIMIT 50
             "#,
@@ -4744,7 +4704,7 @@ impl EventStore {
             alerts.push(serde_json::json!({
                 "severity": "warning",
                 "type": "dropped_events",
-                "message": format!("Node {} dropped {} events", &node_id[..16], dropped),
+                "message": format!("Node {} dropped {} events", &node_id[..16.min(node_id.len())], dropped),
                 "node_id": node_id,
                 "details": {
                     "dropped_count": dropped

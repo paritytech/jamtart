@@ -11,6 +11,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::time::{timeout, Duration};
 use tracing::{debug, error, info, warn};
 
 /// Configure TCP socket receive buffer size for better performance.
@@ -150,49 +151,88 @@ impl TelemetryServer {
         loop {
             match listener.accept().await {
                 Ok((stream, addr)) => {
-                    // Check connection limit
-                    if !self.rate_limiter.allow_connection(&addr) {
-                        // Close connection immediately
-                        drop(stream);
-                        continue;
-                    }
-
-                    info!(
-                        "New connection from {} ({}/{})",
-                        addr,
-                        self.rate_limiter.connection_count(),
-                        1024
-                    );
-
-                    let connections = Arc::clone(&self.connections);
-                    let batch_writer = self.batch_writer.clone();
-                    let rate_limiter = Arc::clone(&self.rate_limiter);
-                    let broadcaster = Arc::clone(&self.broadcaster);
-
-                    tokio::spawn(async move {
-                        let result = handle_connection_optimized(
-                            stream,
-                            addr,
-                            connections,
-                            batch_writer,
-                            rate_limiter.clone(),
-                            broadcaster,
-                        )
-                        .await;
-
-                        // Always decrement connection count
-                        rate_limiter.connection_closed();
-
-                        if let Err(e) = result {
-                            error!("Connection error from {}: {}", addr, e);
-                        }
-                    });
+                    self.spawn_connection(stream, addr);
                 }
                 Err(e) => {
                     error!("Failed to accept connection: {}", e);
                 }
             }
         }
+    }
+
+    /// Run the server until a shutdown signal is received.
+    pub async fn run_until_shutdown(
+        &self,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<(), std::io::Error> {
+        let listener = TcpListener::bind(&self.bind_address).await?;
+        info!(
+            "Optimized telemetry server listening on {}",
+            self.bind_address
+        );
+
+        #[cfg(unix)]
+        configure_socket_receive_buffer(&listener);
+
+        loop {
+            tokio::select! {
+                result = listener.accept() => {
+                    match result {
+                        Ok((stream, addr)) => {
+                            self.spawn_connection(stream, addr);
+                        }
+                        Err(e) => {
+                            error!("Failed to accept connection: {}", e);
+                        }
+                    }
+                }
+                _ = shutdown.changed() => {
+                    info!("TCP server received shutdown signal, stopping accept loop");
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn spawn_connection(&self, stream: TcpStream, addr: SocketAddr) {
+        // Check connection limit
+        if !self.rate_limiter.allow_connection(&addr) {
+            // Close connection immediately
+            drop(stream);
+            return;
+        }
+
+        info!(
+            "New connection from {} ({}/{})",
+            addr,
+            self.rate_limiter.connection_count(),
+            1024
+        );
+
+        let connections = Arc::clone(&self.connections);
+        let batch_writer = self.batch_writer.clone();
+        let rate_limiter = Arc::clone(&self.rate_limiter);
+        let broadcaster = Arc::clone(&self.broadcaster);
+
+        tokio::spawn(async move {
+            let result = handle_connection_optimized(
+                stream,
+                addr,
+                connections,
+                batch_writer,
+                rate_limiter.clone(),
+                broadcaster,
+            )
+            .await;
+
+            // Always decrement connection count
+            rate_limiter.connection_closed();
+
+            if let Err(e) = result {
+                error!("Connection error from {}: {}", addr, e);
+            }
+        });
     }
 
     pub fn get_connections(&self) -> Vec<NodeConnection> {
@@ -264,7 +304,11 @@ async fn handle_connection_optimized(
 
     // First message should be NodeInformation
     let node_info = loop {
-        let n = stream.read_buf(&mut buffer).await?;
+        let n = match timeout(Duration::from_secs(30), stream.read_buf(&mut buffer)).await {
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => return Err("Timeout waiting for node information".into()),
+        };
         if n == 0 {
             return Err("Connection closed before receiving node information".into());
         }
@@ -314,25 +358,25 @@ async fn handle_connection_optimized(
         node_info.additional_info.as_str().unwrap_or("")
     );
 
-    // Store connection info
-    let connection = NodeConnection {
-        id: node_id_str.clone(),
-        address: addr,
-        info: node_info.clone(),
-        connected_at: chrono::Utc::now(),
-        last_event_at: chrono::Utc::now(),
-        event_count: 0,
-    };
-    connections.insert(node_id_str.clone(), connection);
-
-    // Queue node connection event
-    // Queue node connection event
+    // Queue node connection event first - only insert into DashMap on success
     info!("Queueing node connection for {}", node_id_str);
     match batch_writer
-        .node_connected(node_id_str.clone(), node_info)
+        .node_connected(node_id_str.clone(), node_info.clone())
         .await
     {
-        Ok(_) => info!("Successfully queued node connection for {}", node_id_str),
+        Ok(_) => {
+            info!("Successfully queued node connection for {}", node_id_str);
+            // Store connection info only after successful batch_writer registration
+            let connection = NodeConnection {
+                id: node_id_str.clone(),
+                address: addr,
+                info: node_info,
+                connected_at: chrono::Utc::now(),
+                last_event_at: chrono::Utc::now(),
+                event_count: 0,
+            };
+            connections.insert(node_id_str.clone(), connection);
+        }
         Err(e) => {
             error!("Failed to queue node connection for {}: {}", node_id_str, e);
             return Err(e.into());
@@ -410,7 +454,20 @@ async fn handle_connection_optimized(
                             buffer.advance(4 + size as usize);
                         }
                         Err(e) => {
-                            warn!("Failed to decode event from {}: {}", node_id_str, e);
+                            // Timestamp is u64 (8 bytes LE), discriminator is at byte 8
+                            let event_type_hint = if msg_data.len() > 8 {
+                                format!(" (event_type={})", msg_data[8])
+                            } else {
+                                String::new()
+                            };
+                            let hex_preview: String = msg_data.iter().take(32)
+                                .map(|b| format!("{:02x}", b))
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            warn!(
+                                "Failed to decode event from {}{}: {} [msg_len={}, hex={}]",
+                                node_id_str, event_type_hint, e, msg_data.len(), hex_preview
+                            );
                             buffer.advance(4 + size as usize);
                         }
                     }
@@ -430,8 +487,18 @@ async fn handle_connection_optimized(
             metrics::gauge!("telemetry_buffer_pending").set(batch_writer.pending_count() as f64);
         }
 
-        // Read more data from the stream
-        let n = stream.read_buf(&mut buffer).await?;
+        // Read more data from the stream (120s idle timeout for dead connections)
+        let n = match timeout(Duration::from_secs(120), stream.read_buf(&mut buffer)).await {
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => {
+                info!("Node {} read error: {}", node_id_str, e);
+                break;
+            }
+            Err(_) => {
+                warn!("Node {} timed out after 120s idle", node_id_str);
+                break;
+            }
+        };
         if n == 0 {
             info!(
                 "Node {} disconnected (received {} events, dropped {})",
