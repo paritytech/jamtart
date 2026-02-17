@@ -62,6 +62,11 @@ impl EventStore {
         Ok(Self { pool })
     }
 
+    /// Expose the connection pool for raw queries in API handlers.
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
     /// Batch insert/update multiple node connections in a single query.
     /// Uses PostgreSQL unnest() for efficient multi-row upsert.
     pub async fn store_nodes_connected_batch(
