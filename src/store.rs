@@ -725,7 +725,11 @@ impl EventStore {
     ///
     /// Performance impact: Reduces database load from 3 queries every request to 1 lightweight
     /// cache check per request, with full recompute only every 5 seconds.
-    pub async fn get_stats(&self, interval: &str, _secondary_interval: &str) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn get_stats(
+        &self,
+        interval: &str,
+        _secondary_interval: &str,
+    ) -> Result<serde_json::Value, sqlx::Error> {
         const CACHE_TTL_SECONDS: i64 = 5;
         const CACHE_KEY: &str = "system_stats";
 
@@ -752,8 +756,7 @@ impl EventStore {
         // The max slot is always from recent events; scanning last 10 minutes is sufficient.
         let q_total_blocks = format!("SELECT COUNT(*) FROM events WHERE event_type = 42 AND created_at > NOW() - INTERVAL '{}'", interval);
         let (total_blocks, best_block_opt, finalized_block_opt) = tokio::try_join!(
-            sqlx::query_scalar::<_, i64>(&q_total_blocks)
-                .fetch_one(&self.pool),
+            sqlx::query_scalar::<_, i64>(&q_total_blocks).fetch_one(&self.pool),
             sqlx::query_scalar::<_, Option<i64>>(
                 r#"
                 SELECT MAX(CAST(data->'BestBlockChanged'->>'slot' AS BIGINT))
@@ -812,7 +815,10 @@ impl EventStore {
     }
 
     /// Get work package statistics aggregated from telemetry events.
-    pub async fn get_workpackage_stats(&self, interval: &str) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn get_workpackage_stats(
+        &self,
+        interval: &str,
+    ) -> Result<serde_json::Value, sqlx::Error> {
         // Work package event types:
         // 90 = WorkPackageSubmission, 91 = WorkPackageBeingShared, 92 = WorkPackageFailed
         // 93 = DuplicateWorkPackage, 94 = WorkPackageReceived, 101 = Refined
@@ -1399,7 +1405,11 @@ impl EventStore {
     }
 
     /// Get list of active work packages (in progress through the pipeline).
-    pub async fn get_active_workpackages(&self, interval: &str, secondary_interval: &str) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn get_active_workpackages(
+        &self,
+        interval: &str,
+        secondary_interval: &str,
+    ) -> Result<serde_json::Value, sqlx::Error> {
         // Unified single-CTE query: anchors on ALL WP-related events, not just event 94.
         // Event 94 (WorkPackageReceived) is rarely emitted — anchoring only on it causes
         // empty results when none exist in the time window.
@@ -1560,7 +1570,11 @@ impl EventStore {
     /// Returns totals only — per-core attribution is not possible from
     /// telemetry because PolkaJam v0.1.26 doesn't emit a core field.
     /// The API handler merges these with real per-core data from JAM RPC.
-    pub async fn get_cores_telemetry_agg(&self, interval: &str, secondary_interval: &str) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn get_cores_telemetry_agg(
+        &self,
+        interval: &str,
+        secondary_interval: &str,
+    ) -> Result<serde_json::Value, sqlx::Error> {
         let agg: (i64, i64, Option<chrono::DateTime<chrono::Utc>>) = sqlx::query_as(&format!(
             r#"
             SELECT
@@ -1684,7 +1698,10 @@ impl EventStore {
     }
 
     /// Get execution cost metrics from Refined/Executed/Authorized events.
-    pub async fn get_execution_metrics(&self, interval: &str) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn get_execution_metrics(
+        &self,
+        interval: &str,
+    ) -> Result<serde_json::Value, sqlx::Error> {
         // Get refinement stats from event type 101 (Refined)
         // costs is a JSON array; each element has total.gas_used and total.elapsed_ns
         let refinement = sqlx::query(&format!(
@@ -1802,7 +1819,11 @@ impl EventStore {
     }
 
     /// Get guarantee distribution statistics.
-    pub async fn get_guarantee_stats(&self, _interval: &str, secondary_interval: &str) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn get_guarantee_stats(
+        &self,
+        _interval: &str,
+        secondary_interval: &str,
+    ) -> Result<serde_json::Value, sqlx::Error> {
         // Guarantee event types:
         // 105 = GuaranteeBuilt, 106 = SendingGuarantee, 107 = GuaranteeSendFailed
         // 108 = GuaranteeSent, 109 = GuaranteesDistributed
@@ -3290,7 +3311,11 @@ impl EventStore {
     }
 
     /// Get enhanced DA stats with read/write operations and latency metrics.
-    pub async fn get_da_stats_enhanced(&self, interval: &str, secondary_interval: &str) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn get_da_stats_enhanced(
+        &self,
+        interval: &str,
+        secondary_interval: &str,
+    ) -> Result<serde_json::Value, sqlx::Error> {
         // Get per-node DA operation metrics
         let by_node: Vec<serde_json::Value> = sqlx::query_scalar(&format!(
             r#"
@@ -3507,7 +3532,8 @@ impl EventStore {
         // Run both independent queries concurrently:
         // Q1: Active work packages for this core
         // Q2: Historical processing time for this core
-        let q1_sql = format!(r#"
+        let q1_sql = format!(
+            r#"
                 WITH received AS (
                     SELECT
                         node_id,
@@ -3575,9 +3601,10 @@ impl EventStore {
                 ORDER BY submitted_at DESC
                 LIMIT 50
                 "#,
-                interval = interval
+            interval = interval
         );
-        let q2_sql = format!(r#"
+        let q2_sql = format!(
+            r#"
                 WITH received AS (
                     SELECT
                         (data->'WorkPackageReceived'->>'submission_or_share_id') as wp_id,
@@ -3611,16 +3638,13 @@ impl EventStore {
                     COUNT(*) as completed_count
                 FROM wp_times
                 "#,
-                interval = interval
+            interval = interval
         );
         let (work_packages, processing_stats) = tokio::try_join!(
             sqlx::query_scalar::<_, serde_json::Value>(&q1_sql)
-            .bind(core_index)
-            .fetch_all(&self.pool),
-
-            sqlx::query(&q2_sql)
-            .bind(core_index)
-            .fetch_one(&self.pool),
+                .bind(core_index)
+                .fetch_all(&self.pool),
+            sqlx::query(&q2_sql).bind(core_index).fetch_one(&self.pool),
         )?;
 
         let active_count = work_packages
@@ -3647,7 +3671,10 @@ impl EventStore {
     // ========================================================================
 
     /// Get failure rate analytics across the system.
-    pub async fn get_failure_rates(&self, interval: &str) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn get_failure_rates(
+        &self,
+        interval: &str,
+    ) -> Result<serde_json::Value, sqlx::Error> {
         // Define failure event types (JIP-3 spec):
         // 41=BlockAuthoringFailed, 44=BlockSealingFailed, 46=BlockAuthoringTimedOut
         // 81=TicketGenerationFailed, 83=TicketTransferFailed
@@ -3802,7 +3829,10 @@ impl EventStore {
     }
 
     /// Get block propagation analytics.
-    pub async fn get_block_propagation(&self, interval: &str) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn get_block_propagation(
+        &self,
+        interval: &str,
+    ) -> Result<serde_json::Value, sqlx::Error> {
         // Calculate propagation times from BlockAnnounced (62) to BlockTransferred (68)
         let propagation_stats = sqlx::query(&format!(
             r#"
@@ -3892,7 +3922,11 @@ impl EventStore {
     }
 
     /// Get guarantor statistics aggregated by guarantor.
-    pub async fn get_guarantees_by_guarantor(&self, interval: &str, secondary_interval: &str) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn get_guarantees_by_guarantor(
+        &self,
+        interval: &str,
+        secondary_interval: &str,
+    ) -> Result<serde_json::Value, sqlx::Error> {
         let guarantors: Vec<serde_json::Value> = sqlx::query_scalar(&format!(
             r#"
             WITH guarantee_events AS (
@@ -3975,7 +4009,11 @@ impl EventStore {
 
     /// Get network health and congestion metrics.
     /// Returns shape matching ApiNetworkHealth: overall_health, health_score, components[], alerts[].
-    pub async fn get_network_health(&self, interval: &str, _secondary_interval: &str) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn get_network_health(
+        &self,
+        interval: &str,
+        _secondary_interval: &str,
+    ) -> Result<serde_json::Value, sqlx::Error> {
         // Gather raw metrics for health scoring
         let stats = sqlx::query(&format!(
             r#"
@@ -4839,8 +4877,8 @@ impl EventStore {
         // Get validators who have processed work packages for this core.
         // Start from WorkPackageReceived (94) which has the core field,
         // then find all nodes that participated via submission_or_share_id linkage.
-        let validators: Vec<serde_json::Value> = sqlx::query_scalar(
-            &format!(r#"
+        let validators: Vec<serde_json::Value> = sqlx::query_scalar(&format!(
+            r#"
             WITH core_wp_ids AS (
                 SELECT DISTINCT (data->'WorkPackageReceived'->>'submission_or_share_id') as wp_id
                 FROM events
@@ -4949,7 +4987,8 @@ impl EventStore {
     ) -> Result<serde_json::Value, sqlx::Error> {
         // Run all 4 independent queries concurrently for this core.
         // Pre-compute format strings to avoid temporary lifetime issues in try_join!
-        let q1_pipeline = format!(r#"
+        let q1_pipeline = format!(
+            r#"
                 WITH core_wp_ids AS (
                     SELECT DISTINCT (data->'WorkPackageReceived'->>'submission_or_share_id') as wp_id
                     FROM events
@@ -4982,9 +5021,10 @@ impl EventStore {
                     COUNT(DISTINCT node_id) as active_validators
                 FROM core_events
                 "#,
-                interval = interval
-            );
-        let q2_gas = format!(r#"
+            interval = interval
+        );
+        let q2_gas = format!(
+            r#"
                 WITH core_wp_ids AS (
                     SELECT DISTINCT (data->'WorkPackageReceived'->>'submission_or_share_id') as wp_id
                     FROM events
@@ -5019,9 +5059,10 @@ impl EventStore {
                 FROM refined_gas rg
                 FULL OUTER JOIN (SELECT AVG(gas_limit) as gas_limit FROM wp_gas_limits) wl ON true
                 "#,
-                interval = interval
-            );
-        let q3_latency = format!(r#"
+            interval = interval
+        );
+        let q3_latency = format!(
+            r#"
                 WITH core_received AS (
                     SELECT
                         (data->'WorkPackageReceived'->>'submission_or_share_id') as wp_id,
@@ -5055,17 +5096,23 @@ impl EventStore {
                 FROM wp_durations
                 WHERE completion_time_ms > 0 AND completion_time_ms < 300000
                 "#,
-                interval = interval
-            );
+            interval = interval
+        );
         let q4_wps_24h = format!(
                 "SELECT COUNT(*) FROM events WHERE event_type = 94 AND CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) = $1 AND created_at > NOW() - INTERVAL '{}'",
                 secondary_interval
             );
         let (metrics, gas, latency, wps_24h) = tokio::try_join!(
-            sqlx::query(&q1_pipeline).bind(core_index).fetch_one(&self.pool),
+            sqlx::query(&q1_pipeline)
+                .bind(core_index)
+                .fetch_one(&self.pool),
             sqlx::query(&q2_gas).bind(core_index).fetch_one(&self.pool),
-            sqlx::query(&q3_latency).bind(core_index).fetch_one(&self.pool),
-            sqlx::query_scalar::<_, i64>(&q4_wps_24h).bind(core_index).fetch_one(&self.pool),
+            sqlx::query(&q3_latency)
+                .bind(core_index)
+                .fetch_one(&self.pool),
+            sqlx::query_scalar::<_, i64>(&q4_wps_24h)
+                .bind(core_index)
+                .fetch_one(&self.pool),
         )?;
 
         let wps_received: i64 = metrics.get("wps_received");
@@ -5262,7 +5309,8 @@ impl EventStore {
         interval: &str,
     ) -> Result<serde_json::Value, sqlx::Error> {
         // Pre-compute format strings to avoid temporary lifetime issues in try_join!
-        let q1_slow = format!(r#"
+        let q1_slow = format!(
+            r#"
                 WITH core_wp_ids AS (
                     SELECT DISTINCT (data->'WorkPackageReceived'->>'submission_or_share_id') as wp_id
                     FROM events
@@ -5322,9 +5370,10 @@ impl EventStore {
                 ORDER BY vt.avg_processing_ms DESC
                 LIMIT 10
                 "#,
-                interval = interval
-            );
-        let q2_stats = format!(r#"
+            interval = interval
+        );
+        let q2_stats = format!(
+            r#"
                 WITH core_wp_ids AS (
                     SELECT DISTINCT (data->'WorkPackageReceived'->>'submission_or_share_id') as wp_id
                     FROM events
@@ -5353,15 +5402,15 @@ impl EventStore {
                     COUNT(DISTINCT node_id) as validator_count
                 FROM core_events
                 "#,
-                interval = interval
-            );
+            interval = interval
+        );
         let (slow_validators, bottleneck_stats) = tokio::try_join!(
             sqlx::query_scalar::<_, serde_json::Value>(&q1_slow)
-            .bind(core_index)
-            .fetch_all(&self.pool),
+                .bind(core_index)
+                .fetch_all(&self.pool),
             sqlx::query(&q2_stats)
-            .bind(core_index)
-            .fetch_one(&self.pool),
+                .bind(core_index)
+                .fetch_one(&self.pool),
         )?;
 
         let total_events: i64 = bottleneck_stats.get("total_events");

@@ -762,9 +762,8 @@ async fn get_cores_status(
         } else {
             // No JAM RPC: build cores from telemetry only.
             // Count per-core WPs from events that have a core field (93, 94).
-            let per_core_wp: Vec<(Option<i64>, i64)> = sqlx::query_as(
-                &format!(
-                    r#"
+            let per_core_wp: Vec<(Option<i64>, i64)> = sqlx::query_as(&format!(
+                r#"
                 SELECT
                     COALESCE(
                         (data->'WorkPackageReceived'->>'core')::bigint,
@@ -777,9 +776,8 @@ async fn get_cores_status(
                 GROUP BY core_idx
                 ORDER BY core_idx
                 "#,
-                    interval
-                ),
-            )
+                interval
+            ))
             .fetch_all(state.store.pool())
             .await
             .unwrap_or_default();
@@ -1088,7 +1086,11 @@ async fn get_core_work_packages(
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let duration = dq.duration.unwrap_or(DurationPreset::OneHour);
-    let key = format!("core_work_packages_{}_{}", core_index, duration.cache_suffix());
+    let key = format!(
+        "core_work_packages_{}_{}",
+        core_index,
+        duration.cache_suffix()
+    );
     let result = cache_or_compute(&state.cache, &key, || async {
         state
             .store
@@ -1323,7 +1325,11 @@ async fn get_core_validators(
     let result = cache_or_compute(&state.cache, &key, || async {
         state
             .store
-            .get_core_validators(core_index, duration.as_pg_interval(), duration.secondary_interval())
+            .get_core_validators(
+                core_index,
+                duration.as_pg_interval(),
+                duration.secondary_interval(),
+            )
             .await
             .map_err(|e| {
                 error!("Failed to get core {} validators: {}", core_index, e);
@@ -1350,7 +1356,11 @@ async fn get_core_metrics(
     let result = cache_or_compute(&state.cache, &key, || async {
         state
             .store
-            .get_core_metrics(core_index, duration.as_pg_interval(), duration.secondary_interval())
+            .get_core_metrics(
+                core_index,
+                duration.as_pg_interval(),
+                duration.secondary_interval(),
+            )
             .await
             .map_err(|e| {
                 error!("Failed to get core {} metrics: {}", core_index, e);
@@ -1373,7 +1383,11 @@ async fn get_core_bottlenecks(
     }
 
     let duration = dq.duration.unwrap_or(DurationPreset::OneHour);
-    let key = format!("core_bottlenecks_{}_{}", core_index, duration.cache_suffix());
+    let key = format!(
+        "core_bottlenecks_{}_{}",
+        core_index,
+        duration.cache_suffix()
+    );
     let result = cache_or_compute(&state.cache, &key, || async {
         state
             .store
