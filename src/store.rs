@@ -1410,15 +1410,12 @@ impl EventStore {
         interval: &str,
         secondary_interval: &str,
     ) -> Result<serde_json::Value, sqlx::Error> {
-        // Unified single-CTE query: anchors on ALL WP-related events, not just event 94.
-        // Event 94 (WorkPackageReceived) is rarely emitted — anchoring only on it causes
-        // empty results when none exist in the time window.
-        // Uses submission_or_share_id (events 92, 94, 95, 101, 102) and submission_id
-        // (events 105, 109) to group all stages by work package.
-        let work_packages: Vec<serde_json::Value> = sqlx::query_scalar(&format!(
+        // Full pipeline query: anchors on ALL WP-related events (92-109),
+        // then cross-links to events 112/113 via work_report_hash from event 105
+        // to track guarantee reception and on-chain inclusion.
+        let query = format!(
             r#"
             WITH all_wp_events AS (
-                -- Collect ALL work-package-related events, extract a unified wp_id
                 SELECT
                     event_type, timestamp, node_id, data,
                     COALESCE(
@@ -1434,7 +1431,29 @@ impl EventStore {
                 WHERE event_type IN (92, 94, 95, 101, 102, 105, 109)
                 AND created_at > NOW() - INTERVAL '{interval}'
             ),
-            -- Fallback: each node's core from their most recent WorkPackageReceived
+            -- Extract work_report_hash from GuaranteeBuilt (105) for cross-linking to 112/113
+            wp_report_hashes AS (
+                SELECT
+                    data->'GuaranteeBuilt'->>'submission_id' as wp_id,
+                    data->'GuaranteeBuilt'->'outline'->'work_report_hash' as work_report_hash
+                FROM events
+                WHERE event_type = 105
+                AND created_at > NOW() - INTERVAL '{interval}'
+                AND data->'GuaranteeBuilt'->'outline'->'work_report_hash' IS NOT NULL
+            ),
+            -- Find events 112 (GuaranteeReceived) and 113 (GuaranteeDiscarded) by work_report_hash
+            reporting_events AS (
+                SELECT wrh.wp_id, e.event_type, e.timestamp, e.data
+                FROM wp_report_hashes wrh
+                JOIN events e ON (
+                    e.event_type IN (112, 113)
+                    AND e.created_at > NOW() - INTERVAL '{interval}'
+                    AND (
+                        (e.event_type = 112 AND e.data->'GuaranteeReceived'->'outline'->'work_report_hash' = wrh.work_report_hash)
+                        OR (e.event_type = 113 AND e.data->'GuaranteeDiscarded'->'outline'->'work_report_hash' = wrh.work_report_hash)
+                    )
+                )
+            ),
             node_cores AS (
                 SELECT DISTINCT ON (node_id)
                     node_id,
@@ -1452,9 +1471,7 @@ impl EventStore {
                         data->'WorkPackageReceived'->>'core',
                         data->'WorkPackageReceived'->>'core_index'
                     ) AS INTEGER)) FILTER (WHERE event_type = 94) as direct_core,
-                    -- Use earliest node as the primary node
                     (array_agg(node_id ORDER BY timestamp ASC))[1] as node_id,
-                    -- Timestamps per stage
                     MIN(timestamp) FILTER (WHERE event_type = 94) as received_at,
                     MIN(timestamp) FILTER (WHERE event_type = 95) as authorized_at,
                     MIN(timestamp) FILTER (WHERE event_type = 101) as refined_at,
@@ -1462,7 +1479,6 @@ impl EventStore {
                     MIN(timestamp) FILTER (WHERE event_type = 105) as guarantee_built_at,
                     MIN(timestamp) FILTER (WHERE event_type = 109) as distributed_at,
                     MIN(timestamp) FILTER (WHERE event_type = 92) as failed_at,
-                    -- Earliest event = when we first saw this WP
                     MIN(timestamp) as first_seen_at,
                     MAX(timestamp) as last_event_at,
                     COUNT(DISTINCT node_id) as nodes_involved,
@@ -1472,24 +1488,50 @@ impl EventStore {
                 WHERE wp_id IS NOT NULL
                 GROUP BY wp_id
             ),
+            -- Merge reporting events (112/113) into WP data
+            wp_with_reporting AS (
+                SELECT
+                    r.*,
+                    MIN(re.timestamp) FILTER (WHERE re.event_type = 112) as guarantee_received_at,
+                    MIN(re.timestamp) FILTER (
+                        WHERE re.event_type = 113
+                        AND re.data->'GuaranteeDiscarded'->>'reason' = 'PackageReportedOnChain'
+                    ) as included_at,
+                    MIN(re.timestamp) FILTER (
+                        WHERE re.event_type = 113
+                        AND re.data->'GuaranteeDiscarded'->>'reason' != 'PackageReportedOnChain'
+                    ) as discarded_at,
+                    (array_agg(re.data->'GuaranteeDiscarded'->>'reason')
+                     FILTER (WHERE re.event_type = 113 AND re.data->'GuaranteeDiscarded'->>'reason' != 'PackageReportedOnChain')
+                    )[1] as discard_reason
+                FROM wp_raw r
+                LEFT JOIN reporting_events re ON re.wp_id = r.wp_id
+                GROUP BY r.wp_id, r.direct_core, r.node_id, r.received_at, r.authorized_at,
+                         r.refined_at, r.report_built_at, r.guarantee_built_at, r.distributed_at,
+                         r.failed_at, r.first_seen_at, r.last_event_at, r.nodes_involved, r.failure_reason
+            ),
             wp_stages AS (
                 SELECT
-                    r.wp_id, COALESCE(r.direct_core, nc.core_index) as core_index,
-                    r.node_id, r.received_at, r.authorized_at, r.refined_at,
-                    r.report_built_at, r.guarantee_built_at, r.distributed_at,
-                    r.failed_at, r.first_seen_at, r.last_event_at,
-                    r.nodes_involved, r.failure_reason
-                FROM wp_raw r
-                LEFT JOIN node_cores nc ON nc.node_id = r.node_id
+                    wr.wp_id, COALESCE(wr.direct_core, nc.core_index) as core_index,
+                    wr.node_id, wr.received_at, wr.authorized_at, wr.refined_at,
+                    wr.report_built_at, wr.guarantee_built_at, wr.distributed_at,
+                    wr.failed_at, wr.first_seen_at, wr.last_event_at,
+                    wr.nodes_involved, wr.failure_reason,
+                    wr.guarantee_received_at, wr.included_at, wr.discarded_at, wr.discard_reason
+                FROM wp_with_reporting wr
+                LEFT JOIN node_cores nc ON nc.node_id = wr.node_id
             )
             SELECT jsonb_build_object(
                 'hash', wp_id,
                 'core_index', core_index,
                 'node_id', node_id,
                 'submitted_at', COALESCE(received_at, first_seen_at),
-                'last_update', last_event_at,
+                'last_update', GREATEST(last_event_at, guarantee_received_at, included_at, discarded_at),
                 'current_stage', CASE
-                    WHEN failed_at IS NOT NULL THEN 'failed'
+                    WHEN failed_at IS NOT NULL AND included_at IS NULL THEN 'failed'
+                    WHEN included_at IS NOT NULL THEN 'included'
+                    WHEN discarded_at IS NOT NULL THEN 'discarded'
+                    WHEN guarantee_received_at IS NOT NULL THEN 'guarantee_received'
                     WHEN distributed_at IS NOT NULL THEN 'distributed'
                     WHEN guarantee_built_at IS NOT NULL THEN 'guarantee_built'
                     WHEN report_built_at IS NOT NULL THEN 'report_built'
@@ -1505,12 +1547,17 @@ impl EventStore {
                     'report_built', report_built_at,
                     'guarantee_built', guarantee_built_at,
                     'distributed', distributed_at,
+                    'guarantee_received', guarantee_received_at,
+                    'included', included_at,
+                    'discarded', discarded_at,
                     'failed', failed_at
                 ),
-                'failure_reason', failure_reason,
+                'failure_reason', COALESCE(failure_reason, discard_reason),
+                'discard_reason', discard_reason,
                 'nodes_involved', nodes_involved,
                 'elapsed_ms', EXTRACT(EPOCH FROM (
-                    last_event_at - COALESCE(received_at, first_seen_at)
+                    GREATEST(last_event_at, guarantee_received_at, included_at, discarded_at)
+                    - COALESCE(received_at, first_seen_at)
                 )) * 1000
             )
             FROM wp_stages
@@ -1519,11 +1566,12 @@ impl EventStore {
             "#,
             interval = interval,
             secondary_interval = secondary_interval
-        ))
-        .fetch_all(&self.pool)
-        .await?;
+        );
+        let work_packages: Vec<serde_json::Value> = sqlx::query_scalar(&query)
+            .fetch_all(&self.pool)
+            .await?;
 
-        // Compute summary from the result set for guaranteed accuracy
+        // Compute summary + failure breakdown from the result set
         let mut total = 0i64;
         let mut submitted = 0i64;
         let mut received = 0i64;
@@ -1532,7 +1580,23 @@ impl EventStore {
         let mut reports_built = 0i64;
         let mut guarantees_built = 0i64;
         let mut distributed = 0i64;
+        let mut guarantee_received = 0i64;
+        let mut included = 0i64;
+        let mut discarded = 0i64;
         let mut failed = 0i64;
+
+        // "Reached" counts: how many WPs passed through each stage (regardless of current_stage)
+        let mut reached_received = 0i64;
+        let mut reached_authorized = 0i64;
+        let mut reached_refined = 0i64;
+        let mut reached_report_built = 0i64;
+        let mut reached_guarantee_built = 0i64;
+        let mut reached_distributed = 0i64;
+        let mut reached_guarantee_received = 0i64;
+        let mut reached_included = 0i64;
+
+        let mut failure_breakdown: std::collections::HashMap<String, i64> =
+            std::collections::HashMap::new();
 
         for wp in &work_packages {
             total += 1;
@@ -1544,8 +1608,94 @@ impl EventStore {
                 Some("report_built") => reports_built += 1,
                 Some("guarantee_built") => guarantees_built += 1,
                 Some("distributed") => distributed += 1,
+                Some("guarantee_received") => guarantee_received += 1,
+                Some("included") => included += 1,
+                Some("discarded") => discarded += 1,
                 Some("failed") => failed += 1,
                 _ => {}
+            }
+
+            // Count "reached" by checking stage timestamps (non-null = reached)
+            if let Some(stages) = wp.get("stages") {
+                if !stages.get("received").unwrap_or(&serde_json::Value::Null).is_null() {
+                    reached_received += 1;
+                }
+                if !stages.get("authorized").unwrap_or(&serde_json::Value::Null).is_null() {
+                    reached_authorized += 1;
+                }
+                if !stages.get("refined").unwrap_or(&serde_json::Value::Null).is_null() {
+                    reached_refined += 1;
+                }
+                if !stages.get("report_built").unwrap_or(&serde_json::Value::Null).is_null() {
+                    reached_report_built += 1;
+                }
+                if !stages.get("guarantee_built").unwrap_or(&serde_json::Value::Null).is_null() {
+                    reached_guarantee_built += 1;
+                }
+                if !stages.get("distributed").unwrap_or(&serde_json::Value::Null).is_null() {
+                    reached_distributed += 1;
+                }
+                if !stages.get("guarantee_received").unwrap_or(&serde_json::Value::Null).is_null() {
+                    reached_guarantee_received += 1;
+                }
+                if !stages.get("included").unwrap_or(&serde_json::Value::Null).is_null() {
+                    reached_included += 1;
+                }
+            }
+
+            // Collect failure/discard reasons for breakdown
+            if let Some(reason) = wp.get("failure_reason").and_then(|v| v.as_str()) {
+                if !reason.is_empty() {
+                    *failure_breakdown.entry(reason.to_string()).or_insert(0) += 1;
+                }
+            }
+        }
+
+        // Compute stage-to-stage duration percentiles (p50/p95)
+        let stage_transitions: &[(&str, &str, &str)] = &[
+            ("received", "authorized", "received_to_authorized"),
+            ("authorized", "refined", "authorized_to_refined"),
+            ("refined", "report_built", "refined_to_report_built"),
+            ("report_built", "guarantee_built", "report_built_to_guarantee_built"),
+            ("guarantee_built", "distributed", "guarantee_built_to_distributed"),
+            ("distributed", "guarantee_received", "distributed_to_guarantee_received"),
+            ("guarantee_received", "included", "guarantee_received_to_included"),
+        ];
+
+        let mut stage_duration_percentiles = serde_json::Map::new();
+        for (from_stage, to_stage, key) in stage_transitions {
+            let mut durations_ms: Vec<f64> = Vec::new();
+            for wp in &work_packages {
+                if let Some(stages) = wp.get("stages") {
+                    let from_ts = stages.get(*from_stage).and_then(|v| v.as_str());
+                    let to_ts = stages.get(*to_stage).and_then(|v| v.as_str());
+                    if let (Some(from_str), Some(to_str)) = (from_ts, to_ts) {
+                        if let (Ok(from_dt), Ok(to_dt)) = (
+                            chrono::DateTime::parse_from_rfc3339(from_str),
+                            chrono::DateTime::parse_from_rfc3339(to_str),
+                        ) {
+                            let delta = (to_dt - from_dt).num_milliseconds() as f64;
+                            if delta > 0.0 {
+                                durations_ms.push(delta);
+                            }
+                        }
+                    }
+                }
+            }
+            if !durations_ms.is_empty() {
+                durations_ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let n = durations_ms.len();
+                let p50 = durations_ms[n / 2];
+                let p95_idx = ((n as f64) * 0.95).ceil() as usize - 1;
+                let p95 = durations_ms[p95_idx.min(n - 1)];
+                stage_duration_percentiles.insert(
+                    key.to_string(),
+                    serde_json::json!({
+                        "p50_ms": p50,
+                        "p95_ms": p95,
+                        "sample_count": n,
+                    }),
+                );
             }
         }
 
@@ -1560,8 +1710,23 @@ impl EventStore {
                 "reports_built": reports_built,
                 "guarantees_built": guarantees_built,
                 "distributed": distributed,
+                "guarantee_received": guarantee_received,
+                "included": included,
+                "discarded": discarded,
                 "failed": failed,
             },
+            "reached": {
+                "received": reached_received,
+                "authorized": reached_authorized,
+                "refined": reached_refined,
+                "report_built": reached_report_built,
+                "guarantee_built": reached_guarantee_built,
+                "distributed": reached_distributed,
+                "guarantee_received": reached_guarantee_received,
+                "included": reached_included,
+            },
+            "failure_breakdown": failure_breakdown,
+            "stage_duration_percentiles": stage_duration_percentiles,
         }))
     }
 
@@ -3086,16 +3251,12 @@ impl EventStore {
     ) -> Result<serde_json::Value, sqlx::Error> {
         // Get all events for this work package, linked by submission_or_share_id / submission_id.
         // The wp_id parameter is the submission_or_share_id from WorkPackageReceived.
-        // Per JIP-3: events 90-102 use submission_or_share_id, events 105/109 use submission_id.
+        // Per JIP-3: events 90-102 use submission_or_share_id, events 105/109 use submission_id,
+        // events 112/113 link via work_report_hash from event 105.
         let stages: Vec<serde_json::Value> = sqlx::query_scalar(
             r#"
-            WITH wp_events AS (
-                SELECT
-                    event_type,
-                    node_id,
-                    timestamp,
-                    data,
-                    LAG(timestamp) OVER (ORDER BY timestamp) as prev_timestamp
+            WITH direct_events AS (
+                SELECT event_type, node_id, timestamp, data
                 FROM events
                 WHERE created_at > NOW() - INTERVAL '24 hours'
                 AND (
@@ -3119,6 +3280,36 @@ impl EventStore {
                         OR data->'GuaranteesDistributed'->>'submission_id' = $1
                     ))
                 )
+            ),
+            -- Extract work_report_hash from event 105 to link reporting events
+            wp_report_hash AS (
+                SELECT data->'GuaranteeBuilt'->'outline'->'work_report_hash' as wrh
+                FROM direct_events
+                WHERE event_type = 105
+                AND data->'GuaranteeBuilt'->'outline'->'work_report_hash' IS NOT NULL
+                LIMIT 1
+            ),
+            -- Events 112/113 link via work_report_hash
+            reporting_events AS (
+                SELECT e.event_type, e.node_id, e.timestamp, e.data
+                FROM events e, wp_report_hash h
+                WHERE e.event_type IN (112, 113)
+                AND e.created_at > NOW() - INTERVAL '24 hours'
+                AND (
+                    (e.event_type = 112 AND e.data->'GuaranteeReceived'->'outline'->'work_report_hash' = h.wrh)
+                    OR (e.event_type = 113 AND e.data->'GuaranteeDiscarded'->'outline'->'work_report_hash' = h.wrh)
+                )
+            ),
+            all_events AS (
+                SELECT * FROM direct_events
+                UNION ALL
+                SELECT * FROM reporting_events
+            ),
+            wp_events AS (
+                SELECT
+                    event_type, node_id, timestamp, data,
+                    LAG(timestamp) OVER (ORDER BY timestamp) as prev_timestamp
+                FROM all_events
                 ORDER BY timestamp
             )
             SELECT jsonb_build_object(
@@ -3137,11 +3328,18 @@ impl EventStore {
                     WHEN 101 THEN 'refined'
                     WHEN 102 THEN 'report_built'
                     WHEN 105 THEN 'guarantee_built'
-                    WHEN 109 THEN 'guaranteed'
+                    WHEN 109 THEN 'distributed'
+                    WHEN 112 THEN 'guarantee_received'
+                    WHEN 113 THEN CASE
+                        WHEN data->'GuaranteeDiscarded'->>'reason' = 'PackageReportedOnChain'
+                        THEN 'included'
+                        ELSE 'discarded'
+                    END
                     ELSE 'unknown'
                 END,
                 'status', CASE
                     WHEN event_type IN (92, 99) THEN 'failed'
+                    WHEN event_type = 113 AND data->'GuaranteeDiscarded'->>'reason' != 'PackageReportedOnChain' THEN 'failed'
                     WHEN event_type IN (91, 96, 97, 98, 100) THEN 'in_progress'
                     ELSE 'completed'
                 END,
@@ -3156,6 +3354,8 @@ impl EventStore {
                 'error_code', CASE
                     WHEN event_type = 92 THEN data->'WorkPackageFailed'->>'reason'
                     WHEN event_type = 99 THEN data->'WorkPackageSharingFailed'->>'reason'
+                    WHEN event_type = 113 AND data->'GuaranteeDiscarded'->>'reason' != 'PackageReportedOnChain'
+                        THEN data->'GuaranteeDiscarded'->>'reason'
                     ELSE NULL
                 END,
                 'data', CASE
@@ -3169,6 +3369,12 @@ impl EventStore {
                     WHEN event_type = 105 THEN jsonb_build_object(
                         'slot', data->'GuaranteeBuilt'->'outline'->>'slot',
                         'guarantors', data->'GuaranteeBuilt'->'outline'->'guarantors'
+                    )
+                    WHEN event_type = 112 THEN jsonb_build_object(
+                        'block_author', node_id
+                    )
+                    WHEN event_type = 113 THEN jsonb_build_object(
+                        'reason', data->'GuaranteeDiscarded'->>'reason'
                     )
                     ELSE '{}'::jsonb
                 END
@@ -3269,6 +3475,54 @@ impl EventStore {
             .and_then(|s| s.get("stage").cloned())
             .unwrap_or(serde_json::json!("submitted"));
 
+        // If this WP failed, find other WPs with the same failure reason
+        let similar_failures: Vec<serde_json::Value> = if let Some(ref reason) = failure_reason {
+            sqlx::query_scalar(
+                r#"
+                SELECT jsonb_build_object(
+                    'wp_id', data->'WorkPackageFailed'->>'submission_or_share_id',
+                    'timestamp', timestamp,
+                    'node_id', node_id
+                )
+                FROM events
+                WHERE event_type = 92
+                AND created_at > NOW() - INTERVAL '24 hours'
+                AND data->'WorkPackageFailed'->>'reason' = $1
+                AND data->'WorkPackageFailed'->>'submission_or_share_id' != $2
+                ORDER BY timestamp DESC
+                LIMIT 10
+                "#,
+            )
+            .bind(reason)
+            .bind(wp_id)
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default()
+        } else {
+            vec![]
+        };
+
+        // Count total similar failures (not just the 10 we return)
+        let similar_count: i64 = if let Some(ref reason) = failure_reason {
+            sqlx::query_scalar(
+                r#"
+                SELECT COUNT(DISTINCT data->'WorkPackageFailed'->>'submission_or_share_id')
+                FROM events
+                WHERE event_type = 92
+                AND created_at > NOW() - INTERVAL '24 hours'
+                AND data->'WorkPackageFailed'->>'reason' = $1
+                AND data->'WorkPackageFailed'->>'submission_or_share_id' != $2
+                "#,
+            )
+            .bind(reason)
+            .bind(wp_id)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(0)
+        } else {
+            0
+        };
+
         Ok(serde_json::json!({
             "hash": wp_id,
             "work_package_hash": wp_id,
@@ -3307,6 +3561,11 @@ impl EventStore {
                     "node_id": s.get("node_id"),
                 }))
                 .collect::<Vec<_>>(),
+            "similar_failures": {
+                "count": similar_count,
+                "reason": failure_reason,
+                "examples": similar_failures,
+            },
         }))
     }
 
