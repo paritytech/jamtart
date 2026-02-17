@@ -460,13 +460,19 @@ async fn handle_connection_optimized(
                             } else {
                                 String::new()
                             };
-                            let hex_preview: String = msg_data.iter().take(32)
+                            let hex_preview: String = msg_data
+                                .iter()
+                                .take(32)
                                 .map(|b| format!("{:02x}", b))
                                 .collect::<Vec<_>>()
                                 .join(" ");
                             warn!(
                                 "Failed to decode event from {}{}: {} [msg_len={}, hex={}]",
-                                node_id_str, event_type_hint, e, msg_data.len(), hex_preview
+                                node_id_str,
+                                event_type_hint,
+                                e,
+                                msg_data.len(),
+                                hex_preview
                             );
                             buffer.advance(4 + size as usize);
                         }

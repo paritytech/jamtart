@@ -533,20 +533,15 @@ async fn get_active_workpackages(
 async fn get_cores_status(State(state): State<ApiState>) -> Result<impl IntoResponse, StatusCode> {
     let result = cache_or_compute(&state.cache, "cores_status", || async {
         // Per-core accumulated stats from JAM RPC rolling window
-        let (window_stats, core_count, current_slot) =
-            if let Some(ref jam_rpc) = state.jam_rpc {
-                let ws = jam_rpc.get_core_window_stats().await;
-                let params = jam_rpc.get_params().await;
-                let count = params.as_ref().map(|p| p.core_count).unwrap_or(0);
-                let slot = jam_rpc
-                    .get_stats()
-                    .await
-                    .map(|s| s.slot)
-                    .unwrap_or(0);
-                (ws, count, slot)
-            } else {
-                (vec![], 0u16, 0u32)
-            };
+        let (window_stats, core_count, current_slot) = if let Some(ref jam_rpc) = state.jam_rpc {
+            let ws = jam_rpc.get_core_window_stats().await;
+            let params = jam_rpc.get_params().await;
+            let count = params.as_ref().map(|p| p.core_count).unwrap_or(0);
+            let slot = jam_rpc.get_stats().await.map(|s| s.slot).unwrap_or(0);
+            (ws, count, slot)
+        } else {
+            (vec![], 0u16, 0u32)
+        };
 
         // Fallback: get core_count from connected node params if JAM RPC unavailable
         let core_count = if core_count > 0 {
@@ -564,28 +559,21 @@ async fn get_cores_status(State(state): State<ApiState>) -> Result<impl IntoResp
         let core_count = if core_count > 0 {
             core_count
         } else {
-            let row: Option<(Option<serde_json::Value>,)> = sqlx::query_as(
-                "SELECT node_info->'params' FROM nodes LIMIT 1",
-            )
-            .fetch_optional(state.store.pool())
-            .await
-            .unwrap_or(None);
+            let row: Option<(Option<serde_json::Value>,)> =
+                sqlx::query_as("SELECT node_info->'params' FROM nodes LIMIT 1")
+                    .fetch_optional(state.store.pool())
+                    .await
+                    .unwrap_or(None);
 
-            row.and_then(|(params,)| {
-                params?.get("core_count")?.as_u64().map(|v| v as u16)
-            })
-            .unwrap_or(0)
+            row.and_then(|(params,)| params?.get("core_count")?.as_u64().map(|v| v as u16))
+                .unwrap_or(0)
         };
 
         // Aggregate telemetry from DB
-        let telemetry = state
-            .store
-            .get_cores_telemetry_agg()
-            .await
-            .map_err(|e| {
-                error!("Failed to get cores telemetry: {}", e);
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+        let telemetry = state.store.get_cores_telemetry_agg().await.map_err(|e| {
+            error!("Failed to get cores telemetry: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
         let guarantees_last_hour = telemetry["guarantees_last_hour"].as_i64().unwrap_or(0);
         let wp_last_hour = telemetry["work_packages_last_hour"].as_i64().unwrap_or(0);
@@ -617,19 +605,22 @@ async fn get_cores_status(State(state): State<ApiState>) -> Result<impl IntoResp
                 let last_active = ws.map(|w| w.last_active_slot).unwrap_or(0);
 
                 // Distribute aggregate WP/guarantee counts proportionally
-                let (core_wp, core_guar) =
-                    if total_active_blocks > 0 && active_blocks > 0 {
-                        let share = active_blocks as f64 / total_active_blocks as f64;
-                        (
-                            (wp_last_hour as f64 * share).round() as i64,
-                            (guarantees_last_hour as f64 * share).round() as i64,
-                        )
-                    } else {
-                        (0, 0)
-                    };
+                let (core_wp, core_guar) = if total_active_blocks > 0 && active_blocks > 0 {
+                    let share = active_blocks as f64 / total_active_blocks as f64;
+                    (
+                        (wp_last_hour as f64 * share).round() as i64,
+                        (guarantees_last_hour as f64 * share).round() as i64,
+                    )
+                } else {
+                    (0, 0)
+                };
 
                 let is_active = gas > 0;
-                if is_active { active_count += 1; } else { idle_count += 1; }
+                if is_active {
+                    active_count += 1;
+                } else {
+                    idle_count += 1;
+                }
 
                 cores.push(serde_json::json!({
                     "core_index": i,
@@ -694,7 +685,11 @@ async fn get_cores_status(State(state): State<ApiState>) -> Result<impl IntoResp
                 let (core_wp, core_guar, is_active) = if !core_wp_map.is_empty() {
                     let active = core_wp_events > 0;
                     let n_active = core_wp_map.len().max(1) as i64;
-                    let guar = if active { guarantees_last_hour / n_active } else { 0 };
+                    let guar = if active {
+                        guarantees_last_hour / n_active
+                    } else {
+                        0
+                    };
                     (core_wp_events, guar, active)
                 } else if has_activity && core_count > 0 {
                     // No per-core data; distribute evenly
@@ -705,7 +700,11 @@ async fn get_cores_status(State(state): State<ApiState>) -> Result<impl IntoResp
                     (0, 0, false)
                 };
 
-                if is_active { active_count += 1; } else { idle_count += 1; }
+                if is_active {
+                    active_count += 1;
+                } else {
+                    idle_count += 1;
+                }
 
                 cores.push(serde_json::json!({
                     "core_index": i,

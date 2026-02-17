@@ -664,7 +664,12 @@ fn ui(f: &mut Frame, app: &App) {
 /// Safe padding: returns spaces to right-align a value within a fixed-width box.
 /// Returns empty string if the value is already wider than the box.
 fn pad(box_width: usize, prefix_len: usize, value_len: usize) -> String {
-    " ".repeat(box_width.saturating_sub(prefix_len).saturating_sub(value_len).saturating_sub(1))
+    " ".repeat(
+        box_width
+            .saturating_sub(prefix_len)
+            .saturating_sub(value_len)
+            .saturating_sub(1),
+    )
 }
 
 fn render_stats(f: &mut Frame, area: Rect, data: &DashboardData) {
@@ -815,7 +820,11 @@ fn render_stats(f: &mut Frame, area: Rect, data: &DashboardData) {
                 Style::default().fg(Color::Rgb(150, 255, 255)),
             ),
             Span::styled(
-                pad(30 - 2, 11, format!("{:3}/{}", connected_nodes, total_nodes).len()),
+                pad(
+                    30 - 2,
+                    11,
+                    format!("{:3}/{}", connected_nodes, total_nodes).len(),
+                ),
                 Style::default(),
             ),
             Span::styled(
@@ -851,7 +860,11 @@ fn render_stats(f: &mut Frame, area: Rect, data: &DashboardData) {
                 Style::default().fg(Color::Rgb(150, 255, 255)),
             ),
             Span::styled(
-                pad(30 - 2, 11, data.stats.total_blocks_authored.to_string().len()),
+                pad(
+                    30 - 2,
+                    11,
+                    data.stats.total_blocks_authored.to_string().len(),
+                ),
                 Style::default(),
             ),
             Span::styled(
@@ -974,7 +987,13 @@ fn render_nodes(f: &mut Frame, area: Rect, data: &DashboardData, scroll: usize, 
                 Cell::from("○ offline").style(Style::default().fg(Color::Rgb(100, 100, 100)))
             };
 
-            let node_id_display = format!("({}...)", node.node_id.get(..16).unwrap_or(&node.node_id).to_lowercase());
+            let node_id_display = format!(
+                "({}...)",
+                node.node_id
+                    .get(..16)
+                    .unwrap_or(&node.node_id)
+                    .to_lowercase()
+            );
 
             Row::new(vec![
                 Cell::from(Line::from(vec![
@@ -1188,7 +1207,13 @@ fn render_events(
             let time = DateTime::parse_from_rfc3339(&event.timestamp)
                 .ok()
                 .map(|dt| dt.with_timezone(&Local).format("%H:%M:%S").to_string())
-                .unwrap_or_else(|| event.timestamp.get(11..19).unwrap_or(&event.timestamp).to_string());
+                .unwrap_or_else(|| {
+                    event
+                        .timestamp
+                        .get(11..19)
+                        .unwrap_or(&event.timestamp)
+                        .to_string()
+                });
 
             // Categorize events and assign colors/prefixes - Y2K vibrant theme
             let (prefix, color, emoji) = match event.event_type {
@@ -1230,7 +1255,14 @@ fn render_events(
                     Style::default().fg(color).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!("({}...) ", event.node_id.get(..12).unwrap_or(&event.node_id).to_lowercase()),
+                    format!(
+                        "({}...) ",
+                        event
+                            .node_id
+                            .get(..12)
+                            .unwrap_or(&event.node_id)
+                            .to_lowercase()
+                    ),
                     Style::default().fg(Color::Rgb(128, 128, 128)),
                 ),
                 Span::styled(emoji, Style::default()),
@@ -1624,21 +1656,12 @@ fn render_metrics(f: &mut Frame, area: Rect, data: &DashboardData, is_selected: 
                             .add_modifier(Modifier::BOLD),
                     ),
                     Cell::from(status_text).style(Style::default().fg(status_color)),
-                    Cell::from(format!("{:>5.1}%", core.utilization_pct)).style(
-                        Style::default()
-                            .fg(util_color)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Cell::from(format!("{:>6}", gas_str)).style(
-                        Style::default()
-                            .fg(gas_color)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Cell::from(format!("{:>6}", da_str)).style(
-                        Style::default()
-                            .fg(da_color)
-                            .add_modifier(Modifier::BOLD),
-                    ),
+                    Cell::from(format!("{:>5.1}%", core.utilization_pct))
+                        .style(Style::default().fg(util_color).add_modifier(Modifier::BOLD)),
+                    Cell::from(format!("{:>6}", gas_str))
+                        .style(Style::default().fg(gas_color).add_modifier(Modifier::BOLD)),
+                    Cell::from(format!("{:>6}", da_str))
+                        .style(Style::default().fg(da_color).add_modifier(Modifier::BOLD)),
                     Cell::from(format!("{:>7}", blocks_str)).style(
                         Style::default()
                             .fg(blocks_color)
