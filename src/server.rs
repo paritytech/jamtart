@@ -4,15 +4,14 @@ use crate::event_broadcaster::EventBroadcaster;
 use crate::events::{Event, NodeInformation};
 use crate::rate_limiter::RateLimiter;
 use crate::store::EventStore;
-use bytes::BytesMut;
+use bytes::{Buf, BytesMut};
 use dashmap::DashMap;
 use std::io::Cursor;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::time::{timeout, Duration};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 /// Configure TCP socket receive buffer size for better performance.
 ///
@@ -92,7 +91,7 @@ pub struct NodeConnection {
 /// # }
 /// ```
 pub struct TelemetryServer {
-    bind_address: String,
+    listener: TcpListener,
     connections: Arc<DashMap<String, NodeConnection>>,
     /// EventStore reference - owned by BatchWriter but kept here for lifetime management
     /// and potential future direct queries
@@ -101,13 +100,29 @@ pub struct TelemetryServer {
     batch_writer: BatchWriter,
     rate_limiter: Arc<RateLimiter>,
     broadcaster: Arc<EventBroadcaster>,
+    /// When true, rate limiting is disabled (--no-rate-limit flag)
+    rate_limit_disabled: bool,
+    connection_watch: Arc<tokio::sync::watch::Sender<usize>>,
+    /// Kept alive so the watch channel stays open (senders fail when all receivers drop)
+    #[allow(dead_code)]
+    _connection_watch_rx: tokio::sync::watch::Receiver<usize>,
 }
 
 impl TelemetryServer {
     pub async fn new(bind_address: &str, store: Arc<EventStore>) -> Result<Self, std::io::Error> {
-        // Test bind to make sure address is valid
-        let _ = TcpListener::bind(bind_address).await?;
-        info!("Telemetry server configured for {}", bind_address);
+        Self::with_options(bind_address, store, false).await
+    }
+
+    pub async fn with_options(
+        bind_address: &str,
+        store: Arc<EventStore>,
+        no_rate_limit: bool,
+    ) -> Result<Self, std::io::Error> {
+        let listener = TcpListener::bind(bind_address).await?;
+        info!("Telemetry server listening on {}", bind_address);
+
+        #[cfg(unix)]
+        configure_socket_receive_buffer(&listener);
 
         // Initialize metrics
         metrics::describe_counter!(
@@ -127,29 +142,30 @@ impl TelemetryServer {
             "Number of events pending in write buffer"
         );
 
+        let batch_writer = BatchWriter::new(Arc::clone(&store));
+
+        if no_rate_limit {
+            info!("Rate limiting DISABLED - nodes can send unlimited events");
+        }
+
+        let (connection_watch, connection_watch_rx) = tokio::sync::watch::channel(0usize);
+
         Ok(Self {
-            bind_address: bind_address.to_string(),
+            listener,
             connections: Arc::new(DashMap::new()),
-            batch_writer: BatchWriter::new(Arc::clone(&store)),
+            batch_writer,
             rate_limiter: Arc::new(RateLimiter::new()),
             broadcaster: Arc::new(EventBroadcaster::new()),
             store,
+            rate_limit_disabled: no_rate_limit,
+            connection_watch: Arc::new(connection_watch),
+            _connection_watch_rx: connection_watch_rx,
         })
     }
 
     pub async fn run(&self) -> Result<(), std::io::Error> {
-        let listener = TcpListener::bind(&self.bind_address).await?;
-        info!(
-            "Optimized telemetry server listening on {}",
-            self.bind_address
-        );
-
-        // Set TCP socket options for better performance on Unix
-        #[cfg(unix)]
-        configure_socket_receive_buffer(&listener);
-
         loop {
-            match listener.accept().await {
+            match self.listener.accept().await {
                 Ok((stream, addr)) => {
                     self.spawn_connection(stream, addr);
                 }
@@ -165,18 +181,9 @@ impl TelemetryServer {
         &self,
         mut shutdown: tokio::sync::watch::Receiver<bool>,
     ) -> Result<(), std::io::Error> {
-        let listener = TcpListener::bind(&self.bind_address).await?;
-        info!(
-            "Optimized telemetry server listening on {}",
-            self.bind_address
-        );
-
-        #[cfg(unix)]
-        configure_socket_receive_buffer(&listener);
-
         loop {
             tokio::select! {
-                result = listener.accept() => {
+                result = self.listener.accept() => {
                     match result {
                         Ok((stream, addr)) => {
                             self.spawn_connection(stream, addr);
@@ -207,24 +214,21 @@ impl TelemetryServer {
             "New connection from {} ({}/{})",
             addr,
             self.rate_limiter.connection_count(),
-            1024
+            crate::rate_limiter::MAX_CONNECTIONS
         );
 
-        let connections = Arc::clone(&self.connections);
-        let batch_writer = self.batch_writer.clone();
         let rate_limiter = Arc::clone(&self.rate_limiter);
-        let broadcaster = Arc::clone(&self.broadcaster);
+        let ctx = ConnectionContext {
+            connections: Arc::clone(&self.connections),
+            batch_writer: self.batch_writer.clone(),
+            rate_limiter: rate_limiter.clone(),
+            broadcaster: Arc::clone(&self.broadcaster),
+            rate_limit_disabled: self.rate_limit_disabled,
+            connection_watch: Arc::clone(&self.connection_watch),
+        };
 
         tokio::spawn(async move {
-            let result = handle_connection_optimized(
-                stream,
-                addr,
-                connections,
-                batch_writer,
-                rate_limiter.clone(),
-                broadcaster,
-            )
-            .await;
+            let result = handle_connection_optimized(stream, addr, ctx).await;
 
             // Always decrement connection count
             rate_limiter.connection_closed();
@@ -283,19 +287,50 @@ impl TelemetryServer {
     ///
     /// In production, this can be used for graceful shutdown but should
     /// NOT be called during normal operation.
+    /// Returns the local address the server is listening on.
+    ///
+    /// Useful in tests that bind to port 0 to discover the assigned port.
+    pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
+        self.listener.local_addr()
+    }
+
     pub async fn flush_writes(&self) -> anyhow::Result<()> {
         self.batch_writer.flush().await
     }
+
+    /// Wait until the server has exactly `expected` active connections.
+    /// Returns immediately if the condition is already met.
+    pub async fn wait_for_connections(&self, expected: usize) {
+        let mut rx = self.connection_watch.subscribe();
+        while *rx.borrow_and_update() != expected {
+            rx.changed().await.expect("connection watch closed");
+        }
+    }
+}
+
+/// Shared server state passed to each connection handler.
+struct ConnectionContext {
+    connections: Arc<DashMap<String, NodeConnection>>,
+    batch_writer: BatchWriter,
+    rate_limiter: Arc<RateLimiter>,
+    broadcaster: Arc<EventBroadcaster>,
+    rate_limit_disabled: bool,
+    connection_watch: Arc<tokio::sync::watch::Sender<usize>>,
 }
 
 async fn handle_connection_optimized(
     mut stream: TcpStream,
     addr: SocketAddr,
-    connections: Arc<DashMap<String, NodeConnection>>,
-    batch_writer: BatchWriter,
-    rate_limiter: Arc<RateLimiter>,
-    broadcaster: Arc<EventBroadcaster>,
+    ctx: ConnectionContext,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let ConnectionContext {
+        connections,
+        batch_writer,
+        rate_limiter,
+        broadcaster,
+        rate_limit_disabled,
+        connection_watch,
+    } = ctx;
     // Set TCP nodelay for lower latency
     stream.set_nodelay(true)?;
 
@@ -304,11 +339,7 @@ async fn handle_connection_optimized(
 
     // First message should be NodeInformation
     let node_info = loop {
-        let n = match timeout(Duration::from_secs(30), stream.read_buf(&mut buffer)).await {
-            Ok(Ok(n)) => n,
-            Ok(Err(e)) => return Err(e.into()),
-            Err(_) => return Err("Timeout waiting for node information".into()),
-        };
+        let n = stream.read_buf(&mut buffer).await?;
         if n == 0 {
             return Err("Connection closed before receiving node information".into());
         }
@@ -358,25 +389,25 @@ async fn handle_connection_optimized(
         node_info.additional_info.as_str().unwrap_or("")
     );
 
-    // Queue node connection event first - only insert into DashMap on success
+    // Store connection info
+    let connection = NodeConnection {
+        id: node_id_str.clone(),
+        address: addr,
+        info: node_info.clone(),
+        connected_at: chrono::Utc::now(),
+        last_event_at: chrono::Utc::now(),
+        event_count: 0,
+    };
+    connections.insert(node_id_str.clone(), connection);
+    let _ = connection_watch.send(connections.len());
+
+    // Queue node connection event
     info!("Queueing node connection for {}", node_id_str);
     match batch_writer
-        .node_connected(node_id_str.clone(), node_info.clone())
+        .node_connected(node_id_str.clone(), node_info, addr.to_string())
         .await
     {
-        Ok(_) => {
-            info!("Successfully queued node connection for {}", node_id_str);
-            // Store connection info only after successful batch_writer registration
-            let connection = NodeConnection {
-                id: node_id_str.clone(),
-                address: addr,
-                info: node_info,
-                connected_at: chrono::Utc::now(),
-                last_event_at: chrono::Utc::now(),
-                event_count: 0,
-            };
-            connections.insert(node_id_str.clone(), connection);
-        }
+        Ok(_) => info!("Successfully queued node connection for {}", node_id_str),
         Err(e) => {
             error!("Failed to queue node connection for {}: {}", node_id_str, e);
             return Err(e.into());
@@ -404,15 +435,15 @@ async fn handle_connection_optimized(
                         Ok(event) => {
                             event_count += 1;
 
-                            // Apply rate limiting
-                            if !rate_limiter.allow_event(&node_id_str) {
+                            // Apply rate limiting (unless disabled)
+                            if !rate_limit_disabled && !rate_limiter.allow_event(&node_id_str) {
                                 dropped_events += 1;
                                 metrics::counter!("telemetry_events_dropped").increment(1);
                                 buffer.advance(4 + size as usize);
                                 continue;
                             }
 
-                            debug!(
+                            trace!(
                                 "Received event {} from node {}",
                                 event.event_type() as u8,
                                 node_id_str
@@ -426,11 +457,18 @@ async fn handle_connection_optimized(
                                 broadcaster.broadcast_event(&node_id_str, Arc::clone(&event));
 
                             if let Ok(event_id) = broadcast_result {
-                                debug!("Broadcast event {} from node {}", event_id, node_id_str);
+                                trace!("Broadcast event {} from node {}", event_id, node_id_str);
                             }
 
                             // Try to queue event for batch writing
-                            match batch_writer.write_event(&node_id_str, event_count, event) {
+                            // Unwrap Arc — broadcaster already has its clone
+                            let event_owned =
+                                Arc::try_unwrap(event).unwrap_or_else(|arc| (*arc).clone());
+                            match batch_writer.write_event(
+                                node_id_str.clone(),
+                                event_count,
+                                event_owned,
+                            ) {
                                 Ok(_) => {
                                     metrics::counter!("telemetry_events_received").increment(1);
 
@@ -447,33 +485,22 @@ async fn handle_connection_optimized(
                                     // Buffer is full, apply backpressure
                                     dropped_events += 1;
                                     metrics::counter!("telemetry_events_dropped").increment(1);
-                                    warn!("Write buffer full, dropping event from {}", node_id_str);
+                                    trace!(
+                                        "Write buffer full, dropping event from {}",
+                                        node_id_str
+                                    );
+                                    if dropped_events.is_multiple_of(500) {
+                                        debug!(
+                                        "Write buffer full, dropping events total: {dropped_events}",
+                                    );
+                                    }
                                 }
                             }
 
                             buffer.advance(4 + size as usize);
                         }
                         Err(e) => {
-                            // Timestamp is u64 (8 bytes LE), discriminator is at byte 8
-                            let event_type_hint = if msg_data.len() > 8 {
-                                format!(" (event_type={})", msg_data[8])
-                            } else {
-                                String::new()
-                            };
-                            let hex_preview: String = msg_data
-                                .iter()
-                                .take(32)
-                                .map(|b| format!("{:02x}", b))
-                                .collect::<Vec<_>>()
-                                .join(" ");
-                            warn!(
-                                "Failed to decode event from {}{}: {} [msg_len={}, hex={}]",
-                                node_id_str,
-                                event_type_hint,
-                                e,
-                                msg_data.len(),
-                                hex_preview
-                            );
+                            warn!("Failed to decode event from {}: {}", node_id_str, e);
                             buffer.advance(4 + size as usize);
                         }
                     }
@@ -488,23 +515,8 @@ async fn handle_connection_optimized(
             }
         }
 
-        // Update metrics periodically (every 100 events) to reduce overhead in hot loop
-        if event_count.is_multiple_of(100) {
-            metrics::gauge!("telemetry_buffer_pending").set(batch_writer.pending_count() as f64);
-        }
-
-        // Read more data from the stream (120s idle timeout for dead connections)
-        let n = match timeout(Duration::from_secs(120), stream.read_buf(&mut buffer)).await {
-            Ok(Ok(n)) => n,
-            Ok(Err(e)) => {
-                info!("Node {} read error: {}", node_id_str, e);
-                break;
-            }
-            Err(_) => {
-                warn!("Node {} timed out after 120s idle", node_id_str);
-                break;
-            }
-        };
+        // Read more data from stream
+        let n = stream.read_buf(&mut buffer).await?;
         if n == 0 {
             info!(
                 "Node {} disconnected (received {} events, dropped {})",
@@ -518,23 +530,17 @@ async fn handle_connection_optimized(
             warn!("Buffer overflow for node {} - disconnecting", node_id_str);
             break;
         }
+
+        // Update metrics
+        metrics::gauge!("telemetry_buffer_pending").set(batch_writer.pending_count() as f64);
     }
 
     // Clean up
     connections.remove(&node_id_str);
+    let _ = connection_watch.send(connections.len());
     batch_writer.node_disconnected(node_id_str).await?;
 
     Ok(())
-}
-
-trait BytesMutExt {
-    fn advance(&mut self, cnt: usize);
-}
-
-impl BytesMutExt for BytesMut {
-    fn advance(&mut self, cnt: usize) {
-        let _ = self.split_to(cnt);
-    }
 }
 
 #[derive(Debug, serde::Serialize)]

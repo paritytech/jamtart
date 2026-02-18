@@ -1,0 +1,151 @@
+-- Event type lookup table for human-readable names and grouping.
+-- TODO: Generate this table automatically from src/events.rs definitions.
+-- For now, this is a hardcoded list matching the JIP-3 telemetry protocol event types.
+
+CREATE TABLE IF NOT EXISTS event_types (
+    id SMALLINT PRIMARY KEY,
+    name TEXT NOT NULL,
+    group_name TEXT NOT NULL
+);
+
+INSERT INTO event_types (id, name, group_name) VALUES
+-- status
+(10, 'Status', 'status'),
+(11, 'BestBlockChanged', 'status'),
+(12, 'FinalizedBlockChanged', 'status'),
+(13, 'SyncStatusChanged', 'status'),
+-- networking
+(20, 'ConnectionRefused', 'networking'),
+(21, 'ConnectingIn', 'networking'),
+(22, 'ConnectInFailed', 'networking'),
+(23, 'ConnectedIn', 'networking'),
+(24, 'ConnectingOut', 'networking'),
+(25, 'ConnectOutFailed', 'networking'),
+(26, 'ConnectedOut', 'networking'),
+(27, 'Disconnected', 'networking'),
+(28, 'PeerMisbehaved', 'networking'),
+-- blocks
+(40, 'Authoring', 'blocks'),
+(41, 'AuthoringFailed', 'blocks'),
+(42, 'Authored', 'blocks'),
+(43, 'Importing', 'blocks'),
+(44, 'BlockVerificationFailed', 'blocks'),
+(45, 'BlockVerified', 'blocks'),
+(46, 'BlockExecutionFailed', 'blocks'),
+(47, 'BlockExecuted', 'blocks'),
+(60, 'BlockAnnouncementStreamOpened', 'blocks'),
+(61, 'BlockAnnouncementStreamClosed', 'blocks'),
+(62, 'BlockAnnounced', 'blocks'),
+(63, 'SendingBlockRequest', 'blocks'),
+(64, 'ReceivingBlockRequest', 'blocks'),
+(65, 'BlockRequestFailed', 'blocks'),
+(66, 'BlockRequestSent', 'blocks'),
+(67, 'BlockRequestReceived', 'blocks'),
+(68, 'BlockTransferred', 'blocks'),
+-- tickets
+(80, 'GeneratingTickets', 'tickets'),
+(81, 'TicketGenerationFailed', 'tickets'),
+(82, 'TicketsGenerated', 'tickets'),
+(83, 'TicketTransferFailed', 'tickets'),
+(84, 'TicketTransferred', 'tickets'),
+-- work-package
+(90, 'WorkPackageSubmission', 'work-package'),
+(91, 'WorkPackageBeingShared', 'work-package'),
+(92, 'WorkPackageFailed', 'work-package'),
+(93, 'DuplicateWorkPackage', 'work-package'),
+(94, 'WorkPackageReceived', 'work-package'),
+(95, 'Authorized', 'work-package'),
+(96, 'ExtrinsicDataReceived', 'work-package'),
+(97, 'ImportsReceived', 'work-package'),
+(98, 'SharingWorkPackage', 'work-package'),
+(99, 'WorkPackageSharingFailed', 'work-package'),
+(100, 'BundleSent', 'work-package'),
+(101, 'Refined', 'work-package'),
+(102, 'WorkReportBuilt', 'work-package'),
+(103, 'WorkReportSignatureSent', 'work-package'),
+(104, 'WorkReportSignatureReceived', 'work-package'),
+-- guaranteeing
+(105, 'GuaranteeBuilt', 'guaranteeing'),
+(106, 'SendingGuarantee', 'guaranteeing'),
+(107, 'GuaranteeSendFailed', 'guaranteeing'),
+(108, 'GuaranteeSent', 'guaranteeing'),
+(109, 'GuaranteesDistributed', 'guaranteeing'),
+(110, 'ReceivingGuarantee', 'guaranteeing'),
+(111, 'GuaranteeReceiveFailed', 'guaranteeing'),
+(112, 'GuaranteeReceived', 'guaranteeing'),
+(113, 'GuaranteeDiscarded', 'guaranteeing'),
+-- availability
+(120, 'SendingShardRequest', 'availability'),
+(121, 'ReceivingShardRequest', 'availability'),
+(122, 'ShardRequestFailed', 'availability'),
+(123, 'ShardRequestSent', 'availability'),
+(124, 'ShardRequestReceived', 'availability'),
+(125, 'ShardsTransferred', 'availability'),
+(126, 'DistributingAssurance', 'availability'),
+(127, 'AssuranceSendFailed', 'availability'),
+(128, 'AssuranceSent', 'availability'),
+(129, 'AssuranceDistributed', 'availability'),
+(130, 'AssuranceReceiveFailed', 'availability'),
+(131, 'AssuranceReceived', 'availability'),
+-- auditing
+(140, 'SendingBundleShardRequest', 'auditing'),
+(141, 'ReceivingBundleShardRequest', 'auditing'),
+(142, 'BundleShardRequestFailed', 'auditing'),
+(143, 'BundleShardRequestSent', 'auditing'),
+(144, 'BundleShardRequestReceived', 'auditing'),
+(145, 'BundleShardTransferred', 'auditing'),
+(146, 'ReconstructingBundle', 'auditing'),
+(147, 'BundleReconstructed', 'auditing'),
+(148, 'SendingBundleRequest', 'auditing'),
+(149, 'ReceivingBundleRequest', 'auditing'),
+(150, 'BundleRequestFailed', 'auditing'),
+(151, 'BundleRequestSent', 'auditing'),
+(152, 'BundleRequestReceived', 'auditing'),
+(153, 'BundleTransferred', 'auditing'),
+-- segments
+(160, 'WorkPackageHashMapped', 'segments'),
+(161, 'SegmentsRootMapped', 'segments'),
+(162, 'SendingSegmentShardRequest', 'segments'),
+(163, 'ReceivingSegmentShardRequest', 'segments'),
+(164, 'SegmentShardRequestFailed', 'segments'),
+(165, 'SegmentShardRequestSent', 'segments'),
+(166, 'SegmentShardRequestReceived', 'segments'),
+(167, 'SegmentShardsTransferred', 'segments'),
+(168, 'ReconstructingSegments', 'segments'),
+(169, 'SegmentReconstructionFailed', 'segments'),
+(170, 'SegmentsReconstructed', 'segments'),
+(171, 'SegmentVerificationFailed', 'segments'),
+(172, 'SegmentsVerified', 'segments'),
+(173, 'SendingSegmentRequest', 'segments'),
+(174, 'ReceivingSegmentRequest', 'segments'),
+(175, 'SegmentRequestFailed', 'segments'),
+(176, 'SegmentRequestSent', 'segments'),
+(177, 'SegmentRequestReceived', 'segments'),
+(178, 'SegmentsTransferred', 'segments'),
+-- preimages
+(190, 'PreimageAnnouncementFailed', 'preimages'),
+(191, 'PreimageAnnounced', 'preimages'),
+(192, 'AnnouncedPreimageForgotten', 'preimages'),
+(193, 'SendingPreimageRequest', 'preimages'),
+(194, 'ReceivingPreimageRequest', 'preimages'),
+(195, 'PreimageRequestFailed', 'preimages'),
+(196, 'PreimageRequestSent', 'preimages'),
+(197, 'PreimageRequestReceived', 'preimages'),
+(198, 'PreimageTransferred', 'preimages'),
+(199, 'PreimageDiscarded', 'preimages')
+ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, group_name = EXCLUDED.group_name;
+
+-- Convenience view: events pre-joined with type names and groups.
+-- Use this in Grafana panels instead of raw events + JOIN.
+CREATE OR REPLACE VIEW events_view AS
+SELECT
+    e.timestamp,
+    e.node_id,
+    e.event_id,
+    e.event_type,
+    et.name AS event_name,
+    et.group_name AS event_group,
+    e.data,
+    e.created_at
+FROM events e
+LEFT JOIN event_types et ON e.event_type = et.id;

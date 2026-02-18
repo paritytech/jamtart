@@ -11,30 +11,24 @@ use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
 
 async fn setup_test_server() -> (Arc<TelemetryServer>, u16) {
-    // Use test PostgreSQL database
-    let test_db_url = std::env::var("TEST_DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tart:tart_password@localhost:5432/tart_test".to_string());
+    let test_db_url = common::test_database_url();
     let store = Arc::new(EventStore::new(&test_db_url).await.unwrap());
 
     // Clean database before each test
     let _ = store.cleanup_test_data().await;
 
-    // Find available port
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
-
-    let bind_addr = format!("127.0.0.1:{}", port);
-    let server = Arc::new(TelemetryServer::new(&bind_addr, store).await.unwrap());
+    let server = Arc::new(
+        TelemetryServer::with_options("127.0.0.1:0", store, true)
+            .await
+            .unwrap(),
+    );
+    let port = server.local_addr().unwrap().port();
 
     // Start server in background
     let server_clone = Arc::clone(&server);
     tokio::spawn(async move {
         server_clone.run().await.unwrap();
     });
-
-    // Give server time to start
-    sleep(Duration::from_millis(100)).await;
 
     (server, port)
 }

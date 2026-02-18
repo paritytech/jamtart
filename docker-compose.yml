@@ -1,8 +1,8 @@
 services:
-  # PostgreSQL database
+  # TimescaleDB database
   postgres:
-    image: postgres:18-alpine
-    container_name: tart-postgres
+    image: timescale/timescaledb:latest-pg17
+    container_name: tart-timescaledb
     shm_size: 512mb
     environment:
       # WARNING: Default credentials for LOCAL DEVELOPMENT only

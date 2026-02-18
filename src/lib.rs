@@ -19,5 +19,5 @@ pub use events::{Event, EventType, NodeInformation};
 pub use jam_rpc::{JamRpcClient, NetworkStats, ServiceInfo};
 pub use node_id::NodeId;
 pub use server::TelemetryServer;
-pub use store::{EventStore, PartitionHealth};
+pub use store::EventStore;
 pub use types::*;
