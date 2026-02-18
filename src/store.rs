@@ -2288,7 +2288,8 @@ impl EventStore {
                     r#"
                     WITH time_series AS (
                         SELECT generate_series(
-                            date_trunc('minute', NOW() - $1::interval),
+                            date_trunc('minute', NOW() - $1::interval)
+                              - (EXTRACT(MINUTE FROM NOW() - $1::interval)::int % $3) * interval '1 minute',
                             date_trunc('minute', NOW()),
                             $2::interval
                         ) AS bucket
@@ -2336,7 +2337,8 @@ impl EventStore {
                     r#"
                     WITH time_series AS (
                         SELECT generate_series(
-                            date_trunc('minute', NOW() - $1::interval),
+                            date_trunc('minute', NOW() - $1::interval)
+                              - (EXTRACT(MINUTE FROM NOW() - $1::interval)::int % $3) * interval '1 minute',
                             date_trunc('minute', NOW()),
                             $2::interval
                         ) AS bucket
@@ -2384,7 +2386,8 @@ impl EventStore {
                     r#"
                     WITH time_series AS (
                         SELECT generate_series(
-                            date_trunc('minute', NOW() - $1::interval),
+                            date_trunc('minute', NOW() - $1::interval)
+                              - (EXTRACT(MINUTE FROM NOW() - $1::interval)::int % $3) * interval '1 minute',
                             date_trunc('minute', NOW()),
                             $2::interval
                         ) AS bucket

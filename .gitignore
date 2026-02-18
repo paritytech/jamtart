@@ -84,6 +84,10 @@ Desktop.ini
 \#*\#
 .\#*
 
+# PolkaJam binaries (downloaded by start-validators.sh)
+polkajam
+polkajam-testnet
+
 # Build artifacts
 dist/
 build/
