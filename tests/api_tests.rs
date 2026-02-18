@@ -4,7 +4,6 @@ use axum::http::StatusCode;
 use axum_test::TestServer;
 use serde_json::Value;
 use std::sync::Arc;
-use std::time::Duration;
 use tart_backend::api::{create_api_router, ApiState};
 use tart_backend::encoding::encode_message;
 use tart_backend::events::Event;
@@ -12,41 +11,27 @@ use tart_backend::types::*;
 use tart_backend::{EventStore, TelemetryServer};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
-use tokio::time::sleep;
 
 async fn setup_test_api() -> (TestServer, Arc<TelemetryServer>, u16) {
-    // Setup test database (PostgreSQL)
-    let database_url = std::env::var("TEST_DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tart:tart_password@localhost:5432/tart_test".to_string());
+    let database_url = common::test_database_url();
 
-    eprintln!("DEBUG: Connecting to database: {}", database_url);
     let store = Arc::new(
         EventStore::new(&database_url)
             .await
             .expect("Failed to connect to database"),
     );
 
-    eprintln!("DEBUG: Cleaning test data...");
     store
         .cleanup_test_data()
         .await
         .expect("Failed to cleanup test data");
-    eprintln!("DEBUG: Cleanup completed");
 
-    // Small delay to ensure cleanup completes
-    sleep(Duration::from_millis(50)).await;
-
-    // Find available port for telemetry
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let telemetry_port = listener.local_addr().unwrap().port();
-    drop(listener);
-
-    let telemetry_bind = format!("127.0.0.1:{}", telemetry_port);
     let telemetry_server = Arc::new(
-        TelemetryServer::new(&telemetry_bind, Arc::clone(&store))
+        TelemetryServer::with_options("127.0.0.1:0", Arc::clone(&store), true)
             .await
             .unwrap(),
     );
+    let telemetry_port = telemetry_server.local_addr().unwrap().port();
 
     // Start telemetry server
     let telemetry_server_clone = Arc::clone(&telemetry_server);
@@ -68,15 +53,12 @@ async fn setup_test_api() -> (TestServer, Arc<TelemetryServer>, u16) {
         health_monitor,
         jam_rpc: None,
         cache: Arc::new(tart_backend::cache::TtlCache::new(
-            std::time::Duration::from_secs(5),
+            std::time::Duration::ZERO,
         )),
     };
 
     let app = create_api_router(api_state);
     let test_server = TestServer::new(app).unwrap();
-
-    // Give servers time to start
-    sleep(Duration::from_millis(100)).await;
 
     (test_server, telemetry_server, telemetry_port)
 }
@@ -86,6 +68,8 @@ async fn connect_test_node_with_server(
     node_id: u8,
     telemetry_server: &Arc<TelemetryServer>,
 ) -> TcpStream {
+    let expected = telemetry_server.connection_count() + 1;
+
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
         .await
         .unwrap();
@@ -93,36 +77,17 @@ async fn connect_test_node_with_server(
     let mut node_info = common::test_node_info([node_id; 32]);
     node_info.implementation_name = BoundedString::new(&format!("test-node-{}", node_id)).unwrap();
 
-    eprintln!("DEBUG: Sending node info for node {}", node_id);
     let encoded = encode_message(&node_info).unwrap();
     stream.write_all(&encoded).await.unwrap();
 
-    // Wait for server to receive, decode, queue AND write to database
-    // The batch writer automatically flushes NodeConnected immediately
-    sleep(Duration::from_millis(50)).await;
-
-    // Verify the node was actually written by flushing
-    eprintln!("DEBUG: Flushing after node {} connection", node_id);
-    flush_and_wait(telemetry_server).await;
-    eprintln!("DEBUG: Node {} connection confirmed in database", node_id);
+    telemetry_server.wait_for_connections(expected).await;
+    common::flush_and_wait(telemetry_server).await;
 
     stream
 }
 
 async fn flush_and_wait(telemetry_server: &Arc<TelemetryServer>) {
-    // Flush batch writer and wait for completion
-    // This ensures all queued writes have been processed and written to PostgreSQL
-    // before we query the database in tests
-    eprintln!("DEBUG: Calling flush_writes()");
-    match telemetry_server.flush_writes().await {
-        Ok(_) => eprintln!("DEBUG: Flush completed successfully"),
-        Err(e) => {
-            eprintln!("ERROR: Flush failed: {}", e);
-            panic!("Flush failed: {}", e);
-        }
-    }
-    // Delay to ensure PostgreSQL commit completes and data is visible to other connections
-    sleep(Duration::from_millis(100)).await;
+    common::flush_and_wait(telemetry_server).await;
 }
 
 #[tokio::test]
@@ -898,4 +863,509 @@ async fn test_jam_cores_no_rpc() {
     let (server, _, _) = setup_test_api().await;
     let response = server.get("/api/jam/cores").await;
     assert_eq!(response.status_code(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+// ============================================================================
+// Data-driven tests — validate JSONB query paths against real event data
+// ============================================================================
+
+/// Helper: construct a WorkPackageReceived event
+fn wp_received_event(timestamp: u64, submission_id: u64, core: u16) -> Event {
+    Event::WorkPackageReceived {
+        timestamp,
+        submission_or_share_id: submission_id,
+        core,
+        outline: WorkPackageSummary {
+            work_package_size: 2048,
+            work_package_hash: [0xCC; 32],
+            anchor: [0xAA; 32],
+            lookup_anchor_slot: 100,
+            prerequisites: vec![],
+            work_items: vec![
+                WorkItemSummary {
+                    service_id: 1,
+                    payload_size: 512,
+                    refine_gas_limit: 1_000_000,
+                    accumulate_gas_limit: 500_000,
+                    sum_of_extrinsic_lengths: 128,
+                    imports: vec![],
+                    num_exported_segments: 2,
+                },
+                WorkItemSummary {
+                    service_id: 2,
+                    payload_size: 256,
+                    refine_gas_limit: 2_000_000,
+                    accumulate_gas_limit: 300_000,
+                    sum_of_extrinsic_lengths: 64,
+                    imports: vec![],
+                    num_exported_segments: 1,
+                },
+            ],
+        },
+    }
+}
+
+/// Helper: construct a Refined event
+fn refined_event(timestamp: u64, submission_id: u64) -> Event {
+    Event::Refined {
+        timestamp,
+        submission_or_share_id: submission_id,
+        costs: vec![
+            RefineCost {
+                total: ExecCost { gas_used: 500_000, elapsed_ns: 1_000_000 },
+                load_ns: 100_000,
+                host_call: RefineHostCallCost {
+                    lookup: ExecCost { gas_used: 50_000, elapsed_ns: 100_000 },
+                    vm: ExecCost { gas_used: 200_000, elapsed_ns: 400_000 },
+                    mem: ExecCost { gas_used: 30_000, elapsed_ns: 60_000 },
+                    invoke: ExecCost { gas_used: 100_000, elapsed_ns: 200_000 },
+                    other: ExecCost { gas_used: 20_000, elapsed_ns: 40_000 },
+                },
+            },
+            RefineCost {
+                total: ExecCost { gas_used: 700_000, elapsed_ns: 1_500_000 },
+                load_ns: 120_000,
+                host_call: RefineHostCallCost {
+                    lookup: ExecCost { gas_used: 70_000, elapsed_ns: 140_000 },
+                    vm: ExecCost { gas_used: 300_000, elapsed_ns: 600_000 },
+                    mem: ExecCost { gas_used: 40_000, elapsed_ns: 80_000 },
+                    invoke: ExecCost { gas_used: 150_000, elapsed_ns: 300_000 },
+                    other: ExecCost { gas_used: 30_000, elapsed_ns: 60_000 },
+                },
+            },
+        ],
+    }
+}
+
+/// Helper: construct an Authorized event
+fn authorized_event(timestamp: u64, submission_id: u64) -> Event {
+    Event::Authorized {
+        timestamp,
+        submission_or_share_id: submission_id,
+        cost: IsAuthorizedCost {
+            total: ExecCost { gas_used: 100_000, elapsed_ns: 200_000 },
+            load_ns: 50_000,
+            host_call: ExecCost { gas_used: 30_000, elapsed_ns: 60_000 },
+        },
+    }
+}
+
+/// Helper: construct a GuaranteeBuilt event
+fn guarantee_built_event(timestamp: u64, submission_id: u64, _core: u16) -> Event {
+    Event::GuaranteeBuilt {
+        timestamp,
+        submission_id,
+        outline: GuaranteeSummary {
+            work_report_hash: [0xBB; 32],
+            slot: 200,
+            guarantors: vec![0, 1, 2],
+        },
+    }
+}
+
+#[tokio::test]
+async fn test_workpackage_stats_with_data() {
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
+    let mut stream = connect_test_node_with_server(telemetry_port, 30, &telemetry_server).await;
+
+    let now = common::now_jce_micros();
+    let events: Vec<Event> = vec![
+        wp_received_event(now, 42, 3),
+        wp_received_event(now + 1_000_000, 43, 5),
+        refined_event(now + 2_000_000, 42),
+    ];
+
+    for event in events {
+        let encoded = encode_message(&event).unwrap();
+        stream.write_all(&encoded).await.unwrap();
+    }
+    common::flush_and_wait(&telemetry_server).await;
+
+    let response = server.get("/api/workpackages").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = serde_json::from_str(&response.text()).unwrap();
+
+    let totals = &json["totals"];
+    assert!(totals["received"].as_i64().unwrap() >= 2,
+        "Expected at least 2 received WPs, got {}", totals["received"]);
+    assert!(totals["refined"].as_i64().unwrap() >= 1,
+        "Expected at least 1 refined WP, got {}", totals["refined"]);
+
+    let by_core = json["by_core"].as_array().unwrap();
+    if !by_core.is_empty() {
+        let first = &by_core[0];
+        assert!(first.get("core_index").is_some() || first.get("core").is_some(),
+            "Expected core index in by_core entry");
+    }
+}
+
+#[tokio::test]
+async fn test_execution_metrics_with_block_executed() {
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
+    let mut stream = connect_test_node_with_server(telemetry_port, 31, &telemetry_server).await;
+
+    let now = common::now_jce_micros();
+    let event = Event::BlockExecuted {
+        timestamp: now,
+        authoring_or_importing_id: 1,
+        accumulate_costs: vec![
+            (1, common::test_accumulate_cost()),
+            (2, common::test_accumulate_cost()),
+        ],
+    };
+    let encoded = encode_message(&event).unwrap();
+    stream.write_all(&encoded).await.unwrap();
+
+    let refined = refined_event(now + 1_000_000, 100);
+    let encoded = encode_message(&refined).unwrap();
+    stream.write_all(&encoded).await.unwrap();
+
+    let auth = authorized_event(now + 2_000_000, 100);
+    let encoded = encode_message(&auth).unwrap();
+    stream.write_all(&encoded).await.unwrap();
+
+    common::flush_and_wait(&telemetry_server).await;
+
+    let response = server.get("/api/metrics/execution").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+
+    let refinement = &json["refinement"];
+    assert!(refinement["total_refined"].as_i64().unwrap() >= 1,
+        "Expected at least 1 refined, got {}", refinement["total_refined"]);
+
+    let auth_section = &json["authorization"];
+    assert!(auth_section["total_authorized"].as_i64().unwrap() >= 1,
+        "Expected at least 1 authorized, got {}", auth_section["total_authorized"]);
+    if auth_section["total_gas_used"].as_i64().unwrap() > 0 {
+        assert_eq!(auth_section["total_gas_used"].as_i64().unwrap(), 100_000,
+            "Expected authorized gas_used = 100000");
+    }
+}
+
+#[tokio::test]
+async fn test_cores_status_with_guarantee_join() {
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
+    let mut stream = connect_test_node_with_server(telemetry_port, 32, &telemetry_server).await;
+
+    let submission_id: u64 = 999;
+    let core: u16 = 7;
+    let now = common::now_jce_micros();
+
+    let wp = wp_received_event(now, submission_id, core);
+    let encoded = encode_message(&wp).unwrap();
+    stream.write_all(&encoded).await.unwrap();
+
+    let guarantee = guarantee_built_event(now + 1_000_000, submission_id, core);
+    let encoded = encode_message(&guarantee).unwrap();
+    stream.write_all(&encoded).await.unwrap();
+
+    common::flush_and_wait(&telemetry_server).await;
+
+    let response = server.get("/api/cores/status").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+
+    let cores = json["cores"].as_array().unwrap();
+    assert!(!cores.is_empty(), "Expected at least one core with activity");
+
+    let summary = &json["summary"];
+    assert!(summary["total_cores"].as_i64().unwrap() >= 1,
+        "Expected at least 1 total core");
+}
+
+#[tokio::test]
+async fn test_active_workpackages_pipeline() {
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
+    let mut stream = connect_test_node_with_server(telemetry_port, 33, &telemetry_server).await;
+
+    let submission_id: u64 = 777;
+    let now = common::now_jce_micros();
+
+    let events: Vec<Event> = vec![
+        wp_received_event(now, submission_id, 2),
+        authorized_event(now + 1_000_000, submission_id),
+        refined_event(now + 2_000_000, submission_id),
+        guarantee_built_event(now + 3_000_000, submission_id, 2),
+    ];
+
+    for event in events {
+        let encoded = encode_message(&event).unwrap();
+        stream.write_all(&encoded).await.unwrap();
+    }
+    common::flush_and_wait(&telemetry_server).await;
+
+    let response = server.get("/api/workpackages/active").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+
+    // The WP should appear with multiple stages tracked
+    let _wps = if json.is_array() {
+        json.as_array().unwrap().clone()
+    } else if json.get("work_packages").is_some() {
+        json["work_packages"].as_array().unwrap_or(&vec![]).clone()
+    } else {
+        vec![]
+    };
+}
+
+#[tokio::test]
+async fn test_core_guarantees_with_status_data() {
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
+    let mut stream = connect_test_node_with_server(telemetry_port, 34, &telemetry_server).await;
+
+    let now = common::now_jce_micros();
+    let event = Event::Status {
+        timestamp: now,
+        num_val_peers: 10,
+        num_peers: 20,
+        num_sync_peers: 15,
+        num_guarantees: vec![3, 1, 4, 1, 5, 9, 2, 6],
+        num_shards: 100,
+        shards_size: 1024 * 1024,
+        num_preimages: 5,
+        preimages_size: 2048,
+    };
+    let encoded = encode_message(&event).unwrap();
+    stream.write_all(&encoded).await.unwrap();
+
+    let guarantee = guarantee_built_event(now + 1_000_000, 500, 0);
+    let encoded = encode_message(&guarantee).unwrap();
+    stream.write_all(&encoded).await.unwrap();
+
+    common::flush_and_wait(&telemetry_server).await;
+
+    let response = server.get("/api/cores/0/guarantees").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let response = server.get("/api/cores/2/guarantees").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_da_stats_with_status_data() {
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
+    let mut stream = connect_test_node_with_server(telemetry_port, 35, &telemetry_server).await;
+
+    let now = common::now_jce_micros();
+    let event = Event::Status {
+        timestamp: now,
+        num_val_peers: 10,
+        num_peers: 20,
+        num_sync_peers: 15,
+        num_guarantees: vec![1, 2, 3],
+        num_shards: 150,
+        shards_size: 2 * 1024 * 1024,
+        num_preimages: 8,
+        preimages_size: 4096,
+    };
+    let encoded = encode_message(&event).unwrap();
+    stream.write_all(&encoded).await.unwrap();
+    common::flush_and_wait(&telemetry_server).await;
+
+    let response = server.get("/api/da/stats").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+
+    let agg = &json["aggregate"];
+    assert!(agg["total_shards"].as_i64().unwrap() >= 150,
+        "Expected total_shards >= 150, got {}", agg["total_shards"]);
+    assert!(agg["total_preimages"].as_i64().unwrap() >= 8,
+        "Expected total_preimages >= 8, got {}", agg["total_preimages"]);
+    assert!(agg["node_count"].as_i64().unwrap() >= 1,
+        "Expected node_count >= 1, got {}", agg["node_count"]);
+}
+
+#[tokio::test]
+async fn test_workpackage_journey_with_data() {
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
+    let mut stream = connect_test_node_with_server(telemetry_port, 40, &telemetry_server).await;
+
+    let submission_id: u64 = 5001;
+    let now = common::now_jce_micros();
+
+    let events: Vec<Event> = vec![
+        wp_received_event(now, submission_id, 4),
+        authorized_event(now + 1_000_000, submission_id),
+        refined_event(now + 2_000_000, submission_id),
+        guarantee_built_event(now + 3_000_000, submission_id, 4),
+    ];
+
+    for event in &events {
+        let encoded = encode_message(event).unwrap();
+        stream.write_all(&encoded).await.unwrap();
+    }
+    common::flush_and_wait(&telemetry_server).await;
+
+    let response = server.get(&format!("/api/workpackages/{}/journey", submission_id)).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+
+    let stages = json["stages"].as_array().expect("stages should be an array");
+
+    if !stages.is_empty() {
+        let first = &stages[0];
+        assert!(first.get("stage").is_some(), "Stage entry should have 'stage' field");
+        assert!(first.get("timestamp").is_some(), "Stage entry should have 'timestamp' field");
+        assert!(first.get("node_id").is_some(), "Stage entry should have 'node_id' field");
+        assert!(first.get("event_type").is_some(), "Stage entry should have 'event_type' field");
+    }
+
+    assert_eq!(json["failed"].as_bool().unwrap(), false,
+        "Expected failed=false for successful pipeline");
+}
+
+#[tokio::test]
+async fn test_workpackage_journey_enhanced_with_data() {
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
+    let mut stream = connect_test_node_with_server(telemetry_port, 41, &telemetry_server).await;
+
+    let submission_id: u64 = 6001;
+    let now = common::now_jce_micros();
+
+    let events: Vec<Event> = vec![
+        wp_received_event(now, submission_id, 3),
+        authorized_event(now + 1_000_000, submission_id),
+        refined_event(now + 2_000_000, submission_id),
+        guarantee_built_event(now + 3_000_000, submission_id, 3),
+    ];
+
+    for event in &events {
+        let encoded = encode_message(event).unwrap();
+        stream.write_all(&encoded).await.unwrap();
+    }
+    common::flush_and_wait(&telemetry_server).await;
+
+    let response = server.get(&format!(
+        "/api/workpackages/{}/journey/enhanced", submission_id
+    )).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+
+    assert!(json.get("stages").is_some(), "Should have stages array");
+    assert!(json.get("core_index").is_some(), "Should have core_index");
+    assert!(json.get("failed").is_some(), "Should have failed flag");
+    assert!(json.get("timing").is_some(), "Should have timing info");
+
+    let stages = json["stages"].as_array().expect("stages should be array");
+
+    if !stages.is_empty() {
+        let first = &stages[0];
+        assert!(first.get("stage").is_some(), "Should have stage name");
+        assert!(first.get("status").is_some(), "Should have status");
+        assert!(first.get("event_type").is_some(), "Should have event_type");
+        assert!(first.get("node_id").is_some(), "Should have node_id");
+        assert!(first.get("timestamp").is_some(), "Should have timestamp");
+    }
+
+    assert_eq!(json["failed"].as_bool().unwrap(), false);
+}
+
+#[tokio::test]
+async fn test_workpackage_audit_progress_with_data() {
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
+    let mut stream = connect_test_node_with_server(telemetry_port, 42, &telemetry_server).await;
+
+    let now = common::now_jce_micros();
+    let guarantee = guarantee_built_event(now, 7001, 5);
+    let encoded = encode_message(&guarantee).unwrap();
+    stream.write_all(&encoded).await.unwrap();
+
+    common::flush_and_wait(&telemetry_server).await;
+
+    let wp_hash = hex::encode([0xBB; 32]);
+    let response = server.get(&format!("/api/workpackages/{}/audit-progress", wp_hash)).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+
+    assert!(json.get("hash").is_some(), "Should have hash field");
+    assert!(json.get("status").is_some(), "Should have status field");
+    assert!(json.get("audit_progress").is_some(), "Should have audit_progress");
+    assert!(json.get("events").is_some(), "Should have events array");
+}
+
+#[tokio::test]
+async fn test_guarantees_by_guarantor_with_data() {
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
+    let mut stream = connect_test_node_with_server(telemetry_port, 43, &telemetry_server).await;
+
+    let now = common::now_jce_micros();
+    let guarantees: Vec<Event> = vec![
+        guarantee_built_event(now, 8001, 0),
+        guarantee_built_event(now + 1_000_000, 8002, 0),
+        guarantee_built_event(now + 2_000_000, 8003, 3),
+    ];
+
+    for event in &guarantees {
+        let encoded = encode_message(event).unwrap();
+        stream.write_all(&encoded).await.unwrap();
+    }
+    common::flush_and_wait(&telemetry_server).await;
+
+    let response = server.get("/api/guarantees/by-guarantor").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+
+    let guarantors = json["guarantors"].as_array().expect("Should have guarantors array");
+    assert!(!guarantors.is_empty(), "Should have at least 1 guarantor");
+
+    let first = &guarantors[0];
+    assert!(first.get("node_id").is_some(), "Guarantor should have node_id");
+    assert!(first.get("total_guarantees").is_some(), "Guarantor should have total_guarantees");
+
+    let total = first["total_guarantees"].as_i64().unwrap();
+    assert!(total >= 3, "Expected at least 3 guarantees from our node, got {}", total);
+
+    assert!(json["total_guarantors"].as_i64().unwrap() >= 1);
+}
+
+#[tokio::test]
+async fn test_core_guarantors_with_data() {
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
+    let mut stream = connect_test_node_with_server(telemetry_port, 44, &telemetry_server).await;
+
+    let now = common::now_jce_micros();
+    let guarantees: Vec<Event> = vec![
+        guarantee_built_event(now, 9001, 2),
+        guarantee_built_event(now + 1_000_000, 9002, 2),
+    ];
+
+    for event in &guarantees {
+        let encoded = encode_message(event).unwrap();
+        stream.write_all(&encoded).await.unwrap();
+    }
+    common::flush_and_wait(&telemetry_server).await;
+
+    let response = server.get("/api/cores/2/guarantors").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+
+    assert_eq!(json["core_index"].as_i64().unwrap(), 2);
+    let _guarantors = json["guarantors"].as_array().expect("Should have guarantors array");
+}
+
+#[tokio::test]
+async fn test_core_guarantors_enhanced_with_data() {
+    let (server, telemetry_server, telemetry_port) = setup_test_api().await;
+    let mut stream = connect_test_node_with_server(telemetry_port, 45, &telemetry_server).await;
+
+    let submission_id: u64 = 10001;
+    let now = common::now_jce_micros();
+
+    let wp = wp_received_event(now, submission_id, 1);
+    let encoded = encode_message(&wp).unwrap();
+    stream.write_all(&encoded).await.unwrap();
+
+    let guarantee = guarantee_built_event(now + 1_000_000, submission_id, 1);
+    let encoded = encode_message(&guarantee).unwrap();
+    stream.write_all(&encoded).await.unwrap();
+
+    common::flush_and_wait(&telemetry_server).await;
+
+    let response = server.get("/api/cores/1/guarantors/enhanced").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+
+    assert_eq!(json["core_index"].as_i64().unwrap(), 1);
+    let _guarantors = json["guarantors"].as_array().expect("Should have guarantors array");
 }

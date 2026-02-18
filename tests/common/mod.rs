@@ -1,5 +1,41 @@
+use std::sync::Arc;
+use std::time::Duration;
 use tart_backend::events::NodeInformation;
 use tart_backend::types::*;
+use tart_backend::TelemetryServer;
+use tokio::time::sleep;
+
+/// Returns a "now" timestamp in JCE-relative microseconds.
+/// Use this in test events so they fall within time-bounded query windows.
+#[allow(dead_code)]
+pub fn now_jce_micros() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    const JCE_EPOCH_UNIX_MICROS: u64 = 1_735_732_800_000_000;
+    let unix_micros = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_micros() as u64;
+    unix_micros.saturating_sub(JCE_EPOCH_UNIX_MICROS)
+}
+
+/// Returns TEST_DATABASE_URL after verifying it points to a test database.
+/// Panics if TEST_DATABASE_URL is unset or doesn't contain "test" in the name.
+#[allow(dead_code)]
+pub fn test_database_url() -> String {
+    let url = std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL must be set");
+    assert!(
+        url.contains("test"),
+        "Refusing to run tests against non-test database: {url}"
+    );
+    url
+}
+
+/// Flush all pending batch writes and wait for database visibility.
+#[allow(dead_code)]
+pub async fn flush_and_wait(server: &Arc<TelemetryServer>) {
+    sleep(Duration::from_millis(100)).await;
+    server.flush_writes().await.expect("Flush failed");
+}
 
 /// Creates a test BlockSummary with reasonable default values
 #[allow(dead_code)]
