@@ -596,7 +596,7 @@ impl Decode for Event {
 
         // Debug logging
         if ![10, 11, 12, 13].contains(&discriminator) {
-            tracing::debug!(
+            tracing::trace!(
                 "Decoding event with discriminator: {}, remaining bytes: {}",
                 discriminator,
                 buf.remaining()
