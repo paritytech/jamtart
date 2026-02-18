@@ -1280,36 +1280,91 @@ impl EventStore {
         // 102: WorkReportBuilt, 105: GuaranteeBuilt
         // Also track failures: 92: Failed, 113: GuaranteeDiscarded
 
-        // Search for events containing this work package hash
-        // The hash might be in different fields depending on event type
-        let events: Vec<(i16, DateTime<Utc>, String, serde_json::Value)> = sqlx::query_as(
+        // Step 1: Resolve work_package_hash hex → submission_or_share_ids
+        let share_ids: Vec<String> = sqlx::query_scalar(
             r#"
-            SELECT event_type, timestamp, node_id, data
-            FROM events
-            WHERE event_type IN (90, 91, 92, 93, 94, 95, 96, 97, 101, 102, 105, 106, 108, 109, 112, 113)
-            AND (
-                data::text LIKE $1
-                OR data->'WorkPackageReceived'->'outline'->>'hash' = $2
-                OR data->'DuplicateWorkPackage'->>'hash' = $2
-                OR data->'WorkPackageHashMapped'->>'work_package_hash' = $2
+            WITH hex_to_jsonb AS (
+                SELECT jsonb_agg(x) as hash_arr FROM (
+                    SELECT ('x' || substr($1, i, 2))::bit(8)::int as x
+                    FROM generate_series(1, length($1), 2) as i
+                ) t
             )
-            ORDER BY timestamp ASC
-            LIMIT 100
+            SELECT data->'WorkPackageReceived'->>'submission_or_share_id'
+            FROM events, hex_to_jsonb h
+            WHERE event_type = 94
+            AND created_at > NOW() - INTERVAL '24 hours'
+            AND data->'WorkPackageReceived'->'outline'->'work_package_hash' = h.hash_arr
             "#,
         )
-        .bind(format!("%{}%", wp_hash))
         .bind(wp_hash)
         .fetch_all(&self.pool)
         .await?;
 
+        let effective_ids: Vec<String> = if share_ids.is_empty() {
+            vec![wp_hash.to_string()]
+        } else {
+            share_ids
+        };
+
+        // Step 2: Fetch events using ANY($1) array match
+        let events: Vec<(i16, DateTime<Utc>, String, serde_json::Value)> = sqlx::query_as(
+            r#"
+            SELECT event_type, timestamp, node_id, data
+            FROM events
+            WHERE event_type IN (90, 91, 92, 93, 94, 95, 96, 97, 101, 102, 105, 106, 108, 109)
+            AND created_at > NOW() - INTERVAL '24 hours'
+            AND (
+                (event_type IN (90, 91, 92, 93, 94, 95, 96, 97, 101, 102) AND
+                    COALESCE(
+                        data->'WorkPackageSubmission'->>'submission_or_share_id',
+                        data->'WorkPackageBeingShared'->>'submission_or_share_id',
+                        data->'WorkPackageFailed'->>'submission_or_share_id',
+                        data->'DuplicateWorkPackage'->>'submission_or_share_id',
+                        data->'WorkPackageReceived'->>'submission_or_share_id',
+                        data->'Authorized'->>'submission_or_share_id',
+                        data->'ExtrinsicDataReceived'->>'submission_or_share_id',
+                        data->'ImportsReceived'->>'submission_or_share_id',
+                        data->'Refined'->>'submission_or_share_id',
+                        data->'WorkReportBuilt'->>'submission_or_share_id'
+                    ) = ANY($1)
+                )
+                OR (event_type IN (105, 106, 108, 109) AND
+                    COALESCE(
+                        data->'GuaranteeBuilt'->>'submission_id',
+                        data->'GuaranteeSending'->>'submission_id',
+                        data->'GuaranteeSent'->>'submission_id',
+                        data->'GuaranteesDistributed'->>'submission_id'
+                    ) = ANY($1)
+                )
+            )
+            ORDER BY timestamp ASC
+            LIMIT 200
+            "#,
+        )
+        .bind(&effective_ids)
+        .fetch_all(&self.pool)
+        .await?;
+
         // Map event types to stage names
-        let stages: Vec<serde_json::Value> = events
+        let mut stages: Vec<serde_json::Value> = events
             .iter()
             .map(|(event_type, timestamp, node_id, data)| {
                 let stage = match *event_type {
                     90 => "submitted",
                     91 => "being_shared",
-                    92 => "failed",
+                    92 => {
+                        // Check if this is a superseded event (refined by another guarantor)
+                        let reason = data
+                            .get("WorkPackageFailed")
+                            .and_then(|wf| wf.get("reason"))
+                            .and_then(|r| r.as_str())
+                            .unwrap_or("");
+                        if reason == "work package was refined by another guarantor" {
+                            "superseded"
+                        } else {
+                            "failed"
+                        }
+                    }
                     93 => "duplicate",
                     94 => "received",
                     95 => "authorized",
@@ -1321,8 +1376,6 @@ impl EventStore {
                     106 => "guarantee_sending",
                     108 => "guarantee_sent",
                     109 => "guarantees_distributed",
-                    112 => "guarantee_received",
-                    113 => "guarantee_discarded",
                     _ => "unknown",
                 };
                 serde_json::json!({
@@ -1335,16 +1388,227 @@ impl EventStore {
             })
             .collect();
 
-        // Determine current stage and failure status
+        // Step 2.5: Extract work_report_hash from event 102 for these share_ids
+        let wr_hashes: Vec<String> = sqlx::query_scalar(
+            r#"
+            SELECT DISTINCT (data->'WorkReportBuilt'->'outline'->'work_report_hash')::text
+            FROM events
+            WHERE event_type = 102
+            AND created_at > NOW() - INTERVAL '24 hours'
+            AND data->'WorkReportBuilt'->>'submission_or_share_id' = ANY($1)
+            AND data->'WorkReportBuilt'->'outline'->'work_report_hash' IS NOT NULL
+            "#,
+        )
+        .bind(&effective_ids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        // Step 3: Fetch events 112/113 via work_report_hash (they lack submission_id)
+        if !wr_hashes.is_empty() {
+            let onchain_events: Vec<(i16, DateTime<Utc>, String, serde_json::Value)> =
+                sqlx::query_as(
+                    r#"
+                    SELECT event_type, timestamp, node_id, data
+                    FROM events
+                    WHERE event_type IN (112, 113)
+                    AND created_at > NOW() - INTERVAL '24 hours'
+                    AND (
+                        (event_type = 112 AND (data->'GuaranteeReceived'->'outline'->'work_report_hash')::text = ANY($1))
+                        OR
+                        (event_type = 113 AND (data->'GuaranteeDiscarded'->'outline'->'work_report_hash')::text = ANY($1))
+                    )
+                    ORDER BY timestamp ASC
+                    "#,
+                )
+                .bind(&wr_hashes)
+                .fetch_all(&self.pool)
+                .await?;
+
+            for (event_type, timestamp, node_id, data) in &onchain_events {
+                let stage = match *event_type {
+                    112 => "guarantee_received",
+                    113 => {
+                        let reason = data
+                            .get("GuaranteeDiscarded")
+                            .and_then(|gd| gd.get("reason"))
+                            .and_then(|r| r.as_str())
+                            .unwrap_or("");
+                        if reason == "PackageReportedOnChain" {
+                            "included"
+                        } else {
+                            "discarded"
+                        }
+                    }
+                    _ => "unknown",
+                };
+                stages.push(serde_json::json!({
+                    "stage": stage,
+                    "timestamp": timestamp,
+                    "node_id": node_id,
+                    "event_type": event_type,
+                    "data": data,
+                }));
+            }
+
+            // Re-sort all stages by timestamp
+            stages.sort_by(|a, b| {
+                let ts_a = a.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
+                let ts_b = b.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
+                ts_a.cmp(ts_b)
+            });
+        }
+
+        // Step 4: Extract erasure_root from event 102 for these share_ids
+        let er_hashes: Vec<String> = sqlx::query_scalar(
+            r#"
+            SELECT DISTINCT (data->'WorkReportBuilt'->'outline'->'erasure_root')::text
+            FROM events
+            WHERE event_type = 102
+            AND created_at > NOW() - INTERVAL '24 hours'
+            AND data->'WorkReportBuilt'->>'submission_or_share_id' = ANY($1)
+            AND data->'WorkReportBuilt'->'outline'->'erasure_root' IS NOT NULL
+            "#,
+        )
+        .bind(&effective_ids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        // Step 5: Fetch shard events (120, 124, 125) via erasure_root
+        if !er_hashes.is_empty() {
+            // Get events 120 and 124 directly via erasure_root
+            let shard_events: Vec<(i16, DateTime<Utc>, String, serde_json::Value)> =
+                sqlx::query_as(
+                    r#"
+                    SELECT event_type, timestamp, node_id, data
+                    FROM events
+                    WHERE event_type IN (120, 124)
+                    AND created_at > NOW() - INTERVAL '24 hours'
+                    AND (
+                        (event_type = 120 AND (data->'SendingShardRequest'->'erasure_root')::text = ANY($1))
+                        OR
+                        (event_type = 124 AND (data->'ShardRequestReceived'->'erasure_root')::text = ANY($1))
+                    )
+                    ORDER BY timestamp ASC
+                    "#,
+                )
+                .bind(&er_hashes)
+                .fetch_all(&self.pool)
+                .await?;
+
+            for (event_type, timestamp, node_id, data) in &shard_events {
+                let stage = match *event_type {
+                    120 => "shard_requested",
+                    124 => "shard_received",
+                    _ => "unknown",
+                };
+                stages.push(serde_json::json!({
+                    "stage": stage,
+                    "timestamp": timestamp,
+                    "node_id": node_id,
+                    "event_type": event_type,
+                    "data": data,
+                }));
+            }
+
+            // Get event 125 (ShardsTransferred) via request_id from event 124
+            // Use text comparison to avoid per-row CAST(AS BIGINT) on all event-125 rows
+            let request_id_strs: Vec<String> = shard_events
+                .iter()
+                .filter(|(et, ..)| *et == 124)
+                .filter_map(|(_, _, _, data)| {
+                    data.get("ShardRequestReceived")
+                        .and_then(|d| d.get("request_id"))
+                        .and_then(|v| {
+                            // request_id may be a JSON number or string
+                            v.as_i64()
+                                .map(|n| n.to_string())
+                                .or_else(|| v.as_str().map(String::from))
+                        })
+                })
+                .collect();
+
+            if !request_id_strs.is_empty() {
+                let transfer_events: Vec<(i16, DateTime<Utc>, String, serde_json::Value)> =
+                    sqlx::query_as(
+                        r#"
+                        SELECT event_type, timestamp, node_id, data
+                        FROM events
+                        WHERE event_type = 125
+                        AND created_at > NOW() - INTERVAL '24 hours'
+                        AND data->'ShardsTransferred'->>'request_id' = ANY($1)
+                        ORDER BY timestamp ASC
+                        "#,
+                    )
+                    .bind(&request_id_strs)
+                    .fetch_all(&self.pool)
+                    .await?;
+
+                for (event_type, timestamp, node_id, data) in &transfer_events {
+                    stages.push(serde_json::json!({
+                        "stage": "shards_transferred",
+                        "timestamp": timestamp,
+                        "node_id": node_id,
+                        "event_type": event_type,
+                        "data": data,
+                    }));
+                }
+            }
+
+            // Re-sort all stages by timestamp
+            stages.sort_by(|a, b| {
+                let ts_a = a.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
+                let ts_b = b.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
+                ts_a.cmp(ts_b)
+            });
+        }
+
+        // Determine current stage by furthest progress, not last chronological event
+        let stage_rank = |s: &str| -> i32 {
+            match s {
+                "submitted" => 0,
+                "being_shared" => 1,
+                "received" => 2,
+                "extrinsic_received" | "imports_received" => 3,
+                "authorized" => 4,
+                "refined" => 5,
+                "report_built" => 6,
+                "guarantee_built" | "guarantee_sending" | "guarantee_sent" => 7,
+                "guarantees_distributed" => 8,
+                "guarantee_received" => 9,
+                "included" => 10,
+                "shard_requested" | "shard_received" | "shards_transferred" => 11,
+                "failed" | "guarantee_discarded" => -1,
+                "superseded" | "duplicate" => -2,
+                _ => -3,
+            }
+        };
         let current_stage = stages
-            .last()
-            .map(|s| s["stage"].as_str().unwrap_or("unknown"));
+            .iter()
+            .filter_map(|s| s["stage"].as_str())
+            .max_by_key(|s| stage_rank(s));
         let failed = stages.iter().any(|s| {
             matches!(
                 s["stage"].as_str(),
-                Some("failed") | Some("duplicate") | Some("guarantee_discarded")
+                Some("failed") | Some("duplicate") | Some("discarded")
             )
         });
+        let has_progress = stages.iter().any(|s| {
+            matches!(
+                s["stage"].as_str(),
+                Some("refined")
+                    | Some("report_built")
+                    | Some("guarantee_built")
+                    | Some("guarantees_distributed")
+                    | Some("guarantee_received")
+                    | Some("included")
+                    | Some("shard_received")
+            )
+        });
+        let superseded = stages
+            .iter()
+            .any(|s| s["stage"].as_str() == Some("superseded"))
+            && !has_progress
+            && !failed;
         let failure_reason = stages
             .iter()
             .find(|s| s["stage"].as_str() == Some("failed"))
@@ -1367,6 +1631,7 @@ impl EventStore {
             "stages": stages,
             "current_stage": current_stage,
             "failed": failed,
+            "superseded": superseded,
             "failure_reason": failure_reason,
         }))
     }
@@ -1377,15 +1642,29 @@ impl EventStore {
         interval: &str,
         secondary_interval: &str,
     ) -> Result<serde_json::Value, sqlx::Error> {
-        // Unified single-CTE query: anchors on ALL WP-related events, not just event 94.
-        // Event 94 (WorkPackageReceived) is rarely emitted — anchoring only on it causes
-        // empty results when none exist in the time window.
-        // Uses submission_or_share_id (events 92, 94, 95, 101, 102) and submission_id
-        // (events 105, 109) to group all stages by work package.
+        // Groups work packages by their actual work_package_hash (from event 94 outline)
+        // so that the same WP processed by multiple guarantor nodes is counted once.
+        // Each guarantor path has a distinct submission_or_share_id, so we first build
+        // a mapping from share_id → work_package_hash, then group all events by hash.
         let work_packages: Vec<serde_json::Value> = sqlx::query_scalar(&format!(
             r#"
-            WITH all_wp_events AS (
-                -- Collect ALL work-package-related events, extract a unified wp_id
+            WITH wp_hash_map AS (
+                -- Map each submission_or_share_id to the real work_package_hash
+                SELECT
+                    data->'WorkPackageReceived'->>'submission_or_share_id' as share_id,
+                    (data->'WorkPackageReceived'->'outline'->'work_package_hash')::text as wp_hash,
+                    CAST(COALESCE(
+                        data->'WorkPackageReceived'->>'core',
+                        data->'WorkPackageReceived'->>'core_index'
+                    ) AS INTEGER) as core_index,
+                    node_id,
+                    timestamp
+                FROM events
+                WHERE event_type = 94
+                AND timestamp > NOW() - INTERVAL '{interval}'
+                AND data->'WorkPackageReceived'->'outline'->'work_package_hash' IS NOT NULL
+            ),
+            all_wp_events AS (
                 SELECT
                     event_type, timestamp, node_id, data,
                     COALESCE(
@@ -1396,10 +1675,87 @@ impl EventStore {
                         data->'WorkPackageFailed'->>'submission_or_share_id',
                         data->'GuaranteeBuilt'->>'submission_id',
                         data->'GuaranteesDistributed'->>'submission_id'
-                    ) as wp_id
+                    ) as share_id
                 FROM events
                 WHERE event_type IN (92, 94, 95, 101, 102, 105, 109)
                 AND timestamp > NOW() - INTERVAL '{interval}'
+            ),
+            events_with_hash AS (
+                SELECT e.*, m.wp_hash
+                FROM all_wp_events e
+                INNER JOIN wp_hash_map m ON m.share_id = e.share_id
+            ),
+            work_report_map AS (
+                -- Map work_report_hash and erasure_root from event 102 (WorkReportBuilt) back to wp_hash
+                SELECT DISTINCT
+                    e.wp_hash,
+                    (e.data->'WorkReportBuilt'->'outline'->'work_report_hash')::text as wr_hash,
+                    (e.data->'WorkReportBuilt'->'outline'->'erasure_root')::text as er_hash
+                FROM events_with_hash e
+                WHERE e.event_type = 102
+                AND e.data->'WorkReportBuilt'->'outline'->'work_report_hash' IS NOT NULL
+            ),
+            onchain_events AS (
+                -- Events 112 (GuaranteeReceived) and 113 (GuaranteeDiscarded) joined via work_report_hash
+                SELECT
+                    wrm.wp_hash,
+                    ev.event_type,
+                    ev.timestamp,
+                    CASE
+                        WHEN ev.event_type = 113 THEN ev.data->'GuaranteeDiscarded'->>'reason'
+                        ELSE NULL
+                    END as reason
+                FROM events ev
+                INNER JOIN work_report_map wrm ON (
+                    CASE
+                        WHEN ev.event_type = 112 THEN (ev.data->'GuaranteeReceived'->'outline'->'work_report_hash')::text
+                        WHEN ev.event_type = 113 THEN (ev.data->'GuaranteeDiscarded'->'outline'->'work_report_hash')::text
+                    END = wrm.wr_hash
+                )
+                WHERE ev.event_type IN (112, 113)
+                AND ev.timestamp > NOW() - INTERVAL '{interval}'
+            ),
+            onchain_agg AS (
+                -- Aggregate on-chain events per work package
+                SELECT
+                    wp_hash,
+                    MIN(timestamp) FILTER (WHERE event_type = 112) as guarantee_received_at,
+                    MIN(timestamp) FILTER (WHERE event_type = 113 AND reason = 'PackageReportedOnChain') as included_at,
+                    MIN(timestamp) FILTER (WHERE event_type = 113 AND reason != 'PackageReportedOnChain') as discarded_at,
+                    (array_agg(reason) FILTER (WHERE event_type = 113 AND reason != 'PackageReportedOnChain'))[1] as discard_reason
+                FROM onchain_events
+                GROUP BY wp_hash
+            ),
+            wp_raw AS (
+                SELECT
+                    e.wp_hash,
+                    MAX(m.core_index) as direct_core,
+                    -- Primary node = earliest to receive
+                    (array_agg(DISTINCT e.node_id ORDER BY e.node_id))[1] as node_id,
+                    -- Timestamps per stage (earliest across all guarantor paths)
+                    MIN(e.timestamp) FILTER (WHERE e.event_type = 94) as created_at,
+                    MIN(e.timestamp) FILTER (WHERE e.event_type = 95) as authorized_at,
+                    MIN(e.timestamp) FILTER (WHERE e.event_type = 101) as refined_at,
+                    MIN(e.timestamp) FILTER (WHERE e.event_type = 102) as report_built_at,
+                    MIN(e.timestamp) FILTER (WHERE e.event_type = 105) as guarantee_built_at,
+                    MIN(e.timestamp) FILTER (WHERE e.event_type = 109) as distributed_at,
+                    MIN(e.timestamp) FILTER (WHERE e.event_type = 92
+                        AND e.data->'WorkPackageFailed'->>'reason' != 'work package was refined by another guarantor'
+                    ) as failed_at,
+                    MIN(e.timestamp) as first_seen_at,
+                    MAX(e.timestamp) as last_event_at,
+                    COUNT(DISTINCT e.node_id) as nodes_involved,
+                    (array_agg(e.data->'WorkPackageFailed'->>'reason')
+                     FILTER (WHERE e.event_type = 92
+                        AND e.data->'WorkPackageFailed'->>'reason' != 'work package was refined by another guarantor'
+                     ))[1] as failure_reason,
+                    COUNT(*) FILTER (WHERE e.event_type = 92
+                        AND e.data->'WorkPackageFailed'->>'reason' = 'work package was refined by another guarantor'
+                    ) as superseded_count
+                FROM events_with_hash e
+                LEFT JOIN wp_hash_map m ON m.share_id = e.share_id
+                WHERE e.wp_hash IS NOT NULL
+                GROUP BY e.wp_hash
             ),
             -- Fallback: each node's core from their most recent WorkPackageReceived
             node_cores AS (
@@ -1412,51 +1768,39 @@ impl EventStore {
                 AND data->'WorkPackageReceived'->>'core' IS NOT NULL
                 ORDER BY node_id, timestamp DESC
             ),
-            wp_raw AS (
-                SELECT
-                    wp_id,
-                    MAX(CAST(COALESCE(
-                        data->'WorkPackageReceived'->>'core',
-                        data->'WorkPackageReceived'->>'core_index'
-                    ) AS INTEGER)) FILTER (WHERE event_type = 94) as direct_core,
-                    -- Use earliest node as the primary node
-                    (array_agg(node_id ORDER BY timestamp ASC))[1] as node_id,
-                    -- Timestamps per stage
-                    MIN(timestamp) FILTER (WHERE event_type = 94) as created_at,
-                    MIN(timestamp) FILTER (WHERE event_type = 95) as authorized_at,
-                    MIN(timestamp) FILTER (WHERE event_type = 101) as refined_at,
-                    MIN(timestamp) FILTER (WHERE event_type = 102) as report_built_at,
-                    MIN(timestamp) FILTER (WHERE event_type = 105) as guarantee_built_at,
-                    MIN(timestamp) FILTER (WHERE event_type = 109) as distributed_at,
-                    MIN(timestamp) FILTER (WHERE event_type = 92) as failed_at,
-                    -- Earliest event = when we first saw this WP
-                    MIN(timestamp) as first_seen_at,
-                    MAX(timestamp) as last_event_at,
-                    COUNT(DISTINCT node_id) as nodes_involved,
-                    (array_agg(data->'WorkPackageFailed'->>'reason')
-                     FILTER (WHERE event_type = 92))[1] as failure_reason
-                FROM all_wp_events
-                WHERE wp_id IS NOT NULL
-                GROUP BY wp_id
-            ),
             wp_stages AS (
                 SELECT
-                    r.wp_id, COALESCE(r.direct_core, nc.core_index) as core_index,
+                    r.wp_hash, COALESCE(r.direct_core, nc.core_index) as core_index,
                     r.node_id, r.created_at, r.authorized_at, r.refined_at,
                     r.report_built_at, r.guarantee_built_at, r.distributed_at,
                     r.failed_at, r.first_seen_at, r.last_event_at,
-                    r.nodes_involved, r.failure_reason
+                    r.nodes_involved, r.failure_reason, r.superseded_count,
+                    oc.guarantee_received_at, oc.included_at, oc.discarded_at, oc.discard_reason,
+                    wrm.er_hash
                 FROM wp_raw r
                 LEFT JOIN node_cores nc ON nc.node_id = r.node_id
+                LEFT JOIN onchain_agg oc ON oc.wp_hash = r.wp_hash
+                LEFT JOIN (
+                    SELECT DISTINCT ON (wp_hash) wp_hash, er_hash
+                    FROM work_report_map
+                    WHERE er_hash IS NOT NULL
+                ) wrm ON wrm.wp_hash = r.wp_hash
             )
             SELECT jsonb_build_object(
-                'hash', wp_id,
+                'hash', (SELECT string_agg(lpad(to_hex(elem::int), 2, '0'), '')
+                         FROM jsonb_array_elements_text(wp_hash::jsonb) AS elem),
                 'core_index', core_index,
                 'node_id', node_id,
                 'submitted_at', COALESCE(created_at, first_seen_at),
-                'last_update', last_event_at,
+                'er_hash', er_hash,
+                'last_update', GREATEST(last_event_at, guarantee_received_at, included_at, discarded_at),
                 'current_stage', CASE
+                    WHEN included_at IS NOT NULL THEN 'included'
+                    WHEN discarded_at IS NOT NULL THEN 'discarded'
+                    WHEN guarantee_received_at IS NOT NULL THEN 'guarantee_received'
                     WHEN failed_at IS NOT NULL THEN 'failed'
+                    WHEN superseded_count > 0 AND distributed_at IS NULL AND guarantee_built_at IS NULL
+                         AND report_built_at IS NULL AND refined_at IS NULL THEN 'superseded'
                     WHEN distributed_at IS NOT NULL THEN 'distributed'
                     WHEN guarantee_built_at IS NOT NULL THEN 'guarantee_built'
                     WHEN report_built_at IS NOT NULL THEN 'report_built'
@@ -1472,17 +1816,21 @@ impl EventStore {
                     'report_built', report_built_at,
                     'guarantee_built', guarantee_built_at,
                     'distributed', distributed_at,
+                    'guarantee_received', guarantee_received_at,
+                    'included', included_at,
+                    'discarded', discarded_at,
                     'failed', failed_at
                 ),
                 'failure_reason', failure_reason,
+                'discard_reason', discard_reason,
                 'nodes_involved', nodes_involved,
                 'elapsed_ms', EXTRACT(EPOCH FROM (
-                    last_event_at - COALESCE(created_at, first_seen_at)
+                    GREATEST(last_event_at, guarantee_received_at, included_at, discarded_at) - COALESCE(created_at, first_seen_at)
                 )) * 1000
             )
             FROM wp_stages
             ORDER BY COALESCE(created_at, first_seen_at) DESC
-            LIMIT 100
+            LIMIT 200
             "#,
             interval = interval,
             secondary_interval = secondary_interval
@@ -1490,30 +1838,302 @@ impl EventStore {
         .fetch_all(&self.pool)
         .await?;
 
-        // Compute summary from the result set for guaranteed accuracy
+        // ── Shard availability: separate focused query ──────────────────
+        // Collect distinct er_hash values from the WP results, then query
+        // MIN(timestamp) for matching shard events. This avoids scanning all
+        // shard events inside the main CTE (O(N) JSON extraction at 1024 nodes).
+        let mut work_packages = work_packages;
+
+        let er_hashes: Vec<String> = work_packages
+            .iter()
+            .filter_map(|wp| wp.get("er_hash").and_then(|v| v.as_str()).map(String::from))
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        if !er_hashes.is_empty() {
+            // Two targeted index scans (one per event type), each only extracting
+            // its own JSON path. PostgreSQL hashes the small er_hashes array and
+            // probes against each row's extracted erasure_root.
+            let shard_avail: Vec<(String, DateTime<Utc>)> = sqlx::query_as(&format!(
+                r#"
+                SELECT er_hash, MIN(ts) as available_at FROM (
+                    SELECT (data->'SendingShardRequest'->'erasure_root')::text as er_hash,
+                           timestamp as ts
+                    FROM events
+                    WHERE event_type = 120
+                    AND timestamp > NOW() - INTERVAL '{interval}'
+                    UNION ALL
+                    SELECT (data->'ShardRequestReceived'->'erasure_root')::text,
+                           timestamp
+                    FROM events
+                    WHERE event_type = 124
+                    AND timestamp > NOW() - INTERVAL '{interval}'
+                ) sub
+                WHERE er_hash = ANY($1)
+                GROUP BY er_hash
+                "#,
+                interval = interval
+            ))
+            .bind(&er_hashes)
+            .fetch_all(&self.pool)
+            .await?;
+
+            // Build er_hash → available_at lookup
+            let avail_map: std::collections::HashMap<String, String> = shard_avail
+                .into_iter()
+                .map(|(er, ts)| (er, ts.to_rfc3339()))
+                .collect();
+
+            // Merge available_at into each WP's JSON
+            for wp in work_packages.iter_mut() {
+                let er = wp.get("er_hash").and_then(|v| v.as_str());
+                if let Some(available_at) = er.and_then(|e| avail_map.get(e)) {
+                    if let Some(obj) = wp.as_object_mut() {
+                        // Set available stage timestamp
+                        if let Some(stages) = obj.get_mut("stages").and_then(|s| s.as_object_mut())
+                        {
+                            stages.insert("available".to_string(), serde_json::json!(available_at));
+                        }
+
+                        // Update current_stage: available ranks above included
+                        let cur = obj
+                            .get("current_stage")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        if cur == "included" {
+                            obj.insert("current_stage".to_string(), serde_json::json!("available"));
+                        }
+
+                        // Update last_update and elapsed_ms
+                        let avail_dt = chrono::DateTime::parse_from_rfc3339(available_at).ok();
+                        if let Some(avail_dt) = avail_dt {
+                            let last_update_str = obj
+                                .get("last_update")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let last_update_dt =
+                                chrono::DateTime::parse_from_rfc3339(last_update_str).ok();
+                            if last_update_dt.map(|lu| avail_dt > lu).unwrap_or(true) {
+                                obj.insert(
+                                    "last_update".to_string(),
+                                    serde_json::json!(available_at),
+                                );
+                            }
+
+                            let submitted_str = obj
+                                .get("submitted_at")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            if let Ok(submitted_dt) =
+                                chrono::DateTime::parse_from_rfc3339(submitted_str)
+                            {
+                                let new_last = std::cmp::max(
+                                    avail_dt.timestamp_millis(),
+                                    last_update_dt.map(|d| d.timestamp_millis()).unwrap_or(0),
+                                );
+                                let elapsed = (new_last - submitted_dt.timestamp_millis()) as f64;
+                                obj.insert("elapsed_ms".to_string(), serde_json::json!(elapsed));
+                            }
+                        }
+                    }
+                }
+
+                // Strip er_hash from output (internal field, not needed by frontend)
+                if let Some(obj) = wp.as_object_mut() {
+                    obj.remove("er_hash");
+                }
+            }
+        } else {
+            // No er_hashes — still need to strip er_hash field and add empty available stage
+            for wp in work_packages.iter_mut() {
+                if let Some(obj) = wp.as_object_mut() {
+                    obj.remove("er_hash");
+                    if let Some(stages) = obj.get_mut("stages").and_then(|s| s.as_object_mut()) {
+                        stages.insert("available".to_string(), serde_json::Value::Null);
+                    }
+                }
+            }
+        }
+
+        // Compute summary, reached counts, failure breakdown, and stage duration percentiles
         let mut total = 0i64;
         let mut submitted = 0i64;
-        let mut received = 0i64;
-        let mut authorized = 0i64;
-        let mut refined = 0i64;
-        let mut reports_built = 0i64;
-        let mut guarantees_built = 0i64;
-        let mut distributed = 0i64;
-        let mut failed = 0i64;
+        let mut received_current = 0i64;
+        let mut authorized_current = 0i64;
+        let mut refined_current = 0i64;
+        let mut reports_built_current = 0i64;
+        let mut guarantees_built_current = 0i64;
+        let mut distributed_current = 0i64;
+        let mut guarantee_received_current = 0i64;
+        let mut included_current = 0i64;
+        let mut available_current = 0i64;
+        let mut discarded_current = 0i64;
+        let mut failed_current = 0i64;
+        let mut superseded_current = 0i64;
+
+        // Reached: how many WPs passed through each stage (has a non-null timestamp)
+        let mut reached_received = 0i64;
+        let mut reached_authorized = 0i64;
+        let mut reached_refined = 0i64;
+        let mut reached_report_built = 0i64;
+        let mut reached_guarantee_built = 0i64;
+        let mut reached_distributed = 0i64;
+        let mut reached_guarantee_received = 0i64;
+        let mut reached_included = 0i64;
+        let mut reached_available = 0i64;
+
+        // Failure breakdown by reason
+        let mut failure_breakdown: std::collections::HashMap<String, i64> =
+            std::collections::HashMap::new();
+
+        // Stage durations in ms for percentile computation
+        let mut dur_authorize: Vec<f64> = Vec::new();
+        let mut dur_refine: Vec<f64> = Vec::new();
+        let mut dur_report: Vec<f64> = Vec::new();
+        let mut dur_guarantee: Vec<f64> = Vec::new();
+        let mut dur_distribute: Vec<f64> = Vec::new();
 
         for wp in &work_packages {
             total += 1;
+
+            // Current stage summary
             match wp.get("current_stage").and_then(|v| v.as_str()) {
                 Some("submitted") => submitted += 1,
-                Some("received") => received += 1,
-                Some("authorized") => authorized += 1,
-                Some("refined") => refined += 1,
-                Some("report_built") => reports_built += 1,
-                Some("guarantee_built") => guarantees_built += 1,
-                Some("distributed") => distributed += 1,
-                Some("failed") => failed += 1,
+                Some("received") => received_current += 1,
+                Some("authorized") => authorized_current += 1,
+                Some("refined") => refined_current += 1,
+                Some("report_built") => reports_built_current += 1,
+                Some("guarantee_built") => guarantees_built_current += 1,
+                Some("distributed") => distributed_current += 1,
+                Some("guarantee_received") => guarantee_received_current += 1,
+                Some("included") => included_current += 1,
+                Some("available") => available_current += 1,
+                Some("discarded") => discarded_current += 1,
+                Some("failed") => failed_current += 1,
+                Some("superseded") => superseded_current += 1,
                 _ => {}
             }
+
+            // Reached counts - check if each stage timestamp exists
+            let stages = wp.get("stages");
+            let has_stage = |name: &str| -> bool {
+                stages
+                    .and_then(|s| s.get(name))
+                    .map(|v| !v.is_null())
+                    .unwrap_or(false)
+            };
+            let stage_ts = |name: &str| -> Option<f64> {
+                stages
+                    .and_then(|s| s.get(name))
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| dt.timestamp_millis() as f64)
+            };
+
+            if has_stage("received") {
+                reached_received += 1;
+            }
+            if has_stage("authorized") {
+                reached_authorized += 1;
+            }
+            if has_stage("refined") {
+                reached_refined += 1;
+            }
+            if has_stage("report_built") {
+                reached_report_built += 1;
+            }
+            if has_stage("guarantee_built") {
+                reached_guarantee_built += 1;
+            }
+            if has_stage("distributed") {
+                reached_distributed += 1;
+            }
+            if has_stage("guarantee_received") {
+                reached_guarantee_received += 1;
+            }
+            if has_stage("included") {
+                reached_included += 1;
+            }
+            if has_stage("available") {
+                reached_available += 1;
+            }
+
+            // Failure breakdown
+            if let Some(reason) = wp.get("failure_reason").and_then(|v| v.as_str()) {
+                if !reason.is_empty() {
+                    *failure_breakdown.entry(reason.to_string()).or_insert(0) += 1;
+                }
+            }
+
+            // Stage durations (time between consecutive stages)
+            let t_received = stage_ts("received");
+            let t_authorized = stage_ts("authorized");
+            let t_refined = stage_ts("refined");
+            let t_report = stage_ts("report_built");
+            let t_guarantee = stage_ts("guarantee_built");
+            let t_distributed = stage_ts("distributed");
+
+            if let (Some(a), Some(b)) = (t_received, t_authorized) {
+                dur_authorize.push(b - a);
+            }
+            if let (Some(a), Some(b)) = (t_authorized, t_refined) {
+                dur_refine.push(b - a);
+            }
+            if let (Some(a), Some(b)) = (t_refined, t_report) {
+                dur_report.push(b - a);
+            }
+            if let (Some(a), Some(b)) = (t_report, t_guarantee) {
+                dur_guarantee.push(b - a);
+            }
+            if let (Some(a), Some(b)) = (t_guarantee, t_distributed) {
+                dur_distribute.push(b - a);
+            }
+        }
+
+        // Helper to compute percentiles from a sorted vec of f64
+        fn percentile(sorted: &mut [f64], p: f64) -> f64 {
+            if sorted.is_empty() {
+                return 0.0;
+            }
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let idx = ((p / 100.0) * (sorted.len() as f64 - 1.0)).round() as usize;
+            sorted[idx.min(sorted.len() - 1)]
+        }
+
+        let make_pct = |durations: &mut Vec<f64>| -> serde_json::Value {
+            if durations.is_empty() {
+                return serde_json::json!(null);
+            }
+            serde_json::json!({
+                "p50_ms": percentile(durations, 50.0),
+                "p95_ms": percentile(durations, 95.0),
+                "sample_count": durations.len(),
+            })
+        };
+
+        let mut stage_duration_percentiles = serde_json::Map::new();
+        let pct_auth = make_pct(&mut dur_authorize);
+        let pct_refine = make_pct(&mut dur_refine);
+        let pct_report = make_pct(&mut dur_report);
+        let pct_guarantee = make_pct(&mut dur_guarantee);
+        let pct_distribute = make_pct(&mut dur_distribute);
+        if !pct_auth.is_null() {
+            stage_duration_percentiles.insert("received_to_authorized".to_string(), pct_auth);
+        }
+        if !pct_refine.is_null() {
+            stage_duration_percentiles.insert("authorized_to_refined".to_string(), pct_refine);
+        }
+        if !pct_report.is_null() {
+            stage_duration_percentiles.insert("refined_to_report_built".to_string(), pct_report);
+        }
+        if !pct_guarantee.is_null() {
+            stage_duration_percentiles
+                .insert("report_built_to_guarantee_built".to_string(), pct_guarantee);
+        }
+        if !pct_distribute.is_null() {
+            stage_duration_percentiles
+                .insert("guarantee_built_to_distributed".to_string(), pct_distribute);
         }
 
         Ok(serde_json::json!({
@@ -1521,14 +2141,32 @@ impl EventStore {
             "summary": {
                 "total": total,
                 "submitted": submitted,
-                "received": received,
-                "authorized": authorized,
-                "refined": refined,
-                "reports_built": reports_built,
-                "guarantees_built": guarantees_built,
-                "distributed": distributed,
-                "failed": failed,
+                "received": received_current,
+                "authorized": authorized_current,
+                "refined": refined_current,
+                "reports_built": reports_built_current,
+                "guarantees_built": guarantees_built_current,
+                "distributed": distributed_current,
+                "guarantee_received": guarantee_received_current,
+                "included": included_current,
+                "available": available_current,
+                "discarded": discarded_current,
+                "failed": failed_current,
+                "superseded": superseded_current,
             },
+            "reached": {
+                "received": reached_received,
+                "authorized": reached_authorized,
+                "refined": reached_refined,
+                "report_built": reached_report_built,
+                "guarantee_built": reached_guarantee_built,
+                "distributed": reached_distributed,
+                "guarantee_received": reached_guarantee_received,
+                "included": reached_included,
+                "available": reached_available,
+            },
+            "failure_breakdown": failure_breakdown,
+            "stage_duration_percentiles": stage_duration_percentiles,
         }))
     }
 
@@ -2678,10 +3316,38 @@ impl EventStore {
         &self,
         wp_id: &str,
     ) -> Result<serde_json::Value, sqlx::Error> {
-        // Get all events for this work package, linked by submission_or_share_id / submission_id.
-        // The wp_id parameter is the submission_or_share_id from WorkPackageReceived.
-        // Per JIP-3: events 90-102 use submission_or_share_id, events 105/109 use submission_id.
-        let stages: Vec<serde_json::Value> = sqlx::query_scalar(
+        // Step 1: Resolve work_package_hash hex → submission_or_share_ids.
+        // We do this in a separate fast query, then pass the IDs as an array
+        // to the main query to avoid expensive correlated subqueries.
+        let share_ids: Vec<String> = sqlx::query_scalar(
+            r#"
+            WITH hex_to_jsonb AS (
+                SELECT jsonb_agg(x) as hash_arr FROM (
+                    SELECT ('x' || substr($1, i, 2))::bit(8)::int as x
+                    FROM generate_series(1, length($1), 2) as i
+                ) t
+            )
+            SELECT data->'WorkPackageReceived'->>'submission_or_share_id'
+            FROM events, hex_to_jsonb h
+            WHERE event_type = 94
+            AND created_at > NOW() - INTERVAL '24 hours'
+            AND data->'WorkPackageReceived'->'outline'->'work_package_hash' = h.hash_arr
+            "#,
+        )
+        .bind(wp_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        // If no share_ids found via hash, fall back to treating wp_id as a share_id directly
+        let effective_ids: Vec<String> = if share_ids.is_empty() {
+            vec![wp_id.to_string()]
+        } else {
+            share_ids
+        };
+
+        // Step 2: Fetch all events matching any of the resolved share_ids.
+        // Uses a simple ANY($1) array check instead of correlated IN subqueries.
+        let mut stages: Vec<serde_json::Value> = sqlx::query_scalar(
             r#"
             WITH wp_events AS (
                 SELECT
@@ -2693,48 +3359,54 @@ impl EventStore {
                 FROM events
                 WHERE created_at > NOW() - INTERVAL '24 hours'
                 AND (
-                    (event_type IN (90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102) AND (
-                        data->'WorkPackageSubmission'->>'submission_or_share_id' = $1
-                        OR data->'WorkPackageBeingShared'->>'submission_or_share_id' = $1
-                        OR data->'WorkPackageFailed'->>'submission_or_share_id' = $1
-                        OR data->'DuplicateWorkPackage'->>'submission_or_share_id' = $1
-                        OR data->'WorkPackageReceived'->>'submission_or_share_id' = $1
-                        OR data->'Authorized'->>'submission_or_share_id' = $1
-                        OR data->'ExtrinsicDataReceived'->>'submission_or_share_id' = $1
-                        OR data->'ImportsReceived'->>'submission_or_share_id' = $1
-                        OR data->'SharingWorkPackage'->>'submission_or_share_id' = $1
-                        OR data->'WorkPackageSharingFailed'->>'submission_or_share_id' = $1
-                        OR data->'BundleSent'->>'submission_or_share_id' = $1
-                        OR data->'Refined'->>'submission_or_share_id' = $1
-                        OR data->'WorkReportBuilt'->>'submission_or_share_id' = $1
-                    ))
-                    OR (event_type IN (105, 109) AND (
-                        data->'GuaranteeBuilt'->>'submission_id' = $1
-                        OR data->'GuaranteesDistributed'->>'submission_id' = $1
-                    ))
+                    (event_type IN (90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102) AND
+                        COALESCE(
+                            data->'WorkPackageSubmission'->>'submission_or_share_id',
+                            data->'WorkPackageBeingShared'->>'submission_or_share_id',
+                            data->'WorkPackageFailed'->>'submission_or_share_id',
+                            data->'DuplicateWorkPackage'->>'submission_or_share_id',
+                            data->'WorkPackageReceived'->>'submission_or_share_id',
+                            data->'Authorized'->>'submission_or_share_id',
+                            data->'ExtrinsicDataReceived'->>'submission_or_share_id',
+                            data->'ImportsReceived'->>'submission_or_share_id',
+                            data->'SharingWorkPackage'->>'submission_or_share_id',
+                            data->'WorkPackageSharingFailed'->>'submission_or_share_id',
+                            data->'BundleSent'->>'submission_or_share_id',
+                            data->'Refined'->>'submission_or_share_id',
+                            data->'WorkReportBuilt'->>'submission_or_share_id'
+                        ) = ANY($1)
+                    )
+                    OR (event_type IN (105, 109) AND
+                        COALESCE(
+                            data->'GuaranteeBuilt'->>'submission_id',
+                            data->'GuaranteesDistributed'->>'submission_id'
+                        ) = ANY($1)
+                    )
                 )
                 ORDER BY timestamp
             )
             SELECT jsonb_build_object(
-                'stage', CASE event_type
-                    WHEN 90 THEN 'submitted'
-                    WHEN 91 THEN 'being_shared'
-                    WHEN 92 THEN 'failed'
-                    WHEN 93 THEN 'duplicate'
-                    WHEN 94 THEN 'received'
-                    WHEN 95 THEN 'authorized'
-                    WHEN 96 THEN 'extrinsic_data_received'
-                    WHEN 97 THEN 'imports_received'
-                    WHEN 98 THEN 'sharing'
-                    WHEN 99 THEN 'sharing_failed'
-                    WHEN 100 THEN 'bundle_sent'
-                    WHEN 101 THEN 'refined'
-                    WHEN 102 THEN 'report_built'
-                    WHEN 105 THEN 'guarantee_built'
-                    WHEN 109 THEN 'guaranteed'
+                'stage', CASE
+                    WHEN event_type = 92 AND data->'WorkPackageFailed'->>'reason' = 'work package was refined by another guarantor' THEN 'superseded'
+                    WHEN event_type = 90 THEN 'submitted'
+                    WHEN event_type = 91 THEN 'being_shared'
+                    WHEN event_type = 92 THEN 'failed'
+                    WHEN event_type = 93 THEN 'duplicate'
+                    WHEN event_type = 94 THEN 'received'
+                    WHEN event_type = 95 THEN 'authorized'
+                    WHEN event_type = 96 THEN 'extrinsic_data_received'
+                    WHEN event_type = 97 THEN 'imports_received'
+                    WHEN event_type = 98 THEN 'sharing'
+                    WHEN event_type = 99 THEN 'sharing_failed'
+                    WHEN event_type = 100 THEN 'bundle_sent'
+                    WHEN event_type = 101 THEN 'refined'
+                    WHEN event_type = 102 THEN 'report_built'
+                    WHEN event_type = 105 THEN 'guarantee_built'
+                    WHEN event_type = 109 THEN 'guaranteed'
                     ELSE 'unknown'
                 END,
                 'status', CASE
+                    WHEN event_type = 92 AND data->'WorkPackageFailed'->>'reason' = 'work package was refined by another guarantor' THEN 'superseded'
                     WHEN event_type IN (92, 99) THEN 'failed'
                     WHEN event_type IN (91, 96, 97, 98, 100) THEN 'in_progress'
                     ELSE 'completed'
@@ -2771,9 +3443,195 @@ impl EventStore {
             ORDER BY timestamp
             "#,
         )
-        .bind(wp_id)
+        .bind(&effective_ids)
         .fetch_all(&self.pool)
         .await?;
+
+        // Step 2.5: Extract work_report_hash(es) from event 102 for these share_ids
+        let wr_hashes: Vec<String> = sqlx::query_scalar(
+            r#"
+            SELECT DISTINCT (data->'WorkReportBuilt'->'outline'->'work_report_hash')::text
+            FROM events
+            WHERE event_type = 102
+            AND created_at > NOW() - INTERVAL '24 hours'
+            AND data->'WorkReportBuilt'->>'submission_or_share_id' = ANY($1)
+            AND data->'WorkReportBuilt'->'outline'->'work_report_hash' IS NOT NULL
+            "#,
+        )
+        .bind(&effective_ids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        // Step 3: Fetch events 112 (GuaranteeReceived) and 113 (GuaranteeDiscarded)
+        // These events lack submission_id — they join only via work_report_hash
+        if !wr_hashes.is_empty() {
+            let onchain_stages: Vec<serde_json::Value> = sqlx::query_scalar(
+                r#"
+                SELECT jsonb_build_object(
+                    'stage', CASE
+                        WHEN event_type = 112 THEN 'guarantee_received'
+                        WHEN event_type = 113 AND data->'GuaranteeDiscarded'->>'reason' = 'PackageReportedOnChain' THEN 'included'
+                        WHEN event_type = 113 THEN 'discarded'
+                        ELSE 'unknown'
+                    END,
+                    'status', CASE
+                        WHEN event_type = 112 THEN 'completed'
+                        WHEN event_type = 113 AND data->'GuaranteeDiscarded'->>'reason' = 'PackageReportedOnChain' THEN 'completed'
+                        WHEN event_type = 113 THEN 'failed'
+                        ELSE 'unknown'
+                    END,
+                    'event_type', event_type,
+                    'node_id', node_id,
+                    'timestamp', timestamp,
+                    'duration_ms', NULL,
+                    'error_code', CASE
+                        WHEN event_type = 113 AND data->'GuaranteeDiscarded'->>'reason' != 'PackageReportedOnChain'
+                            THEN data->'GuaranteeDiscarded'->>'reason'
+                        ELSE NULL
+                    END,
+                    'data', CASE
+                        WHEN event_type = 112 THEN jsonb_build_object(
+                            'slot', data->'GuaranteeReceived'->'outline'->>'slot'
+                        )
+                        WHEN event_type = 113 THEN jsonb_build_object(
+                            'reason', data->'GuaranteeDiscarded'->>'reason',
+                            'slot', data->'GuaranteeDiscarded'->'outline'->>'slot'
+                        )
+                        ELSE '{}'::jsonb
+                    END
+                )
+                FROM events
+                WHERE event_type IN (112, 113)
+                AND created_at > NOW() - INTERVAL '24 hours'
+                AND (
+                    (event_type = 112 AND (data->'GuaranteeReceived'->'outline'->'work_report_hash')::text = ANY($1))
+                    OR
+                    (event_type = 113 AND (data->'GuaranteeDiscarded'->'outline'->'work_report_hash')::text = ANY($1))
+                )
+                ORDER BY timestamp
+                "#,
+            )
+            .bind(&wr_hashes)
+            .fetch_all(&self.pool)
+            .await?;
+
+            stages.extend(onchain_stages);
+            // Re-sort all stages by timestamp
+            stages.sort_by(|a, b| {
+                let ts_a = a.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
+                let ts_b = b.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
+                ts_a.cmp(ts_b)
+            });
+        }
+
+        // Step 4: Extract erasure_root from event 102 for these share_ids
+        let er_hashes: Vec<String> = sqlx::query_scalar(
+            r#"
+            SELECT DISTINCT (data->'WorkReportBuilt'->'outline'->'erasure_root')::text
+            FROM events
+            WHERE event_type = 102
+            AND created_at > NOW() - INTERVAL '24 hours'
+            AND data->'WorkReportBuilt'->>'submission_or_share_id' = ANY($1)
+            AND data->'WorkReportBuilt'->'outline'->'erasure_root' IS NOT NULL
+            "#,
+        )
+        .bind(&effective_ids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        // Step 5: Fetch shard events (120, 124, 125) via erasure_root
+        if !er_hashes.is_empty() {
+            let shard_stages: Vec<serde_json::Value> = sqlx::query_scalar(
+                r#"
+                SELECT jsonb_build_object(
+                    'stage', CASE
+                        WHEN event_type = 120 THEN 'shard_requested'
+                        WHEN event_type = 124 THEN 'shard_received'
+                        ELSE 'unknown'
+                    END,
+                    'status', 'completed',
+                    'event_type', event_type,
+                    'node_id', node_id,
+                    'timestamp', timestamp,
+                    'duration_ms', NULL,
+                    'error_code', NULL,
+                    'data', CASE
+                        WHEN event_type = 120 THEN jsonb_build_object(
+                            'shard', data->'SendingShardRequest'->>'shard'
+                        )
+                        WHEN event_type = 124 THEN jsonb_build_object(
+                            'shard', data->'ShardRequestReceived'->>'shard',
+                            'request_id', data->'ShardRequestReceived'->>'request_id'
+                        )
+                        ELSE '{}'::jsonb
+                    END
+                )
+                FROM events
+                WHERE event_type IN (120, 124)
+                AND created_at > NOW() - INTERVAL '24 hours'
+                AND (
+                    (event_type = 120 AND (data->'SendingShardRequest'->'erasure_root')::text = ANY($1))
+                    OR
+                    (event_type = 124 AND (data->'ShardRequestReceived'->'erasure_root')::text = ANY($1))
+                )
+                ORDER BY timestamp
+                "#,
+            )
+            .bind(&er_hashes)
+            .fetch_all(&self.pool)
+            .await?;
+
+            // Extract request_ids from event 124 for linking to event 125
+            // Use text comparison to avoid per-row CAST(AS BIGINT) on all event-125 rows
+            let request_id_strs: Vec<String> = shard_stages
+                .iter()
+                .filter(|s| s.get("event_type").and_then(|v| v.as_i64()) == Some(124))
+                .filter_map(|s| {
+                    s.get("data")
+                        .and_then(|d| d.get("request_id"))
+                        .and_then(|v| v.as_str().map(String::from))
+                })
+                .collect();
+
+            stages.extend(shard_stages);
+
+            // Fetch event 125 (ShardsTransferred) via request_id
+            if !request_id_strs.is_empty() {
+                let transfer_stages: Vec<serde_json::Value> = sqlx::query_scalar(
+                    r#"
+                    SELECT jsonb_build_object(
+                        'stage', 'shards_transferred',
+                        'status', 'completed',
+                        'event_type', event_type,
+                        'node_id', node_id,
+                        'timestamp', timestamp,
+                        'duration_ms', NULL,
+                        'error_code', NULL,
+                        'data', jsonb_build_object(
+                            'request_id', data->'ShardsTransferred'->>'request_id'
+                        )
+                    )
+                    FROM events
+                    WHERE event_type = 125
+                    AND created_at > NOW() - INTERVAL '24 hours'
+                    AND data->'ShardsTransferred'->>'request_id' = ANY($1)
+                    ORDER BY timestamp
+                    "#,
+                )
+                .bind(&request_id_strs)
+                .fetch_all(&self.pool)
+                .await?;
+
+                stages.extend(transfer_stages);
+            }
+
+            // Re-sort all stages by timestamp
+            stages.sort_by(|a, b| {
+                let ts_a = a.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
+                let ts_b = b.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
+                ts_a.cmp(ts_b)
+            });
+        }
 
         // Extract core_index from the WorkPackageReceived stage if present
         let core_index: Option<i32> = stages.iter().find_map(|s| {
@@ -2823,6 +3681,27 @@ impl EventStore {
                 .unwrap_or(false)
         });
 
+        // Only mark the WP as superseded if it didn't actually progress
+        let has_superseded_event = stages.iter().any(|s| {
+            s.get("status")
+                .and_then(|v| v.as_str())
+                .map(|s| s == "superseded")
+                .unwrap_or(false)
+        });
+        let has_progress = stages.iter().any(|s| {
+            matches!(
+                s.get("stage").and_then(|v| v.as_str()),
+                Some("refined")
+                    | Some("report_built")
+                    | Some("guarantee_built")
+                    | Some("guaranteed")
+                    | Some("distributed")
+                    | Some("included")
+                    | Some("shard_received")
+            )
+        });
+        let is_superseded = has_superseded_event && !has_progress && !has_failed;
+
         let failure_reason = stages.iter().find_map(|s| {
             if s.get("status").and_then(|v| v.as_str()) == Some("failed") {
                 s.get("error_code")
@@ -2858,10 +3737,39 @@ impl EventStore {
             }
         }
 
+        // Determine current_stage by furthest progress, not last chronological event.
+        // Progress stages ranked by how far along the pipeline they are.
+        let stage_rank = |s: &str| -> i32 {
+            match s {
+                "submitted" => 0,
+                "being_shared" => 1,
+                "received" => 2,
+                "extrinsic_data_received" => 3,
+                "imports_received" => 3,
+                "authorized" => 4,
+                "refined" => 5,
+                "report_built" => 6,
+                "guarantee_built" => 7,
+                "sharing" | "bundle_sent" => 7,
+                "guaranteed" | "distributed" => 8,
+                "guarantee_received" => 9,
+                "included" => 10,
+                "shard_requested" | "shard_received" | "shards_transferred" => 11,
+                // Terminal non-progress stages get low rank so progress wins
+                "failed" => -1,
+                "superseded" => -2,
+                "duplicate" => -2,
+                "sharing_failed" => -1,
+                "discarded" => -1,
+                _ => -3,
+            }
+        };
         let current_stage = stages
-            .last()
-            .and_then(|s| s.get("stage").cloned())
-            .unwrap_or(serde_json::json!("submitted"));
+            .iter()
+            .filter_map(|s| s.get("stage").and_then(|v| v.as_str()))
+            .max_by_key(|s| stage_rank(s))
+            .unwrap_or("submitted");
+        let current_stage = serde_json::json!(current_stage);
 
         Ok(serde_json::json!({
             "hash": wp_id,
@@ -2872,6 +3780,7 @@ impl EventStore {
             "current_stage": current_stage,
             "current_status": stages.last().and_then(|s| s.get("status")),
             "failed": has_failed,
+            "superseded": is_superseded,
             "failure_reason": failure_reason,
             "started_at": started_at,
             "completed_at": completed_at,
