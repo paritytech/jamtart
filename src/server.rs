@@ -217,25 +217,18 @@ impl TelemetryServer {
             crate::rate_limiter::MAX_CONNECTIONS
         );
 
-        let connections = Arc::clone(&self.connections);
-        let batch_writer = self.batch_writer.clone();
         let rate_limiter = Arc::clone(&self.rate_limiter);
-        let broadcaster = Arc::clone(&self.broadcaster);
-        let rate_limit_disabled = self.rate_limit_disabled;
-        let connection_watch = Arc::clone(&self.connection_watch);
+        let ctx = ConnectionContext {
+            connections: Arc::clone(&self.connections),
+            batch_writer: self.batch_writer.clone(),
+            rate_limiter: rate_limiter.clone(),
+            broadcaster: Arc::clone(&self.broadcaster),
+            rate_limit_disabled: self.rate_limit_disabled,
+            connection_watch: Arc::clone(&self.connection_watch),
+        };
 
         tokio::spawn(async move {
-            let result = handle_connection_optimized(
-                stream,
-                addr,
-                connections,
-                batch_writer,
-                rate_limiter.clone(),
-                broadcaster,
-                rate_limit_disabled,
-                connection_watch,
-            )
-            .await;
+            let result = handle_connection_optimized(stream, addr, ctx).await;
 
             // Always decrement connection count
             rate_limiter.connection_closed();
@@ -315,16 +308,29 @@ impl TelemetryServer {
     }
 }
 
-async fn handle_connection_optimized(
-    mut stream: TcpStream,
-    addr: SocketAddr,
+/// Shared server state passed to each connection handler.
+struct ConnectionContext {
     connections: Arc<DashMap<String, NodeConnection>>,
     batch_writer: BatchWriter,
     rate_limiter: Arc<RateLimiter>,
     broadcaster: Arc<EventBroadcaster>,
     rate_limit_disabled: bool,
     connection_watch: Arc<tokio::sync::watch::Sender<usize>>,
+}
+
+async fn handle_connection_optimized(
+    mut stream: TcpStream,
+    addr: SocketAddr,
+    ctx: ConnectionContext,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let ConnectionContext {
+        connections,
+        batch_writer,
+        rate_limiter,
+        broadcaster,
+        rate_limit_disabled,
+        connection_watch,
+    } = ctx;
     // Set TCP nodelay for lower latency
     stream.set_nodelay(true)?;
 
@@ -483,7 +489,7 @@ async fn handle_connection_optimized(
                                         "Write buffer full, dropping event from {}",
                                         node_id_str
                                     );
-                                    if dropped_events % 500 == 0 {
+                                    if dropped_events.is_multiple_of(500) {
                                         debug!(
                                         "Write buffer full, dropping events total: {dropped_events}",
                                     );

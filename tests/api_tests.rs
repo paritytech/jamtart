@@ -1300,9 +1300,8 @@ async fn test_workpackage_journey_with_data() {
         );
     }
 
-    assert_eq!(
-        json["failed"].as_bool().unwrap(),
-        false,
+    assert!(
+        !json["failed"].as_bool().unwrap(),
         "Expected failed=false for successful pipeline"
     );
 }
@@ -1353,7 +1352,7 @@ async fn test_workpackage_journey_enhanced_with_data() {
         assert!(first.get("timestamp").is_some(), "Should have timestamp");
     }
 
-    assert_eq!(json["failed"].as_bool().unwrap(), false);
+    assert!(!json["failed"].as_bool().unwrap());
 }
 
 #[tokio::test]
