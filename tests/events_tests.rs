@@ -90,8 +90,9 @@ fn test_status_event_encoding_decoding() {
     // Check discriminator
     assert_eq!(buf[8], 10);
 
+    let core_count = guarantees.len() as u16;
     let mut cursor = Cursor::new(&buf[..]);
-    let decoded = Event::decode(&mut cursor).unwrap();
+    let decoded = Event::decode_event(&mut cursor, core_count).unwrap();
 
     match decoded {
         Event::Status {
@@ -717,9 +718,9 @@ fn test_status_event_with_message_frame() {
     let (size, msg_data) = decode_message_frame(&encoded).unwrap();
     println!("Frame size: {}, data len: {}", size, msg_data.len());
 
-    // Decode the event
+    // Decode the event (core_count = 4 to match num_guarantees length)
     let mut cursor = Cursor::new(msg_data);
-    let decoded = Event::decode(&mut cursor).unwrap();
+    let decoded = Event::decode_event(&mut cursor, 4).unwrap();
 
     match decoded {
         Event::Status {

@@ -1203,7 +1203,8 @@ impl Encode for Event {
                 num_peers.encode(buf)?;
                 num_val_peers.encode(buf)?;
                 num_sync_peers.encode(buf)?;
-                num_guarantees.encode(buf)?;
+                // JIP-3: num_guarantees is [u8; C] — raw bytes, no length prefix
+                buf.extend_from_slice(num_guarantees);
                 num_shards.encode(buf)?;
                 shards_size.encode(buf)?;
                 num_preimages.encode(buf)?;
@@ -1487,7 +1488,8 @@ impl Encode for Event {
         let specific_size = match self {
             Event::Dropped { .. } => 8 + 8, // last_timestamp + num (u64)
             Event::Status { num_guarantees, .. } => {
-                4 + 4 + 4 + num_guarantees.encoded_size() + 4 + 8 + 4 + 4
+                // JIP-3: num_guarantees is [u8; C] — raw bytes, no length prefix
+                4 + 4 + 4 + num_guarantees.len() + 4 + 8 + 4 + 4
             }
             Event::BestBlockChanged { .. } => 4 + 32, // slot + hash
             Event::FinalizedBlockChanged { .. } => 4 + 32,

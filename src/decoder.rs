@@ -589,12 +589,16 @@ impl Decode for Vec<ValidatorIndex> {
     }
 }
 
-impl Decode for Event {
-    fn decode(buf: &mut Cursor<&[u8]>) -> Result<Self, DecodingError> {
+impl Event {
+    /// Decode an event from the wire format, using `core_count` (C) from
+    /// the node's ProtocolParameters for fixed-size [u8; C] arrays (JIP-3).
+    pub fn decode_event(
+        buf: &mut Cursor<&[u8]>,
+        core_count: u16,
+    ) -> Result<Self, DecodingError> {
         let timestamp = Timestamp::decode(buf)?;
         let discriminator = u8::decode(buf)?;
 
-        // Debug logging
         if ![10, 11, 12, 13].contains(&discriminator) {
             tracing::trace!(
                 "Decoding event with discriminator: {}, remaining bytes: {}",
@@ -614,14 +618,12 @@ impl Decode for Event {
                 let num_val_peers = u32::decode(buf)?;
                 let num_sync_peers = u32::decode(buf)?;
 
-                // TODO: JIP-3 specifies num_guarantees as [u8; C] (fixed-size array where
-                // C = core_count), but PolkaJam sends a varint length prefix before the
-                // byte array. We decode it as variable-length to match actual wire format.
-                let core_count = decode_variable_length(buf)? as usize;
-                let mut num_guarantees = vec![0u8; core_count];
-                if buf.remaining() < core_count {
+                // JIP-3: num_guarantees is [u8; C] — fixed-size array, no length prefix
+                let c = core_count as usize;
+                let mut num_guarantees = vec![0u8; c];
+                if buf.remaining() < c {
                     return Err(DecodingError::InsufficientData {
-                        needed: core_count,
+                        needed: c,
                         available: buf.remaining(),
                     });
                 }
@@ -982,10 +984,24 @@ impl Decode for Event {
             }),
 
             // Assurance distribution (126-131)
-            126 => Ok(Event::DistributingAssurance {
-                timestamp,
-                statement: AvailabilityStatement::decode(buf)?,
-            }),
+            126 => {
+                // JIP-3: AvailabilityStatement is anchor (32 bytes) +
+                // bitfield [u8; ceil(C/8)] — fixed-size, no length prefix
+                let anchor = HeaderHash::decode(buf)?;
+                let bitfield_len = (core_count as usize + 7) / 8;
+                if buf.remaining() < bitfield_len {
+                    return Err(DecodingError::InsufficientData {
+                        needed: bitfield_len,
+                        available: buf.remaining(),
+                    });
+                }
+                let mut bitfield = vec![0u8; bitfield_len];
+                buf.copy_to_slice(&mut bitfield);
+                Ok(Event::DistributingAssurance {
+                    timestamp,
+                    statement: AvailabilityStatement { anchor, bitfield },
+                })
+            }
             127 => Ok(Event::AssuranceSendFailed {
                 timestamp,
                 distributing_id: EventId::decode(buf)?,
@@ -1242,6 +1258,15 @@ impl Decode for Event {
 
             _ => Err(DecodingError::InvalidDiscriminator(discriminator)),
         }
+    }
+}
+
+impl Decode for Event {
+    fn decode(buf: &mut Cursor<&[u8]>) -> Result<Self, DecodingError> {
+        // Fallback: decode with core_count=0 (Status/DistributingAssurance will
+        // produce empty arrays). Use decode_event() directly with the real
+        // core_count for production decoding.
+        Event::decode_event(buf, 0)
     }
 }
 

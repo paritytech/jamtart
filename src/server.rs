@@ -375,6 +375,9 @@ async fn handle_connection_optimized(
         }
     };
 
+    // Extract core_count from ProtocolParameters for JIP-3 fixed-size arrays
+    let core_count = node_info.params.core_count;
+
     // Generate node ID from peer ID
     let node_id_str = hex::encode(node_info.details.peer_id);
 
@@ -431,7 +434,7 @@ async fn handle_connection_optimized(
                     }
 
                     let mut cursor = Cursor::new(msg_data);
-                    match Event::decode(&mut cursor) {
+                    match Event::decode_event(&mut cursor, core_count) {
                         Ok(event) => {
                             event_count += 1;
 
