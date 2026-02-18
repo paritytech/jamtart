@@ -5,6 +5,11 @@ use tart_backend::types::*;
 use tart_backend::TelemetryServer;
 use tokio::time::sleep;
 
+/// Core count used in test_protocol_params(). Status events must have
+/// num_guarantees with exactly this many elements to match the decoder.
+#[allow(dead_code)]
+pub const TEST_CORE_COUNT: usize = 16;
+
 /// Returns a "now" timestamp in JCE-relative microseconds.
 /// Use this in test events so they fall within time-bounded query windows.
 #[allow(dead_code)]

@@ -72,7 +72,7 @@ async fn test_optimized_server_handles_multiple_connections() {
                     num_val_peers: 10,
                     num_peers: 5,
                     num_sync_peers: 15,
-                    num_guarantees: vec![1, 2, 3],
+                    num_guarantees: vec![0u8; common::TEST_CORE_COUNT],
                     num_shards: 3,
                     shards_size: 1024,
                     num_preimages: 0,
