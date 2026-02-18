@@ -1328,7 +1328,6 @@ async fn get_core_validators(
             .get_core_validators(
                 core_index,
                 duration.as_pg_interval(),
-                duration.secondary_interval(),
             )
             .await
             .map_err(|e| {
@@ -1359,7 +1358,6 @@ async fn get_core_metrics(
             .get_core_metrics(
                 core_index,
                 duration.as_pg_interval(),
-                duration.secondary_interval(),
             )
             .await
             .map_err(|e| {
@@ -1424,8 +1422,6 @@ async fn get_core_guarantors_enhanced(
             .store
             .get_core_guarantors_with_sharing(
                 core_index,
-                duration.as_pg_interval(),
-                duration.secondary_interval(),
             )
             .await
             .map_err(|e| {
