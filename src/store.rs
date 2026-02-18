@@ -1364,7 +1364,7 @@ impl EventStore {
                         } else {
                             "failed"
                         }
-                    },
+                    }
                     93 => "duplicate",
                     94 => "received",
                     95 => "authorized",
@@ -1438,7 +1438,7 @@ impl EventStore {
                         } else {
                             "discarded"
                         }
-                    },
+                    }
                     _ => "unknown",
                 };
                 stages.push(serde_json::json!({
@@ -1520,7 +1520,8 @@ impl EventStore {
                         .and_then(|d| d.get("request_id"))
                         .and_then(|v| {
                             // request_id may be a JSON number or string
-                            v.as_i64().map(|n| n.to_string())
+                            v.as_i64()
+                                .map(|n| n.to_string())
                                 .or_else(|| v.as_str().map(String::from))
                         })
                 })
@@ -1594,13 +1595,20 @@ impl EventStore {
         let has_progress = stages.iter().any(|s| {
             matches!(
                 s["stage"].as_str(),
-                Some("refined") | Some("report_built") | Some("guarantee_built")
-                | Some("guarantees_distributed") | Some("guarantee_received") | Some("included")
-                | Some("shard_received")
+                Some("refined")
+                    | Some("report_built")
+                    | Some("guarantee_built")
+                    | Some("guarantees_distributed")
+                    | Some("guarantee_received")
+                    | Some("included")
+                    | Some("shard_received")
             )
         });
-        let superseded = stages.iter().any(|s| s["stage"].as_str() == Some("superseded"))
-            && !has_progress && !failed;
+        let superseded = stages
+            .iter()
+            .any(|s| s["stage"].as_str() == Some("superseded"))
+            && !has_progress
+            && !failed;
         let failure_reason = stages
             .iter()
             .find(|s| s["stage"].as_str() == Some("failed"))
@@ -1883,12 +1891,16 @@ impl EventStore {
                 if let Some(available_at) = er.and_then(|e| avail_map.get(e)) {
                     if let Some(obj) = wp.as_object_mut() {
                         // Set available stage timestamp
-                        if let Some(stages) = obj.get_mut("stages").and_then(|s| s.as_object_mut()) {
+                        if let Some(stages) = obj.get_mut("stages").and_then(|s| s.as_object_mut())
+                        {
                             stages.insert("available".to_string(), serde_json::json!(available_at));
                         }
 
                         // Update current_stage: available ranks above included
-                        let cur = obj.get("current_stage").and_then(|v| v.as_str()).unwrap_or("");
+                        let cur = obj
+                            .get("current_stage")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
                         if cur == "included" {
                             obj.insert("current_stage".to_string(), serde_json::json!("available"));
                         }
@@ -1896,14 +1908,26 @@ impl EventStore {
                         // Update last_update and elapsed_ms
                         let avail_dt = chrono::DateTime::parse_from_rfc3339(available_at).ok();
                         if let Some(avail_dt) = avail_dt {
-                            let last_update_str = obj.get("last_update").and_then(|v| v.as_str()).unwrap_or("");
-                            let last_update_dt = chrono::DateTime::parse_from_rfc3339(last_update_str).ok();
+                            let last_update_str = obj
+                                .get("last_update")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let last_update_dt =
+                                chrono::DateTime::parse_from_rfc3339(last_update_str).ok();
                             if last_update_dt.map(|lu| avail_dt > lu).unwrap_or(true) {
-                                obj.insert("last_update".to_string(), serde_json::json!(available_at));
+                                obj.insert(
+                                    "last_update".to_string(),
+                                    serde_json::json!(available_at),
+                                );
                             }
 
-                            let submitted_str = obj.get("submitted_at").and_then(|v| v.as_str()).unwrap_or("");
-                            if let Ok(submitted_dt) = chrono::DateTime::parse_from_rfc3339(submitted_str) {
+                            let submitted_str = obj
+                                .get("submitted_at")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            if let Ok(submitted_dt) =
+                                chrono::DateTime::parse_from_rfc3339(submitted_str)
+                            {
                                 let new_last = std::cmp::max(
                                     avail_dt.timestamp_millis(),
                                     last_update_dt.map(|d| d.timestamp_millis()).unwrap_or(0),
@@ -3667,9 +3691,13 @@ impl EventStore {
         let has_progress = stages.iter().any(|s| {
             matches!(
                 s.get("stage").and_then(|v| v.as_str()),
-                Some("refined") | Some("report_built") | Some("guarantee_built")
-                | Some("guaranteed") | Some("distributed") | Some("included")
-                | Some("shard_received")
+                Some("refined")
+                    | Some("report_built")
+                    | Some("guarantee_built")
+                    | Some("guaranteed")
+                    | Some("distributed")
+                    | Some("included")
+                    | Some("shard_received")
             )
         });
         let is_superseded = has_superseded_event && !has_progress && !has_failed;
