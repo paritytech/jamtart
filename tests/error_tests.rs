@@ -382,7 +382,7 @@ fn test_event_edge_cases() {
     event.encode(&mut buf).unwrap();
 
     let mut cursor = Cursor::new(&buf[..]);
-    let decoded = Event::decode(&mut cursor).unwrap();
+    let decoded = Event::decode_event(&mut cursor, 1000).unwrap();
 
     match decoded {
         Event::Status { num_guarantees, .. } => {
