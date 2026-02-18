@@ -503,7 +503,25 @@ async fn handle_connection_optimized(
                             buffer.advance(4 + size as usize);
                         }
                         Err(e) => {
-                            warn!("Failed to decode event from {}: {}", node_id_str, e);
+                            let event_type_hint = if msg_data.len() > 8 {
+                                format!(" (event_type={})", msg_data[8])
+                            } else {
+                                String::new()
+                            };
+                            let hex_preview: String = msg_data
+                                .iter()
+                                .take(32)
+                                .map(|b| format!("{:02x}", b))
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            warn!(
+                                "Failed to decode event from {}{}: {} [msg_len={}, hex={}]",
+                                node_id_str,
+                                event_type_hint,
+                                e,
+                                msg_data.len(),
+                                hex_preview
+                            );
                             buffer.advance(4 + size as usize);
                         }
                     }

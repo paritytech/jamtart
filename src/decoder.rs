@@ -592,10 +592,7 @@ impl Decode for Vec<ValidatorIndex> {
 impl Event {
     /// Decode an event from the wire format, using `core_count` (C) from
     /// the node's ProtocolParameters for fixed-size [u8; C] arrays (JIP-3).
-    pub fn decode_event(
-        buf: &mut Cursor<&[u8]>,
-        core_count: u16,
-    ) -> Result<Self, DecodingError> {
+    pub fn decode_event(buf: &mut Cursor<&[u8]>, core_count: u16) -> Result<Self, DecodingError> {
         let timestamp = Timestamp::decode(buf)?;
         let discriminator = u8::decode(buf)?;
 
@@ -988,7 +985,7 @@ impl Event {
                 // JIP-3: AvailabilityStatement is anchor (32 bytes) +
                 // bitfield [u8; ceil(C/8)] — fixed-size, no length prefix
                 let anchor = HeaderHash::decode(buf)?;
-                let bitfield_len = (core_count as usize + 7) / 8;
+                let bitfield_len = (core_count as usize).div_ceil(8);
                 if buf.remaining() < bitfield_len {
                     return Err(DecodingError::InsufficientData {
                         needed: bitfield_len,
