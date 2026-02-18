@@ -39,7 +39,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:18-alpine
+        image: timescale/timescaledb:latest-pg17
         env:
           POSTGRES_USER: tart
           POSTGRES_PASSWORD: tart_password
@@ -77,7 +77,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:18-alpine
+        image: timescale/timescaledb:latest-pg17
         env:
           POSTGRES_USER: tart
           POSTGRES_PASSWORD: tart_password
