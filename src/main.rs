@@ -182,11 +182,7 @@ async fn main() -> anyhow::Result<()> {
     health_monitor
         .add_check(checks::system_resources_check())
         .await;
-    health_monitor
-        .add_check(checks::partition_check(Arc::clone(&store)))
-        .await;
-
-    info!("Health monitoring system initialized with 6 critical component checks");
+    info!("Health monitoring system initialized with 5 critical component checks");
 
     // Initialize JAM RPC client if configured
     let jam_rpc = match std::env::var("JAM_RPC_URL") {
