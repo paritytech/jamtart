@@ -1377,15 +1377,29 @@ impl EventStore {
         interval: &str,
         secondary_interval: &str,
     ) -> Result<serde_json::Value, sqlx::Error> {
-        // Unified single-CTE query: anchors on ALL WP-related events, not just event 94.
-        // Event 94 (WorkPackageReceived) is rarely emitted — anchoring only on it causes
-        // empty results when none exist in the time window.
-        // Uses submission_or_share_id (events 92, 94, 95, 101, 102) and submission_id
-        // (events 105, 109) to group all stages by work package.
+        // Groups work packages by their actual work_package_hash (from event 94 outline)
+        // so that the same WP processed by multiple guarantor nodes is counted once.
+        // Each guarantor path has a distinct submission_or_share_id, so we first build
+        // a mapping from share_id → work_package_hash, then group all events by hash.
         let work_packages: Vec<serde_json::Value> = sqlx::query_scalar(&format!(
             r#"
-            WITH all_wp_events AS (
-                -- Collect ALL work-package-related events, extract a unified wp_id
+            WITH wp_hash_map AS (
+                -- Map each submission_or_share_id to the real work_package_hash
+                SELECT
+                    data->'WorkPackageReceived'->>'submission_or_share_id' as share_id,
+                    (data->'WorkPackageReceived'->'outline'->'work_package_hash')::text as wp_hash,
+                    CAST(COALESCE(
+                        data->'WorkPackageReceived'->>'core',
+                        data->'WorkPackageReceived'->>'core_index'
+                    ) AS INTEGER) as core_index,
+                    node_id,
+                    timestamp
+                FROM events
+                WHERE event_type = 94
+                AND timestamp > NOW() - INTERVAL '{interval}'
+                AND data->'WorkPackageReceived'->'outline'->'work_package_hash' IS NOT NULL
+            ),
+            all_wp_events AS (
                 SELECT
                     event_type, timestamp, node_id, data,
                     COALESCE(
@@ -1396,10 +1410,39 @@ impl EventStore {
                         data->'WorkPackageFailed'->>'submission_or_share_id',
                         data->'GuaranteeBuilt'->>'submission_id',
                         data->'GuaranteesDistributed'->>'submission_id'
-                    ) as wp_id
+                    ) as share_id
                 FROM events
                 WHERE event_type IN (92, 94, 95, 101, 102, 105, 109)
                 AND timestamp > NOW() - INTERVAL '{interval}'
+            ),
+            events_with_hash AS (
+                SELECT e.*, m.wp_hash
+                FROM all_wp_events e
+                INNER JOIN wp_hash_map m ON m.share_id = e.share_id
+            ),
+            wp_raw AS (
+                SELECT
+                    e.wp_hash,
+                    MAX(m.core_index) as direct_core,
+                    -- Primary node = earliest to receive
+                    (array_agg(DISTINCT e.node_id ORDER BY e.node_id))[1] as node_id,
+                    -- Timestamps per stage (earliest across all guarantor paths)
+                    MIN(e.timestamp) FILTER (WHERE e.event_type = 94) as created_at,
+                    MIN(e.timestamp) FILTER (WHERE e.event_type = 95) as authorized_at,
+                    MIN(e.timestamp) FILTER (WHERE e.event_type = 101) as refined_at,
+                    MIN(e.timestamp) FILTER (WHERE e.event_type = 102) as report_built_at,
+                    MIN(e.timestamp) FILTER (WHERE e.event_type = 105) as guarantee_built_at,
+                    MIN(e.timestamp) FILTER (WHERE e.event_type = 109) as distributed_at,
+                    MIN(e.timestamp) FILTER (WHERE e.event_type = 92) as failed_at,
+                    MIN(e.timestamp) as first_seen_at,
+                    MAX(e.timestamp) as last_event_at,
+                    COUNT(DISTINCT e.node_id) as nodes_involved,
+                    (array_agg(e.data->'WorkPackageFailed'->>'reason')
+                     FILTER (WHERE e.event_type = 92))[1] as failure_reason
+                FROM events_with_hash e
+                LEFT JOIN wp_hash_map m ON m.share_id = e.share_id
+                WHERE e.wp_hash IS NOT NULL
+                GROUP BY e.wp_hash
             ),
             -- Fallback: each node's core from their most recent WorkPackageReceived
             node_cores AS (
@@ -1412,36 +1455,9 @@ impl EventStore {
                 AND data->'WorkPackageReceived'->>'core' IS NOT NULL
                 ORDER BY node_id, timestamp DESC
             ),
-            wp_raw AS (
-                SELECT
-                    wp_id,
-                    MAX(CAST(COALESCE(
-                        data->'WorkPackageReceived'->>'core',
-                        data->'WorkPackageReceived'->>'core_index'
-                    ) AS INTEGER)) FILTER (WHERE event_type = 94) as direct_core,
-                    -- Use earliest node as the primary node
-                    (array_agg(node_id ORDER BY timestamp ASC))[1] as node_id,
-                    -- Timestamps per stage
-                    MIN(timestamp) FILTER (WHERE event_type = 94) as created_at,
-                    MIN(timestamp) FILTER (WHERE event_type = 95) as authorized_at,
-                    MIN(timestamp) FILTER (WHERE event_type = 101) as refined_at,
-                    MIN(timestamp) FILTER (WHERE event_type = 102) as report_built_at,
-                    MIN(timestamp) FILTER (WHERE event_type = 105) as guarantee_built_at,
-                    MIN(timestamp) FILTER (WHERE event_type = 109) as distributed_at,
-                    MIN(timestamp) FILTER (WHERE event_type = 92) as failed_at,
-                    -- Earliest event = when we first saw this WP
-                    MIN(timestamp) as first_seen_at,
-                    MAX(timestamp) as last_event_at,
-                    COUNT(DISTINCT node_id) as nodes_involved,
-                    (array_agg(data->'WorkPackageFailed'->>'reason')
-                     FILTER (WHERE event_type = 92))[1] as failure_reason
-                FROM all_wp_events
-                WHERE wp_id IS NOT NULL
-                GROUP BY wp_id
-            ),
             wp_stages AS (
                 SELECT
-                    r.wp_id, COALESCE(r.direct_core, nc.core_index) as core_index,
+                    r.wp_hash, COALESCE(r.direct_core, nc.core_index) as core_index,
                     r.node_id, r.created_at, r.authorized_at, r.refined_at,
                     r.report_built_at, r.guarantee_built_at, r.distributed_at,
                     r.failed_at, r.first_seen_at, r.last_event_at,
@@ -1450,7 +1466,8 @@ impl EventStore {
                 LEFT JOIN node_cores nc ON nc.node_id = r.node_id
             )
             SELECT jsonb_build_object(
-                'hash', wp_id,
+                'hash', (SELECT string_agg(lpad(to_hex(elem::int), 2, '0'), '')
+                         FROM jsonb_array_elements_text(wp_hash::jsonb) AS elem),
                 'core_index', core_index,
                 'node_id', node_id,
                 'submitted_at', COALESCE(created_at, first_seen_at),
@@ -1482,7 +1499,7 @@ impl EventStore {
             )
             FROM wp_stages
             ORDER BY COALESCE(created_at, first_seen_at) DESC
-            LIMIT 100
+            LIMIT 200
             "#,
             interval = interval,
             secondary_interval = secondary_interval
@@ -1490,45 +1507,165 @@ impl EventStore {
         .fetch_all(&self.pool)
         .await?;
 
-        // Compute summary from the result set for guaranteed accuracy
+        // Compute summary, reached counts, failure breakdown, and stage duration percentiles
         let mut total = 0i64;
         let mut submitted = 0i64;
-        let mut received = 0i64;
-        let mut authorized = 0i64;
-        let mut refined = 0i64;
-        let mut reports_built = 0i64;
-        let mut guarantees_built = 0i64;
-        let mut distributed = 0i64;
-        let mut failed = 0i64;
+        let mut received_current = 0i64;
+        let mut authorized_current = 0i64;
+        let mut refined_current = 0i64;
+        let mut reports_built_current = 0i64;
+        let mut guarantees_built_current = 0i64;
+        let mut distributed_current = 0i64;
+        let mut failed_current = 0i64;
+
+        // Reached: how many WPs passed through each stage (has a non-null timestamp)
+        let mut reached_received = 0i64;
+        let mut reached_authorized = 0i64;
+        let mut reached_refined = 0i64;
+        let mut reached_report_built = 0i64;
+        let mut reached_guarantee_built = 0i64;
+        let mut reached_distributed = 0i64;
+
+        // Failure breakdown by reason
+        let mut failure_breakdown: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+
+        // Stage durations in ms for percentile computation
+        let mut dur_authorize: Vec<f64> = Vec::new();
+        let mut dur_refine: Vec<f64> = Vec::new();
+        let mut dur_report: Vec<f64> = Vec::new();
+        let mut dur_guarantee: Vec<f64> = Vec::new();
+        let mut dur_distribute: Vec<f64> = Vec::new();
 
         for wp in &work_packages {
             total += 1;
+
+            // Current stage summary
             match wp.get("current_stage").and_then(|v| v.as_str()) {
                 Some("submitted") => submitted += 1,
-                Some("received") => received += 1,
-                Some("authorized") => authorized += 1,
-                Some("refined") => refined += 1,
-                Some("report_built") => reports_built += 1,
-                Some("guarantee_built") => guarantees_built += 1,
-                Some("distributed") => distributed += 1,
-                Some("failed") => failed += 1,
+                Some("received") => received_current += 1,
+                Some("authorized") => authorized_current += 1,
+                Some("refined") => refined_current += 1,
+                Some("report_built") => reports_built_current += 1,
+                Some("guarantee_built") => guarantees_built_current += 1,
+                Some("distributed") => distributed_current += 1,
+                Some("failed") => failed_current += 1,
                 _ => {}
             }
+
+            // Reached counts - check if each stage timestamp exists
+            let stages = wp.get("stages");
+            let has_stage = |name: &str| -> bool {
+                stages
+                    .and_then(|s| s.get(name))
+                    .map(|v| !v.is_null())
+                    .unwrap_or(false)
+            };
+            let stage_ts = |name: &str| -> Option<f64> {
+                stages
+                    .and_then(|s| s.get(name))
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| dt.timestamp_millis() as f64)
+            };
+
+            if has_stage("received") { reached_received += 1; }
+            if has_stage("authorized") { reached_authorized += 1; }
+            if has_stage("refined") { reached_refined += 1; }
+            if has_stage("report_built") { reached_report_built += 1; }
+            if has_stage("guarantee_built") { reached_guarantee_built += 1; }
+            if has_stage("distributed") { reached_distributed += 1; }
+
+            // Failure breakdown
+            if let Some(reason) = wp.get("failure_reason").and_then(|v| v.as_str()) {
+                if !reason.is_empty() {
+                    *failure_breakdown.entry(reason.to_string()).or_insert(0) += 1;
+                }
+            }
+
+            // Stage durations (time between consecutive stages)
+            let t_received = stage_ts("received");
+            let t_authorized = stage_ts("authorized");
+            let t_refined = stage_ts("refined");
+            let t_report = stage_ts("report_built");
+            let t_guarantee = stage_ts("guarantee_built");
+            let t_distributed = stage_ts("distributed");
+
+            if let (Some(a), Some(b)) = (t_received, t_authorized) {
+                dur_authorize.push(b - a);
+            }
+            if let (Some(a), Some(b)) = (t_authorized, t_refined) {
+                dur_refine.push(b - a);
+            }
+            if let (Some(a), Some(b)) = (t_refined, t_report) {
+                dur_report.push(b - a);
+            }
+            if let (Some(a), Some(b)) = (t_report, t_guarantee) {
+                dur_guarantee.push(b - a);
+            }
+            if let (Some(a), Some(b)) = (t_guarantee, t_distributed) {
+                dur_distribute.push(b - a);
+            }
         }
+
+        // Helper to compute percentiles from a sorted vec of f64
+        fn percentile(sorted: &mut Vec<f64>, p: f64) -> f64 {
+            if sorted.is_empty() { return 0.0; }
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let idx = ((p / 100.0) * (sorted.len() as f64 - 1.0)).round() as usize;
+            sorted[idx.min(sorted.len() - 1)]
+        }
+
+        let make_pct = |durations: &mut Vec<f64>| -> serde_json::Value {
+            if durations.is_empty() {
+                return serde_json::json!(null);
+            }
+            serde_json::json!({
+                "p50_ms": percentile(durations, 50.0),
+                "p95_ms": percentile(durations, 95.0),
+                "sample_count": durations.len(),
+            })
+        };
+
+        let mut stage_duration_percentiles = serde_json::Map::new();
+        let pct_auth = make_pct(&mut dur_authorize);
+        let pct_refine = make_pct(&mut dur_refine);
+        let pct_report = make_pct(&mut dur_report);
+        let pct_guarantee = make_pct(&mut dur_guarantee);
+        let pct_distribute = make_pct(&mut dur_distribute);
+        if !pct_auth.is_null() { stage_duration_percentiles.insert("received_to_authorized".to_string(), pct_auth); }
+        if !pct_refine.is_null() { stage_duration_percentiles.insert("authorized_to_refined".to_string(), pct_refine); }
+        if !pct_report.is_null() { stage_duration_percentiles.insert("refined_to_report_built".to_string(), pct_report); }
+        if !pct_guarantee.is_null() { stage_duration_percentiles.insert("report_built_to_guarantee_built".to_string(), pct_guarantee); }
+        if !pct_distribute.is_null() { stage_duration_percentiles.insert("guarantee_built_to_distributed".to_string(), pct_distribute); }
 
         Ok(serde_json::json!({
             "work_packages": work_packages,
             "summary": {
                 "total": total,
                 "submitted": submitted,
-                "received": received,
-                "authorized": authorized,
-                "refined": refined,
-                "reports_built": reports_built,
-                "guarantees_built": guarantees_built,
-                "distributed": distributed,
-                "failed": failed,
+                "received": received_current,
+                "authorized": authorized_current,
+                "refined": refined_current,
+                "reports_built": reports_built_current,
+                "guarantees_built": guarantees_built_current,
+                "distributed": distributed_current,
+                "failed": failed_current,
+                "included": 0,
+                "discarded": 0,
+                "guarantee_received": 0,
             },
+            "reached": {
+                "received": reached_received,
+                "authorized": reached_authorized,
+                "refined": reached_refined,
+                "report_built": reached_report_built,
+                "guarantee_built": reached_guarantee_built,
+                "distributed": reached_distributed,
+                "guarantee_received": 0,
+                "included": 0,
+            },
+            "failure_breakdown": failure_breakdown,
+            "stage_duration_percentiles": stage_duration_percentiles,
         }))
     }
 
