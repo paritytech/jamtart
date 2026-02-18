@@ -1527,13 +1527,14 @@ impl Encode for Event {
             Event::TicketsGenerated { ids, .. } => 8 + ids.encoded_size(),
             Event::TicketTransferFailed { reason, .. } => 32 + 1 + 1 + reason.encoded_size(),
             Event::TicketTransferred { .. } => 32 + 1 + 1 + 4 + 1 + 32,
-            Event::WorkPackageReceived {
-                outline, ..
-            } => 8 + 2 + outline.encoded_size(), // submission_id + core + outline
+            Event::WorkPackageReceived { outline, .. } => 8 + 2 + outline.encoded_size(), // submission_id + core + outline
             Event::Authorized { cost, .. } => 8 + cost.encoded_size(),
             Event::Refined { costs, .. } => 8 + costs.encoded_size(),
             Event::GuaranteeBuilt { outline, .. } => 8 + outline.encoded_size(),
-            _ => todo!("Event::encoded_size not implemented for {:?}", self.event_type()),
+            _ => todo!(
+                "Event::encoded_size not implemented for {:?}",
+                self.event_type()
+            ),
         };
 
         base_size + specific_size

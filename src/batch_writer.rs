@@ -121,9 +121,18 @@ impl BatchWriter {
     }
 
     /// Queue a node connection event (async for reliability)
-    pub async fn node_connected(&self, node_id: String, info: NodeInformation, address: String) -> Result<()> {
+    pub async fn node_connected(
+        &self,
+        node_id: String,
+        info: NodeInformation,
+        address: String,
+    ) -> Result<()> {
         self.sender
-            .send(WriterCommand::NodeConnected { node_id, info, address })
+            .send(WriterCommand::NodeConnected {
+                node_id,
+                info,
+                address,
+            })
             .await
             .map_err(|e| anyhow::anyhow!("Failed to send node connection: {}", e))?;
         Ok(())
@@ -378,7 +387,7 @@ async fn drain_from_channel(
                         CommandAction::Flush => return false,
                     },
                     Ok(None) => return true, // channel closed
-                    Err(_) => return false,   // timeout — flush what we have
+                    Err(_) => return false,  // timeout — flush what we have
                 }
             }
         }
@@ -409,7 +418,11 @@ fn handle_command(
             event_batch.push((node_id, event_id, event));
             CommandAction::Continue
         }
-        WriterCommand::NodeConnected { node_id, info, address } => {
+        WriterCommand::NodeConnected {
+            node_id,
+            info,
+            address,
+        } => {
             node_connects.push((node_id, info, address));
             CommandAction::Continue
         }

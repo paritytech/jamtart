@@ -403,7 +403,6 @@ pub mod checks {
             interval: Duration::from_secs(60),
         }
     }
-
 }
 
 #[cfg(test)]

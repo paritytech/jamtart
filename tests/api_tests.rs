@@ -912,25 +912,61 @@ fn refined_event(timestamp: u64, submission_id: u64) -> Event {
         submission_or_share_id: submission_id,
         costs: vec![
             RefineCost {
-                total: ExecCost { gas_used: 500_000, elapsed_ns: 1_000_000 },
+                total: ExecCost {
+                    gas_used: 500_000,
+                    elapsed_ns: 1_000_000,
+                },
                 load_ns: 100_000,
                 host_call: RefineHostCallCost {
-                    lookup: ExecCost { gas_used: 50_000, elapsed_ns: 100_000 },
-                    vm: ExecCost { gas_used: 200_000, elapsed_ns: 400_000 },
-                    mem: ExecCost { gas_used: 30_000, elapsed_ns: 60_000 },
-                    invoke: ExecCost { gas_used: 100_000, elapsed_ns: 200_000 },
-                    other: ExecCost { gas_used: 20_000, elapsed_ns: 40_000 },
+                    lookup: ExecCost {
+                        gas_used: 50_000,
+                        elapsed_ns: 100_000,
+                    },
+                    vm: ExecCost {
+                        gas_used: 200_000,
+                        elapsed_ns: 400_000,
+                    },
+                    mem: ExecCost {
+                        gas_used: 30_000,
+                        elapsed_ns: 60_000,
+                    },
+                    invoke: ExecCost {
+                        gas_used: 100_000,
+                        elapsed_ns: 200_000,
+                    },
+                    other: ExecCost {
+                        gas_used: 20_000,
+                        elapsed_ns: 40_000,
+                    },
                 },
             },
             RefineCost {
-                total: ExecCost { gas_used: 700_000, elapsed_ns: 1_500_000 },
+                total: ExecCost {
+                    gas_used: 700_000,
+                    elapsed_ns: 1_500_000,
+                },
                 load_ns: 120_000,
                 host_call: RefineHostCallCost {
-                    lookup: ExecCost { gas_used: 70_000, elapsed_ns: 140_000 },
-                    vm: ExecCost { gas_used: 300_000, elapsed_ns: 600_000 },
-                    mem: ExecCost { gas_used: 40_000, elapsed_ns: 80_000 },
-                    invoke: ExecCost { gas_used: 150_000, elapsed_ns: 300_000 },
-                    other: ExecCost { gas_used: 30_000, elapsed_ns: 60_000 },
+                    lookup: ExecCost {
+                        gas_used: 70_000,
+                        elapsed_ns: 140_000,
+                    },
+                    vm: ExecCost {
+                        gas_used: 300_000,
+                        elapsed_ns: 600_000,
+                    },
+                    mem: ExecCost {
+                        gas_used: 40_000,
+                        elapsed_ns: 80_000,
+                    },
+                    invoke: ExecCost {
+                        gas_used: 150_000,
+                        elapsed_ns: 300_000,
+                    },
+                    other: ExecCost {
+                        gas_used: 30_000,
+                        elapsed_ns: 60_000,
+                    },
                 },
             },
         ],
@@ -943,9 +979,15 @@ fn authorized_event(timestamp: u64, submission_id: u64) -> Event {
         timestamp,
         submission_or_share_id: submission_id,
         cost: IsAuthorizedCost {
-            total: ExecCost { gas_used: 100_000, elapsed_ns: 200_000 },
+            total: ExecCost {
+                gas_used: 100_000,
+                elapsed_ns: 200_000,
+            },
             load_ns: 50_000,
-            host_call: ExecCost { gas_used: 30_000, elapsed_ns: 60_000 },
+            host_call: ExecCost {
+                gas_used: 30_000,
+                elapsed_ns: 60_000,
+            },
         },
     }
 }
@@ -986,16 +1028,24 @@ async fn test_workpackage_stats_with_data() {
     let json: Value = serde_json::from_str(&response.text()).unwrap();
 
     let totals = &json["totals"];
-    assert!(totals["received"].as_i64().unwrap() >= 2,
-        "Expected at least 2 received WPs, got {}", totals["received"]);
-    assert!(totals["refined"].as_i64().unwrap() >= 1,
-        "Expected at least 1 refined WP, got {}", totals["refined"]);
+    assert!(
+        totals["received"].as_i64().unwrap() >= 2,
+        "Expected at least 2 received WPs, got {}",
+        totals["received"]
+    );
+    assert!(
+        totals["refined"].as_i64().unwrap() >= 1,
+        "Expected at least 1 refined WP, got {}",
+        totals["refined"]
+    );
 
     let by_core = json["by_core"].as_array().unwrap();
     if !by_core.is_empty() {
         let first = &by_core[0];
-        assert!(first.get("core_index").is_some() || first.get("core").is_some(),
-            "Expected core index in by_core entry");
+        assert!(
+            first.get("core_index").is_some() || first.get("core").is_some(),
+            "Expected core index in by_core entry"
+        );
     }
 }
 
@@ -1031,15 +1081,24 @@ async fn test_execution_metrics_with_block_executed() {
     let json: Value = response.json();
 
     let refinement = &json["refinement"];
-    assert!(refinement["total_refined"].as_i64().unwrap() >= 1,
-        "Expected at least 1 refined, got {}", refinement["total_refined"]);
+    assert!(
+        refinement["total_refined"].as_i64().unwrap() >= 1,
+        "Expected at least 1 refined, got {}",
+        refinement["total_refined"]
+    );
 
     let auth_section = &json["authorization"];
-    assert!(auth_section["total_authorized"].as_i64().unwrap() >= 1,
-        "Expected at least 1 authorized, got {}", auth_section["total_authorized"]);
+    assert!(
+        auth_section["total_authorized"].as_i64().unwrap() >= 1,
+        "Expected at least 1 authorized, got {}",
+        auth_section["total_authorized"]
+    );
     if auth_section["total_gas_used"].as_i64().unwrap() > 0 {
-        assert_eq!(auth_section["total_gas_used"].as_i64().unwrap(), 100_000,
-            "Expected authorized gas_used = 100000");
+        assert_eq!(
+            auth_section["total_gas_used"].as_i64().unwrap(),
+            100_000,
+            "Expected authorized gas_used = 100000"
+        );
     }
 }
 
@@ -1067,11 +1126,16 @@ async fn test_cores_status_with_guarantee_join() {
     let json: Value = response.json();
 
     let cores = json["cores"].as_array().unwrap();
-    assert!(!cores.is_empty(), "Expected at least one core with activity");
+    assert!(
+        !cores.is_empty(),
+        "Expected at least one core with activity"
+    );
 
     let summary = &json["summary"];
-    assert!(summary["total_cores"].as_i64().unwrap() >= 1,
-        "Expected at least 1 total core");
+    assert!(
+        summary["total_cores"].as_i64().unwrap() >= 1,
+        "Expected at least 1 total core"
+    );
 }
 
 #[tokio::test]
@@ -1168,12 +1232,21 @@ async fn test_da_stats_with_status_data() {
     let json: Value = response.json();
 
     let agg = &json["aggregate"];
-    assert!(agg["total_shards"].as_i64().unwrap() >= 150,
-        "Expected total_shards >= 150, got {}", agg["total_shards"]);
-    assert!(agg["total_preimages"].as_i64().unwrap() >= 8,
-        "Expected total_preimages >= 8, got {}", agg["total_preimages"]);
-    assert!(agg["node_count"].as_i64().unwrap() >= 1,
-        "Expected node_count >= 1, got {}", agg["node_count"]);
+    assert!(
+        agg["total_shards"].as_i64().unwrap() >= 150,
+        "Expected total_shards >= 150, got {}",
+        agg["total_shards"]
+    );
+    assert!(
+        agg["total_preimages"].as_i64().unwrap() >= 8,
+        "Expected total_preimages >= 8, got {}",
+        agg["total_preimages"]
+    );
+    assert!(
+        agg["node_count"].as_i64().unwrap() >= 1,
+        "Expected node_count >= 1, got {}",
+        agg["node_count"]
+    );
 }
 
 #[tokio::test]
@@ -1197,22 +1270,41 @@ async fn test_workpackage_journey_with_data() {
     }
     common::flush_and_wait(&telemetry_server).await;
 
-    let response = server.get(&format!("/api/workpackages/{}/journey", submission_id)).await;
+    let response = server
+        .get(&format!("/api/workpackages/{}/journey", submission_id))
+        .await;
     assert_eq!(response.status_code(), StatusCode::OK);
     let json: Value = response.json();
 
-    let stages = json["stages"].as_array().expect("stages should be an array");
+    let stages = json["stages"]
+        .as_array()
+        .expect("stages should be an array");
 
     if !stages.is_empty() {
         let first = &stages[0];
-        assert!(first.get("stage").is_some(), "Stage entry should have 'stage' field");
-        assert!(first.get("timestamp").is_some(), "Stage entry should have 'timestamp' field");
-        assert!(first.get("node_id").is_some(), "Stage entry should have 'node_id' field");
-        assert!(first.get("event_type").is_some(), "Stage entry should have 'event_type' field");
+        assert!(
+            first.get("stage").is_some(),
+            "Stage entry should have 'stage' field"
+        );
+        assert!(
+            first.get("timestamp").is_some(),
+            "Stage entry should have 'timestamp' field"
+        );
+        assert!(
+            first.get("node_id").is_some(),
+            "Stage entry should have 'node_id' field"
+        );
+        assert!(
+            first.get("event_type").is_some(),
+            "Stage entry should have 'event_type' field"
+        );
     }
 
-    assert_eq!(json["failed"].as_bool().unwrap(), false,
-        "Expected failed=false for successful pipeline");
+    assert_eq!(
+        json["failed"].as_bool().unwrap(),
+        false,
+        "Expected failed=false for successful pipeline"
+    );
 }
 
 #[tokio::test]
@@ -1236,9 +1328,12 @@ async fn test_workpackage_journey_enhanced_with_data() {
     }
     common::flush_and_wait(&telemetry_server).await;
 
-    let response = server.get(&format!(
-        "/api/workpackages/{}/journey/enhanced", submission_id
-    )).await;
+    let response = server
+        .get(&format!(
+            "/api/workpackages/{}/journey/enhanced",
+            submission_id
+        ))
+        .await;
     assert_eq!(response.status_code(), StatusCode::OK);
     let json: Value = response.json();
 
@@ -1274,13 +1369,18 @@ async fn test_workpackage_audit_progress_with_data() {
     common::flush_and_wait(&telemetry_server).await;
 
     let wp_hash = hex::encode([0xBB; 32]);
-    let response = server.get(&format!("/api/workpackages/{}/audit-progress", wp_hash)).await;
+    let response = server
+        .get(&format!("/api/workpackages/{}/audit-progress", wp_hash))
+        .await;
     assert_eq!(response.status_code(), StatusCode::OK);
     let json: Value = response.json();
 
     assert!(json.get("hash").is_some(), "Should have hash field");
     assert!(json.get("status").is_some(), "Should have status field");
-    assert!(json.get("audit_progress").is_some(), "Should have audit_progress");
+    assert!(
+        json.get("audit_progress").is_some(),
+        "Should have audit_progress"
+    );
     assert!(json.get("events").is_some(), "Should have events array");
 }
 
@@ -1306,15 +1406,27 @@ async fn test_guarantees_by_guarantor_with_data() {
     assert_eq!(response.status_code(), StatusCode::OK);
     let json: Value = response.json();
 
-    let guarantors = json["guarantors"].as_array().expect("Should have guarantors array");
+    let guarantors = json["guarantors"]
+        .as_array()
+        .expect("Should have guarantors array");
     assert!(!guarantors.is_empty(), "Should have at least 1 guarantor");
 
     let first = &guarantors[0];
-    assert!(first.get("node_id").is_some(), "Guarantor should have node_id");
-    assert!(first.get("total_guarantees").is_some(), "Guarantor should have total_guarantees");
+    assert!(
+        first.get("node_id").is_some(),
+        "Guarantor should have node_id"
+    );
+    assert!(
+        first.get("total_guarantees").is_some(),
+        "Guarantor should have total_guarantees"
+    );
 
     let total = first["total_guarantees"].as_i64().unwrap();
-    assert!(total >= 3, "Expected at least 3 guarantees from our node, got {}", total);
+    assert!(
+        total >= 3,
+        "Expected at least 3 guarantees from our node, got {}",
+        total
+    );
 
     assert!(json["total_guarantors"].as_i64().unwrap() >= 1);
 }
@@ -1341,7 +1453,9 @@ async fn test_core_guarantors_with_data() {
     let json: Value = response.json();
 
     assert_eq!(json["core_index"].as_i64().unwrap(), 2);
-    let _guarantors = json["guarantors"].as_array().expect("Should have guarantors array");
+    let _guarantors = json["guarantors"]
+        .as_array()
+        .expect("Should have guarantors array");
 }
 
 #[tokio::test]
@@ -1367,5 +1481,7 @@ async fn test_core_guarantors_enhanced_with_data() {
     let json: Value = response.json();
 
     assert_eq!(json["core_index"].as_i64().unwrap(), 1);
-    let _guarantors = json["guarantors"].as_array().expect("Should have guarantors array");
+    let _guarantors = json["guarantors"]
+        .as_array()
+        .expect("Should have guarantors array");
 }

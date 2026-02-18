@@ -95,7 +95,9 @@ impl EventStore {
             .collect();
         let node_infos: Vec<serde_json::Value> = nodes
             .iter()
-            .map(|(_, info, _)| serde_json::to_value(info).unwrap_or_else(|_| serde_json::json!({})))
+            .map(|(_, info, _)| {
+                serde_json::to_value(info).unwrap_or_else(|_| serde_json::json!({}))
+            })
             .collect();
         let addresses: Vec<&str> = nodes.iter().map(|(_, _, addr)| addr.as_str()).collect();
 
@@ -590,12 +592,11 @@ impl EventStore {
                 .await?;
 
         // Use approximate_row_count for O(1) instead of full table scan
-        let event_count = sqlx::query_scalar::<_, i64>(
-            "SELECT GREATEST(approximate_row_count('events'), 0)",
-        )
-        .fetch_one(&self.pool)
-        .await
-        .unwrap_or(0);
+        let event_count =
+            sqlx::query_scalar::<_, i64>("SELECT GREATEST(approximate_row_count('events'), 0)")
+                .fetch_one(&self.pool)
+                .await
+                .unwrap_or(0);
 
         // Use continuous aggregate for recent event count
         let recent_events = sqlx::query_scalar::<_, i64>(
@@ -1483,7 +1484,8 @@ impl EventStore {
             ORDER BY COALESCE(created_at, first_seen_at) DESC
             LIMIT 100
             "#,
-            interval = interval, secondary_interval = secondary_interval
+            interval = interval,
+            secondary_interval = secondary_interval
         ))
         .fetch_all(&self.pool)
         .await?;
@@ -3060,7 +3062,8 @@ impl EventStore {
                 ORDER BY shard_idx
             ) sub
             WHERE shard_idx IS NOT NULL
-            "#, interval
+            "#,
+            interval
         ))
         .fetch_all(&self.pool)
         .await?;
@@ -3185,7 +3188,8 @@ impl EventStore {
             WHERE wp_id IS NOT NULL
             ORDER BY submitted_at DESC
             LIMIT 50
-            "#, interval, interval
+            "#,
+            interval, interval
         ))
         .bind(core_index)
         .fetch_all(&self.pool)
@@ -3276,7 +3280,8 @@ impl EventStore {
                 COUNT(*) FILTER (WHERE event_type = ANY($1)) as failed_events
             FROM events
             WHERE timestamp > NOW() - INTERVAL '{}'
-            "#, interval
+            "#,
+            interval
         ))
         .bind(&failure_types)
         .fetch_one(&self.pool)
@@ -3390,7 +3395,8 @@ impl EventStore {
             AND timestamp > NOW() - INTERVAL '{}'
             ORDER BY timestamp DESC
             LIMIT 20
-            "#, interval
+            "#,
+            interval
         ))
         .bind(&failure_types)
         .fetch_all(&self.pool)
@@ -4503,7 +4509,8 @@ impl EventStore {
             LEFT JOIN node_info ni ON va.node_id = ni.node_id
             WHERE va.event_count > 0
             ORDER BY va.event_count DESC
-            "#, interval, interval
+            "#,
+            interval, interval
         ))
         .bind(core_index)
         .fetch_all(&self.pool)
@@ -4594,7 +4601,8 @@ impl EventStore {
                 COUNT(*) FILTER (WHERE event_type = 109) as guarantees_distributed,
                 COUNT(DISTINCT node_id) as active_validators
             FROM core_events
-            "#, interval, interval
+            "#,
+            interval, interval
         ))
         .bind(core_index)
         .fetch_one(&self.pool)
@@ -4991,7 +4999,8 @@ impl EventStore {
                 COUNT(*) FILTER (WHERE event_type = 92) as total_failures,
                 COUNT(DISTINCT node_id) as validator_count
             FROM core_events
-            "#, interval, interval
+            "#,
+            interval, interval
         ))
         .bind(core_index)
         .fetch_one(&self.pool)
@@ -5699,4 +5708,3 @@ impl EventStore {
         }))
     }
 }
-

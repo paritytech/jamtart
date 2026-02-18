@@ -109,10 +109,7 @@ pub struct TelemetryServer {
 }
 
 impl TelemetryServer {
-    pub async fn new(
-        bind_address: &str,
-        store: Arc<EventStore>,
-    ) -> Result<Self, std::io::Error> {
+    pub async fn new(bind_address: &str, store: Arc<EventStore>) -> Result<Self, std::io::Error> {
         Self::with_options(bind_address, store, false).await
     }
 
@@ -459,9 +456,13 @@ async fn handle_connection_optimized(
 
                             // Try to queue event for batch writing
                             // Unwrap Arc — broadcaster already has its clone
-                            let event_owned = Arc::try_unwrap(event)
-                                .unwrap_or_else(|arc| (*arc).clone());
-                            match batch_writer.write_event(node_id_str.clone(), event_count, event_owned) {
+                            let event_owned =
+                                Arc::try_unwrap(event).unwrap_or_else(|arc| (*arc).clone());
+                            match batch_writer.write_event(
+                                node_id_str.clone(),
+                                event_count,
+                                event_owned,
+                            ) {
                                 Ok(_) => {
                                     metrics::counter!("telemetry_events_received").increment(1);
 

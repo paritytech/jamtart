@@ -1325,10 +1325,7 @@ async fn get_core_validators(
     let result = cache_or_compute(&state.cache, &key, || async {
         state
             .store
-            .get_core_validators(
-                core_index,
-                duration.as_pg_interval(),
-            )
+            .get_core_validators(core_index, duration.as_pg_interval())
             .await
             .map_err(|e| {
                 error!("Failed to get core {} validators: {}", core_index, e);
@@ -1355,10 +1352,7 @@ async fn get_core_metrics(
     let result = cache_or_compute(&state.cache, &key, || async {
         state
             .store
-            .get_core_metrics(
-                core_index,
-                duration.as_pg_interval(),
-            )
+            .get_core_metrics(core_index, duration.as_pg_interval())
             .await
             .map_err(|e| {
                 error!("Failed to get core {} metrics: {}", core_index, e);
@@ -1420,9 +1414,7 @@ async fn get_core_guarantors_enhanced(
     let result = cache_or_compute(&state.cache, &key, || async {
         state
             .store
-            .get_core_guarantors_with_sharing(
-                core_index,
-            )
+            .get_core_guarantors_with_sharing(core_index)
             .await
             .map_err(|e| {
                 error!(
