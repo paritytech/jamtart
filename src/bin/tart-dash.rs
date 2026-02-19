@@ -58,7 +58,7 @@ struct NodesResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct EventInfo {
-    id: u64,
+    event_id: u64,
     node_id: String,
     event_type: u8,
     timestamp: String,
@@ -321,7 +321,7 @@ impl App {
             }
             KeyCode::Up => match self.selected_panel {
                 0 => self.events_scroll = self.events_scroll.saturating_sub(1),
-                1 => self.nodes_scroll = self.nodes_scroll.saturating_sub(1),
+                2 => self.nodes_scroll = self.nodes_scroll.saturating_sub(1),
                 _ => {}
             },
             KeyCode::Down => {
@@ -332,7 +332,7 @@ impl App {
                             self.events_scroll += 1;
                         }
                     }
-                    1 => {
+                    2 => {
                         if self.nodes_scroll < data.nodes.len().saturating_sub(1) {
                             self.nodes_scroll += 1;
                         }
@@ -342,7 +342,7 @@ impl App {
             }
             KeyCode::PageUp => match self.selected_panel {
                 0 => self.events_scroll = self.events_scroll.saturating_sub(10),
-                1 => self.nodes_scroll = self.nodes_scroll.saturating_sub(10),
+                2 => self.nodes_scroll = self.nodes_scroll.saturating_sub(10),
                 _ => {}
             },
             KeyCode::PageDown => {
@@ -352,7 +352,7 @@ impl App {
                         self.events_scroll =
                             (self.events_scroll + 10).min(data.events.len().saturating_sub(1));
                     }
-                    1 => {
+                    2 => {
                         self.nodes_scroll =
                             (self.nodes_scroll + 10).min(data.nodes.len().saturating_sub(1));
                     }
@@ -361,7 +361,7 @@ impl App {
             }
             KeyCode::Home => match self.selected_panel {
                 0 => self.events_scroll = 0,
-                1 => self.nodes_scroll = 0,
+                2 => self.nodes_scroll = 0,
                 _ => {}
             },
             _ => {}
@@ -636,7 +636,7 @@ fn ui(f: &mut Frame, app: &App) {
     render_stats(f, top_chunks[0], &data);
 
     // Right side - Events or Metrics tab
-    if app.selected_panel == 2 {
+    if app.selected_panel == 1 {
         render_metrics(f, top_chunks[1], &data, true);
     } else {
         render_events(
@@ -654,7 +654,7 @@ fn ui(f: &mut Frame, app: &App) {
         content_chunks[1],
         &data,
         app.nodes_scroll,
-        app.selected_panel == 1,
+        app.selected_panel == 2,
     );
 
     // Footer
@@ -1770,12 +1770,12 @@ fn render_footer(f: &mut Frame, area: Rect, data: &DashboardData, selected_panel
         } else {
             inactive_tab
         };
-        let nodes_style = if selected_panel == 1 {
+        let metrics_style = if selected_panel == 1 {
             active_tab
         } else {
             inactive_tab
         };
-        let metrics_style = if selected_panel == 2 {
+        let nodes_style = if selected_panel == 2 {
             active_tab
         } else {
             inactive_tab
@@ -1832,9 +1832,9 @@ fn render_footer(f: &mut Frame, area: Rect, data: &DashboardData, selected_panel
                 Span::styled(" ", Style::default().fg(Color::White)),
                 Span::styled("events", events_style),
                 Span::styled("·", Style::default().fg(Color::Rgb(80, 80, 80))),
-                Span::styled("nodes", nodes_style),
-                Span::styled("·", Style::default().fg(Color::Rgb(80, 80, 80))),
                 Span::styled("metrics", metrics_style),
+                Span::styled("·", Style::default().fg(Color::Rgb(80, 80, 80))),
+                Span::styled("nodes", nodes_style),
                 Span::styled("  ", Style::default().fg(Color::White)),
                 Span::styled(
                     "[↑↓]",
