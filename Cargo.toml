@@ -17,6 +17,10 @@ name = "tart-bench"
 path = "src/bin/bench.rs"
 required-features = ["bench"]
 
+[[bin]]
+name = "tart-loadgen"
+path = "src/bin/loadgen.rs"
+
 [dependencies]
 # Async runtime
 tokio = { version = "1.40", features = ["rt-multi-thread", "sync", "time", "macros", "io-util", "net", "signal"] }
@@ -72,6 +76,9 @@ reqwest = { version = "0.11", features = ["json", "blocking"], optional = true }
 hdrhistogram = { version = "7.5", optional = true }
 tokio-tungstenite = { version = "0.24", optional = true }
 
+# Profiling dependencies (feature-gated)
+dhat = { version = "0.3", optional = true }
+
 # JAM RPC client dependencies
 jam-std-common = "0.1.26"
 jam-types = { version = "0.1.26", default-features = false, features = ["std"] }
@@ -86,6 +93,7 @@ default = ["jemalloc"]
 jemalloc = ["tikv-jemallocator"]
 dashboard = ["ratatui", "crossterm", "clap", "reqwest"]
 bench = ["reqwest", "hdrhistogram", "tokio-tungstenite"]
+profiling = ["dhat"]
 
 [dev-dependencies]
 axum-test = "15.0"
@@ -104,3 +112,8 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = "symbols"
+
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = false

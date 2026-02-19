@@ -1,11 +1,11 @@
 use crate::events::Event;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::broadcast;
-use tracing::{debug, info, warn};
+use tokio::sync::{broadcast, mpsc};
+use tracing::{debug, info, trace, warn};
 
 /// Size of the main broadcast channel
 /// 500K provides ~5 seconds of buffer at peak throughput (100K events/sec)
@@ -22,6 +22,34 @@ const MAX_NODE_CHANNELS: usize = 2048;
 
 /// How often to clean up inactive channels (seconds)
 const CHANNEL_CLEANUP_INTERVAL: u64 = 30;
+
+/// Size of the MPSC aggregation channel.
+/// Matches BROADCAST_CHANNEL_SIZE to handle the same burst capacity.
+const AGGREGATION_CHANNEL_SIZE: usize = 500_000;
+
+/// Batch of events sent from a connection handler to the aggregator task via MPSC.
+/// One channel message per TCP read wakeup instead of one per event.
+struct IncomingBatch {
+    events: Vec<(Arc<str>, Arc<Event>)>,
+}
+
+/// Typed struct for direct WebSocket JSON serialization.
+/// Replaces `serde_json::json!()` macro to avoid intermediate `Value` heap allocation.
+#[derive(Serialize)]
+struct WsBroadcast<'a> {
+    r#type: &'static str,
+    data: WsBroadcastData<'a>,
+    timestamp: chrono::DateTime<chrono::Utc>,
+}
+
+/// Inner data payload for WsBroadcast.
+#[derive(Serialize)]
+struct WsBroadcastData<'a> {
+    id: u64,
+    node_id: &'a str,
+    event_type: u8,
+    event: &'a Event,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BroadcastEvent {
@@ -60,6 +88,13 @@ pub struct BroadcasterStats {
 /// ring buffer and node_channels map because the critical sections contain no await
 /// points. This avoids async lock overhead on the hottest path.
 pub struct EventBroadcaster {
+    /// MPSC sender for connection handlers to submit event batches to the aggregator.
+    /// `try_send()` is lock-free — no contention between 1023 connection tasks.
+    event_sender: mpsc::Sender<IncomingBatch>,
+
+    /// MPSC receiver, wrapped in Mutex<Option<>> so `start_aggregator()` can take it once.
+    event_receiver: Mutex<Option<mpsc::Receiver<IncomingBatch>>>,
+
     /// Main broadcast channel for all events
     sender: broadcast::Sender<Arc<BroadcastEvent>>,
 
@@ -88,8 +123,11 @@ impl Default for EventBroadcaster {
 impl EventBroadcaster {
     pub fn new() -> Self {
         let (sender, _) = broadcast::channel(BROADCAST_CHANNEL_SIZE);
+        let (event_sender, event_receiver) = mpsc::channel(AGGREGATION_CHANNEL_SIZE);
 
         let broadcaster = Self {
+            event_sender,
+            event_receiver: Mutex::new(Some(event_receiver)),
             sender,
             node_channels: Arc::new(RwLock::new(HashMap::with_capacity(MAX_NODE_CHANNELS))),
             recent_events: Arc::new(RwLock::new(VecDeque::with_capacity(MAX_RETAINED_EVENTS))),
@@ -161,17 +199,19 @@ impl EventBroadcaster {
         // Pre-serialize in WebSocketResponse format so the WS handler can send it directly.
         // Must match the {"type": "event", "data": {...}, "timestamp": "..."} envelope
         // that clients (frontend) expect.
+        // Uses typed structs instead of serde_json::json!() to avoid intermediate
+        // Value heap allocation + recursive drop.
         if main_receivers > 0 {
-            let ws_response = serde_json::json!({
-                "type": "event",
-                "data": {
-                    "id": broadcast_event.id,
-                    "node_id": &broadcast_event.node_id,
-                    "event_type": broadcast_event.event_type,
-                    "event": &broadcast_event.event,
+            let ws_response = WsBroadcast {
+                r#type: "event",
+                data: WsBroadcastData {
+                    id: broadcast_event.id,
+                    node_id: &broadcast_event.node_id,
+                    event_type: broadcast_event.event_type,
+                    event: &broadcast_event.event,
                 },
-                "timestamp": broadcast_event.timestamp,
-            });
+                timestamp: broadcast_event.timestamp,
+            };
             if let Ok(json) = serde_json::to_string(&ws_response) {
                 broadcast_event.serialized_json = Some(Arc::from(json.as_str()));
             }
@@ -214,6 +254,67 @@ impl EventBroadcaster {
         }
 
         Ok(id)
+    }
+
+    /// Submit an event to the aggregation channel for processing.
+    ///
+    /// This is the public API for connection handlers. Events are funnelled through
+    /// an MPSC channel to a single aggregator task, eliminating lock contention on
+    /// the broadcast channel and ring buffer.
+    ///
+    /// Uses `try_send()` which is lock-free and will return an error if the channel
+    /// is full (backpressure).
+    /// Returns `true` if the event was submitted, `false` if the channel is full.
+    pub fn send_event(&self, node_id: Arc<str>, event: Arc<Event>) -> bool {
+        self.event_sender
+            .try_send(IncomingBatch {
+                events: vec![(node_id, event)],
+            })
+            .is_ok()
+    }
+
+    /// Submit a batch of events in a single channel `try_send`.
+    /// At 600K ev/s with ~50 events per TCP read, this turns 600K channel sends
+    /// into ~12K, dramatically reducing atomic CAS contention in `Tx::find_block`.
+    pub fn send_event_batch(&self, events: Vec<(Arc<str>, Arc<Event>)>) -> bool {
+        if events.is_empty() {
+            return true;
+        }
+        self.event_sender
+            .try_send(IncomingBatch { events })
+            .is_ok()
+    }
+
+    /// Spawn the aggregator task that drains the MPSC channel and calls `broadcast_event()`.
+    ///
+    /// This must be called exactly once after construction. The aggregator is the sole
+    /// caller of `broadcast_event()`, which eliminates contention on the broadcast mutex
+    /// and ring buffer RwLock.
+    pub fn start_aggregator(self: &Arc<Self>) {
+        let mut receiver = self
+            .event_receiver
+            .lock()
+            .take()
+            .expect("start_aggregator() must be called exactly once");
+
+        let this = Arc::clone(self);
+
+        tokio::spawn(async move {
+            // Drain all available batches per wakeup for throughput
+            while let Some(batch) = receiver.recv().await {
+                for (node_id, event) in batch.events {
+                    let _ = this.broadcast_event(node_id, event);
+                }
+
+                // Drain any additional buffered batches without awaiting
+                while let Ok(batch) = receiver.try_recv() {
+                    for (node_id, event) in batch.events {
+                        let _ = this.broadcast_event(node_id, event);
+                    }
+                }
+            }
+            trace!("Aggregator task exiting — all senders dropped");
+        });
     }
 
     /// Subscribe to all events

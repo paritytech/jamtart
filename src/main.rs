@@ -1,4 +1,8 @@
-#[cfg(feature = "jemalloc")]
+#[cfg(feature = "profiling")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
+#[cfg(all(feature = "jemalloc", not(feature = "profiling")))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
@@ -107,6 +111,9 @@ fn configure_socket_buffers(listener: &tokio::net::TcpListener) {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    #[cfg(feature = "profiling")]
+    let _profiler = dhat::Profiler::new_heap();
+
     // Initialize tracing
     tracing_subscriber::registry()
         .with(

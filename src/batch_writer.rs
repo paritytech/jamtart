@@ -54,6 +54,9 @@ enum WriterCommand {
         event_id: u64,
         event: Arc<Event>,
     },
+    EventBatch {
+        events: Vec<(NodeId, u64, Arc<Event>)>,
+    },
     Flush {
         response: tokio::sync::oneshot::Sender<Result<()>>,
     },
@@ -159,6 +162,18 @@ impl BatchWriter {
                 event_id,
                 event,
             })
+            .map_err(|e| anyhow::anyhow!("Channel full: {}", e))?;
+        Ok(())
+    }
+
+    /// Queue a batch of events for writing (non-blocking, single channel send).
+    /// Reduces mpsc contention by sending N events in one `try_send` instead of N calls.
+    pub fn write_event_batch(
+        &self,
+        events: Vec<(NodeId, u64, Arc<Event>)>,
+    ) -> Result<()> {
+        self.sender
+            .try_send(WriterCommand::EventBatch { events })
             .map_err(|e| anyhow::anyhow!("Channel full: {}", e))?;
         Ok(())
     }
@@ -420,6 +435,13 @@ fn handle_command(
         } => {
             *node_counts.entry(node_id.clone()).or_default() += 1;
             event_batch.push((node_id, event_id, event));
+            CommandAction::Continue
+        }
+        WriterCommand::EventBatch { events } => {
+            for (node_id, event_id, event) in events {
+                *node_counts.entry(node_id.clone()).or_default() += 1;
+                event_batch.push((node_id, event_id, event));
+            }
             CommandAction::Continue
         }
         WriterCommand::NodeConnected {

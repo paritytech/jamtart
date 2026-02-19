@@ -11,7 +11,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, warn};
 
 /// Configure TCP socket receive buffer size for better performance.
 ///
@@ -150,12 +150,15 @@ impl TelemetryServer {
 
         let (connection_watch, connection_watch_rx) = tokio::sync::watch::channel(0usize);
 
+        let broadcaster = Arc::new(EventBroadcaster::new());
+        broadcaster.start_aggregator();
+
         Ok(Self {
             listener,
             connections: Arc::new(DashMap::new()),
             batch_writer,
             rate_limiter: Arc::new(RateLimiter::new()),
-            broadcaster: Arc::new(EventBroadcaster::new()),
+            broadcaster,
             store,
             rate_limit_disabled: no_rate_limit,
             connection_watch: Arc::new(connection_watch),
@@ -420,10 +423,27 @@ async fn handle_connection_optimized(
     // Track dropped events
     let mut dropped_events = 0u64;
 
+    // Cache metric handles before the event loop (one-time registry lookup).
+    // Each metrics::counter!/gauge! macro does a full hash + DashMap lock to find the
+    // handle. At 1023 connections x 600 events/sec, this caused ~13% CPU in DashMap
+    // spin contention. Caching eliminates it.
+    let counter_events_received = metrics::counter!("telemetry_events_received");
+    let counter_events_dropped = metrics::counter!("telemetry_events_dropped");
+    let gauge_buffer_pending = metrics::gauge!("telemetry_buffer_pending");
+
+    // Per-wakeup batch accumulators. Reused across loop iterations to avoid
+    // repeated allocation. Events are collected during the inner decode loop
+    // and sent as batches after it completes — one channel send per TCP read
+    // wakeup instead of one per event.
+    let mut broadcast_batch: Vec<(Arc<str>, Arc<Event>)> = Vec::with_capacity(64);
+    let mut db_batch: Vec<(Arc<str>, u64, Arc<Event>)> = Vec::with_capacity(64);
+
     // Read events
     loop {
         // Process all complete messages already in buffer before blocking on read.
         // This handles leftover bytes from the node info read and coalesced TCP segments.
+        let mut batch_received: u64 = 0;
+
         while buffer.len() >= 4 {
             match decode_message_frame(&buffer) {
                 Ok((size, msg_data)) => {
@@ -441,61 +461,23 @@ async fn handle_connection_optimized(
                             // Apply rate limiting (unless disabled)
                             if !rate_limit_disabled && !rate_limiter.allow_event(&node_id_str) {
                                 dropped_events += 1;
-                                metrics::counter!("telemetry_events_dropped").increment(1);
+                                counter_events_dropped.increment(1);
                                 buffer.advance(4 + size as usize);
                                 continue;
                             }
 
-                            trace!(
-                                "Received event {} from node {}",
-                                event.event_type() as u8,
-                                node_id_str
-                            );
-
                             // Wrap event in Arc once to share between broadcaster and batch writer
                             let event = Arc::new(event);
 
-                            // Broadcast event for real-time subscribers (non-blocking, sync)
-                            let broadcast_result =
-                                broadcaster.broadcast_event(node_id_str.clone(), Arc::clone(&event));
-
-                            if let Ok(event_id) = broadcast_result {
-                                trace!("Broadcast event {} from node {}", event_id, node_id_str);
-                            }
-
-                            // Queue event for batch writing — Arc clone is just atomic increment
-                            match batch_writer.write_event(
+                            // Accumulate for batch send after inner loop
+                            broadcast_batch
+                                .push((node_id_str.clone(), Arc::clone(&event)));
+                            db_batch.push((
                                 node_id_str.clone(),
                                 event_count,
-                                Arc::clone(&event),
-                            ) {
-                                Ok(_) => {
-                                    metrics::counter!("telemetry_events_received").increment(1);
-
-                                    // Update connection stats periodically
-                                    if event_count.is_multiple_of(CONNECTION_STATS_UPDATE_FREQUENCY)
-                                    {
-                                        if let Some(mut conn) = connections.get_mut(&*node_id_str) {
-                                            conn.last_event_at = chrono::Utc::now();
-                                            conn.event_count = event_count;
-                                        }
-                                    }
-                                }
-                                Err(_) => {
-                                    // Buffer is full, apply backpressure
-                                    dropped_events += 1;
-                                    metrics::counter!("telemetry_events_dropped").increment(1);
-                                    trace!(
-                                        "Write buffer full, dropping event from {}",
-                                        node_id_str
-                                    );
-                                    if dropped_events.is_multiple_of(500) {
-                                        debug!(
-                                        "Write buffer full, dropping events total: {dropped_events}",
-                                    );
-                                    }
-                                }
-                            }
+                                event,
+                            ));
+                            batch_received += 1;
 
                             buffer.advance(4 + size as usize);
                         }
@@ -533,6 +515,40 @@ async fn handle_connection_optimized(
             }
         }
 
+        // Batch-send accumulated events (1 channel send per TCP read, not per event)
+        if !broadcast_batch.is_empty() {
+            let cap = broadcast_batch.capacity();
+            let events = std::mem::replace(&mut broadcast_batch, Vec::with_capacity(cap));
+            broadcaster.send_event_batch(events);
+        }
+
+        if !db_batch.is_empty() {
+            let cap = db_batch.capacity();
+            let events = std::mem::replace(&mut db_batch, Vec::with_capacity(cap));
+            match batch_writer.write_event_batch(events) {
+                Ok(_) => {
+                    counter_events_received.increment(batch_received);
+
+                    // Update connection stats periodically
+                    if event_count.is_multiple_of(CONNECTION_STATS_UPDATE_FREQUENCY) {
+                        if let Some(mut conn) = connections.get_mut(&*node_id_str) {
+                            conn.last_event_at = chrono::Utc::now();
+                            conn.event_count = event_count;
+                        }
+                    }
+                }
+                Err(_) => {
+                    dropped_events += batch_received;
+                    counter_events_dropped.increment(batch_received);
+                    if dropped_events.is_multiple_of(500) {
+                        debug!(
+                            "Write buffer full, dropping events total: {dropped_events}",
+                        );
+                    }
+                }
+            }
+        }
+
         // Read more data from stream
         let n = stream.read_buf(&mut buffer).await?;
         if n == 0 {
@@ -550,7 +566,7 @@ async fn handle_connection_optimized(
         }
 
         // Update metrics
-        metrics::gauge!("telemetry_buffer_pending").set(batch_writer.pending_count() as f64);
+        gauge_buffer_pending.set(batch_writer.pending_count() as f64);
     }
 
     // Clean up

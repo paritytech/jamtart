@@ -6,10 +6,10 @@ use std::time::{Duration, Instant};
 use tracing::warn;
 
 /// Maximum sustained events per second per node
-const MAX_EVENTS_PER_SECOND: u32 = 100;
+const MAX_EVENTS_PER_SECOND: u32 = 1000;
 
 /// Burst allowance above the sustained rate (for block production spikes)
-const BURST_ALLOWANCE: u32 = 50;
+const BURST_ALLOWANCE: u32 = 200;
 
 /// Maximum number of concurrent connections
 pub const MAX_CONNECTIONS: usize = 1024;
@@ -36,6 +36,10 @@ pub struct RateLimiter {
     connection_count: AtomicUsize,
     /// Running count of throttled events (avoids iterating DashMap in get_stats)
     throttled_count: AtomicUsize,
+    // Cached metric handles to avoid per-call registry lookup (hash + DashMap lock)
+    counter_rate_limited: metrics::Counter,
+    counter_connections_rejected: metrics::Counter,
+    gauge_active_connections: metrics::Gauge,
 }
 
 impl Default for RateLimiter {
@@ -56,6 +60,9 @@ impl RateLimiter {
             limits,
             connection_count: AtomicUsize::new(0),
             throttled_count: AtomicUsize::new(0),
+            counter_rate_limited: metrics::counter!("telemetry_events_rate_limited"),
+            counter_connections_rejected: metrics::counter!("telemetry_connections_rejected"),
+            gauge_active_connections: metrics::gauge!("telemetry_active_connections"),
         }
     }
 
@@ -69,7 +76,7 @@ impl RateLimiter {
                     "Connection limit reached ({}), rejecting {}",
                     MAX_CONNECTIONS, addr
                 );
-                metrics::counter!("telemetry_connections_rejected").increment(1);
+                self.counter_connections_rejected.increment(1);
                 return false;
             }
             match self.connection_count.compare_exchange(
@@ -79,7 +86,7 @@ impl RateLimiter {
                 Ordering::Acquire,
             ) {
                 Ok(_) => {
-                    metrics::gauge!("telemetry_active_connections").set((current + 1) as f64);
+                    self.gauge_active_connections.set((current + 1) as f64);
                     return true;
                 }
                 Err(_) => {
@@ -97,7 +104,7 @@ impl RateLimiter {
         loop {
             let current = self.connection_count.load(Ordering::Acquire);
             if current == 0 {
-                metrics::gauge!("telemetry_active_connections").set(0.0);
+                self.gauge_active_connections.set(0.0);
                 return;
             }
             match self.connection_count.compare_exchange(
@@ -107,7 +114,7 @@ impl RateLimiter {
                 Ordering::Acquire,
             ) {
                 Ok(_) => {
-                    metrics::gauge!("telemetry_active_connections").set((current - 1) as f64);
+                    self.gauge_active_connections.set((current - 1) as f64);
                     return;
                 }
                 Err(_) => {
@@ -143,7 +150,7 @@ impl RateLimiter {
             }
             if limit.count >= MAX_EVENTS_PER_SECOND + BURST_ALLOWANCE {
                 self.throttled_count.fetch_add(1, Ordering::Relaxed);
-                metrics::counter!("telemetry_events_rate_limited").increment(1);
+                self.counter_rate_limited.increment(1);
                 return false;
             }
             limit.count += 1;
@@ -165,7 +172,7 @@ impl RateLimiter {
         // Check if we've exceeded the limit (with burst allowance)
         if limit.count >= MAX_EVENTS_PER_SECOND + BURST_ALLOWANCE {
             self.throttled_count.fetch_add(1, Ordering::Relaxed);
-            metrics::counter!("telemetry_events_rate_limited").increment(1);
+            self.counter_rate_limited.increment(1);
             return false;
         }
 
@@ -227,11 +234,12 @@ mod tests {
     fn test_rate_limit_exceeded() {
         setup_metrics();
         let limiter = RateLimiter::new();
-        // Exhaust the 150 event budget
-        for _ in 0..150 {
+        let budget = MAX_EVENTS_PER_SECOND + BURST_ALLOWANCE;
+        // Exhaust the event budget
+        for _ in 0..budget {
             limiter.allow_event("node_1");
         }
-        // 151st event should be rejected
+        // Next event should be rejected
         assert!(!limiter.allow_event("node_1"));
     }
 
@@ -239,8 +247,9 @@ mod tests {
     fn test_rate_limit_per_node() {
         setup_metrics();
         let limiter = RateLimiter::new();
+        let budget = MAX_EVENTS_PER_SECOND + BURST_ALLOWANCE;
         // Exhaust node_1's budget
-        for _ in 0..150 {
+        for _ in 0..budget {
             limiter.allow_event("node_1");
         }
         assert!(!limiter.allow_event("node_1"));
@@ -252,8 +261,9 @@ mod tests {
     fn test_window_reset() {
         setup_metrics();
         let limiter = RateLimiter::new();
+        let budget = MAX_EVENTS_PER_SECOND + BURST_ALLOWANCE;
         // Exhaust the budget
-        for _ in 0..150 {
+        for _ in 0..budget {
             limiter.allow_event("node_1");
         }
         assert!(!limiter.allow_event("node_1"));
