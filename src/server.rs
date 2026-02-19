@@ -56,7 +56,7 @@ const MAX_MESSAGE_SIZE: u32 = 100 * 1024;
 const INITIAL_BUFFER_SIZE: usize = 8192;
 
 /// Frequency of connection stats updates (every N events)
-const CONNECTION_STATS_UPDATE_FREQUENCY: u64 = 100;
+const CONNECTION_STATS_UPDATE_FREQUENCY: u64 = 1000;
 
 /// Represents an active connection from a JAM/Polkadot node.
 #[derive(Clone)]
@@ -378,8 +378,8 @@ async fn handle_connection_optimized(
     // Extract core_count from ProtocolParameters for JIP-3 fixed-size arrays
     let core_count = node_info.params.core_count;
 
-    // Generate node ID from peer ID
-    let node_id_str = hex::encode(node_info.details.peer_id);
+    // Generate node ID from peer ID — Arc<str> for zero-cost cloning in hot path
+    let node_id_str: Arc<str> = Arc::from(hex::encode(node_info.details.peer_id));
 
     info!(
         "Node {} connected: {} v{} - {}",
@@ -392,16 +392,16 @@ async fn handle_connection_optimized(
         node_info.additional_info.as_str().unwrap_or("")
     );
 
-    // Store connection info
+    // Store connection info (DashMap key is String; one-time alloc per connection)
     let connection = NodeConnection {
-        id: node_id_str.clone(),
+        id: node_id_str.to_string(),
         address: addr,
         info: node_info.clone(),
         connected_at: chrono::Utc::now(),
         last_event_at: chrono::Utc::now(),
         event_count: 0,
     };
-    connections.insert(node_id_str.clone(), connection);
+    connections.insert(node_id_str.to_string(), connection);
     let _ = connection_watch.send(connections.len());
 
     // Queue node connection event
@@ -457,20 +457,17 @@ async fn handle_connection_optimized(
 
                             // Broadcast event for real-time subscribers (non-blocking, sync)
                             let broadcast_result =
-                                broadcaster.broadcast_event(&node_id_str, Arc::clone(&event));
+                                broadcaster.broadcast_event(node_id_str.clone(), Arc::clone(&event));
 
                             if let Ok(event_id) = broadcast_result {
                                 trace!("Broadcast event {} from node {}", event_id, node_id_str);
                             }
 
-                            // Try to queue event for batch writing
-                            // Unwrap Arc — broadcaster already has its clone
-                            let event_owned =
-                                Arc::try_unwrap(event).unwrap_or_else(|arc| (*arc).clone());
+                            // Queue event for batch writing — Arc clone is just atomic increment
                             match batch_writer.write_event(
                                 node_id_str.clone(),
                                 event_count,
-                                event_owned,
+                                Arc::clone(&event),
                             ) {
                                 Ok(_) => {
                                     metrics::counter!("telemetry_events_received").increment(1);
@@ -478,7 +475,7 @@ async fn handle_connection_optimized(
                                     // Update connection stats periodically
                                     if event_count.is_multiple_of(CONNECTION_STATS_UPDATE_FREQUENCY)
                                     {
-                                        if let Some(mut conn) = connections.get_mut(&node_id_str) {
+                                        if let Some(mut conn) = connections.get_mut(&*node_id_str) {
                                             conn.last_event_at = chrono::Utc::now();
                                             conn.event_count = event_count;
                                         }
@@ -557,7 +554,7 @@ async fn handle_connection_optimized(
     }
 
     // Clean up
-    connections.remove(&node_id_str);
+    connections.remove(&*node_id_str);
     let _ = connection_watch.send(connections.len());
     batch_writer.node_disconnected(node_id_str).await?;
 

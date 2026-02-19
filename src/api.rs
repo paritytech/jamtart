@@ -1813,7 +1813,7 @@ async fn websocket_connection(mut socket: WebSocket, state: ApiState) {
     info!("WebSocket connection established");
 
     // Send initial connection confirmation with recent events
-    let recent_events = state.broadcaster.get_recent_events(Some(20));
+    let recent_events = state.broadcaster.get_recent_events(Some(200));
     let broadcaster_stats = state.broadcaster.get_stats();
 
     let initial_state = WebSocketResponse {
@@ -1823,7 +1823,7 @@ async fn websocket_connection(mut socket: WebSocket, state: ApiState) {
             "recent_events": recent_events.len(),
             "total_nodes": state.telemetry_server.connection_count(),
             "broadcaster_stats": broadcaster_stats,
-            "recent_event_samples": recent_events.iter().take(5).map(|e| {
+            "recent_event_samples": recent_events.iter().take(200).map(|e| {
                 serde_json::json!({
                     "id": e.id,
                     "node_id": e.node_id,

@@ -26,8 +26,8 @@ const CHANNEL_CLEANUP_INTERVAL: u64 = 30;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BroadcastEvent {
     pub id: u64,
-    pub node_id: String,
-    pub event: Event,
+    pub node_id: Arc<str>,
+    pub event: Arc<Event>,
     pub timestamp: chrono::DateTime<chrono::Utc>,
     pub event_type: u8,
     /// Pre-serialized JSON for WebSocket delivery (serialize once, send to all subscribers)
@@ -107,29 +107,61 @@ impl EventBroadcaster {
 
     /// Broadcast an event to all subscribers
     /// Optimized for high throughput with minimal latency.
-    /// Accepts `Arc<Event>` to avoid cloning in the caller's hot path.
+    /// Accepts `Arc<str>` node_id and `Arc<Event>` to avoid cloning/allocating in the hot path.
     pub fn broadcast_event(
         &self,
-        node_id: &str,
+        node_id: Arc<str>,
         event: Arc<Event>,
     ) -> Result<u64, broadcast::error::SendError<Arc<BroadcastEvent>>> {
         // Generate unique event ID
         let id = self.event_counter.fetch_add(1, Ordering::Relaxed);
 
+        let main_receivers = self.sender.receiver_count();
+        let has_node_channels = {
+            let nc = self.node_channels.read();
+            !nc.is_empty()
+        };
+
+        // Fast path: no WebSocket subscribers and no node-specific channels.
+        // Still update the ring buffer for API /events catch-up, but skip
+        // JSON serialization, broadcast channel send, and node-channel dispatch.
+        if main_receivers == 0 && !has_node_channels {
+            let broadcast_event = Arc::new(BroadcastEvent {
+                id,
+                node_id,
+                event_type: event.event_type() as u8,
+                timestamp: chrono::Utc::now(),
+                event,
+                serialized_json: None,
+            });
+            self.total_broadcast.fetch_add(1, Ordering::Relaxed);
+            self.undelivered_events.fetch_add(1, Ordering::Relaxed);
+
+            // Ring buffer for API recent events
+            {
+                let mut recent = self.recent_events.write();
+                if recent.len() >= MAX_RETAINED_EVENTS {
+                    recent.pop_front();
+                }
+                recent.push_back(broadcast_event);
+            }
+            return Ok(id);
+        }
+
         let event_type = event.event_type() as u8;
         let mut broadcast_event = BroadcastEvent {
             id,
-            node_id: node_id.to_string(),
+            node_id: node_id.clone(),
             event_type,
             timestamp: chrono::Utc::now(),
-            event: (*event).clone(),
+            event,
             serialized_json: None,
         };
 
         // Pre-serialize in WebSocketResponse format so the WS handler can send it directly.
         // Must match the {"type": "event", "data": {...}, "timestamp": "..."} envelope
         // that clients (frontend) expect.
-        if self.sender.receiver_count() > 0 {
+        if main_receivers > 0 {
             let ws_response = serde_json::json!({
                 "type": "event",
                 "data": {
@@ -147,38 +179,27 @@ impl EventBroadcaster {
 
         let broadcast_event = Arc::new(broadcast_event);
 
-        // Broadcast to main channel (fast path)
-        let receiver_count = self.sender.receiver_count();
+        // Broadcast to main channel
         match self.sender.send(broadcast_event.clone()) {
             Ok(_) => {
-                debug!("Broadcast event {} to {} receivers", id, receiver_count);
+                debug!("Broadcast event {} to {} receivers", id, main_receivers);
                 self.total_broadcast.fetch_add(1, Ordering::Relaxed);
-                if receiver_count == 0 {
-                    // No receivers currently listening, but event is still in buffer
-                    self.undelivered_events.fetch_add(1, Ordering::Relaxed);
-                }
             }
             Err(_) => {
-                // In tokio broadcast, send() only fails if there are no receivers
-                // (not even lagged ones). This is different from "lagged receivers"
-                // which handle lag internally by dropping old messages
                 self.total_broadcast.fetch_add(1, Ordering::Relaxed);
-                if receiver_count == 0 {
-                    self.undelivered_events.fetch_add(1, Ordering::Relaxed);
-                } else {
-                    // This shouldn't happen with active receivers
+                if main_receivers > 0 {
                     warn!(
                         "Unexpected broadcast error with {} active receivers",
-                        receiver_count
+                        main_receivers
                     );
                 }
             }
         }
 
         // Broadcast to node-specific channel if exists (sync read lock - fast path)
-        {
+        if has_node_channels {
             let node_channels = self.node_channels.read();
-            if let Some(sender) = node_channels.get(node_id) {
+            if let Some(sender) = node_channels.get(&*node_id) {
                 let _ = sender.send(broadcast_event.clone());
             }
         }
@@ -187,11 +208,9 @@ impl EventBroadcaster {
         {
             let mut recent = self.recent_events.write();
             if recent.len() >= MAX_RETAINED_EVENTS {
-                // This is normal ring buffer rotation, not data loss
-                // The event was already broadcast to all subscribers
-                recent.pop_front(); // O(1) with VecDeque instead of O(n) with Vec
+                recent.pop_front();
             }
-            recent.push_back(broadcast_event); // O(1) append
+            recent.push_back(broadcast_event);
         }
 
         Ok(id)
@@ -277,7 +296,7 @@ impl EventBroadcaster {
         // Single pass: collect from reverse iterator, then reverse the result
         let mut result = Vec::with_capacity(limit.min(recent.len()));
         for event in recent.iter().rev() {
-            if event.node_id == node_id {
+            if &*event.node_id == node_id {
                 result.push(Arc::clone(event));
                 if result.len() >= limit {
                     break;
@@ -346,6 +365,10 @@ mod tests {
         })
     }
 
+    fn node_id(s: &str) -> Arc<str> {
+        Arc::from(s)
+    }
+
     #[tokio::test]
     async fn test_broadcaster_scale() {
         let broadcaster = EventBroadcaster::new();
@@ -370,12 +393,14 @@ mod tests {
         let mut rx = broadcaster.subscribe_all();
 
         let event = make_test_event("node_1");
-        let id = broadcaster.broadcast_event("node_1", event).unwrap();
+        let id = broadcaster
+            .broadcast_event(node_id("node_1"), event)
+            .unwrap();
         assert_eq!(id, 0);
 
         let received = rx.recv().await.unwrap();
         assert_eq!(received.id, 0);
-        assert_eq!(received.node_id, "node_1");
+        assert_eq!(&*received.node_id, "node_1");
     }
 
     #[tokio::test]
@@ -385,7 +410,9 @@ mod tests {
         let mut rx2 = broadcaster.subscribe_all();
 
         let event = make_test_event("node_1");
-        broadcaster.broadcast_event("node_1", event).unwrap();
+        broadcaster
+            .broadcast_event(node_id("node_1"), event)
+            .unwrap();
 
         let e1 = rx1.recv().await.unwrap();
         let e2 = rx2.recv().await.unwrap();
@@ -399,14 +426,18 @@ mod tests {
 
         // Broadcast to node_1 — should be received
         let event1 = make_test_event("node_1");
-        broadcaster.broadcast_event("node_1", event1).unwrap();
+        broadcaster
+            .broadcast_event(node_id("node_1"), event1)
+            .unwrap();
 
         // Broadcast to node_2 — should NOT be received on node_1 channel
         let event2 = make_test_event("node_2");
-        broadcaster.broadcast_event("node_2", event2).unwrap();
+        broadcaster
+            .broadcast_event(node_id("node_2"), event2)
+            .unwrap();
 
         let received = rx_node1.recv().await.unwrap();
-        assert_eq!(received.node_id, "node_1");
+        assert_eq!(&*received.node_id, "node_1");
 
         // Trying to receive again should timeout (no more messages for node_1)
         let result =
@@ -420,10 +451,12 @@ mod tests {
         let mut rx = broadcaster.subscribe_filtered(EventFilter::All);
 
         let event = make_test_event("node_1");
-        broadcaster.broadcast_event("node_1", event).unwrap();
+        broadcaster
+            .broadcast_event(node_id("node_1"), event)
+            .unwrap();
 
         let received = rx.recv().await.unwrap();
-        assert_eq!(received.node_id, "node_1");
+        assert_eq!(&*received.node_id, "node_1");
     }
 
     #[tokio::test]
@@ -434,7 +467,7 @@ mod tests {
         for i in 0..5 {
             let event = make_test_event(&format!("node_{}", i));
             broadcaster
-                .broadcast_event(&format!("node_{}", i), event)
+                .broadcast_event(node_id(&format!("node_{}", i)), event)
                 .unwrap();
         }
 
@@ -457,16 +490,20 @@ mod tests {
         // Broadcast from multiple nodes
         for _ in 0..3 {
             let event = make_test_event("node_a");
-            broadcaster.broadcast_event("node_a", event).unwrap();
+            broadcaster
+                .broadcast_event(node_id("node_a"), event)
+                .unwrap();
         }
         for _ in 0..2 {
             let event = make_test_event("node_b");
-            broadcaster.broadcast_event("node_b", event).unwrap();
+            broadcaster
+                .broadcast_event(node_id("node_b"), event)
+                .unwrap();
         }
 
         let node_a_events = broadcaster.get_recent_events_by_node("node_a", 10);
         assert_eq!(node_a_events.len(), 3);
-        assert!(node_a_events.iter().all(|e| e.node_id == "node_a"));
+        assert!(node_a_events.iter().all(|e| &*e.node_id == "node_a"));
 
         let node_b_events = broadcaster.get_recent_events_by_node("node_b", 10);
         assert_eq!(node_b_events.len(), 2);
@@ -479,7 +516,9 @@ mod tests {
         // Broadcast more than MAX_RETAINED_EVENTS
         for _ in 0..(MAX_RETAINED_EVENTS + 100) {
             let event = make_test_event("node_1");
-            broadcaster.broadcast_event("node_1", event).unwrap();
+            broadcaster
+                .broadcast_event(node_id("node_1"), event)
+                .unwrap();
         }
 
         let recent = broadcaster.get_recent_events(None);
@@ -494,7 +533,9 @@ mod tests {
         let _rx = broadcaster.subscribe_all();
 
         let event = make_test_event("node_1");
-        broadcaster.broadcast_event("node_1", event).unwrap();
+        broadcaster
+            .broadcast_event(node_id("node_1"), event)
+            .unwrap();
 
         let stats = broadcaster.get_stats();
         assert_eq!(stats.total_events_broadcast, 1);

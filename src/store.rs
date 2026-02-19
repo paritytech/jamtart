@@ -4,8 +4,12 @@ use chrono::{DateTime, Utc};
 use serde_json;
 use sqlx::{postgres::PgPoolOptions, PgPool, Row};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
+
+/// Shared string type for node IDs (matches batch_writer::NodeId).
+type NodeId = Arc<str>;
 
 /// TimescaleDB-backed event store for high-throughput telemetry data.
 ///
@@ -71,7 +75,7 @@ impl EventStore {
     /// Uses PostgreSQL unnest() for efficient multi-row upsert.
     pub async fn store_nodes_connected_batch(
         &self,
-        nodes: &[(String, crate::events::NodeInformation, String)],
+        nodes: &[(NodeId, crate::events::NodeInformation, String)],
     ) -> Result<(), sqlx::Error> {
         if nodes.is_empty() {
             return Ok(());
@@ -80,7 +84,7 @@ impl EventStore {
         let now = Utc::now();
 
         // Prepare arrays for unnest
-        let node_ids: Vec<&str> = nodes.iter().map(|(id, _, _)| id.as_str()).collect();
+        let node_ids: Vec<&str> = nodes.iter().map(|(id, _, _)| &**id).collect();
         let peer_ids: Vec<String> = nodes
             .iter()
             .map(|(_, info, _)| hex::encode(info.details.peer_id))
@@ -136,14 +140,14 @@ impl EventStore {
     /// Batch update multiple node disconnections in a single query.
     pub async fn store_nodes_disconnected_batch(
         &self,
-        node_ids: &[String],
+        node_ids: &[NodeId],
     ) -> Result<(), sqlx::Error> {
         if node_ids.is_empty() {
             return Ok(());
         }
 
         let now = Utc::now();
-        let ids: Vec<&str> = node_ids.iter().map(|s| s.as_str()).collect();
+        let ids: Vec<&str> = node_ids.iter().map(|s| &**s).collect();
 
         sqlx::query(
             r#"
@@ -400,7 +404,7 @@ impl EventStore {
     /// overhead on both client and server side.
     pub async fn store_events_batch(
         &self,
-        events: Vec<(String, u64, Event)>,
+        events: Vec<(NodeId, u64, Arc<Event>)>,
     ) -> Result<(), sqlx::Error> {
         if events.is_empty() {
             return Ok(());
@@ -422,6 +426,9 @@ impl EventStore {
         buf.extend_from_slice(b"PGCOPY\n\xff\r\n\0");
         buf.extend_from_slice(&0i32.to_be_bytes()); // flags
         buf.extend_from_slice(&0i32.to_be_bytes()); // header extension length
+
+        // Reusable scratch buffer for JSON serialization (avoids per-event String allocation)
+        let mut json_buf: Vec<u8> = Vec::with_capacity(4096);
 
         for (node_id, event_id, event) in &events {
             // Field count
@@ -447,12 +454,16 @@ impl EventStore {
             buf.extend_from_slice(&2i32.to_be_bytes());
             buf.extend_from_slice(&event_type.to_be_bytes());
 
-            // Column 5: data (JSONB) — version byte (0x01) + JSON UTF-8 bytes
-            let event_json = serde_json::to_string(event).unwrap_or_else(|_| "{}".to_string());
-            let json_bytes = event_json.as_bytes();
-            buf.extend_from_slice(&(json_bytes.len() as i32 + 1).to_be_bytes()); // +1 for version byte
+            // Column 5: data (JSONB) — version byte (0x01) + JSON bytes
+            // Write directly into reusable buffer to avoid per-event String allocation
+            json_buf.clear();
+            if serde_json::to_writer(&mut json_buf, &**event).is_err() {
+                json_buf.clear();
+                json_buf.extend_from_slice(b"{}");
+            }
+            buf.extend_from_slice(&(json_buf.len() as i32 + 1).to_be_bytes()); // +1 for version byte
             buf.push(1u8); // JSONB version 1
-            buf.extend_from_slice(json_bytes);
+            buf.extend_from_slice(&json_buf);
         }
 
         // Trailer: -1 as i16
@@ -480,7 +491,7 @@ impl EventStore {
     /// Simple batch insert for small batches using individual INSERTs in a transaction.
     async fn store_events_simple(
         &self,
-        events: Vec<(String, u64, Event)>,
+        events: Vec<(NodeId, u64, Arc<Event>)>,
     ) -> Result<(), sqlx::Error> {
         let mut tx = self.pool.begin().await?;
         let event_count = events.len();
@@ -499,7 +510,7 @@ impl EventStore {
                     Utc::now()
                 });
             let event_json =
-                serde_json::to_value(&event).map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
+                serde_json::to_value(&*event).map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
 
             sqlx::query(
                 r#"
@@ -508,7 +519,7 @@ impl EventStore {
                 "#,
             )
             .bind(timestamp)
-            .bind(&node_id)
+            .bind(&*node_id)
             .bind(event_id as i64)
             .bind(event_type)
             .bind(event_json)
@@ -549,14 +560,14 @@ impl EventStore {
     /// Multiple concurrent callers are safe since updates are additive.
     pub async fn update_node_stats(
         &self,
-        node_counts: &HashMap<String, u64>,
+        node_counts: &HashMap<NodeId, u64>,
     ) -> Result<(), sqlx::Error> {
         if node_counts.is_empty() {
             return Ok(());
         }
 
         let now = Utc::now();
-        let node_ids: Vec<&str> = node_counts.keys().map(|s| s.as_str()).collect();
+        let node_ids: Vec<&str> = node_counts.keys().map(|s| &**s).collect();
         let counts: Vec<i64> = node_counts.values().map(|&c| c as i64).collect();
 
         // Single UPDATE with unnest() acquires all row locks atomically,
