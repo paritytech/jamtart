@@ -10,9 +10,17 @@ use tracing::{debug, error, info, warn};
 use crate::events::{Event, NodeInformation};
 use crate::store::EventStore;
 
+/// Shared string type for node IDs in hot paths.
+/// Arc<str> clone is a single atomic increment vs 64-byte heap allocation for String.
+pub type NodeId = Arc<str>;
+
+/// Event record with pre-serialized JSON: (node_id, event_id, event, event_json).
+/// Used throughout the write pipeline (batch_writer → store).
+pub type EventRecord = (NodeId, u64, Arc<Event>, Arc<[u8]>);
+
 /// Number of parallel DB writer tasks (work-stealing pool).
 /// More workers = more concurrent COPY operations in flight while waiting on DB I/O.
-const NUM_WRITERS: usize = 32;
+const NUM_WRITERS: usize = 8;
 
 /// Maximum number of events to buffer per writer before flushing.
 /// Increased from 3,000 to 10,000 for TimescaleDB hypertable efficiency.
@@ -38,17 +46,21 @@ pub struct BatchWriter {
 
 enum WriterCommand {
     NodeConnected {
-        node_id: String,
-        info: NodeInformation,
+        node_id: NodeId,
+        info: Box<NodeInformation>,
         address: String,
     },
     NodeDisconnected {
-        node_id: String,
+        node_id: NodeId,
     },
     Event {
-        node_id: String,
+        node_id: NodeId,
         event_id: u64,
-        event: Event,
+        event: Arc<Event>,
+        event_json: Arc<[u8]>,
+    },
+    EventBatch {
+        events: Vec<EventRecord>,
     },
     Flush {
         response: tokio::sync::oneshot::Sender<Result<()>>,
@@ -66,7 +78,7 @@ impl BatchWriter {
     pub fn new(store: Arc<EventStore>) -> Self {
         let (sender, receiver) = mpsc::channel(CHANNEL_SIZE);
         let shared_rx = Arc::new(Mutex::new(receiver));
-        let shared_node_counts: Arc<Mutex<HashMap<String, u64>>> =
+        let shared_node_counts: Arc<Mutex<HashMap<NodeId, u64>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
         // Single dedicated task for flushing node stats to DB.
@@ -123,14 +135,14 @@ impl BatchWriter {
     /// Queue a node connection event (async for reliability)
     pub async fn node_connected(
         &self,
-        node_id: String,
+        node_id: NodeId,
         info: NodeInformation,
         address: String,
     ) -> Result<()> {
         self.sender
             .send(WriterCommand::NodeConnected {
                 node_id,
-                info,
+                info: Box::new(info),
                 address,
             })
             .await
@@ -139,7 +151,7 @@ impl BatchWriter {
     }
 
     /// Queue a node disconnection event (async for reliability)
-    pub async fn node_disconnected(&self, node_id: String) -> Result<()> {
+    pub async fn node_disconnected(&self, node_id: NodeId) -> Result<()> {
         self.sender
             .send(WriterCommand::NodeDisconnected { node_id })
             .await
@@ -148,13 +160,29 @@ impl BatchWriter {
     }
 
     /// Queue an event for writing (non-blocking)
-    pub fn write_event(&self, node_id: String, event_id: u64, event: Event) -> Result<()> {
+    pub fn write_event(
+        &self,
+        node_id: NodeId,
+        event_id: u64,
+        event: Arc<Event>,
+        event_json: Arc<[u8]>,
+    ) -> Result<()> {
         self.sender
             .try_send(WriterCommand::Event {
                 node_id,
                 event_id,
                 event,
+                event_json,
             })
+            .map_err(|e| anyhow::anyhow!("Channel full: {}", e))?;
+        Ok(())
+    }
+
+    /// Queue a batch of events for writing (non-blocking, single channel send).
+    /// Reduces mpsc contention by sending N events in one `try_send` instead of N calls.
+    pub fn write_event_batch(&self, events: Vec<EventRecord>) -> Result<()> {
+        self.sender
+            .try_send(WriterCommand::EventBatch { events })
             .map_err(|e| anyhow::anyhow!("Channel full: {}", e))?;
         Ok(())
     }
@@ -220,12 +248,12 @@ async fn writer_worker(
     id: usize,
     receiver: Arc<Mutex<Receiver<WriterCommand>>>,
     store: Arc<EventStore>,
-    shared_node_counts: Arc<Mutex<HashMap<String, u64>>>,
+    shared_node_counts: Arc<Mutex<HashMap<NodeId, u64>>>,
 ) -> Result<()> {
-    let mut event_batch: Vec<(String, u64, Event)> = Vec::with_capacity(MAX_BATCH_SIZE);
-    let mut node_connects: Vec<(String, NodeInformation, String)> = Vec::new();
-    let mut node_disconnects: Vec<String> = Vec::new();
-    let mut node_counts: HashMap<String, u64> = HashMap::new();
+    let mut event_batch: Vec<EventRecord> = Vec::with_capacity(MAX_BATCH_SIZE);
+    let mut node_connects: Vec<(NodeId, NodeInformation, String)> = Vec::new();
+    let mut node_disconnects: Vec<NodeId> = Vec::new();
+    let mut node_counts: HashMap<NodeId, u64> = HashMap::new();
 
     let mut stats_interval = interval(NODE_STATS_INTERVAL);
     stats_interval.tick().await;
@@ -323,10 +351,10 @@ async fn writer_worker(
 /// when 32 workers compete for events on a lightly-loaded channel.
 async fn drain_from_channel(
     receiver: &Arc<Mutex<Receiver<WriterCommand>>>,
-    event_batch: &mut Vec<(String, u64, Event)>,
-    node_connects: &mut Vec<(String, NodeInformation, String)>,
-    node_disconnects: &mut Vec<String>,
-    node_counts: &mut HashMap<String, u64>,
+    event_batch: &mut Vec<EventRecord>,
+    node_connects: &mut Vec<(NodeId, NodeInformation, String)>,
+    node_disconnects: &mut Vec<NodeId>,
+    node_counts: &mut HashMap<NodeId, u64>,
     flush_response: &mut Option<tokio::sync::oneshot::Sender<Result<()>>>,
 ) -> bool {
     let mut rx = receiver.lock().await;
@@ -402,10 +430,10 @@ enum CommandAction {
 
 fn handle_command(
     cmd: WriterCommand,
-    event_batch: &mut Vec<(String, u64, Event)>,
-    node_connects: &mut Vec<(String, NodeInformation, String)>,
-    node_disconnects: &mut Vec<String>,
-    node_counts: &mut HashMap<String, u64>,
+    event_batch: &mut Vec<EventRecord>,
+    node_connects: &mut Vec<(NodeId, NodeInformation, String)>,
+    node_disconnects: &mut Vec<NodeId>,
+    node_counts: &mut HashMap<NodeId, u64>,
     flush_response: &mut Option<tokio::sync::oneshot::Sender<Result<()>>>,
 ) -> CommandAction {
     match cmd {
@@ -413,9 +441,17 @@ fn handle_command(
             node_id,
             event_id,
             event,
+            event_json,
         } => {
             *node_counts.entry(node_id.clone()).or_default() += 1;
-            event_batch.push((node_id, event_id, event));
+            event_batch.push((node_id, event_id, event, event_json));
+            CommandAction::Continue
+        }
+        WriterCommand::EventBatch { events } => {
+            for (node_id, event_id, event, event_json) in events {
+                *node_counts.entry(node_id.clone()).or_default() += 1;
+                event_batch.push((node_id, event_id, event, event_json));
+            }
             CommandAction::Continue
         }
         WriterCommand::NodeConnected {
@@ -423,7 +459,7 @@ fn handle_command(
             info,
             address,
         } => {
-            node_connects.push((node_id, info, address));
+            node_connects.push((node_id, *info, address));
             CommandAction::Continue
         }
         WriterCommand::NodeDisconnected { node_id } => {
@@ -439,10 +475,7 @@ fn handle_command(
 }
 
 /// Flush only events to database (node updates are decoupled).
-async fn flush_events(
-    store: &Arc<EventStore>,
-    event_batch: &mut Vec<(String, u64, Event)>,
-) -> Result<()> {
+async fn flush_events(store: &Arc<EventStore>, event_batch: &mut Vec<EventRecord>) -> Result<()> {
     let event_count = event_batch.len();
 
     if event_count == 0 {

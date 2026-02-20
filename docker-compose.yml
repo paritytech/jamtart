@@ -20,7 +20,7 @@ services:
       - -c
       - shared_buffers=256MB
       - -c
-      - max_connections=200
+      - max_connections=250
       - -c
       - effective_cache_size=1GB
       - -c
@@ -73,8 +73,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '4'
-          memory: 4G
+          cpus: '8'
+          memory: 16G
     logging:
       driver: json-file
       options:
