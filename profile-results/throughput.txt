@@ -1,6 +1,0 @@
---- Load Generator Report ---
-Duration:     18.0s
-Nodes:        200
-Events sent:  337,548
-Throughput:   18,752 events/sec
-Errors:       0

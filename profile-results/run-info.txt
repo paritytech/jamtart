@@ -1,8 +1,0 @@
---- Profile Run Info ---
-Date:       2026-02-20T15:49:39Z
-Git rev:    dd2405d
-Git branch: fix/jip3-decoder-alignment
-Mode:       cpu
-Nodes:      200
-Rate:       100 events/sec/node
-Duration:   15s
