@@ -1,0 +1,761 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Some playground for experimenting with JAMTART",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": 1,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 10,
+      "title": "Global overview",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "line", "fillOpacity": 0, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "auto", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 1 },
+      "id": 1,
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "targets": [{
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+        "editorMode": "code", "format": "table", "rawQuery": true,
+        "rawSql": "SELECT $__timeGroup(timestamp, $__interval) AS time, count(*) AS events\nFROM events_view WHERE $__timeFilter(timestamp)\nGROUP BY 1 ORDER BY 1",
+        "refId": "A"
+      }],
+      "title": "Events per minute (total)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "bars", "fillOpacity": 80, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 2,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "auto", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "normal" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 1 },
+      "id": 3,
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "right", "showLegend": true },
+        "tooltip": { "mode": "all", "sort": "desc" }
+      },
+      "targets": [{
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+        "editorMode": "code", "format": "time_series", "rawQuery": true,
+        "rawSql": "SELECT $__timeGroup(timestamp, $__interval) AS time, event_group AS metric, count(*) AS cnt\nFROM events_view\nWHERE $__timeFilter(timestamp)\nGROUP BY 1, 2 ORDER BY 1",
+        "refId": "A"
+      }],
+      "title": "Events by group",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "bars", "fillOpacity": 80, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 2,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "auto", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "normal" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
+      "id": 2,
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "right", "showLegend": true },
+        "tooltip": { "mode": "all", "sort": "none" }
+      },
+      "targets": [{
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+        "editorMode": "code", "format": "time_series", "rawQuery": true,
+        "rawSql": "SELECT $__timeGroup(timestamp, $__interval) AS time, event_group || ': ' || event_name AS metric, count(*) AS cnt\nFROM events_view\nWHERE $__timeFilter(timestamp)\nGROUP BY 1, 2 ORDER BY 1",
+        "refId": "A"
+      }],
+      "title": "Events by type",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "id": 11,
+      "title": "Filtered: $event_group / $event_name",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "auto", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "id": 4,
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "all", "sort": "desc" }
+      },
+      "targets": [{
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+        "editorMode": "code", "format": "time_series", "rawQuery": true,
+        "rawSql": "SELECT $__timeGroup(timestamp, $__interval) AS time, event_name AS metric, count(*) AS cnt\nFROM events_view\nWHERE $__timeFilter(timestamp)\n  AND event_group IN ($event_group)\n  AND event_name IN ($event_name)\nGROUP BY 1, 2 ORDER BY 1",
+        "refId": "A"
+      }],
+      "title": "Filtered events per interval",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "continuous-GrYlRd" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "scaleDistribution": { "type": "linear" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "id": 5,
+      "options": {
+        "calculate": false, "cellGap": 2,
+        "color": { "exponent": 0.5, "fill": "dark-orange", "mode": "scheme", "reverse": false, "scale": "exponential", "scheme": "Turbo", "steps": 64 },
+        "exemplars": { "color": "rgba(255,0,255,0.7)" },
+        "filterValues": { "le": 1e-9 },
+        "legend": { "show": true },
+        "rowsFrame": { "layout": "auto" },
+        "tooltip": { "mode": "single", "showColorScale": true, "yHistogram": false },
+        "yAxis": { "axisPlacement": "left", "reverse": false }
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [{
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+        "editorMode": "code", "format": "table", "rawQuery": true,
+        "rawSql": "SELECT $__timeGroup(timestamp, $__interval) AS time, left(node_id, 8) AS node, count(*) AS cnt\nFROM events_view\nWHERE $__timeFilter(timestamp)\n  AND event_group IN ($event_group)\n  AND event_name IN ($event_name)\nGROUP BY 1, 2 ORDER BY 1",
+        "refId": "A"
+      }],
+      "title": "Node activity heatmap: $event_group",
+      "transformations": [{ "id": "prepareTimeSeries", "options": { "format": "many" } }],
+      "type": "heatmap"
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "id": 30,
+      "title": "Block & Consensus",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "line", "fillOpacity": 0, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 2,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "auto", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 19 },
+      "id": 20,
+      "options": {
+        "legend": { "calcs": ["last"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "all", "sort": "desc" }
+      },
+      "targets": [{
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+        "editorMode": "code", "format": "time_series", "rawQuery": true,
+        "rawSql": "SELECT $__timeGroup(timestamp, $__interval) AS time,\n  left(node_id, 8) AS metric,\n  max((data->'BestBlockChanged'->>'slot')::bigint) AS slot\nFROM events_view\nWHERE $__timeFilter(timestamp) AND event_type = 11\n  AND node_id IN ($node_id)\nGROUP BY 1, 2 ORDER BY 1",
+        "refId": "A"
+      }],
+      "title": "Best block height per node",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "line", "fillOpacity": 0, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 2,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "auto", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 19 },
+      "id": 21,
+      "options": {
+        "legend": { "calcs": ["last"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "all", "sort": "desc" }
+      },
+      "targets": [{
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+        "editorMode": "code", "format": "time_series", "rawQuery": true,
+        "rawSql": "SELECT $__timeGroup(timestamp, $__interval) AS time,\n  left(node_id, 8) AS metric,\n  max((data->'FinalizedBlockChanged'->>'slot')::bigint) AS slot\nFROM events_view\nWHERE $__timeFilter(timestamp) AND event_type = 12\n  AND node_id IN ($node_id)\nGROUP BY 1, 2 ORDER BY 1",
+        "refId": "A"
+      }],
+      "title": "Finalized block height per node",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "slots behind", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "auto", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 19 },
+      "id": 22,
+      "options": {
+        "legend": { "calcs": ["last", "max"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "all", "sort": "desc" }
+      },
+      "targets": [{
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+        "editorMode": "code", "format": "time_series", "rawQuery": true,
+        "rawSql": "SELECT bucket AS time, node AS metric, best_slot - finalized_slot AS gap\nFROM (\n  SELECT $__timeGroup(timestamp, $__interval) AS bucket,\n    left(node_id, 8) AS node,\n    max(CASE WHEN event_type = 11 THEN (data->'BestBlockChanged'->>'slot')::bigint END) AS best_slot,\n    max(CASE WHEN event_type = 12 THEN (data->'FinalizedBlockChanged'->>'slot')::bigint END) AS finalized_slot\n  FROM events_view\n  WHERE $__timeFilter(timestamp) AND event_type IN (11, 12)\n    AND node_id IN ($node_id)\n  GROUP BY 1, 2\n) sub\nWHERE best_slot IS NOT NULL AND finalized_slot IS NOT NULL\nORDER BY 1",
+        "refId": "A"
+      }],
+      "title": "Best - Finalized gap",
+      "type": "timeseries"
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 },
+      "id": 31,
+      "title": "Network Health",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "line", "fillOpacity": 0, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "auto", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 28 },
+      "id": 23,
+      "options": {
+        "legend": { "calcs": ["last", "min", "max"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "all", "sort": "desc" }
+      },
+      "targets": [{
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+        "editorMode": "code", "format": "time_series", "rawQuery": true,
+        "rawSql": "SELECT $__timeGroup(timestamp, $__interval) AS time,\n  left(node_id, 8) AS metric,\n  avg((data->'Status'->>'num_peers')::int) AS peers\nFROM events_view\nWHERE $__timeFilter(timestamp) AND event_type = 10\n  AND node_id IN ($node_id)\nGROUP BY 1, 2 ORDER BY 1",
+        "refId": "A"
+      }],
+      "title": "Peer count per node",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "line", "fillOpacity": 0, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "auto", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 28 },
+      "id": 24,
+      "options": {
+        "legend": { "calcs": ["last", "min"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "all", "sort": "desc" }
+      },
+      "targets": [{
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+        "editorMode": "code", "format": "time_series", "rawQuery": true,
+        "rawSql": "SELECT $__timeGroup(timestamp, $__interval) AS time,\n  left(node_id, 8) AS metric,\n  avg((data->'Status'->>'num_val_peers')::int) AS val_peers\nFROM events_view\nWHERE $__timeFilter(timestamp) AND event_type = 10\n  AND node_id IN ($node_id)\nGROUP BY 1, 2 ORDER BY 1",
+        "refId": "A"
+      }],
+      "title": "Validator peers per node",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "bars", "fillOpacity": 80, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 2,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "auto", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "normal" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 28 },
+      "id": 25,
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "all", "sort": "desc" }
+      },
+      "targets": [{
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+        "editorMode": "code", "format": "time_series", "rawQuery": true,
+        "rawSql": "SELECT $__timeGroup(timestamp, $__interval) AS time,\n  event_name AS metric,\n  count(*) AS cnt\nFROM events_view\nWHERE $__timeFilter(timestamp) AND event_type IN (23, 26, 27)\n  AND node_id IN ($node_id)\nGROUP BY 1, 2 ORDER BY 1",
+        "refId": "A"
+      }],
+      "title": "Connection events",
+      "type": "timeseries"
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 36 },
+      "id": 32,
+      "title": "Work Package Pipeline",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "bars", "fillOpacity": 40, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "auto", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 37 },
+      "id": 26,
+      "options": {
+        "legend": { "calcs": ["sum"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "all", "sort": "desc" }
+      },
+      "targets": [{
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+        "editorMode": "code", "format": "time_series", "rawQuery": true,
+        "rawSql": "SELECT $__timeGroup(timestamp, $__interval) AS time,\n  CASE event_type\n    WHEN 90 THEN '1. Submitted'\n    WHEN 101 THEN '2. Refined'\n    WHEN 105 THEN '3. Guaranteed'\n  END AS metric,\n  count(*) AS cnt\nFROM events_view\nWHERE $__timeFilter(timestamp) AND event_type IN (90, 101, 105)\nGROUP BY 1, 2 ORDER BY 1",
+        "refId": "A"
+      }],
+      "title": "Work package pipeline",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 37 },
+      "id": 27,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "right", "showLegend": true, "values": ["value", "percent"] },
+        "pieType": "donut",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "targets": [{
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+        "editorMode": "code", "format": "table", "rawQuery": true,
+        "rawSql": "SELECT\n  sum(CASE WHEN data->'GuaranteeDiscarded'->>'reason' = 'PackageReportedOnChain' THEN 1 ELSE 0 END) AS \"PackageReportedOnChain\",\n  sum(CASE WHEN data->'GuaranteeDiscarded'->>'reason' = 'CannotReportOnChain' THEN 1 ELSE 0 END) AS \"CannotReportOnChain\",\n  sum(CASE WHEN data->'GuaranteeDiscarded'->>'reason' NOT IN ('PackageReportedOnChain', 'CannotReportOnChain') THEN 1 ELSE 0 END) AS \"Other\"\nFROM events_view\nWHERE $__timeFilter(timestamp) AND event_type = 113",
+        "refId": "A"
+      }],
+      "title": "Guarantee discard reasons",
+      "type": "piechart"
+    },
+    {
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "bars", "fillOpacity": 60, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "auto", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "normal" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 37 },
+      "id": 28,
+      "options": {
+        "legend": { "calcs": ["sum", "mean"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "all", "sort": "desc" }
+      },
+      "targets": [{
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+        "editorMode": "code", "format": "time_series", "rawQuery": true,
+        "rawSql": "SELECT $__timeGroup(timestamp, $__interval) AS time,\n  left(node_id, 8) AS metric,\n  count(*) AS submissions\nFROM events_view\nWHERE $__timeFilter(timestamp) AND event_type = 90\n  AND node_id IN ($node_id)\nGROUP BY 1, 2 ORDER BY 1",
+        "refId": "A"
+      }],
+      "title": "WP throughput per node",
+      "type": "timeseries"
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 45 },
+      "id": 33,
+      "title": "Node Overview",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [
+            { "options": { "false": { "color": "red", "index": 1, "text": "No" }, "true": { "color": "green", "index": 0, "text": "Yes" } }, "type": "value" }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 46 },
+      "id": 40,
+      "options": {
+        "cellHeight": "sm",
+        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+        "showHeader": true,
+        "sortBy": [{ "desc": false, "displayName": "node" }]
+      },
+      "targets": [{
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+        "editorMode": "code", "format": "table", "rawQuery": true,
+        "rawSql": "SELECT\n  left(n.node_id, 8) AS node,\n  n.implementation_name AS impl,\n  n.implementation_version AS version,\n  n.is_connected AS connected,\n  n.event_count,\n  n.last_seen_at\nFROM nodes n\nORDER BY n.node_id",
+        "refId": "A"
+      }],
+      "title": "Connected nodes",
+      "type": "table"
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 52 },
+      "id": 34,
+      "title": "Data Availability",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "line", "fillOpacity": 0, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "auto", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 53 },
+      "id": 41,
+      "options": {
+        "legend": { "calcs": ["last"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "all", "sort": "desc" }
+      },
+      "targets": [{
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+        "editorMode": "code", "format": "time_series", "rawQuery": true,
+        "rawSql": "SELECT $__timeGroup(timestamp, $__interval) AS time,\n  left(node_id, 8) AS metric,\n  avg((data->'Status'->>'num_shards')::int) AS shards\nFROM events_view\nWHERE $__timeFilter(timestamp) AND event_type = 10\n  AND node_id IN ($node_id)\nGROUP BY 1, 2 ORDER BY 1",
+        "refId": "A"
+      }],
+      "title": "Shard count per node",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "line", "fillOpacity": 0, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "auto", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 53 },
+      "id": 42,
+      "options": {
+        "legend": { "calcs": ["last"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "all", "sort": "desc" }
+      },
+      "targets": [{
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+        "editorMode": "code", "format": "time_series", "rawQuery": true,
+        "rawSql": "SELECT $__timeGroup(timestamp, $__interval) AS time,\n  left(node_id, 8) AS metric,\n  avg((data->'Status'->>'shards_size')::bigint) AS bytes\nFROM events_view\nWHERE $__timeFilter(timestamp) AND event_type = 10\n  AND node_id IN ($node_id)\nGROUP BY 1, 2 ORDER BY 1",
+        "refId": "A"
+      }],
+      "title": "Shard storage size",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "line", "fillOpacity": 0, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "auto", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 53 },
+      "id": 43,
+      "options": {
+        "legend": { "calcs": ["last"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "all", "sort": "desc" }
+      },
+      "targets": [{
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+        "editorMode": "code", "format": "time_series", "rawQuery": true,
+        "rawSql": "SELECT $__timeGroup(timestamp, $__interval) AS time,\n  left(node_id, 8) AS metric,\n  avg((data->'Status'->>'num_preimages')::int) AS preimages\nFROM events_view\nWHERE $__timeFilter(timestamp) AND event_type = 10\n  AND node_id IN ($node_id)\nGROUP BY 1, 2 ORDER BY 1",
+        "refId": "A"
+      }],
+      "title": "Preimage count per node",
+      "type": "timeseries"
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": [],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": true, "text": ["All"], "value": ["$__all"] },
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+        "definition": "SELECT DISTINCT group_name FROM event_types ORDER BY 1",
+        "includeAll": true, "multi": true, "name": "event_group", "options": [],
+        "query": "SELECT DISTINCT group_name FROM event_types ORDER BY 1",
+        "refresh": 1, "regex": "", "skipUrlSync": false, "sort": 1, "type": "query"
+      },
+      {
+        "current": { "selected": true, "text": ["All"], "value": ["$__all"] },
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+        "definition": "SELECT DISTINCT name FROM event_types WHERE group_name IN ($event_group) ORDER BY 1",
+        "includeAll": true, "multi": true, "name": "event_name", "options": [],
+        "query": "SELECT DISTINCT name FROM event_types WHERE group_name IN ($event_group) ORDER BY 1",
+        "refresh": 1, "regex": "", "skipUrlSync": false, "sort": 1, "type": "query"
+      },
+      {
+        "current": { "selected": false, "text": "No", "value": "No" },
+        "description": "When Yes, the node list only shows currently connected nodes. Useful for live monitoring.",
+        "includeAll": false, "multi": false, "name": "connected_only", "options": [
+          { "selected": true, "text": "No", "value": "No" },
+          { "selected": false, "text": "Yes", "value": "Yes" }
+        ],
+        "query": "No,Yes",
+        "skipUrlSync": false, "type": "custom"
+      },
+      {
+        "current": { "selected": true, "text": ["All"], "value": ["$__all"] },
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "jamtart-pg" },
+        "definition": "SELECT DISTINCT left(node_id, 8) AS __text, node_id AS __value FROM events WHERE $__timeFilter(timestamp) AND ('$connected_only' = 'No' OR node_id IN (SELECT node_id FROM nodes WHERE is_connected = true)) ORDER BY 1",
+        "description": "Nodes with events in the selected time range. Use 'connected_only' to narrow to live nodes.",
+        "includeAll": true, "multi": true, "name": "node_id", "options": [],
+        "query": "SELECT DISTINCT left(node_id, 8) AS __text, node_id AS __value FROM events WHERE $__timeFilter(timestamp) AND ('$connected_only' = 'No' OR node_id IN (SELECT node_id FROM nodes WHERE is_connected = true)) ORDER BY 1",
+        "refresh": 2, "regex": "", "skipUrlSync": false, "sort": 1, "type": "query"
+      }
+    ]
+  },
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "TART-playground",
+  "uid": "afd4ks6sba1a8b",
+  "version": 14,
+  "weekStart": ""
+}

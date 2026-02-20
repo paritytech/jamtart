@@ -982,6 +982,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+### Grafana Dashboards
+
+Pre-built dashboards for JAM network telemetry are included in `grafana/`. Start with:
+
+```bash
+docker compose --profile with-grafana up -d
+# Open http://localhost:3000 (admin/admin)
+```
+
+Five dashboards are provisioned automatically: network overview, per-node drill-down with event inspector, core analysis, SQL playground, and a connectivity check.
+
+See **[README-grafana.md](README-grafana.md)** for full documentation.
+
 ### Grafana Integration
 
 #### Add TART as Prometheus Data Source
