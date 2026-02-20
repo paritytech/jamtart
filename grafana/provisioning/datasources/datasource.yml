@@ -1,0 +1,34 @@
+apiVersion: 1
+
+datasources:
+  - name: JamTart PostgreSQL
+    type: postgres
+    uid: jamtart-pg
+    access: proxy
+    url: postgres:5432
+    database: tart_telemetry
+    user: tart
+    secureJsonData:
+      password: tart_password
+    jsonData:
+      database: tart_telemetry
+      sslmode: disable
+      maxOpenConns: 5
+      maxIdleConns: 2
+      connMaxLifetime: 14400
+      postgresVersion: 1700
+      timescaledb: true
+    isDefault: true
+    editable: true
+
+  - name: JamTart API
+    type: yesoreyeram-infinity-datasource
+    uid: jamtart-api
+    access: proxy
+    isDefault: false
+    editable: true
+    jsonData:
+      global_queries: []
+      allowedHosts:
+        - http://tart-backend:8080
+        - http://localhost:8080

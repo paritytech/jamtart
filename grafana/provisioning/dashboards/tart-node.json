@@ -1,0 +1,2715 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Per-node deep dive \u2014 status, events, timeline, and health",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "title": "Node Status",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "chain_status.best_slot",
+              "text": "Best Slot",
+              "type": "number"
+            },
+            {
+              "selector": "chain_status.finalized_slot",
+              "text": "Finalized Slot",
+              "type": "number"
+            },
+            {
+              "selector": "chain_status.synced",
+              "text": "Synced",
+              "type": "string"
+            },
+            {
+              "selector": "chain_status.last_updated",
+              "text": "Last Updated",
+              "type": "timestamp"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "format": "table",
+          "parser": "backend",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/nodes/${node_id}/status",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          },
+          "refId": "A"
+        }
+      ],
+      "title": "Node Info",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 7
+      },
+      "id": 3,
+      "title": "Event Breakdown",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "id": 4,
+      "options": {
+        "orientation": "horizontal",
+        "showValue": "always",
+        "xTickLabelRotation": 0,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "category",
+              "text": "Category",
+              "type": "string"
+            },
+            {
+              "selector": "count",
+              "text": "Count",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "format": "table",
+          "parser": "backend",
+          "root_selector": "category_counts",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/nodes/${node_id}/timeline",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          },
+          "refId": "A"
+        }
+      ],
+      "title": "Event Categories",
+      "type": "barchart"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Event Type"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "Dropped",
+                        "index": 0
+                      },
+                      "10": {
+                        "text": "Status",
+                        "index": 1
+                      },
+                      "11": {
+                        "text": "BestBlockChanged",
+                        "index": 2
+                      },
+                      "12": {
+                        "text": "FinalizedBlockChanged",
+                        "index": 3
+                      },
+                      "13": {
+                        "text": "SyncStatusChanged",
+                        "index": 4
+                      },
+                      "20": {
+                        "text": "ConnectionRefused",
+                        "index": 5
+                      },
+                      "21": {
+                        "text": "ConnectingIn",
+                        "index": 6
+                      },
+                      "22": {
+                        "text": "ConnectInFailed",
+                        "index": 7
+                      },
+                      "23": {
+                        "text": "ConnectedIn",
+                        "index": 8
+                      },
+                      "24": {
+                        "text": "ConnectingOut",
+                        "index": 9
+                      },
+                      "25": {
+                        "text": "ConnectOutFailed",
+                        "index": 10
+                      },
+                      "26": {
+                        "text": "ConnectedOut",
+                        "index": 11
+                      },
+                      "27": {
+                        "text": "Disconnected",
+                        "index": 12
+                      },
+                      "28": {
+                        "text": "PeerMisbehaved",
+                        "index": 13
+                      },
+                      "40": {
+                        "text": "Authoring",
+                        "index": 14
+                      },
+                      "41": {
+                        "text": "AuthoringFailed",
+                        "index": 15
+                      },
+                      "42": {
+                        "text": "Authored",
+                        "index": 16
+                      },
+                      "43": {
+                        "text": "Importing",
+                        "index": 17
+                      },
+                      "44": {
+                        "text": "BlockVerificationFailed",
+                        "index": 18
+                      },
+                      "45": {
+                        "text": "BlockVerified",
+                        "index": 19
+                      },
+                      "46": {
+                        "text": "BlockExecutionFailed",
+                        "index": 20
+                      },
+                      "47": {
+                        "text": "BlockExecuted",
+                        "index": 21
+                      },
+                      "60": {
+                        "text": "BlockAnnouncementStreamOpened",
+                        "index": 22
+                      },
+                      "61": {
+                        "text": "BlockAnnouncementStreamClosed",
+                        "index": 23
+                      },
+                      "62": {
+                        "text": "BlockAnnounced",
+                        "index": 24
+                      },
+                      "63": {
+                        "text": "SendingBlockRequest",
+                        "index": 25
+                      },
+                      "64": {
+                        "text": "ReceivingBlockRequest",
+                        "index": 26
+                      },
+                      "65": {
+                        "text": "BlockRequestFailed",
+                        "index": 27
+                      },
+                      "66": {
+                        "text": "BlockRequestSent",
+                        "index": 28
+                      },
+                      "67": {
+                        "text": "BlockRequestReceived",
+                        "index": 29
+                      },
+                      "68": {
+                        "text": "BlockTransferred",
+                        "index": 30
+                      },
+                      "80": {
+                        "text": "GeneratingTickets",
+                        "index": 31
+                      },
+                      "81": {
+                        "text": "TicketGenerationFailed",
+                        "index": 32
+                      },
+                      "82": {
+                        "text": "TicketsGenerated",
+                        "index": 33
+                      },
+                      "83": {
+                        "text": "TicketTransferFailed",
+                        "index": 34
+                      },
+                      "84": {
+                        "text": "TicketTransferred",
+                        "index": 35
+                      },
+                      "90": {
+                        "text": "WorkPackageSubmission",
+                        "index": 36
+                      },
+                      "91": {
+                        "text": "WorkPackageBeingShared",
+                        "index": 37
+                      },
+                      "92": {
+                        "text": "WorkPackageFailed",
+                        "index": 38
+                      },
+                      "93": {
+                        "text": "DuplicateWorkPackage",
+                        "index": 39
+                      },
+                      "94": {
+                        "text": "WorkPackageReceived",
+                        "index": 40
+                      },
+                      "95": {
+                        "text": "Authorized",
+                        "index": 41
+                      },
+                      "96": {
+                        "text": "ExtrinsicDataReceived",
+                        "index": 42
+                      },
+                      "97": {
+                        "text": "ImportsReceived",
+                        "index": 43
+                      },
+                      "98": {
+                        "text": "SharingWorkPackage",
+                        "index": 44
+                      },
+                      "99": {
+                        "text": "WorkPackageSharingFailed",
+                        "index": 45
+                      },
+                      "100": {
+                        "text": "BundleSent",
+                        "index": 46
+                      },
+                      "101": {
+                        "text": "Refined",
+                        "index": 47
+                      },
+                      "102": {
+                        "text": "WorkReportBuilt",
+                        "index": 48
+                      },
+                      "103": {
+                        "text": "WorkReportSignatureSent",
+                        "index": 49
+                      },
+                      "104": {
+                        "text": "WorkReportSignatureReceived",
+                        "index": 50
+                      },
+                      "105": {
+                        "text": "GuaranteeBuilt",
+                        "index": 51
+                      },
+                      "106": {
+                        "text": "SendingGuarantee",
+                        "index": 52
+                      },
+                      "107": {
+                        "text": "GuaranteeSendFailed",
+                        "index": 53
+                      },
+                      "108": {
+                        "text": "GuaranteeSent",
+                        "index": 54
+                      },
+                      "109": {
+                        "text": "GuaranteesDistributed",
+                        "index": 55
+                      },
+                      "110": {
+                        "text": "ReceivingGuarantee",
+                        "index": 56
+                      },
+                      "112": {
+                        "text": "GuaranteeReceived",
+                        "index": 57
+                      },
+                      "113": {
+                        "text": "GuaranteeDiscarded",
+                        "index": 58
+                      },
+                      "120": {
+                        "text": "SendingShardRequest",
+                        "index": 59
+                      },
+                      "121": {
+                        "text": "ReceivingShardRequest",
+                        "index": 60
+                      },
+                      "122": {
+                        "text": "ShardRequestFailed",
+                        "index": 61
+                      },
+                      "123": {
+                        "text": "ShardRequestSent",
+                        "index": 62
+                      },
+                      "124": {
+                        "text": "ShardRequestReceived",
+                        "index": 63
+                      },
+                      "125": {
+                        "text": "ShardsTransferred",
+                        "index": 64
+                      },
+                      "126": {
+                        "text": "DistributingAssurance",
+                        "index": 65
+                      },
+                      "127": {
+                        "text": "AssuranceSendFailed",
+                        "index": 66
+                      },
+                      "128": {
+                        "text": "AssuranceSent",
+                        "index": 67
+                      },
+                      "129": {
+                        "text": "AssuranceDistributed",
+                        "index": 68
+                      },
+                      "131": {
+                        "text": "AssuranceReceived",
+                        "index": 69
+                      },
+                      "148": {
+                        "text": "SendingBundleRequest",
+                        "index": 70
+                      },
+                      "149": {
+                        "text": "ReceivingBundleRequest",
+                        "index": 71
+                      },
+                      "150": {
+                        "text": "BundleRequestFailed",
+                        "index": 72
+                      },
+                      "151": {
+                        "text": "BundleRequestSent",
+                        "index": 73
+                      },
+                      "152": {
+                        "text": "BundleRequestReceived",
+                        "index": 74
+                      },
+                      "153": {
+                        "text": "BundleTransferred",
+                        "index": 75
+                      },
+                      "191": {
+                        "text": "PreimageAnnounced",
+                        "index": 76
+                      },
+                      "193": {
+                        "text": "SendingPreimageRequest",
+                        "index": 77
+                      },
+                      "196": {
+                        "text": "PreimageRequestSent",
+                        "index": 78
+                      },
+                      "198": {
+                        "text": "PreimageTransferred",
+                        "index": 79
+                      },
+                      "199": {
+                        "text": "PreimageDiscarded",
+                        "index": 80
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "id": 5,
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Count"
+          }
+        ],
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        }
+      },
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "event_type",
+              "text": "Event Type",
+              "type": "number"
+            },
+            {
+              "selector": "count",
+              "text": "Count",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "format": "table",
+          "parser": "backend",
+          "root_selector": "event_breakdown",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/nodes/${node_id}/status",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          },
+          "refId": "A"
+        }
+      ],
+      "title": "Event Type Breakdown",
+      "type": "table"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 16
+      },
+      "id": 6,
+      "title": "Events by Type (Network)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 30,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 0"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Dropped"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 10"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Status"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 11"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "BestBlockChanged"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 12"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "FinalizedBlockChanged"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 13"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "SyncStatusChanged"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 20"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "ConnectionRefused"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 21"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "ConnectingIn"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 22"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "ConnectInFailed"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 23"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "ConnectedIn"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 24"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "ConnectingOut"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 25"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "ConnectOutFailed"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 26"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "ConnectedOut"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 27"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Disconnected"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 28"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "PeerMisbehaved"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 40"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Authoring"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 41"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "AuthoringFailed"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 42"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Authored"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 43"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Importing"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 44"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "BlockVerificationFailed"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 45"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "BlockVerified"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 46"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "BlockExecutionFailed"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 47"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "BlockExecuted"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 60"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "BlockAnnouncementStreamOpened"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 61"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "BlockAnnouncementStreamClosed"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 62"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "BlockAnnounced"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 63"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "SendingBlockRequest"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 64"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "ReceivingBlockRequest"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 65"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "BlockRequestFailed"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 66"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "BlockRequestSent"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 67"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "BlockRequestReceived"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 68"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "BlockTransferred"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 80"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "GeneratingTickets"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 81"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "TicketGenerationFailed"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 82"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "TicketsGenerated"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 83"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "TicketTransferFailed"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 84"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "TicketTransferred"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 90"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "WorkPackageSubmission"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 91"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "WorkPackageBeingShared"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 92"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "WorkPackageFailed"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 93"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "DuplicateWorkPackage"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 94"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "WorkPackageReceived"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 95"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Authorized"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 96"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "ExtrinsicDataReceived"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 97"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "ImportsReceived"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 98"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "SharingWorkPackage"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 99"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "WorkPackageSharingFailed"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 100"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "BundleSent"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 101"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Refined"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 102"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "WorkReportBuilt"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 103"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "WorkReportSignatureSent"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 104"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "WorkReportSignatureReceived"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 105"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "GuaranteeBuilt"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 106"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "SendingGuarantee"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 107"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "GuaranteeSendFailed"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 108"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "GuaranteeSent"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 109"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "GuaranteesDistributed"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 110"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "ReceivingGuarantee"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 112"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "GuaranteeReceived"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 113"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "GuaranteeDiscarded"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 120"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "SendingShardRequest"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 121"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "ReceivingShardRequest"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 122"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "ShardRequestFailed"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 123"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "ShardRequestSent"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 124"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "ShardRequestReceived"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 125"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "ShardsTransferred"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 126"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "DistributingAssurance"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 127"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "AssuranceSendFailed"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 128"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "AssuranceSent"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 129"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "AssuranceDistributed"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 131"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "AssuranceReceived"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 148"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "SendingBundleRequest"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 149"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "ReceivingBundleRequest"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 150"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "BundleRequestFailed"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 151"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "BundleRequestSent"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 152"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "BundleRequestReceived"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 153"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "BundleTransferred"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 191"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "PreimageAnnounced"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 193"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "SendingPreimageRequest"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 196"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "PreimageRequestSent"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 198"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "PreimageTransferred"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events 199"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "PreimageDiscarded"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 17
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "all",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "timestamp",
+              "text": "",
+              "type": "timestamp"
+            },
+            {
+              "selector": "event_type",
+              "text": "Event Type",
+              "type": "string"
+            },
+            {
+              "selector": "events",
+              "text": "Events",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "format": "table",
+          "parser": "backend",
+          "root_selector": "data",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/metrics/timeseries/grouped?metric=events&group_by=event_type&duration=1&interval=1",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          },
+          "refId": "A"
+        }
+      ],
+      "title": "Events by Type",
+      "type": "timeseries",
+      "transformations": [
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "Event Type"
+            ],
+            "keepFields": false,
+            "naming": {
+              "asLabels": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 17
+      },
+      "id": 8,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "all",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "timestamp",
+              "text": "",
+              "type": "timestamp"
+            },
+            {
+              "selector": "node_id",
+              "text": "Node",
+              "type": "string"
+            },
+            {
+              "selector": "events",
+              "text": "Events",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "format": "table",
+          "parser": "backend",
+          "root_selector": "data",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/metrics/timeseries/grouped?metric=events&group_by=node&duration=1&interval=1",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          },
+          "refId": "A"
+        }
+      ],
+      "title": "Events by Node",
+      "type": "timeseries",
+      "transformations": [
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "Node"
+            ],
+            "keepFields": false,
+            "naming": {
+              "asLabels": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      },
+      "id": 9,
+      "title": "Recent Events",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 26
+      },
+      "id": 10,
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Time"
+          }
+        ],
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        }
+      },
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "created_at",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "category",
+              "text": "Category",
+              "type": "string"
+            },
+            {
+              "selector": "event_type",
+              "text": "Type",
+              "type": "number"
+            },
+            {
+              "selector": "data",
+              "text": "Data",
+              "type": "string"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "format": "table",
+          "parser": "backend",
+          "root_selector": "events",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/nodes/${node_id}/events?limit=50",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          },
+          "refId": "A"
+        }
+      ],
+      "title": "Recent Events",
+      "type": "table"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 36
+      },
+      "id": 11,
+      "title": "Network Context",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "options": {
+                "true": {
+                  "color": "green",
+                  "index": 0,
+                  "text": "Yes"
+                },
+                "false": {
+                  "color": "red",
+                  "index": 1,
+                  "text": "No"
+                }
+              },
+              "type": "value"
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 37
+      },
+      "id": 12,
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        }
+      },
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "node_id",
+              "text": "Node ID",
+              "type": "string"
+            },
+            {
+              "selector": "implementation_name",
+              "text": "Impl",
+              "type": "string"
+            },
+            {
+              "selector": "implementation_version",
+              "text": "Version",
+              "type": "string"
+            },
+            {
+              "selector": "is_connected",
+              "text": "Connected",
+              "type": "string"
+            },
+            {
+              "selector": "event_count",
+              "text": "Events",
+              "type": "number"
+            },
+            {
+              "selector": "last_seen_at",
+              "text": "Last Seen",
+              "type": "timestamp"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "format": "table",
+          "parser": "backend",
+          "root_selector": "nodes",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/nodes",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          },
+          "refId": "A"
+        }
+      ],
+      "title": "All Nodes",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 37
+      },
+      "id": 13,
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        }
+      },
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "category",
+              "text": "Category",
+              "type": "string"
+            },
+            {
+              "selector": "attempts",
+              "text": "Attempts",
+              "type": "number"
+            },
+            {
+              "selector": "failures",
+              "text": "Failures",
+              "type": "number"
+            },
+            {
+              "selector": "rate",
+              "text": "Rate",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "format": "table",
+          "parser": "backend",
+          "root_selector": "by_category",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/analytics/failure-rates",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          },
+          "refId": "A"
+        }
+      ],
+      "title": "Failure Rates",
+      "type": "table"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 45
+      },
+      "id": 14,
+      "title": "Ticket Activity",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 46
+      },
+      "id": 15,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "node_id",
+              "text": "Node ID",
+              "type": "string"
+            },
+            {
+              "selector": "epoch",
+              "text": "Epoch",
+              "type": "string"
+            },
+            {
+              "selector": "ticket_count",
+              "text": "Tickets",
+              "type": "number"
+            },
+            {
+              "selector": "last_generated",
+              "text": "Last Generated",
+              "type": "timestamp"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "format": "table",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "ticket_activity",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/validators/cores",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          }
+        }
+      ],
+      "title": "Ticket Activity",
+      "type": "table"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 54
+      },
+      "id": 16,
+      "title": "Event Inspector: $event_group / $event_name",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "jamtart-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 55
+      },
+      "id": 17,
+      "options": {
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "all",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "jamtart-pg"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroup(timestamp, $__interval) AS time, event_name AS metric, count(*) AS cnt\nFROM events_view\nWHERE $__timeFilter(timestamp)\n  AND node_id = '$node_id'\n  AND event_group IN ($event_group)\n  AND event_name IN ($event_name)\nGROUP BY 1, 2 ORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "title": "Filtered events per interval",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "jamtart-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 55
+      },
+      "id": 18,
+      "options": {
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "list",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "all",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "jamtart-pg"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroup(timestamp, $__interval) AS time, event_group AS metric, count(*) AS cnt\nFROM events_view\nWHERE $__timeFilter(timestamp)\n  AND node_id = '$node_id'\n  AND event_group IN ($event_group)\n  AND event_name IN ($event_name)\nGROUP BY 1, 2 ORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "title": "Filtered events by group",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "jamtart-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": true
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "data"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 500
+              },
+              {
+                "id": "custom.inspect",
+                "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "time"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 180
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 63
+      },
+      "id": 19,
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "time"
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "jamtart-pg"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT timestamp AS time, event_group, event_name, data::text AS data\nFROM events_view\nWHERE $__timeFilter(timestamp)\n  AND node_id = '$node_id'\n  AND event_group IN ($event_group)\n  AND event_name IN ($event_name)\nORDER BY timestamp DESC\nLIMIT 200",
+          "refId": "A"
+        }
+      ],
+      "title": "Filtered event details",
+      "type": "table"
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": [
+    "api",
+    "node"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "name": "node_id",
+        "label": "Node",
+        "type": "query",
+        "datasource": {
+          "type": "yesoreyeram-infinity-datasource",
+          "uid": "jamtart-api"
+        },
+        "query": {
+          "queryType": "infinity",
+          "infinityQuery": {
+            "refId": "variable",
+            "type": "json",
+            "source": "url",
+            "parser": "backend",
+            "url": "http://tart-backend:8080/api/nodes",
+            "url_options": {
+              "method": "GET",
+              "data": "",
+              "headers": [],
+              "params": []
+            },
+            "root_selector": "nodes",
+            "columns": [
+              {
+                "selector": "node_id",
+                "text": "node_id",
+                "type": "string"
+              }
+            ],
+            "format": "table"
+          }
+        },
+        "refresh": 1,
+        "options": [],
+        "includeAll": false,
+        "multi": false,
+        "description": "Select a node ID \u2014 dynamically loaded from the API."
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "jamtart-pg"
+        },
+        "definition": "SELECT DISTINCT group_name FROM event_types ORDER BY 1",
+        "includeAll": true,
+        "multi": true,
+        "name": "event_group",
+        "label": "Event Group",
+        "options": [],
+        "query": "SELECT DISTINCT group_name FROM event_types ORDER BY 1",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "jamtart-pg"
+        },
+        "definition": "SELECT DISTINCT name FROM event_types WHERE group_name IN ($event_group) ORDER BY 1",
+        "includeAll": true,
+        "multi": true,
+        "name": "event_name",
+        "label": "Event Name",
+        "options": [],
+        "query": "SELECT DISTINCT name FROM event_types WHERE group_name IN ($event_group) ORDER BY 1",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "",
+  "title": "TART-node",
+  "uid": "tart-node",
+  "version": 1
+}
