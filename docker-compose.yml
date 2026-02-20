@@ -101,6 +101,25 @@ services:
       retries: 3
       start_period: 15s
 
+  # Optional: Grafana dashboards
+  grafana:
+    image: grafana/grafana:12.3.3
+    container_name: tart-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_INSTALL_PLUGINS=yesoreyeram-infinity-datasource
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    restart: unless-stopped
+    profiles:
+      - with-grafana
+
   # Optional: JAM validator node
   jam-validator-0:
     image: polkajam:latest
@@ -120,4 +139,6 @@ services:
 
 volumes:
   postgres-data:
+    driver: local
+  grafana-data:
     driver: local
