@@ -180,10 +180,7 @@ impl BatchWriter {
 
     /// Queue a batch of events for writing (non-blocking, single channel send).
     /// Reduces mpsc contention by sending N events in one `try_send` instead of N calls.
-    pub fn write_event_batch(
-        &self,
-        events: Vec<EventRecord>,
-    ) -> Result<()> {
+    pub fn write_event_batch(&self, events: Vec<EventRecord>) -> Result<()> {
         self.sender
             .try_send(WriterCommand::EventBatch { events })
             .map_err(|e| anyhow::anyhow!("Channel full: {}", e))?;
@@ -253,8 +250,7 @@ async fn writer_worker(
     store: Arc<EventStore>,
     shared_node_counts: Arc<Mutex<HashMap<NodeId, u64>>>,
 ) -> Result<()> {
-    let mut event_batch: Vec<EventRecord> =
-        Vec::with_capacity(MAX_BATCH_SIZE);
+    let mut event_batch: Vec<EventRecord> = Vec::with_capacity(MAX_BATCH_SIZE);
     let mut node_connects: Vec<(NodeId, NodeInformation, String)> = Vec::new();
     let mut node_disconnects: Vec<NodeId> = Vec::new();
     let mut node_counts: HashMap<NodeId, u64> = HashMap::new();
@@ -479,10 +475,7 @@ fn handle_command(
 }
 
 /// Flush only events to database (node updates are decoupled).
-async fn flush_events(
-    store: &Arc<EventStore>,
-    event_batch: &mut Vec<EventRecord>,
-) -> Result<()> {
+async fn flush_events(store: &Arc<EventStore>, event_batch: &mut Vec<EventRecord>) -> Result<()> {
     let event_count = event_batch.len();
 
     if event_count == 0 {

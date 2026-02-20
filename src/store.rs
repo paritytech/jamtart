@@ -424,10 +424,7 @@ impl EventStore {
     /// Store events using PostgreSQL COPY BINARY for maximum throughput.
     /// COPY bypasses SQL parsing, and binary format eliminates CSV encoding/parsing
     /// overhead on both client and server side.
-    pub async fn store_events_batch(
-        &self,
-        events: Vec<EventRecord>,
-    ) -> Result<(), sqlx::Error> {
+    pub async fn store_events_batch(&self, events: Vec<EventRecord>) -> Result<(), sqlx::Error> {
         if events.is_empty() {
             return Ok(());
         }
@@ -503,10 +500,7 @@ impl EventStore {
     }
 
     /// Simple batch insert for small batches using individual INSERTs in a transaction.
-    async fn store_events_simple(
-        &self,
-        events: Vec<EventRecord>,
-    ) -> Result<(), sqlx::Error> {
+    async fn store_events_simple(&self, events: Vec<EventRecord>) -> Result<(), sqlx::Error> {
         let mut tx = self.write_pool.begin().await?;
         let event_count = events.len();
 
