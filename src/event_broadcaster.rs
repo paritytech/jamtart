@@ -27,14 +27,18 @@ const CHANNEL_CLEANUP_INTERVAL: u64 = 30;
 /// Matches BROADCAST_CHANNEL_SIZE to handle the same burst capacity.
 const AGGREGATION_CHANNEL_SIZE: usize = 500_000;
 
+/// Broadcast event tuple: (node_id, event, event_json).
+pub type BroadcastRecord = (Arc<str>, Arc<Event>, Arc<[u8]>);
+
 /// Batch of events sent from a connection handler to the aggregator task via MPSC.
 /// One channel message per TCP read wakeup instead of one per event.
+/// The `Arc<[u8]>` carries pre-serialized Event JSON (serialized once in server.rs).
 struct IncomingBatch {
-    events: Vec<(Arc<str>, Arc<Event>)>,
+    events: Vec<BroadcastRecord>,
 }
 
-/// Typed struct for direct WebSocket JSON serialization.
-/// Replaces `serde_json::json!()` macro to avoid intermediate `Value` heap allocation.
+/// Typed struct for direct WebSocket JSON serialization (used in tests to verify RawValue equivalence).
+#[cfg(test)]
 #[derive(Serialize)]
 struct WsBroadcast<'a> {
     r#type: &'static str,
@@ -42,13 +46,32 @@ struct WsBroadcast<'a> {
     timestamp: chrono::DateTime<chrono::Utc>,
 }
 
-/// Inner data payload for WsBroadcast.
+/// Inner data payload for WsBroadcast (used in tests to verify RawValue equivalence).
+#[cfg(test)]
 #[derive(Serialize)]
 struct WsBroadcastData<'a> {
     id: u64,
     node_id: &'a str,
     event_type: u8,
     event: &'a Event,
+}
+
+/// WsBroadcast variant using pre-serialized Event JSON via RawValue.
+/// Avoids re-serializing the Event enum — the RawValue is embedded verbatim.
+#[derive(Serialize)]
+struct WsBroadcastRaw<'a> {
+    r#type: &'static str,
+    data: WsBroadcastDataRaw<'a>,
+    timestamp: chrono::DateTime<chrono::Utc>,
+}
+
+/// Inner data payload using RawValue for the pre-serialized Event.
+#[derive(Serialize)]
+struct WsBroadcastDataRaw<'a> {
+    id: u64,
+    node_id: &'a str,
+    event_type: u8,
+    event: &'a serde_json::value::RawValue,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -61,6 +84,9 @@ pub struct BroadcastEvent {
     /// Pre-serialized JSON for WebSocket delivery (serialize once, send to all subscribers)
     #[serde(skip)]
     pub serialized_json: Option<Arc<str>>,
+    /// Pre-serialized standalone Event JSON (serialized once in server.rs)
+    #[serde(skip)]
+    pub event_json: Option<Arc<[u8]>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -143,13 +169,16 @@ impl EventBroadcaster {
         broadcaster
     }
 
-    /// Broadcast an event to all subscribers
+    /// Broadcast an event to all subscribers.
     /// Optimized for high throughput with minimal latency.
-    /// Accepts `Arc<str>` node_id and `Arc<Event>` to avoid cloning/allocating in the hot path.
+    /// `event_json` is the pre-serialized standalone Event JSON (serialized once in server.rs).
+    /// `ws_buf` is a reusable buffer for building the WS envelope JSON.
     pub fn broadcast_event(
         &self,
         node_id: Arc<str>,
         event: Arc<Event>,
+        event_json: &[u8],
+        ws_buf: &mut Vec<u8>,
     ) -> Result<u64, broadcast::error::SendError<Arc<BroadcastEvent>>> {
         // Generate unique event ID
         let id = self.event_counter.fetch_add(1, Ordering::Relaxed);
@@ -171,6 +200,7 @@ impl EventBroadcaster {
                 timestamp: chrono::Utc::now(),
                 event,
                 serialized_json: None,
+                event_json: None,
             });
             self.total_broadcast.fetch_add(1, Ordering::Relaxed);
             self.undelivered_events.fetch_add(1, Ordering::Relaxed);
@@ -194,26 +224,33 @@ impl EventBroadcaster {
             timestamp: chrono::Utc::now(),
             event,
             serialized_json: None,
+            event_json: Some(Arc::from(event_json)),
         };
 
-        // Pre-serialize in WebSocketResponse format so the WS handler can send it directly.
-        // Must match the {"type": "event", "data": {...}, "timestamp": "..."} envelope
-        // that clients (frontend) expect.
-        // Uses typed structs instead of serde_json::json!() to avoid intermediate
-        // Value heap allocation + recursive drop.
+        // Pre-serialize WS envelope using RawValue to avoid re-serializing the Event.
+        // The event_json bytes were produced by serde_json::to_vec, so they're valid JSON.
         if main_receivers > 0 {
-            let ws_response = WsBroadcast {
-                r#type: "event",
-                data: WsBroadcastData {
-                    id: broadcast_event.id,
-                    node_id: &broadcast_event.node_id,
-                    event_type: broadcast_event.event_type,
-                    event: &broadcast_event.event,
-                },
-                timestamp: broadcast_event.timestamp,
-            };
-            if let Ok(json) = serde_json::to_string(&ws_response) {
-                broadcast_event.serialized_json = Some(Arc::from(json.as_str()));
+            // SAFETY: serde_json::to_vec always produces valid UTF-8
+            if let Ok(raw_str) = std::str::from_utf8(event_json) {
+                if let Ok(raw_value) = serde_json::value::RawValue::from_string(raw_str.to_string())
+                {
+                    let ws_response = WsBroadcastRaw {
+                        r#type: "event",
+                        data: WsBroadcastDataRaw {
+                            id: broadcast_event.id,
+                            node_id: &broadcast_event.node_id,
+                            event_type: broadcast_event.event_type,
+                            event: &raw_value,
+                        },
+                        timestamp: broadcast_event.timestamp,
+                    };
+                    ws_buf.clear();
+                    if serde_json::to_writer(&mut *ws_buf, &ws_response).is_ok() {
+                        // SAFETY: serde_json always produces valid UTF-8
+                        let json_str = unsafe { std::str::from_utf8_unchecked(ws_buf) };
+                        broadcast_event.serialized_json = Some(Arc::from(json_str));
+                    }
+                }
             }
         }
 
@@ -265,10 +302,10 @@ impl EventBroadcaster {
     /// Uses `try_send()` which is lock-free and will return an error if the channel
     /// is full (backpressure).
     /// Returns `true` if the event was submitted, `false` if the channel is full.
-    pub fn send_event(&self, node_id: Arc<str>, event: Arc<Event>) -> bool {
+    pub fn send_event(&self, node_id: Arc<str>, event: Arc<Event>, event_json: Arc<[u8]>) -> bool {
         self.event_sender
             .try_send(IncomingBatch {
-                events: vec![(node_id, event)],
+                events: vec![(node_id, event, event_json)],
             })
             .is_ok()
     }
@@ -276,13 +313,11 @@ impl EventBroadcaster {
     /// Submit a batch of events in a single channel `try_send`.
     /// At 600K ev/s with ~50 events per TCP read, this turns 600K channel sends
     /// into ~12K, dramatically reducing atomic CAS contention in `Tx::find_block`.
-    pub fn send_event_batch(&self, events: Vec<(Arc<str>, Arc<Event>)>) -> bool {
+    pub fn send_event_batch(&self, events: Vec<BroadcastRecord>) -> bool {
         if events.is_empty() {
             return true;
         }
-        self.event_sender
-            .try_send(IncomingBatch { events })
-            .is_ok()
+        self.event_sender.try_send(IncomingBatch { events }).is_ok()
     }
 
     /// Spawn the aggregator task that drains the MPSC channel and calls `broadcast_event()`.
@@ -300,16 +335,19 @@ impl EventBroadcaster {
         let this = Arc::clone(self);
 
         tokio::spawn(async move {
+            // Reusable buffer for building WS envelope JSON (avoids per-event allocation)
+            let mut ws_buf: Vec<u8> = Vec::with_capacity(4096);
+
             // Drain all available batches per wakeup for throughput
             while let Some(batch) = receiver.recv().await {
-                for (node_id, event) in batch.events {
-                    let _ = this.broadcast_event(node_id, event);
+                for (node_id, event, event_json) in batch.events {
+                    let _ = this.broadcast_event(node_id, event, &event_json, &mut ws_buf);
                 }
 
                 // Drain any additional buffered batches without awaiting
                 while let Ok(batch) = receiver.try_recv() {
-                    for (node_id, event) in batch.events {
-                        let _ = this.broadcast_event(node_id, event);
+                    for (node_id, event, event_json) in batch.events {
+                        let _ = this.broadcast_event(node_id, event, &event_json, &mut ws_buf);
                     }
                 }
             }
@@ -466,6 +504,10 @@ mod tests {
         })
     }
 
+    fn make_test_json(event: &Event) -> Arc<[u8]> {
+        Arc::from(serde_json::to_vec(event).unwrap())
+    }
+
     fn node_id(s: &str) -> Arc<str> {
         Arc::from(s)
     }
@@ -492,10 +534,12 @@ mod tests {
     async fn test_broadcast_and_receive() {
         let broadcaster = EventBroadcaster::new();
         let mut rx = broadcaster.subscribe_all();
+        let mut ws_buf = Vec::new();
 
         let event = make_test_event("node_1");
+        let event_json = make_test_json(&event);
         let id = broadcaster
-            .broadcast_event(node_id("node_1"), event)
+            .broadcast_event(node_id("node_1"), event, &event_json, &mut ws_buf)
             .unwrap();
         assert_eq!(id, 0);
 
@@ -509,10 +553,12 @@ mod tests {
         let broadcaster = EventBroadcaster::new();
         let mut rx1 = broadcaster.subscribe_all();
         let mut rx2 = broadcaster.subscribe_all();
+        let mut ws_buf = Vec::new();
 
         let event = make_test_event("node_1");
+        let event_json = make_test_json(&event);
         broadcaster
-            .broadcast_event(node_id("node_1"), event)
+            .broadcast_event(node_id("node_1"), event, &event_json, &mut ws_buf)
             .unwrap();
 
         let e1 = rx1.recv().await.unwrap();
@@ -524,17 +570,20 @@ mod tests {
     async fn test_subscribe_node_filters() {
         let broadcaster = EventBroadcaster::new();
         let mut rx_node1 = broadcaster.subscribe_node("node_1");
+        let mut ws_buf = Vec::new();
 
         // Broadcast to node_1 — should be received
         let event1 = make_test_event("node_1");
+        let json1 = make_test_json(&event1);
         broadcaster
-            .broadcast_event(node_id("node_1"), event1)
+            .broadcast_event(node_id("node_1"), event1, &json1, &mut ws_buf)
             .unwrap();
 
         // Broadcast to node_2 — should NOT be received on node_1 channel
         let event2 = make_test_event("node_2");
+        let json2 = make_test_json(&event2);
         broadcaster
-            .broadcast_event(node_id("node_2"), event2)
+            .broadcast_event(node_id("node_2"), event2, &json2, &mut ws_buf)
             .unwrap();
 
         let received = rx_node1.recv().await.unwrap();
@@ -550,10 +599,12 @@ mod tests {
     async fn test_subscribe_filtered_all() {
         let broadcaster = EventBroadcaster::new();
         let mut rx = broadcaster.subscribe_filtered(EventFilter::All);
+        let mut ws_buf = Vec::new();
 
         let event = make_test_event("node_1");
+        let event_json = make_test_json(&event);
         broadcaster
-            .broadcast_event(node_id("node_1"), event)
+            .broadcast_event(node_id("node_1"), event, &event_json, &mut ws_buf)
             .unwrap();
 
         let received = rx.recv().await.unwrap();
@@ -563,12 +614,19 @@ mod tests {
     #[tokio::test]
     async fn test_recent_events() {
         let broadcaster = EventBroadcaster::new();
+        let mut ws_buf = Vec::new();
 
         // Broadcast 5 events
         for i in 0..5 {
             let event = make_test_event(&format!("node_{}", i));
+            let event_json = make_test_json(&event);
             broadcaster
-                .broadcast_event(node_id(&format!("node_{}", i)), event)
+                .broadcast_event(
+                    node_id(&format!("node_{}", i)),
+                    event,
+                    &event_json,
+                    &mut ws_buf,
+                )
                 .unwrap();
         }
 
@@ -587,18 +645,21 @@ mod tests {
     #[tokio::test]
     async fn test_recent_events_by_node() {
         let broadcaster = EventBroadcaster::new();
+        let mut ws_buf = Vec::new();
 
         // Broadcast from multiple nodes
         for _ in 0..3 {
             let event = make_test_event("node_a");
+            let event_json = make_test_json(&event);
             broadcaster
-                .broadcast_event(node_id("node_a"), event)
+                .broadcast_event(node_id("node_a"), event, &event_json, &mut ws_buf)
                 .unwrap();
         }
         for _ in 0..2 {
             let event = make_test_event("node_b");
+            let event_json = make_test_json(&event);
             broadcaster
-                .broadcast_event(node_id("node_b"), event)
+                .broadcast_event(node_id("node_b"), event, &event_json, &mut ws_buf)
                 .unwrap();
         }
 
@@ -613,12 +674,14 @@ mod tests {
     #[tokio::test]
     async fn test_recent_events_ring_buffer() {
         let broadcaster = EventBroadcaster::new();
+        let mut ws_buf = Vec::new();
 
         // Broadcast more than MAX_RETAINED_EVENTS
         for _ in 0..(MAX_RETAINED_EVENTS + 100) {
             let event = make_test_event("node_1");
+            let event_json = make_test_json(&event);
             broadcaster
-                .broadcast_event(node_id("node_1"), event)
+                .broadcast_event(node_id("node_1"), event, &event_json, &mut ws_buf)
                 .unwrap();
         }
 
@@ -632,15 +695,88 @@ mod tests {
     async fn test_get_stats() {
         let broadcaster = EventBroadcaster::new();
         let _rx = broadcaster.subscribe_all();
+        let mut ws_buf = Vec::new();
 
         let event = make_test_event("node_1");
+        let event_json = make_test_json(&event);
         broadcaster
-            .broadcast_event(node_id("node_1"), event)
+            .broadcast_event(node_id("node_1"), event, &event_json, &mut ws_buf)
             .unwrap();
 
         let stats = broadcaster.get_stats();
         assert_eq!(stats.total_events_broadcast, 1);
         assert_eq!(stats.active_subscribers, 1);
         assert_eq!(stats.events_in_buffer, 1);
+    }
+
+    #[tokio::test]
+    async fn test_raw_value_ws_broadcast_matches_original() {
+        // Verify WsBroadcastRaw with RawValue produces identical JSON as WsBroadcast with &Event
+        let event = Event::BestBlockChanged {
+            timestamp: 1_000_000,
+            slot: 42,
+            hash: [0xAA; 32],
+        };
+        let event_json = serde_json::to_vec(&event).unwrap();
+        let now = chrono::Utc::now();
+
+        // Original: serialize with &Event
+        let original = WsBroadcast {
+            r#type: "event",
+            data: WsBroadcastData {
+                id: 1,
+                node_id: "node_1",
+                event_type: 0,
+                event: &event,
+            },
+            timestamp: now,
+        };
+        let original_json = serde_json::to_string(&original).unwrap();
+
+        // New: serialize with RawValue
+        let raw_str = std::str::from_utf8(&event_json).unwrap();
+        let raw_value = serde_json::value::RawValue::from_string(raw_str.to_string()).unwrap();
+        let raw = WsBroadcastRaw {
+            r#type: "event",
+            data: WsBroadcastDataRaw {
+                id: 1,
+                node_id: "node_1",
+                event_type: 0,
+                event: &raw_value,
+            },
+            timestamp: now,
+        };
+        let raw_json = serde_json::to_string(&raw).unwrap();
+
+        assert_eq!(original_json, raw_json);
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_with_preserialized_json() {
+        // Verify broadcast_event with pre-serialized bytes stores correct serialized_json
+        let broadcaster = EventBroadcaster::new();
+        let _rx = broadcaster.subscribe_all(); // need a subscriber so serialization happens
+        let mut ws_buf = Vec::new();
+
+        let event = make_test_event("node_1");
+        let event_json = make_test_json(&event);
+        broadcaster
+            .broadcast_event(node_id("node_1"), event, &event_json, &mut ws_buf)
+            .unwrap();
+
+        let recent = broadcaster.get_recent_events(Some(1));
+        assert_eq!(recent.len(), 1);
+        let be = &recent[0];
+
+        // serialized_json should be present (we had a subscriber)
+        assert!(be.serialized_json.is_some());
+        let ws_json: serde_json::Value =
+            serde_json::from_str(be.serialized_json.as_ref().unwrap()).unwrap();
+        assert_eq!(ws_json["type"], "event");
+        assert_eq!(ws_json["data"]["node_id"], "node_1");
+
+        // event_json should be stored on BroadcastEvent
+        assert!(be.event_json.is_some());
+        assert_eq!(&**be.event_json.as_ref().unwrap(), &*event_json);
     }
 }

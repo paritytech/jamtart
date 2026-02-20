@@ -227,7 +227,8 @@ async fn main() -> anyhow::Result<()> {
     // Spawn background cache management task:
     // - Evicts expired entries every ~30 seconds
     // - Proactively re-warms all cached endpoints every 2 seconds (before the 3s TTL expires)
-    // - Warming runs concurrently via tokio::join! so cycle time = max(query times) not sum
+    // - Each query is spawned independently and populates its cache key on completion
+    //   (a slow da_stats doesn't block live_counters from being cached)
     // This means the cache is never cold: the HTTP server starts immediately and the first
     // user request always hits a warm cache. Slow DB queries happen in the background only.
     {
@@ -242,87 +243,89 @@ async fn main() -> anyhow::Result<()> {
                 let first = evict_counter == 0;
 
                 if first {
-                    info!("Warming cache with all aggregation endpoints (concurrent)...");
+                    info!("Warming cache with all aggregation endpoints (independent spawns)...");
                 }
 
-                // Resolve core_count from JAM RPC params before concurrent queries
-                // Warm all cached endpoints concurrently — cycle time = max(query) not sum(queries)
-                // NOTE: cores_status is computed in the API handler (merges JAM RPC + DB)
-                // and cached via cache_or_compute, so it's not warmed here.
-                // Real-time endpoints (realtime_metrics, active_workpackages, events/search)
-                // hit the DB directly — they must never serve stale data.
-                let (
-                    r_stats,
-                    r_wp_stats,
-                    r_block_stats,
-                    r_guarantee_stats,
-                    r_da_stats,
-                    r_failure_rates,
-                    r_block_propagation,
-                    r_network_health,
-                    r_guarantees_by_guarantor,
-                    r_live_counters,
-                    r_da_stats_enhanced,
-                    r_execution_metrics,
-                    r_anomalies,
-                ) = tokio::join!(
-                    store_clone.get_stats("1 hour", "24 hours"),
-                    store_clone.get_workpackage_stats("24 hours"),
-                    store_clone.get_block_stats("1 hour"),
-                    store_clone.get_guarantee_stats("1 hour", "24 hours"),
-                    store_clone.get_da_stats(),
-                    store_clone.get_failure_rates("1 hour"),
-                    store_clone.get_block_propagation("1 hour"),
-                    store_clone.get_network_health("1 hour", "24 hours"),
-                    store_clone.get_guarantees_by_guarantor("1 hour", "24 hours"),
-                    store_clone.get_live_counters(),
-                    store_clone.get_da_stats_enhanced("1 hour", "24 hours"),
-                    store_clone.get_execution_metrics("1 hour"),
-                    store_clone.detect_anomalies(),
-                );
+                // Spawn each cache-warm query independently. Each populates its cache key
+                // as soon as it completes — no all-or-nothing blocking.
+                // Captures store_clone/cache_clone/first from enclosing scope.
+                macro_rules! spawn_warm {
+                    ($key:expr, $($method:tt)+) => {{
+                        let cache = Arc::clone(&cache_clone);
+                        let store = Arc::clone(&store_clone);
+                        let first = first;
+                        tokio::spawn(async move {
+                            match store.$($method)+.await {
+                                Ok(value) => {
+                                    cache.insert($key.to_string(), value);
+                                    if first {
+                                        info!("Cache warmed: {}", $key);
+                                    }
+                                }
+                                Err(e) => warn!("Cache warm failed for {}: {}", $key, e),
+                            }
+                        })
+                    }};
+                }
 
-                // Insert results into cache, logging on first run
-                macro_rules! cache_result {
-                    ($key:expr, $result:expr) => {
-                        match $result {
-                            Ok(value) => {
-                                cache_clone.insert($key.to_string(), value);
+                let handles: Vec<tokio::task::JoinHandle<()>> = vec![
+                    spawn_warm!("stats", get_stats("1 hour", "24 hours")),
+                    spawn_warm!("workpackage_stats", get_workpackage_stats("24 hours")),
+                    spawn_warm!("block_stats", get_block_stats("1 hour")),
+                    spawn_warm!("guarantee_stats", get_guarantee_stats("1 hour", "24 hours")),
+                    spawn_warm!("da_stats", get_da_stats()),
+                    spawn_warm!("failure_rates", get_failure_rates("1 hour")),
+                    spawn_warm!("block_propagation", get_block_propagation("1 hour")),
+                    spawn_warm!("network_health", get_network_health("1 hour", "24 hours")),
+                    spawn_warm!(
+                        "guarantees_by_guarantor",
+                        get_guarantees_by_guarantor("1 hour", "24 hours")
+                    ),
+                    spawn_warm!("live_counters", get_live_counters()),
+                    spawn_warm!(
+                        "da_stats_enhanced",
+                        get_da_stats_enhanced("1 hour", "24 hours")
+                    ),
+                    spawn_warm!("execution_metrics", get_execution_metrics("1 hour")),
+                    spawn_warm!("realtime_60", get_realtime_metrics(60)),
+                    spawn_warm!(
+                        "timeseries_throughput_5_1",
+                        get_timeseries_metrics("throughput", 5, 1)
+                    ),
+                ];
+
+                // Anomalies need special handling (wraps Vec<Value> in JSON object)
+                let anomaly_handle = {
+                    let cache = Arc::clone(&cache_clone);
+                    let store = Arc::clone(&store_clone);
+                    tokio::spawn(async move {
+                        match store.detect_anomalies().await {
+                            Ok(alerts) => {
+                                cache.insert(
+                                    "anomalies".to_string(),
+                                    serde_json::json!({"alerts": alerts}),
+                                );
                                 if first {
-                                    info!("Cache warmed: {}", $key);
+                                    info!("Cache warmed: anomalies");
                                 }
                             }
-                            Err(e) => warn!("Failed to warm cache for {}: {}", $key, e),
+                            Err(e) => warn!("Cache warm failed for anomalies: {}", e),
                         }
-                    };
-                }
+                    })
+                };
 
-                cache_result!("stats", r_stats);
-                cache_result!("workpackage_stats", r_wp_stats);
-                cache_result!("block_stats", r_block_stats);
-                cache_result!("guarantee_stats", r_guarantee_stats);
-                cache_result!("da_stats", r_da_stats);
-                cache_result!("failure_rates", r_failure_rates);
-                cache_result!("block_propagation", r_block_propagation);
-                cache_result!("network_health", r_network_health);
-                cache_result!("guarantees_by_guarantor", r_guarantees_by_guarantor);
-                cache_result!("live_counters", r_live_counters);
-                cache_result!("da_stats_enhanced", r_da_stats_enhanced);
-                cache_result!("execution_metrics", r_execution_metrics);
-
-                // Cache anomalies: wrap Vec<Value> in a JSON object for the WS handler
-                match r_anomalies {
-                    Ok(alerts) => {
-                        let value = serde_json::json!({"alerts": alerts});
-                        cache_clone.insert("anomalies".to_string(), value);
-                        if first {
-                            info!("Cache warmed: anomalies");
-                        }
+                // Await all handles for backpressure (don't start next cycle before current finishes)
+                for handle in handles {
+                    if let Err(e) = handle.await {
+                        warn!("Cache warm task panicked: {}", e);
                     }
-                    Err(e) => warn!("Failed to warm cache for anomalies: {}", e),
+                }
+                if let Err(e) = anomaly_handle.await {
+                    warn!("Cache warm task panicked: {}", e);
                 }
 
                 if first {
-                    info!("Initial cache warming complete (13 endpoints, concurrent)");
+                    info!("Initial cache warming complete (15 endpoints, independent spawns)");
                 }
 
                 // Evict expired entries every ~15th cycle (roughly every 30s)
@@ -369,7 +372,7 @@ async fn main() -> anyhow::Result<()> {
     info!("Max events per second per node: 100 (+50 burst)");
     info!("Write batch size: 2000 events");
     info!("Write batch timeout: 5ms");
-    info!("Cache TTL: 3s, warm interval: 2s (13 endpoints, concurrent)");
+    info!("Cache TTL: 3s, warm interval: 2s (15 endpoints, independent spawns)");
     info!("==========================================");
 
     // Graceful shutdown: flush pending data on SIGTERM/SIGINT

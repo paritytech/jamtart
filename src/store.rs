@@ -1,8 +1,8 @@
-use crate::events::Event;
+use crate::batch_writer::EventRecord;
 use crate::types::JCE_EPOCH_UNIX_MICROS;
 use chrono::{DateTime, Utc};
 use serde_json;
-use sqlx::{postgres::PgPoolOptions, PgPool, Row};
+use sqlx::{postgres::PgPoolOptions, Executor, PgPool, Row};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,7 +33,8 @@ type NodeId = Arc<str>;
 /// # }
 /// ```
 pub struct EventStore {
-    pool: PgPool,
+    pool: PgPool,       // read pool — API queries + cache warmer
+    write_pool: PgPool, // write pool — batch writer, node updates
 }
 
 impl EventStore {
@@ -47,7 +48,28 @@ impl EventStore {
     /// # Errors
     /// Returns `sqlx::Error` if connection fails or migrations cannot be applied.
     pub async fn new(database_url: &str) -> Result<Self, sqlx::Error> {
+        // Read pool: smaller, with statement timeout to kill runaway queries.
+        // Serves API queries + cache warmer (15 concurrent queries + HTTP handlers).
         let pool = PgPoolOptions::new()
+            .max_connections(30)
+            .min_connections(5)
+            .acquire_timeout(Duration::from_secs(3))
+            .idle_timeout(Duration::from_secs(300))
+            .max_lifetime(Duration::from_secs(600))
+            .after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    conn.execute("SET statement_timeout = '8s'").await?;
+                    Ok(())
+                })
+            })
+            .connect(database_url)
+            .await?;
+
+        info!("Read pool connected (30 conns, 8s statement_timeout)");
+
+        // Write pool: larger, no statement timeout (COPY operations take variable time).
+        // Serves batch writer workers + node upserts.
+        let write_pool = PgPoolOptions::new()
             .max_connections(200)
             .min_connections(20)
             .acquire_timeout(Duration::from_secs(5))
@@ -56,14 +78,14 @@ impl EventStore {
             .connect(database_url)
             .await?;
 
-        info!("Connected to TimescaleDB database");
+        info!("Write pool connected (200 conns, no statement_timeout)");
 
-        // Run migrations
-        sqlx::migrate!("./migrations").run(&pool).await?;
+        // Run migrations (using write pool — no timeout constraint)
+        sqlx::migrate!("./migrations").run(&write_pool).await?;
 
         info!("Migrations applied successfully");
 
-        Ok(Self { pool })
+        Ok(Self { pool, write_pool })
     }
 
     /// Expose the connection pool for raw queries in API handlers.
@@ -130,7 +152,7 @@ impl EventStore {
         .bind(vec![true; nodes.len()])
         .bind(vec![0i64; nodes.len()])
         .bind(&addresses)
-        .execute(&self.pool)
+        .execute(&self.write_pool)
         .await?;
 
         tracing::debug!("Batch inserted/updated {} node connections", nodes.len());
@@ -160,7 +182,7 @@ impl EventStore {
         )
         .bind(now)
         .bind(&ids)
-        .execute(&self.pool)
+        .execute(&self.write_pool)
         .await?;
 
         tracing::debug!("Batch disconnected {} nodes", node_ids.len());
@@ -370,7 +392,7 @@ impl EventStore {
         });
 
         // Update cache asynchronously (fire-and-forget to not block response)
-        let pool = self.pool.clone();
+        let pool = self.write_pool.clone();
         let stats_clone = stats.clone();
         tokio::spawn(async move {
             match sqlx::query(
@@ -404,7 +426,7 @@ impl EventStore {
     /// overhead on both client and server side.
     pub async fn store_events_batch(
         &self,
-        events: Vec<(NodeId, u64, Arc<Event>)>,
+        events: Vec<EventRecord>,
     ) -> Result<(), sqlx::Error> {
         if events.is_empty() {
             return Ok(());
@@ -427,10 +449,7 @@ impl EventStore {
         buf.extend_from_slice(&0i32.to_be_bytes()); // flags
         buf.extend_from_slice(&0i32.to_be_bytes()); // header extension length
 
-        // Reusable scratch buffer for JSON serialization (avoids per-event String allocation)
-        let mut json_buf: Vec<u8> = Vec::with_capacity(4096);
-
-        for (node_id, event_id, event) in &events {
+        for (node_id, event_id, event, event_json) in &events {
             // Field count
             buf.extend_from_slice(&FIELD_COUNT.to_be_bytes());
 
@@ -454,23 +473,18 @@ impl EventStore {
             buf.extend_from_slice(&2i32.to_be_bytes());
             buf.extend_from_slice(&event_type.to_be_bytes());
 
-            // Column 5: data (JSONB) — version byte (0x01) + JSON bytes
-            // Write directly into reusable buffer to avoid per-event String allocation
-            json_buf.clear();
-            if serde_json::to_writer(&mut json_buf, &**event).is_err() {
-                json_buf.clear();
-                json_buf.extend_from_slice(b"{}");
-            }
-            buf.extend_from_slice(&(json_buf.len() as i32 + 1).to_be_bytes()); // +1 for version byte
+            // Column 5: data (JSONB) — version byte (0x01) + pre-serialized JSON bytes
+            // Uses event_json from server.rs (serialized once, shared via Arc)
+            buf.extend_from_slice(&(event_json.len() as i32 + 1).to_be_bytes()); // +1 for version byte
             buf.push(1u8); // JSONB version 1
-            buf.extend_from_slice(&json_buf);
+            buf.extend_from_slice(event_json);
         }
 
         // Trailer: -1 as i16
         buf.extend_from_slice(&(-1i16).to_be_bytes());
 
         // Send binary payload via COPY
-        let mut conn = self.pool.acquire().await?;
+        let mut conn = self.write_pool.acquire().await?;
         let mut copy_in = conn
             .copy_in_raw(
                 "COPY events (timestamp, node_id, event_id, event_type, data) FROM STDIN WITH (FORMAT binary)",
@@ -491,12 +505,12 @@ impl EventStore {
     /// Simple batch insert for small batches using individual INSERTs in a transaction.
     async fn store_events_simple(
         &self,
-        events: Vec<(NodeId, u64, Arc<Event>)>,
+        events: Vec<EventRecord>,
     ) -> Result<(), sqlx::Error> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.write_pool.begin().await?;
         let event_count = events.len();
 
-        for (node_id, event_id, event) in events {
+        for (node_id, event_id, event, event_json_bytes) in events {
             let event_type = event.event_type() as i16;
             let unix_timestamp_micros = JCE_EPOCH_UNIX_MICROS + event.timestamp() as i64;
             let timestamp =
@@ -509,8 +523,8 @@ impl EventStore {
                     );
                     Utc::now()
                 });
-            let event_json =
-                serde_json::to_value(&*event).map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
+            let event_json: serde_json::Value = serde_json::from_slice(&event_json_bytes)
+                .map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
 
             sqlx::query(
                 r#"
@@ -584,7 +598,7 @@ impl EventStore {
         .bind(now)
         .bind(&node_ids)
         .bind(&counts)
-        .execute(&self.pool)
+        .execute(&self.write_pool)
         .await?;
 
         Ok(())
@@ -889,37 +903,51 @@ impl EventStore {
         // 43 = Importing, 44 = BlockVerificationFailed, 45 = BlockVerified
         // 46 = BlockExecutionFailed, 47 = BlockExecuted
         // 11 = BestBlockChanged, 12 = FinalizedBlockChanged
+
+        // (A) Counts from continuous aggregate
         let row = sqlx::query(&format!(
             r#"
             SELECT
-                COUNT(*) FILTER (WHERE event_type = 40) as authoring_started,
-                COUNT(*) FILTER (WHERE event_type = 41) as authoring_failed,
-                COUNT(*) FILTER (WHERE event_type = 42) as authored,
-                COUNT(*) FILTER (WHERE event_type = 43) as importing,
-                COUNT(*) FILTER (WHERE event_type = 44) as verification_failed,
-                COUNT(*) FILTER (WHERE event_type = 45) as verified,
-                COUNT(*) FILTER (WHERE event_type = 46) as execution_failed,
-                COUNT(*) FILTER (WHERE event_type = 47) as executed,
-                COUNT(*) FILTER (WHERE event_type = 11) as best_block_changes,
-                COUNT(*) FILTER (WHERE event_type = 12) as finalized_block_changes,
-                MAX(CAST(data->'BestBlockChanged'->>'slot' AS BIGINT)) FILTER (WHERE event_type = 11) as best_slot,
-                MAX(CAST(data->'FinalizedBlockChanged'->>'slot' AS BIGINT)) FILTER (WHERE event_type = 12) as finalized_slot
-            FROM events
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 40), 0)::BIGINT as authoring_started,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 41), 0)::BIGINT as authoring_failed,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 42), 0)::BIGINT as authored,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 43), 0)::BIGINT as importing,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 44), 0)::BIGINT as verification_failed,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 45), 0)::BIGINT as verified,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 46), 0)::BIGINT as execution_failed,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 47), 0)::BIGINT as executed,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 11), 0)::BIGINT as best_block_changes,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 12), 0)::BIGINT as finalized_block_changes
+            FROM event_stats_1m
             WHERE event_type IN (40, 41, 42, 43, 44, 45, 46, 47, 11, 12)
-            AND timestamp > NOW() - INTERVAL '{}'
+            AND bucket > NOW() - INTERVAL '{}'
             "#,
             interval
         ))
         .fetch_one(&self.pool)
         .await?;
 
-        // Get per-node authoring stats
+        // (B) Slot extraction from raw events — bounded to 10 min (only need most recent values)
+        let slots = sqlx::query(
+            r#"
+            SELECT
+                MAX(CAST(data->'BestBlockChanged'->>'slot' AS BIGINT)) FILTER (WHERE event_type = 11) as best_slot,
+                MAX(CAST(data->'FinalizedBlockChanged'->>'slot' AS BIGINT)) FILTER (WHERE event_type = 12) as finalized_slot
+            FROM events
+            WHERE event_type IN (11, 12)
+            AND timestamp > NOW() - INTERVAL '10 minutes'
+            "#,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        // Per-node authoring stats from aggregate
         let authoring_by_node: Vec<(String, i64)> = sqlx::query_as(&format!(
             r#"
-            SELECT node_id, COUNT(*) as blocks_authored
-            FROM events
+            SELECT node_id, SUM(event_count)::BIGINT as blocks_authored
+            FROM event_stats_1m
             WHERE event_type = 42
-            AND timestamp > NOW() - INTERVAL '{}'
+            AND bucket > NOW() - INTERVAL '{}'
             GROUP BY node_id
             ORDER BY blocks_authored DESC
             "#,
@@ -928,8 +956,8 @@ impl EventStore {
         .fetch_all(&self.pool)
         .await?;
 
-        // Get recent blocks (last 50 authored)
-        let recent_authored: Vec<serde_json::Value> = sqlx::query_scalar(&format!(
+        // Get recent blocks (last 50 authored) — bounded to 10 min
+        let recent_authored: Vec<serde_json::Value> = sqlx::query_scalar(
             r#"
             SELECT jsonb_build_object(
                 'node_id', node_id,
@@ -939,12 +967,11 @@ impl EventStore {
             )
             FROM events
             WHERE event_type = 42
-            AND timestamp > NOW() - INTERVAL '{}'
+            AND timestamp > NOW() - INTERVAL '10 minutes'
             ORDER BY timestamp DESC
             LIMIT 50
             "#,
-            interval
-        ))
+        )
         .fetch_all(&self.pool)
         .await?;
 
@@ -962,8 +989,8 @@ impl EventStore {
                 "finalized_block_changes": row.get::<i64, _>("finalized_block_changes"),
             },
             "chain": {
-                "best_slot": row.get::<Option<i64>, _>("best_slot").unwrap_or(0),
-                "finalized_slot": row.get::<Option<i64>, _>("finalized_slot").unwrap_or(0),
+                "best_slot": slots.get::<Option<i64>, _>("best_slot").unwrap_or(0),
+                "finalized_slot": slots.get::<Option<i64>, _>("finalized_slot").unwrap_or(0),
             },
             "authoring_by_node": authoring_by_node.into_iter().map(|(node_id, count)| {
                 serde_json::json!({"node_id": node_id, "blocks_authored": count})
@@ -1191,6 +1218,7 @@ impl EventStore {
     /// Get data availability (shard/preimage) statistics aggregated across all nodes.
     pub async fn get_da_stats(&self) -> Result<serde_json::Value, sqlx::Error> {
         // Get aggregate stats from latest status events for each node
+        // Bounded to 1 hour — status events arrive every ~6s so this captures all active nodes
         let aggregate = sqlx::query(
             r#"
             WITH latest_status AS (
@@ -1202,7 +1230,8 @@ impl EventStore {
                     CAST(data->'Status'->>'preimages_size' AS BIGINT) as preimages_size
                 FROM events
                 WHERE event_type = 10
-                ORDER BY node_id, created_at DESC
+                AND timestamp > NOW() - INTERVAL '1 hour'
+                ORDER BY node_id, timestamp DESC
             )
             SELECT
                 COUNT(*) as node_count,
@@ -1230,7 +1259,8 @@ impl EventStore {
                     timestamp
                 FROM events
                 WHERE event_type = 10
-                ORDER BY node_id, created_at DESC
+                AND timestamp > NOW() - INTERVAL '1 hour'
+                ORDER BY node_id, timestamp DESC
             )
             SELECT jsonb_build_object(
                 'node_id', node_id,
@@ -1257,6 +1287,7 @@ impl EventStore {
                 COUNT(*) FILTER (WHERE event_type = 199) as discarded
             FROM events
             WHERE event_type IN (191, 192, 198, 199)
+            AND timestamp > NOW() - INTERVAL '1 hour'
             "#,
         )
         .fetch_one(&self.pool)
@@ -2580,11 +2611,11 @@ impl EventStore {
     ) -> Result<serde_json::Value, sqlx::Error> {
         let seconds = seconds.clamp(10, 300); // 10s to 5min
 
-        // Get per-second event counts
+        // Per-second counts from raw events — bounded to last 13s (260k rows at 20k/s)
         let per_second: Vec<serde_json::Value> = sqlx::query_scalar(
             r#"
             SELECT jsonb_build_object(
-                'timestamp', date_trunc('second', created_at),
+                'timestamp', date_trunc('second', timestamp),
                 'events', COUNT(*),
                 'nodes', COUNT(DISTINCT node_id),
                 'blocks', COUNT(*) FILTER (WHERE event_type = 11),
@@ -2593,31 +2624,42 @@ impl EventStore {
                 'tickets', COUNT(*) FILTER (WHERE event_type IN (80, 82, 84))
             )
             FROM events
-            WHERE created_at > NOW() - make_interval(secs => $1)
-            GROUP BY date_trunc('second', created_at)
-            ORDER BY date_trunc('second', created_at) DESC
+            WHERE timestamp > NOW() - INTERVAL '13 seconds'
+            GROUP BY date_trunc('second', timestamp)
+            ORDER BY date_trunc('second', timestamp) DESC
             "#,
         )
-        .bind(seconds)
         .fetch_all(&self.pool)
         .await?;
 
-        // Get current totals
+        // Totals from continuous aggregate
         let totals = sqlx::query(
             r#"
             SELECT
-                COUNT(*) as total_events,
-                COUNT(*) FILTER (WHERE event_type = 11) as best_blocks,
-                COUNT(*) FILTER (WHERE event_type = 12) as finalized_blocks,
-                COUNT(*) FILTER (WHERE event_type = 42) as authored,
-                COUNT(*) FILTER (WHERE event_type = 62) as announcements,
-                COUNT(DISTINCT node_id) as active_nodes,
-                MAX(CAST(data->'BestBlockChanged'->>'slot' AS INTEGER)) FILTER (WHERE event_type = 11) as latest_slot
-            FROM events
-            WHERE created_at > NOW() - make_interval(secs => $1)
+                COALESCE(SUM(event_count), 0)::BIGINT as total_events,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 11), 0)::BIGINT as best_blocks,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 12), 0)::BIGINT as finalized_blocks,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 42), 0)::BIGINT as authored,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 62), 0)::BIGINT as announcements,
+                COUNT(DISTINCT node_id) as active_nodes
+            FROM event_stats_1m
+            WHERE bucket > NOW() - make_interval(secs => $1)
             "#,
         )
         .bind(seconds)
+        .fetch_one(&self.pool)
+        .await?;
+
+        // Latest slot from raw events — bounded to 10 seconds (tiny scan)
+        let slot_row = sqlx::query(
+            r#"
+            SELECT
+                MAX(CAST(data->'BestBlockChanged'->>'slot' AS INTEGER)) FILTER (WHERE event_type = 11) as latest_slot
+            FROM events
+            WHERE event_type IN (11, 12)
+            AND timestamp > NOW() - INTERVAL '10 seconds'
+            "#,
+        )
         .fetch_one(&self.pool)
         .await?;
 
@@ -2636,13 +2678,13 @@ impl EventStore {
                 "authored_blocks": totals.get::<i64, _>("authored"),
                 "announcements": totals.get::<i64, _>("announcements"),
                 "active_nodes": totals.get::<i64, _>("active_nodes"),
-                "latest_slot": totals.get::<Option<i32>, _>("latest_slot"),
+                "latest_slot": slot_row.get::<Option<i32>, _>("latest_slot"),
             },
             "rates": {
                 "events_per_second": events_per_second,
                 "blocks_per_second": blocks_per_second,
             },
-            "per_second": per_second,
+            "data": per_second,
         }))
     }
 
@@ -2660,20 +2702,20 @@ impl EventStore {
                 MAX(CAST(data->'BestBlockChanged'->>'slot' AS INTEGER)) FILTER (WHERE event_type = 11) as latest_slot,
                 MAX(CAST(data->'FinalizedBlockChanged'->>'slot' AS INTEGER)) FILTER (WHERE event_type = 12) as finalized_slot
             FROM events
-            WHERE created_at > NOW() - INTERVAL '10 seconds'
+            WHERE timestamp > NOW() - INTERVAL '10 seconds'
             "#,
         )
         .fetch_one(&self.pool)
         .await?;
 
-        // Get 1-minute rates for comparison
+        // Get 1-minute rates from continuous aggregate (real-time mode)
         let minute_counters = sqlx::query(
             r#"
             SELECT
-                COUNT(*) as events_1m,
-                COUNT(*) FILTER (WHERE event_type = 11) as blocks_1m
-            FROM events
-            WHERE created_at > NOW() - INTERVAL '1 minute'
+                COALESCE(SUM(event_count), 0)::BIGINT as events_1m,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 11), 0)::BIGINT as blocks_1m
+            FROM event_stats_1m
+            WHERE bucket > NOW() - INTERVAL '1 minute'
             "#,
         )
         .fetch_one(&self.pool)
@@ -2707,6 +2749,7 @@ impl EventStore {
 
     /// Get time-series metrics with configurable interval and duration.
     /// Supports: blocks, events, throughput
+    /// Uses event_stats_1m continuous aggregate with time_bucket re-bucketing.
     pub async fn get_timeseries_metrics(
         &self,
         metric: &str,
@@ -2718,7 +2761,7 @@ impl EventStore {
 
         match metric {
             "blocks" => {
-                // Block production rate over timestamp
+                // Block production rate from aggregate
                 let data: Vec<serde_json::Value> = sqlx::query_scalar(
                     r#"
                     WITH time_series AS (
@@ -2731,21 +2774,18 @@ impl EventStore {
                     ),
                     block_counts AS (
                         SELECT
-                            date_trunc('minute', timestamp) -
-                            (EXTRACT(MINUTE FROM timestamp)::int % $3) * interval '1 minute' AS bucket,
-                            COUNT(*) as blocks,
-                            COUNT(DISTINCT node_id) as authoring_nodes,
-                            MAX(CAST(data->'BestBlockChanged'->>'slot' AS INTEGER)) as max_slot
-                        FROM events
+                            time_bucket($2::interval, bucket) AS bucket,
+                            SUM(event_count)::BIGINT as blocks,
+                            COUNT(DISTINCT node_id) as authoring_nodes
+                        FROM event_stats_1m
                         WHERE event_type = 11
-                        AND created_at > NOW() - $1::interval
+                        AND bucket > NOW() - $1::interval
                         GROUP BY 1
                     )
                     SELECT jsonb_build_object(
                         'timestamp', ts.bucket,
                         'blocks', COALESCE(bc.blocks, 0),
-                        'authoring_nodes', COALESCE(bc.authoring_nodes, 0),
-                        'max_slot', bc.max_slot
+                        'authoring_nodes', COALESCE(bc.authoring_nodes, 0)
                     )
                     FROM time_series ts
                     LEFT JOIN block_counts bc ON ts.bucket = bc.bucket
@@ -2767,7 +2807,7 @@ impl EventStore {
                 }))
             }
             "events" => {
-                // Event throughput over timestamp
+                // Event throughput from aggregate
                 let data: Vec<serde_json::Value> = sqlx::query_scalar(
                     r#"
                     WITH time_series AS (
@@ -2780,13 +2820,12 @@ impl EventStore {
                     ),
                     event_counts AS (
                         SELECT
-                            date_trunc('minute', created_at) -
-                            (EXTRACT(MINUTE FROM created_at)::int % $3) * interval '1 minute' AS bucket,
-                            COUNT(*) as total_events,
+                            time_bucket($2::interval, bucket) AS bucket,
+                            SUM(event_count)::BIGINT as total_events,
                             COUNT(DISTINCT node_id) as active_nodes,
                             COUNT(DISTINCT event_type) as event_types
-                        FROM events
-                        WHERE created_at > NOW() - $1::interval
+                        FROM event_stats_1m
+                        WHERE bucket > NOW() - $1::interval
                         GROUP BY 1
                     )
                     SELECT jsonb_build_object(
@@ -2816,7 +2855,7 @@ impl EventStore {
                 }))
             }
             "throughput" => {
-                // Combined throughput metrics
+                // Combined throughput from aggregate
                 let data: Vec<serde_json::Value> = sqlx::query_scalar(
                     r#"
                     WITH time_series AS (
@@ -2829,16 +2868,15 @@ impl EventStore {
                     ),
                     metrics AS (
                         SELECT
-                            date_trunc('minute', created_at) -
-                            (EXTRACT(MINUTE FROM created_at)::int % $3) * interval '1 minute' AS bucket,
-                            COUNT(*) FILTER (WHERE event_type = 11) as best_blocks,
-                            COUNT(*) FILTER (WHERE event_type = 12) as finalized_blocks,
-                            COUNT(*) FILTER (WHERE event_type = 42) as authored_blocks,
-                            COUNT(*) FILTER (WHERE event_type = 62) as block_announcements,
-                            COUNT(*) FILTER (WHERE event_type BETWEEN 90 AND 113) as wp_events,
-                            COUNT(*) FILTER (WHERE event_type BETWEEN 105 AND 113) as guarantee_events
-                        FROM events
-                        WHERE created_at > NOW() - $1::interval
+                            time_bucket($2::interval, bucket) AS bucket,
+                            COALESCE(SUM(event_count) FILTER (WHERE event_type = 11), 0)::BIGINT as best_blocks,
+                            COALESCE(SUM(event_count) FILTER (WHERE event_type = 12), 0)::BIGINT as finalized_blocks,
+                            COALESCE(SUM(event_count) FILTER (WHERE event_type = 42), 0)::BIGINT as authored_blocks,
+                            COALESCE(SUM(event_count) FILTER (WHERE event_type = 62), 0)::BIGINT as block_announcements,
+                            COALESCE(SUM(event_count) FILTER (WHERE event_type BETWEEN 90 AND 113), 0)::BIGINT as wp_events,
+                            COALESCE(SUM(event_count) FILTER (WHERE event_type BETWEEN 105 AND 113), 0)::BIGINT as guarantee_events
+                        FROM event_stats_1m
+                        WHERE bucket > NOW() - $1::interval
                         GROUP BY 1
                     )
                     SELECT jsonb_build_object(
@@ -4195,14 +4233,14 @@ impl EventStore {
         // 122=ShardRequestFailed, 127=AssuranceSendFailed
         let failure_types = vec![41, 44, 46, 81, 83, 92, 99, 107, 111, 113, 122, 127];
 
-        // Overall failure stats
+        // Overall failure stats — from continuous aggregate
         let overall = sqlx::query(&format!(
             r#"
             SELECT
-                COUNT(*) as total_events,
-                COUNT(*) FILTER (WHERE event_type = ANY($1)) as failed_events
-            FROM events
-            WHERE timestamp > NOW() - INTERVAL '{}'
+                COALESCE(SUM(event_count), 0)::BIGINT as total_events,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = ANY($1)), 0)::BIGINT as failed_events
+            FROM event_stats_1m
+            WHERE bucket > NOW() - INTERVAL '{}'
             "#,
             interval
         ))
@@ -4213,7 +4251,7 @@ impl EventStore {
         let total: i64 = overall.get("total_events");
         let failed: i64 = overall.get("failed_events");
 
-        // By category
+        // By category — from continuous aggregate
         let by_category: Vec<serde_json::Value> = sqlx::query_scalar(&format!(
             r#"
             SELECT jsonb_build_object(
@@ -4225,27 +4263,27 @@ impl EventStore {
             FROM (
                 SELECT
                     'block_authoring' as category,
-                    COUNT(*) FILTER (WHERE event_type IN (40, 41, 42, 44, 46)) as attempts,
-                    COUNT(*) FILTER (WHERE event_type IN (41, 44, 46)) as failures
-                FROM events WHERE timestamp > NOW() - INTERVAL '{}'
+                    COALESCE(SUM(event_count) FILTER (WHERE event_type IN (40, 41, 42, 44, 46)), 0) as attempts,
+                    COALESCE(SUM(event_count) FILTER (WHERE event_type IN (41, 44, 46)), 0) as failures
+                FROM event_stats_1m WHERE bucket > NOW() - INTERVAL '{}'
                 UNION ALL
                 SELECT
                     'work_package' as category,
-                    COUNT(*) FILTER (WHERE event_type IN (94, 95, 101, 102, 92, 99)) as attempts,
-                    COUNT(*) FILTER (WHERE event_type IN (92, 99)) as failures
-                FROM events WHERE timestamp > NOW() - INTERVAL '{}'
+                    COALESCE(SUM(event_count) FILTER (WHERE event_type IN (94, 95, 101, 102, 92, 99)), 0) as attempts,
+                    COALESCE(SUM(event_count) FILTER (WHERE event_type IN (92, 99)), 0) as failures
+                FROM event_stats_1m WHERE bucket > NOW() - INTERVAL '{}'
                 UNION ALL
                 SELECT
                     'ticket_generation' as category,
-                    COUNT(*) FILTER (WHERE event_type IN (80, 81, 82, 83, 84)) as attempts,
-                    COUNT(*) FILTER (WHERE event_type IN (81, 83)) as failures
-                FROM events WHERE timestamp > NOW() - INTERVAL '{}'
+                    COALESCE(SUM(event_count) FILTER (WHERE event_type IN (80, 81, 82, 83, 84)), 0) as attempts,
+                    COALESCE(SUM(event_count) FILTER (WHERE event_type IN (81, 83)), 0) as failures
+                FROM event_stats_1m WHERE bucket > NOW() - INTERVAL '{}'
                 UNION ALL
                 SELECT
                     'guarantee' as category,
-                    COUNT(*) FILTER (WHERE event_type IN (105, 106, 107, 108, 109)) as attempts,
-                    COUNT(*) FILTER (WHERE event_type = 107) as failures
-                FROM events WHERE timestamp > NOW() - INTERVAL '{}'
+                    COALESCE(SUM(event_count) FILTER (WHERE event_type IN (105, 106, 107, 108, 109)), 0) as attempts,
+                    COALESCE(SUM(event_count) FILTER (WHERE event_type = 107), 0) as failures
+                FROM event_stats_1m WHERE bucket > NOW() - INTERVAL '{}'
             ) categories
             WHERE attempts > 0
             "#, interval, interval, interval, interval
@@ -4253,38 +4291,52 @@ impl EventStore {
         .fetch_all(&self.pool)
         .await?;
 
-        // By node (top offenders)
+        // By node (top offenders) — from continuous aggregate
+        // Uses DISTINCT ON instead of MODE() which isn't available on pre-aggregated data
         let by_node: Vec<serde_json::Value> = sqlx::query_scalar(&format!(
             r#"
-            WITH node_failures AS (
+            WITH node_totals AS (
                 SELECT
                     node_id,
-                    COUNT(*) as total_events,
-                    COUNT(*) FILTER (WHERE event_type = ANY($1)) as failures,
-                    MODE() WITHIN GROUP (ORDER BY event_type) FILTER (WHERE event_type = ANY($1)) as most_common_failure
-                FROM events
-                WHERE timestamp > NOW() - INTERVAL '{}'
+                    SUM(event_count)::BIGINT as total_events,
+                    SUM(event_count) FILTER (WHERE event_type = ANY($1))::BIGINT as failures
+                FROM event_stats_1m
+                WHERE bucket > NOW() - INTERVAL '{}'
                 GROUP BY node_id
-                HAVING COUNT(*) FILTER (WHERE event_type = ANY($1)) > 0
+                HAVING SUM(event_count) FILTER (WHERE event_type = ANY($1)) > 0
+            ),
+            top_failure_type AS (
+                SELECT DISTINCT ON (node_id)
+                    node_id, event_type as most_common_failure
+                FROM (
+                    SELECT node_id, event_type, SUM(event_count) as cnt
+                    FROM event_stats_1m
+                    WHERE bucket > NOW() - INTERVAL '{}'
+                    AND event_type = ANY($1)
+                    GROUP BY node_id, event_type
+                ) sub
+                ORDER BY node_id, cnt DESC
             )
             SELECT jsonb_build_object(
-                'node_id', node_id,
-                'total_events', total_events,
-                'failures', failures,
-                'failure_rate', ROUND((failures::numeric / total_events)::numeric, 4),
-                'top_failure_type', most_common_failure
+                'node_id', nt.node_id,
+                'total_events', nt.total_events,
+                'failures', nt.failures,
+                'failure_rate', ROUND((nt.failures::numeric / nt.total_events)::numeric, 4),
+                'top_failure_type', tft.most_common_failure
             )
-            FROM node_failures
-            ORDER BY failures DESC
+            FROM node_totals nt
+            LEFT JOIN top_failure_type tft ON nt.node_id = tft.node_id
+            ORDER BY nt.failures DESC
             LIMIT 20
-            "#, interval
+            "#,
+            interval, interval
         ))
         .bind(&failure_types)
         .fetch_all(&self.pool)
         .await?;
 
         // Recent failures (last 10)
-        let recent_failures: Vec<serde_json::Value> = sqlx::query_scalar(&format!(
+        let recent_failures: Vec<serde_json::Value> = sqlx::query_scalar(
             r#"
             SELECT jsonb_build_object(
                 'event_type', event_type,
@@ -4315,12 +4367,11 @@ impl EventStore {
             )
             FROM events
             WHERE event_type = ANY($1)
-            AND timestamp > NOW() - INTERVAL '{}'
+            AND timestamp > NOW() - INTERVAL '5 minutes'
             ORDER BY timestamp DESC
             LIMIT 20
             "#,
-            interval
-        ))
+        )
         .bind(&failure_types)
         .fetch_all(&self.pool)
         .await?;
@@ -4520,24 +4571,24 @@ impl EventStore {
         interval: &str,
         _secondary_interval: &str,
     ) -> Result<serde_json::Value, sqlx::Error> {
-        // Gather raw metrics for health scoring
+        // Gather metrics from continuous aggregate for health scoring
         let stats = sqlx::query(&format!(
             r#"
             SELECT
-                COUNT(DISTINCT node_id) FILTER (WHERE timestamp > NOW() - INTERVAL '1 minute') as active_nodes_1m,
-                COUNT(DISTINCT node_id) FILTER (WHERE timestamp > NOW() - INTERVAL '{}') as active_nodes_1h,
-                COUNT(*) FILTER (WHERE timestamp > NOW() - INTERVAL '1 minute') as events_last_minute,
-                COUNT(*) FILTER (WHERE event_type = 42 AND timestamp > NOW() - INTERVAL '{}') as blocks_authored_1h,
-                COUNT(*) FILTER (WHERE event_type = 41 AND timestamp > NOW() - INTERVAL '{}') as authoring_failures_1h,
-                COUNT(*) FILTER (WHERE event_type = 40 AND timestamp > NOW() - INTERVAL '{}') as authoring_attempts_1h,
-                COUNT(*) FILTER (WHERE event_type IN (120,124) AND timestamp > NOW() - INTERVAL '{}') as da_ops_1h,
-                COUNT(*) FILTER (WHERE event_type = 122 AND timestamp > NOW() - INTERVAL '{}') as da_failures_1h,
-                COUNT(*) FILTER (WHERE event_type IN (105) AND timestamp > NOW() - INTERVAL '{}') as guarantees_1h,
-                COUNT(*) FILTER (WHERE event_type IN (92) AND timestamp > NOW() - INTERVAL '{}') as wp_failures_1h,
-                COUNT(*) FILTER (WHERE event_type IN (94) AND timestamp > NOW() - INTERVAL '{}') as wp_received_1h
-            FROM events
-            WHERE timestamp > NOW() - INTERVAL '{}'
-            "#, interval, interval, interval, interval, interval, interval, interval, interval, interval, interval
+                COUNT(DISTINCT node_id) FILTER (WHERE bucket > NOW() - INTERVAL '1 minute') as active_nodes_1m,
+                COUNT(DISTINCT node_id) as active_nodes_1h,
+                COALESCE(SUM(event_count) FILTER (WHERE bucket > NOW() - INTERVAL '1 minute'), 0)::BIGINT as events_last_minute,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 42), 0)::BIGINT as blocks_authored_1h,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 41), 0)::BIGINT as authoring_failures_1h,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 40), 0)::BIGINT as authoring_attempts_1h,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type IN (120,124)), 0)::BIGINT as da_ops_1h,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 122), 0)::BIGINT as da_failures_1h,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 105), 0)::BIGINT as guarantees_1h,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 92), 0)::BIGINT as wp_failures_1h,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 94), 0)::BIGINT as wp_received_1h
+            FROM event_stats_1m
+            WHERE bucket > NOW() - INTERVAL '{}'
+            "#, interval
         ))
         .fetch_one(&self.pool)
         .await?;
@@ -5222,14 +5273,14 @@ impl EventStore {
     pub async fn detect_anomalies(&self) -> Result<Vec<serde_json::Value>, sqlx::Error> {
         let mut alerts = Vec::new();
 
-        // Check for high failure rates
+        // Check for high failure rates — from continuous aggregate
         let failure_check = sqlx::query(
             r#"
             SELECT
-                COUNT(*) as total_events,
-                COUNT(*) FILTER (WHERE event_type IN (41, 44, 46, 81, 94, 97, 99, 102, 109, 110, 112, 113)) as failures
-            FROM events
-            WHERE created_at > NOW() - INTERVAL '5 minutes'
+                COALESCE(SUM(event_count), 0)::BIGINT as total_events,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type IN (41, 44, 46, 81, 94, 97, 99, 102, 109, 110, 112, 113)), 0)::BIGINT as failures
+            FROM event_stats_1m
+            WHERE bucket > NOW() - INTERVAL '5 minutes'
             "#,
         )
         .fetch_one(&self.pool)
@@ -5252,18 +5303,18 @@ impl EventStore {
             }));
         }
 
-        // Check for dropped events
+        // Check for dropped events — from continuous aggregate
         let dropped_check = sqlx::query(
             r#"
             SELECT
                 node_id,
-                COUNT(*) as dropped
-            FROM events
+                SUM(event_count)::BIGINT as dropped
+            FROM event_stats_1m
             WHERE event_type = 0
-            AND created_at > NOW() - INTERVAL '5 minutes'
+            AND bucket > NOW() - INTERVAL '5 minutes'
             GROUP BY node_id
-            HAVING COUNT(*) > 10
-            ORDER BY COUNT(*) DESC
+            HAVING SUM(event_count) > 10
+            ORDER BY SUM(event_count) DESC
             LIMIT 5
             "#,
         )
@@ -5285,7 +5336,7 @@ impl EventStore {
             }));
         }
 
-        // Check for nodes falling behind
+        // Check for nodes falling behind — narrow to 30s to keep scan small
         let sync_check: Vec<serde_json::Value> = sqlx::query_scalar(
             r#"
             WITH recent_slots AS (
@@ -5294,7 +5345,7 @@ impl EventStore {
                     MAX(CAST(data->'BestBlockChanged'->>'slot' AS INTEGER)) as slot
                 FROM events
                 WHERE event_type = 11
-                AND created_at > NOW() - INTERVAL '2 minutes'
+                AND created_at > NOW() - INTERVAL '30 seconds'
                 GROUP BY node_id
             ),
             network_max AS (
@@ -5336,17 +5387,16 @@ impl EventStore {
             }));
         }
 
-        // Check for inactive nodes (were active but stopped)
+        // Check for inactive nodes (were active but stopped) — narrow to 10 min
         let inactive_check = sqlx::query(
             r#"
             SELECT
                 node_id,
                 MAX(timestamp) as last_seen
             FROM events
-            WHERE created_at > NOW() - INTERVAL '1 hour'
+            WHERE created_at > NOW() - INTERVAL '10 minutes'
             GROUP BY node_id
             HAVING MAX(timestamp) < NOW() - INTERVAL '5 minutes'
-            AND MAX(timestamp) > NOW() - INTERVAL '10 minutes'
             LIMIT 5
             "#,
         )
@@ -6163,9 +6213,9 @@ impl EventStore {
                 OR e.data->'Refined'->>'hash' = $4
                 OR e.data->'GuaranteeBuilt'->'outline'->>'hash' = $4
             ))
-            AND ($5::timestamptz IS NULL OR e.created_at >= $5)
-            AND ($6::timestamptz IS NULL OR e.created_at <= $6)
-            ORDER BY e.created_at DESC
+            AND ($5::timestamptz IS NULL OR e.timestamp >= $5)
+            AND ($6::timestamptz IS NULL OR e.timestamp <= $6)
+            ORDER BY e.timestamp DESC
             LIMIT $7 OFFSET $8
             "#,
         )
@@ -6180,46 +6230,15 @@ impl EventStore {
         .fetch_all(&self.pool)
         .await?;
 
-        // Get total count for pagination
-        let total: i64 = sqlx::query_scalar(
-            r#"
-            SELECT COUNT(*)
-            FROM events e
-            WHERE ($1::integer[] IS NULL OR e.event_type = ANY($1))
-            AND ($2::text IS NULL OR e.node_id = $2)
-            AND ($3::integer IS NULL OR (
-                COALESCE(
-                    CAST(e.data->'WorkPackageReceived'->>'core' AS INTEGER),
-                    CAST(e.data->'GuaranteeBuilt'->'outline'->>'core' AS INTEGER),
-                    CAST(e.data->'Refined'->>'core' AS INTEGER)
-                ) = $3
-            ))
-            AND ($4::text IS NULL OR (
-                e.data->>'hash' = $4
-                OR e.data->'WorkPackageSubmitted'->>'hash' = $4
-                OR e.data->'WorkPackageReceived'->>'hash' = $4
-                OR e.data->'Refined'->>'hash' = $4
-                OR e.data->'GuaranteeBuilt'->'outline'->>'hash' = $4
-            ))
-            AND ($5::timestamptz IS NULL OR e.created_at >= $5)
-            AND ($6::timestamptz IS NULL OR e.created_at <= $6)
-            "#,
-        )
-        .bind(event_types)
-        .bind(node_id)
-        .bind(core_index)
-        .bind(wp_hash)
-        .bind(start_time)
-        .bind(end_time)
-        .fetch_one(&self.pool)
-        .await?;
+        // Compute has_more from result length instead of a separate COUNT(*) query
+        let has_more = events.len() as i64 == limit;
 
         Ok(serde_json::json!({
             "events": events,
-            "total": total,
+            "total": if has_more { serde_json::Value::Null } else { serde_json::json!(offset + events.len() as i64) },
             "limit": limit,
             "offset": offset,
-            "has_more": (offset + limit) < total,
+            "has_more": has_more,
             "timestamp": chrono::Utc::now(),
         }))
     }

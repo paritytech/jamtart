@@ -1,7 +1,7 @@
 use dashmap::DashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tracing::warn;
 
@@ -17,22 +17,48 @@ pub const MAX_CONNECTIONS: usize = 1024;
 /// Time window for rate limiting (1 second)
 const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(1);
 
-struct RateLimitEntry {
-    count: u32,
-    window_start: Instant,
+/// Process-wide epoch for converting Instant → ticks.
+/// Ticks are milliseconds since this epoch, fitting u32 (~49 days of uptime).
+static EPOCH: OnceLock<Instant> = OnceLock::new();
+
+fn epoch() -> Instant {
+    *EPOCH.get_or_init(Instant::now)
 }
 
-impl Default for RateLimitEntry {
+/// Pack (count, ticks) into a single u64: count in upper 32 bits, ticks in lower 32.
+#[inline]
+fn pack(count: u32, ticks: u32) -> u64 {
+    ((count as u64) << 32) | (ticks as u64)
+}
+
+/// Unpack a u64 into (count, ticks).
+#[inline]
+fn unpack(val: u64) -> (u32, u32) {
+    ((val >> 32) as u32, val as u32)
+}
+
+/// Convert an Instant to ticks (milliseconds since EPOCH).
+#[inline]
+fn instant_to_ticks(t: Instant) -> u32 {
+    t.duration_since(epoch()).as_millis() as u32
+}
+
+/// Atomic rate limit entry. State is packed into a single AtomicU64:
+/// upper 32 bits = event count, lower 32 bits = window start (ticks since EPOCH).
+struct AtomicRateLimitEntry {
+    state: AtomicU64,
+}
+
+impl Default for AtomicRateLimitEntry {
     fn default() -> Self {
         Self {
-            count: 0,
-            window_start: Instant::now(),
+            state: AtomicU64::new(pack(0, instant_to_ticks(Instant::now()))),
         }
     }
 }
 
 pub struct RateLimiter {
-    limits: Arc<DashMap<String, RateLimitEntry>>,
+    limits: Arc<DashMap<String, AtomicRateLimitEntry>>,
     connection_count: AtomicUsize,
     /// Running count of throttled events (avoids iterating DashMap in get_stats)
     throttled_count: AtomicUsize,
@@ -125,59 +151,64 @@ impl RateLimiter {
         }
     }
 
-    /// Check if an event from a node is allowed based on rate limits
+    /// Check if an event from a node is allowed based on rate limits.
+    ///
+    /// Uses `self.limits.get()` (shared read lock on DashMap shard) + CAS loop on
+    /// the packed AtomicU64 state. This eliminates exclusive shard lock contention
+    /// that `get_mut()` caused with 200+ concurrent nodes.
     pub fn allow_event(&self, node_id: &str) -> bool {
-        let now = Instant::now();
+        let now_ticks = instant_to_ticks(Instant::now());
+        let budget = MAX_EVENTS_PER_SECOND + BURST_ALLOWANCE;
+        let window_ms = RATE_LIMIT_WINDOW.as_millis() as u32;
 
-        // Fast path: try get_mut first to avoid String allocation for existing keys
-        // Only allocates a String for first-time insertion
-        if let Some(mut entry) = self.limits.get_mut(node_id) {
-            let limit = entry.value_mut();
-            let elapsed = now.duration_since(limit.window_start);
+        // Fast path: existing entry — shared read lock on DashMap shard
+        if let Some(entry) = self.limits.get(node_id) {
+            let state = &entry.value().state;
+            loop {
+                let current = state.load(Ordering::Relaxed);
+                let (count, start_ticks) = unpack(current);
+                let elapsed_ms = now_ticks.wrapping_sub(start_ticks);
 
-            // Lazy eviction: if entry is stale (>5 min old), reset it in-place
-            // This replaces the background cleanup task that held a global DashMap lock
-            if elapsed >= Duration::from_secs(300) {
-                limit.count = 1;
-                limit.window_start = now;
-                return true;
-            }
+                if elapsed_ms >= window_ms {
+                    // Window expired — reset to count=1, new window
+                    let new = pack(1, now_ticks);
+                    match state.compare_exchange_weak(
+                        current,
+                        new,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    ) {
+                        Ok(_) => return true,
+                        Err(_) => continue, // CAS failed, retry
+                    }
+                }
 
-            if elapsed >= RATE_LIMIT_WINDOW {
-                limit.count = 1;
-                limit.window_start = now;
-                return true;
+                if count >= budget {
+                    // Over budget — no write needed, just return false
+                    self.throttled_count.fetch_add(1, Ordering::Relaxed);
+                    self.counter_rate_limited.increment(1);
+                    return false;
+                }
+
+                // Increment count within current window
+                let new = pack(count + 1, start_ticks);
+                match state.compare_exchange_weak(
+                    current,
+                    new,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => return true,
+                    Err(_) => continue, // CAS failed, retry
+                }
             }
-            if limit.count >= MAX_EVENTS_PER_SECOND + BURST_ALLOWANCE {
-                self.throttled_count.fetch_add(1, Ordering::Relaxed);
-                self.counter_rate_limited.increment(1);
-                return false;
-            }
-            limit.count += 1;
-            return true;
         }
 
-        // Slow path: new key, allocate String
-        let mut entry = self.limits.entry(node_id.to_string()).or_default();
-        let limit = entry.value_mut();
-
-        // Check if we're in a new window
-        if now.duration_since(limit.window_start) >= RATE_LIMIT_WINDOW {
-            // Reset the window
-            limit.count = 1;
-            limit.window_start = now;
-            return true;
-        }
-
-        // Check if we've exceeded the limit (with burst allowance)
-        if limit.count >= MAX_EVENTS_PER_SECOND + BURST_ALLOWANCE {
-            self.throttled_count.fetch_add(1, Ordering::Relaxed);
-            self.counter_rate_limited.increment(1);
-            return false;
-        }
-
-        limit.count += 1;
-        true
+        // Slow path: new node — write lock (once per node lifetime)
+        self.limits.entry(node_id.to_string()).or_default();
+        // Entry now exists with count=0. Recurse (will hit fast path).
+        // This is at most one extra iteration since the entry now exists.
+        self.allow_event(node_id)
     }
 
     /// Get current connection count
@@ -314,5 +345,85 @@ mod tests {
         assert_eq!(stats.active_nodes, 1);
         assert_eq!(stats.max_connections, MAX_CONNECTIONS);
         assert_eq!(stats.max_events_per_second, MAX_EVENTS_PER_SECOND);
+    }
+
+    #[test]
+    fn test_pack_unpack_roundtrip() {
+        // Verify atomic packing preserves count + ticks across edge values
+        for (count, ticks) in [
+            (0u32, 0u32),
+            (1, 1),
+            (1200, 50_000),
+            (u32::MAX, u32::MAX),
+            (0, u32::MAX),
+            (u32::MAX, 0),
+        ] {
+            let packed = pack(count, ticks);
+            let (c, t) = unpack(packed);
+            assert_eq!(c, count, "count mismatch for ({}, {})", count, ticks);
+            assert_eq!(t, ticks, "ticks mismatch for ({}, {})", count, ticks);
+        }
+    }
+
+    #[test]
+    fn test_instant_to_ticks_monotonic() {
+        // Verify ticks increase over time with reasonable precision
+        let t0 = instant_to_ticks(Instant::now());
+        std::thread::sleep(Duration::from_millis(50));
+        let t1 = instant_to_ticks(Instant::now());
+        assert!(t1 > t0, "ticks should be monotonically increasing");
+        let delta = t1 - t0;
+        assert!(
+            (40..=200).contains(&delta),
+            "~50ms sleep should give 40-200ms ticks, got {}",
+            delta
+        );
+    }
+
+    #[test]
+    fn test_rate_limiter_concurrent_correctness() {
+        setup_metrics();
+        let limiter = Arc::new(RateLimiter::new());
+        let budget = MAX_EVENTS_PER_SECOND + BURST_ALLOWANCE;
+        let num_threads = 8;
+        let events_per_thread = (budget as usize * 2) / num_threads;
+
+        let allowed = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+
+        for _ in 0..num_threads {
+            let limiter = Arc::clone(&limiter);
+            let allowed = Arc::clone(&allowed);
+            handles.push(std::thread::spawn(move || {
+                for _ in 0..events_per_thread {
+                    if limiter.allow_event("shared_node") {
+                        allowed.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let total_allowed = allowed.load(Ordering::Relaxed);
+        // With CAS races, total allowed should be close to budget but may vary slightly.
+        // Allow 2% tolerance above budget (CAS races can cause minor overcounting).
+        let tolerance = (budget as f64 * 0.02) as usize;
+        assert!(
+            total_allowed <= budget as usize + tolerance,
+            "total allowed {} should be within 2% of budget {} (tolerance {})",
+            total_allowed,
+            budget,
+            tolerance
+        );
+        assert!(
+            total_allowed >= budget as usize - tolerance,
+            "total allowed {} should be at least budget {} - tolerance {}",
+            total_allowed,
+            budget,
+            tolerance
+        );
     }
 }

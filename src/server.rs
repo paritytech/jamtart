@@ -1,6 +1,6 @@
-use crate::batch_writer::BatchWriter;
+use crate::batch_writer::{BatchWriter, EventRecord};
 use crate::decoder::{decode_message_frame, Decode, DecodingError};
-use crate::event_broadcaster::EventBroadcaster;
+use crate::event_broadcaster::{BroadcastRecord, EventBroadcaster};
 use crate::events::{Event, NodeInformation};
 use crate::rate_limiter::RateLimiter;
 use crate::store::EventStore;
@@ -435,8 +435,8 @@ async fn handle_connection_optimized(
     // repeated allocation. Events are collected during the inner decode loop
     // and sent as batches after it completes — one channel send per TCP read
     // wakeup instead of one per event.
-    let mut broadcast_batch: Vec<(Arc<str>, Arc<Event>)> = Vec::with_capacity(64);
-    let mut db_batch: Vec<(Arc<str>, u64, Arc<Event>)> = Vec::with_capacity(64);
+    let mut broadcast_batch: Vec<BroadcastRecord> = Vec::with_capacity(64);
+    let mut db_batch: Vec<EventRecord> = Vec::with_capacity(64);
 
     // Read events
     loop {
@@ -469,14 +469,18 @@ async fn handle_connection_optimized(
                             // Wrap event in Arc once to share between broadcaster and batch writer
                             let event = Arc::new(event);
 
+                            // Pre-serialize Event JSON once (shared by broadcaster + DB writer)
+                            let event_json: Arc<[u8]> = Arc::from(
+                                serde_json::to_vec(&*event).unwrap_or_else(|_| b"{}".to_vec()),
+                            );
+
                             // Accumulate for batch send after inner loop
-                            broadcast_batch
-                                .push((node_id_str.clone(), Arc::clone(&event)));
-                            db_batch.push((
+                            broadcast_batch.push((
                                 node_id_str.clone(),
-                                event_count,
-                                event,
+                                Arc::clone(&event),
+                                Arc::clone(&event_json),
                             ));
+                            db_batch.push((node_id_str.clone(), event_count, event, event_json));
                             batch_received += 1;
 
                             buffer.advance(4 + size as usize);
@@ -541,9 +545,7 @@ async fn handle_connection_optimized(
                     dropped_events += batch_received;
                     counter_events_dropped.increment(batch_received);
                     if dropped_events.is_multiple_of(500) {
-                        debug!(
-                            "Write buffer full, dropping events total: {dropped_events}",
-                        );
+                        debug!("Write buffer full, dropping events total: {dropped_events}",);
                     }
                 }
             }

@@ -416,7 +416,10 @@ async fn main() {
     println!("Duration:     {:.1}s", elapsed);
     println!("Nodes:        {}", config.nodes);
     println!("Events sent:  {}", format_count(total_events));
-    println!("Throughput:   {} events/sec", format_count(throughput as u64));
+    println!(
+        "Throughput:   {} events/sec",
+        format_count(throughput as u64)
+    );
     println!("Errors:       {}", total_errors);
 }
 

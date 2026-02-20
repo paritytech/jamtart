@@ -1001,26 +1001,34 @@ async fn get_realtime_metrics(
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let seconds = params.seconds.unwrap_or(60);
+    let key = format!("realtime_{}", seconds);
 
-    match state.store.get_realtime_metrics(seconds).await {
-        Ok(metrics) => Ok((no_cache_headers(), Json(metrics))),
-        Err(e) => {
-            error!("Failed to get realtime metrics: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+    let result = cache_or_compute(&state.cache, &key, || async {
+        state
+            .store
+            .get_realtime_metrics(seconds)
+            .await
+            .map_err(|e| {
+                error!("Failed to get realtime metrics: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })
+    })
+    .await?;
+    Ok((no_cache_headers(), Json(result)))
 }
 
 /// Get live counters - ultra-lightweight for high-frequency polling.
 /// Returns current slot, active nodes, and rate calculations.
+/// Reads from cache (warmed every 2s by background task).
 async fn get_live_counters(State(state): State<ApiState>) -> Result<impl IntoResponse, StatusCode> {
-    match state.store.get_live_counters().await {
-        Ok(counters) => Ok((no_cache_headers(), Json(counters))),
-        Err(e) => {
+    let result = cache_or_compute(&state.cache, "live_counters", || async {
+        state.store.get_live_counters().await.map_err(|e| {
             error!("Failed to get live counters: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+    })
+    .await?;
+    Ok((no_cache_headers(), Json(result)))
 }
 
 /// SSE (Server-Sent Events) handler for real-time metrics streaming.
@@ -1485,7 +1493,7 @@ async fn search_events(
         .as_ref()
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
         .map(|dt| dt.with_timezone(&chrono::Utc))
-        .or_else(|| Some(chrono::Utc::now() - chrono::Duration::hours(1)));
+        .or_else(|| Some(chrono::Utc::now() - chrono::Duration::minutes(1)));
 
     let end_time = query
         .end_time

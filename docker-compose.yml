@@ -20,7 +20,7 @@ services:
       - -c
       - shared_buffers=256MB
       - -c
-      - max_connections=200
+      - max_connections=250
       - -c
       - effective_cache_size=1GB
       - -c
