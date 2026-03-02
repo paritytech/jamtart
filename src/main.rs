@@ -6,14 +6,39 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+use clap::Parser;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tart_backend::api::{create_api_router, ApiState};
+use tart_backend::api::{create_api_router, create_minimal_router, ApiState, MinimalApiState};
 use tart_backend::health::{checks, HealthMonitor};
 use tart_backend::jam_rpc::JamRpcClient;
 use tart_backend::{EventStore, TelemetryServer};
 use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+#[derive(Parser)]
+#[command(name = "tart-backend", about = "TART Telemetry Backend")]
+struct Cli {
+    /// Skip database connection — only broadcast events via WebSocket
+    #[arg(long)]
+    no_database: bool,
+
+    /// Disable rate limiting for incoming events
+    #[arg(long)]
+    no_rate_limit: bool,
+
+    /// Database URL (can also be set via DATABASE_URL env var)
+    #[arg(long, env = "DATABASE_URL")]
+    database_url: Option<String>,
+
+    /// Telemetry TCP bind address
+    #[arg(long, env = "TELEMETRY_BIND", default_value = "0.0.0.0:9000")]
+    telemetry_bind: String,
+
+    /// HTTP API bind address
+    #[arg(long, env = "API_BIND", default_value = "0.0.0.0:8080")]
+    api_bind: String,
+}
 
 /// Configure TCP socket buffer sizes for better performance.
 ///
@@ -123,41 +148,45 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    info!("Starting TART (Testing, Analytics and Research Telemetry) Backend - OPTIMIZED");
-    info!("Optimized for handling up to 1024 concurrent nodes");
+    let args = Cli::parse();
 
-    // Configuration from environment variables
-    let telemetry_bind =
-        std::env::var("TELEMETRY_BIND").unwrap_or_else(|_| "0.0.0.0:9000".to_string());
-    let api_bind = std::env::var("API_BIND").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
-    let database_url = std::env::var("DATABASE_URL").expect(
-        "DATABASE_URL must be set. Example: postgres://user:password@localhost:5432/dbname",
-    );
+    info!("Starting TART (Testing, Analytics and Research Telemetry) Backend");
+    info!("Optimized for handling up to 1024 concurrent nodes");
 
     // Initialize metrics
     let prometheus_handle =
         metrics_exporter_prometheus::PrometheusBuilder::new().install_recorder()?;
 
-    // Initialize optimized storage
-    let redacted_url = match url::Url::parse(&database_url) {
-        Ok(mut parsed) => {
-            if parsed.password().is_some() {
-                let _ = parsed.set_password(Some("***"));
+    // Connect to database (unless --no-database)
+    let store = if args.no_database {
+        info!("NO-DATABASE mode: events will only be broadcast via WebSocket, no DB writes");
+        None
+    } else {
+        let database_url = args.database_url.expect(
+            "DATABASE_URL must be set (--database-url or DATABASE_URL env). Use --no-database to skip.",
+        );
+        let redacted_url = match url::Url::parse(&database_url) {
+            Ok(mut parsed) => {
+                if parsed.password().is_some() {
+                    let _ = parsed.set_password(Some("***"));
+                }
+                parsed.to_string()
             }
-            parsed.to_string()
-        }
-        Err(_) => "***redacted***".to_string(),
+            Err(_) => "***redacted***".to_string(),
+        };
+        info!("Connecting to database: {}", redacted_url);
+        Some(Arc::new(EventStore::new(&database_url).await?))
     };
-    info!("Connecting to database: {}", redacted_url);
-    let store = Arc::new(EventStore::new(&database_url).await?);
 
     // Create shutdown signal for TCP server
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-    // Start optimized telemetry server
-    info!("Starting optimized telemetry server on {}", telemetry_bind);
-    let telemetry_server =
-        Arc::new(TelemetryServer::new(&telemetry_bind, Arc::clone(&store)).await?);
+    // Start telemetry server
+    info!("Starting telemetry server on {}", args.telemetry_bind);
+    let telemetry_server = Arc::new(
+        TelemetryServer::with_options(&args.telemetry_bind, store.clone(), args.no_rate_limit)
+            .await?,
+    );
     let telemetry_server_clone = Arc::clone(&telemetry_server);
 
     // Spawn telemetry server task with shutdown support
@@ -171,211 +200,220 @@ async fn main() -> anyhow::Result<()> {
     let broadcaster = telemetry_server.get_broadcaster();
     let batch_writer = Arc::new(telemetry_server.get_batch_writer());
 
-    // Initialize health monitoring system
-    info!("Initializing comprehensive health monitoring system");
-    let health_monitor = Arc::new(HealthMonitor::new());
+    // Build the HTTP router: full (with DB) or minimal (WebSocket-only)
+    let mut app = if let Some(ref store) = store {
+        // Initialize health monitoring system
+        info!("Initializing comprehensive health monitoring system");
+        let health_monitor = Arc::new(HealthMonitor::new());
 
-    // Add health checks for all critical components
-    health_monitor
-        .add_check(checks::database_check(Arc::clone(&store)))
-        .await;
-    health_monitor
-        .add_check(checks::batch_writer_check(Arc::clone(&batch_writer)))
-        .await;
-    health_monitor
-        .add_check(checks::broadcaster_check(Arc::clone(&broadcaster)))
-        .await;
-    health_monitor.add_check(checks::memory_check()).await;
-    health_monitor
-        .add_check(checks::system_resources_check())
-        .await;
-    info!("Health monitoring system initialized with 5 critical component checks");
+        health_monitor
+            .add_check(checks::database_check(Arc::clone(store)))
+            .await;
+        health_monitor
+            .add_check(checks::batch_writer_check(Arc::clone(&batch_writer)))
+            .await;
+        health_monitor
+            .add_check(checks::broadcaster_check(Arc::clone(&broadcaster)))
+            .await;
+        health_monitor.add_check(checks::memory_check()).await;
+        health_monitor
+            .add_check(checks::system_resources_check())
+            .await;
+        info!("Health monitoring system initialized with 5 critical component checks");
 
-    // Initialize JAM RPC client if configured
-    let jam_rpc = match std::env::var("JAM_RPC_URL") {
-        Ok(rpc_url) => {
-            info!("Connecting to JAM node RPC at {}", rpc_url);
-            let mut client = JamRpcClient::new(&rpc_url);
-            match client.connect().await {
-                Ok(()) => {
-                    let client = Arc::new(client);
-                    // Start background statistics subscription
-                    let _subscription_handle = client.clone().start_stats_subscription();
-                    info!("JAM RPC client connected and subscribed to statistics");
-                    Some(client)
-                }
-                Err(e) => {
-                    error!("Failed to connect to JAM RPC at {}: {}", rpc_url, e);
-                    info!("JAM RPC endpoints will be unavailable");
-                    None
-                }
-            }
-        }
-        Err(_) => {
-            info!("JAM_RPC_URL not set - JAM RPC endpoints will be unavailable");
-            info!("To enable, set JAM_RPC_URL=ws://localhost:19800");
-            None
-        }
-    };
-
-    // Create TTL cache for expensive analytics queries
-    // 3s TTL with 2s warming interval means data is never more than ~2s old
-    let cache = Arc::new(tart_backend::cache::TtlCache::new(
-        std::time::Duration::from_secs(3),
-    ));
-
-    // Spawn background cache management task:
-    // - Evicts expired entries every ~30 seconds
-    // - Proactively re-warms all cached endpoints every 2 seconds (before the 3s TTL expires)
-    // - Each query is spawned independently and populates its cache key on completion
-    //   (a slow da_stats doesn't block live_counters from being cached)
-    // This means the cache is never cold: the HTTP server starts immediately and the first
-    // user request always hits a warm cache. Slow DB queries happen in the background only.
-    {
-        let cache_clone = Arc::clone(&cache);
-        let store_clone = Arc::clone(&store);
-        tokio::spawn(async move {
-            let mut warm_interval = tokio::time::interval(std::time::Duration::from_secs(2));
-            let mut evict_counter: u64 = 0;
-
-            loop {
-                warm_interval.tick().await;
-                let first = evict_counter == 0;
-
-                if first {
-                    info!("Warming cache with all aggregation endpoints (independent spawns)...");
-                }
-
-                // Spawn each cache-warm query independently. Each populates its cache key
-                // as soon as it completes — no all-or-nothing blocking.
-                // Captures store_clone/cache_clone/first from enclosing scope.
-                macro_rules! spawn_warm {
-                    ($key:expr, $($method:tt)+) => {{
-                        let cache = Arc::clone(&cache_clone);
-                        let store = Arc::clone(&store_clone);
-                        let first = first;
-                        tokio::spawn(async move {
-                            match store.$($method)+.await {
-                                Ok(value) => {
-                                    cache.insert($key.to_string(), value);
-                                    if first {
-                                        info!("Cache warmed: {}", $key);
-                                    }
-                                }
-                                Err(e) => warn!("Cache warm failed for {}: {}", $key, e),
-                            }
-                        })
-                    }};
-                }
-
-                let handles: Vec<tokio::task::JoinHandle<()>> = vec![
-                    spawn_warm!("stats", get_stats("1 hour", "24 hours")),
-                    spawn_warm!("workpackage_stats", get_workpackage_stats("24 hours")),
-                    spawn_warm!("block_stats", get_block_stats("1 hour")),
-                    spawn_warm!("guarantee_stats", get_guarantee_stats("1 hour", "24 hours")),
-                    spawn_warm!("da_stats", get_da_stats()),
-                    spawn_warm!("failure_rates", get_failure_rates("1 hour")),
-                    spawn_warm!("block_propagation", get_block_propagation("1 hour")),
-                    spawn_warm!("network_health", get_network_health("1 hour", "24 hours")),
-                    spawn_warm!(
-                        "guarantees_by_guarantor",
-                        get_guarantees_by_guarantor("1 hour", "24 hours")
-                    ),
-                    spawn_warm!("live_counters", get_live_counters()),
-                    spawn_warm!(
-                        "da_stats_enhanced",
-                        get_da_stats_enhanced("1 hour", "24 hours")
-                    ),
-                    spawn_warm!("execution_metrics", get_execution_metrics("1 hour")),
-                    spawn_warm!("realtime_60", get_realtime_metrics(60)),
-                    spawn_warm!(
-                        "timeseries_throughput_5_1",
-                        get_timeseries_metrics("throughput", 5, 1)
-                    ),
-                ];
-
-                // Anomalies need special handling (wraps Vec<Value> in JSON object)
-                let anomaly_handle = {
-                    let cache = Arc::clone(&cache_clone);
-                    let store = Arc::clone(&store_clone);
-                    tokio::spawn(async move {
-                        match store.detect_anomalies().await {
-                            Ok(alerts) => {
-                                cache.insert(
-                                    "anomalies".to_string(),
-                                    serde_json::json!({"alerts": alerts}),
-                                );
-                                if first {
-                                    info!("Cache warmed: anomalies");
-                                }
-                            }
-                            Err(e) => warn!("Cache warm failed for anomalies: {}", e),
-                        }
-                    })
-                };
-
-                // Await all handles for backpressure (don't start next cycle before current finishes)
-                for handle in handles {
-                    if let Err(e) = handle.await {
-                        warn!("Cache warm task panicked: {}", e);
+        // Initialize JAM RPC client if configured
+        let jam_rpc = match std::env::var("JAM_RPC_URL") {
+            Ok(rpc_url) => {
+                info!("Connecting to JAM node RPC at {}", rpc_url);
+                let mut client = JamRpcClient::new(&rpc_url);
+                match client.connect().await {
+                    Ok(()) => {
+                        let client = Arc::new(client);
+                        let _subscription_handle = client.clone().start_stats_subscription();
+                        info!("JAM RPC client connected and subscribed to statistics");
+                        Some(client)
+                    }
+                    Err(e) => {
+                        error!("Failed to connect to JAM RPC at {}: {}", rpc_url, e);
+                        info!("JAM RPC endpoints will be unavailable");
+                        None
                     }
                 }
-                if let Err(e) = anomaly_handle.await {
-                    warn!("Cache warm task panicked: {}", e);
-                }
-
-                if first {
-                    info!("Initial cache warming complete (15 endpoints, independent spawns)");
-                }
-
-                // Evict expired entries every ~15th cycle (roughly every 30s)
-                evict_counter += 1;
-                if evict_counter.is_multiple_of(15) {
-                    cache_clone.evict_expired();
-                }
             }
-        });
-    }
+            Err(_) => {
+                info!("JAM_RPC_URL not set - JAM RPC endpoints will be unavailable");
+                info!("To enable, set JAM_RPC_URL=ws://localhost:19800");
+                None
+            }
+        };
 
-    // Create API state using the optimized components
-    let api_state = ApiState {
-        store: Arc::clone(&store),
-        telemetry_server,
-        broadcaster,
-        health_monitor,
-        jam_rpc,
-        cache,
+        // Create TTL cache for expensive analytics queries
+        let cache = Arc::new(tart_backend::cache::TtlCache::new(
+            std::time::Duration::from_secs(3),
+        ));
+
+        // Spawn background cache warming task
+        {
+            let cache_clone = Arc::clone(&cache);
+            let store_clone = Arc::clone(store);
+            tokio::spawn(async move {
+                let mut warm_interval =
+                    tokio::time::interval(std::time::Duration::from_secs(2));
+                let mut evict_counter: u64 = 0;
+
+                loop {
+                    warm_interval.tick().await;
+                    let first = evict_counter == 0;
+
+                    if first {
+                        info!("Warming cache with all aggregation endpoints (independent spawns)...");
+                    }
+
+                    macro_rules! spawn_warm {
+                        ($key:expr, $($method:tt)+) => {{
+                            let cache = Arc::clone(&cache_clone);
+                            let store = Arc::clone(&store_clone);
+                            let first = first;
+                            tokio::spawn(async move {
+                                match store.$($method)+.await {
+                                    Ok(value) => {
+                                        cache.insert($key.to_string(), value);
+                                        if first {
+                                            info!("Cache warmed: {}", $key);
+                                        }
+                                    }
+                                    Err(e) => warn!("Cache warm failed for {}: {}", $key, e),
+                                }
+                            })
+                        }};
+                    }
+
+                    let handles: Vec<tokio::task::JoinHandle<()>> = vec![
+                        spawn_warm!("stats", get_stats("1 hour", "24 hours")),
+                        spawn_warm!("workpackage_stats", get_workpackage_stats("24 hours")),
+                        spawn_warm!("block_stats", get_block_stats("1 hour")),
+                        spawn_warm!(
+                            "guarantee_stats",
+                            get_guarantee_stats("1 hour", "24 hours")
+                        ),
+                        spawn_warm!("da_stats", get_da_stats()),
+                        spawn_warm!("failure_rates", get_failure_rates("1 hour")),
+                        spawn_warm!("block_propagation", get_block_propagation("1 hour")),
+                        spawn_warm!(
+                            "network_health",
+                            get_network_health("1 hour", "24 hours")
+                        ),
+                        spawn_warm!(
+                            "guarantees_by_guarantor",
+                            get_guarantees_by_guarantor("1 hour", "24 hours")
+                        ),
+                        spawn_warm!("live_counters", get_live_counters()),
+                        spawn_warm!(
+                            "da_stats_enhanced",
+                            get_da_stats_enhanced("1 hour", "24 hours")
+                        ),
+                        spawn_warm!("execution_metrics", get_execution_metrics("1 hour")),
+                        spawn_warm!("realtime_60", get_realtime_metrics(60)),
+                        spawn_warm!(
+                            "timeseries_throughput_5_1",
+                            get_timeseries_metrics("throughput", 5, 1)
+                        ),
+                    ];
+
+                    let anomaly_handle = {
+                        let cache = Arc::clone(&cache_clone);
+                        let store = Arc::clone(&store_clone);
+                        tokio::spawn(async move {
+                            match store.detect_anomalies().await {
+                                Ok(alerts) => {
+                                    cache.insert(
+                                        "anomalies".to_string(),
+                                        serde_json::json!({"alerts": alerts}),
+                                    );
+                                    if first {
+                                        info!("Cache warmed: anomalies");
+                                    }
+                                }
+                                Err(e) => warn!("Cache warm failed for anomalies: {}", e),
+                            }
+                        })
+                    };
+
+                    for handle in handles {
+                        if let Err(e) = handle.await {
+                            warn!("Cache warm task panicked: {}", e);
+                        }
+                    }
+                    if let Err(e) = anomaly_handle.await {
+                        warn!("Cache warm task panicked: {}", e);
+                    }
+
+                    if first {
+                        info!(
+                            "Initial cache warming complete (15 endpoints, independent spawns)"
+                        );
+                    }
+
+                    evict_counter += 1;
+                    if evict_counter.is_multiple_of(15) {
+                        cache_clone.evict_expired();
+                    }
+                }
+            });
+        }
+
+        let api_state = ApiState {
+            store: Arc::clone(store),
+            telemetry_server,
+            broadcaster,
+            health_monitor,
+            jam_rpc,
+            cache,
+        };
+
+        create_api_router(api_state)
+    } else {
+        // No-database mode: minimal router with WebSocket + health only
+        let minimal_state = MinimalApiState {
+            telemetry_server,
+            broadcaster,
+        };
+
+        create_minimal_router(minimal_state)
     };
 
-    // Create HTTP API router
-    let mut app = create_api_router(api_state);
-
-    // Add metrics endpoint
+    // Add metrics endpoint (always available)
     app = app.route(
         "/metrics",
         axum::routing::get(move || async move { prometheus_handle.render() }),
     );
 
-    // Start HTTP server with optimized settings
-    let api_addr: SocketAddr = api_bind.parse()?;
+    // Start HTTP server
+    let api_addr: SocketAddr = args.api_bind.parse()?;
     info!("Starting HTTP API server on {}", api_addr);
     info!("Metrics available at http://{}/metrics", api_addr);
 
     let listener = tokio::net::TcpListener::bind(api_addr).await?;
 
-    // Configure socket for better performance on Unix
     #[cfg(unix)]
     configure_socket_buffers(&listener);
 
-    info!("=== TART Backend Optimized Configuration ===");
+    info!("=== TART Backend Configuration ===");
+    info!("Mode: {}", if store.is_none() { "no-database (WebSocket-only)" } else { "full (DB + WebSocket)" });
     info!("Max concurrent connections: 1024");
-    info!("Max events per second per node: 100 (+50 burst)");
-    info!("Write batch size: 2000 events");
-    info!("Write batch timeout: 5ms");
-    info!("Cache TTL: 3s, warm interval: 2s (15 endpoints, independent spawns)");
+    if !args.no_rate_limit {
+        info!("Max events per second per node: 100 (+50 burst)");
+    } else {
+        info!("Rate limiting: DISABLED");
+    }
+    if store.is_some() {
+        info!("Write batch size: 16000 events");
+        info!("Write batch timeout: 100ms");
+        info!("Cache TTL: 3s, warm interval: 2s (15 endpoints, independent spawns)");
+    }
     info!("==========================================");
 
-    // Graceful shutdown: flush pending data on SIGTERM/SIGINT
+    // Graceful shutdown
     let batch_writer_shutdown = Arc::clone(&batch_writer);
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {

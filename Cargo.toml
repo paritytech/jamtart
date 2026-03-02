@@ -66,10 +66,12 @@ tikv-jemallocator = { version = "0.6", optional = true }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# CLI argument parsing
+clap = { version = "4.4", features = ["derive", "env"] }
+
 # Dashboard dependencies (feature-gated to avoid bloating main binary)
 ratatui = { version = "0.26", optional = true }
 crossterm = { version = "0.27", optional = true }
-clap = { version = "4.4", features = ["derive", "env"], optional = true }
 reqwest = { version = "0.11", features = ["json", "blocking"], optional = true }
 
 # Benchmark dependencies (feature-gated)
@@ -91,7 +93,7 @@ url = "2.5"
 [features]
 default = ["jemalloc"]
 jemalloc = ["tikv-jemallocator"]
-dashboard = ["ratatui", "crossterm", "clap", "reqwest"]
+dashboard = ["ratatui", "crossterm", "reqwest"]
 bench = ["reqwest", "hdrhistogram", "tokio-tungstenite"]
 profiling = ["dhat"]
 

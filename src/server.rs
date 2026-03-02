@@ -94,9 +94,9 @@ pub struct TelemetryServer {
     listener: TcpListener,
     connections: Arc<DashMap<String, NodeConnection>>,
     /// EventStore reference - owned by BatchWriter but kept here for lifetime management
-    /// and potential future direct queries
+    /// and potential future direct queries. None in --no-database mode.
     #[allow(dead_code)]
-    store: Arc<EventStore>,
+    store: Option<Arc<EventStore>>,
     batch_writer: BatchWriter,
     rate_limiter: Arc<RateLimiter>,
     broadcaster: Arc<EventBroadcaster>,
@@ -110,12 +110,12 @@ pub struct TelemetryServer {
 
 impl TelemetryServer {
     pub async fn new(bind_address: &str, store: Arc<EventStore>) -> Result<Self, std::io::Error> {
-        Self::with_options(bind_address, store, false).await
+        Self::with_options(bind_address, Some(store), false).await
     }
 
     pub async fn with_options(
         bind_address: &str,
-        store: Arc<EventStore>,
+        store: Option<Arc<EventStore>>,
         no_rate_limit: bool,
     ) -> Result<Self, std::io::Error> {
         let listener = TcpListener::bind(bind_address).await?;
@@ -142,7 +142,7 @@ impl TelemetryServer {
             "Number of events pending in write buffer"
         );
 
-        let batch_writer = BatchWriter::new(Arc::clone(&store));
+        let batch_writer = BatchWriter::new(store.clone());
 
         if no_rate_limit {
             info!("Rate limiting DISABLED - nodes can send unlimited events");

@@ -1810,26 +1810,37 @@ async fn websocket_handler(
         );
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
-    Ok(ws.on_upgrade(move |socket| websocket_connection(socket, state)))
+    Ok(ws.on_upgrade(move |socket| {
+        let store = Some(state.store.clone());
+        let cache = Some(state.cache.clone());
+        websocket_connection(socket, state.broadcaster, state.telemetry_server, store, cache)
+    }))
 }
 
 /// Send timeout for WebSocket messages - prevents slow clients from blocking
 const WS_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-async fn websocket_connection(mut socket: WebSocket, state: ApiState) {
+async fn websocket_connection(
+    mut socket: WebSocket,
+    broadcaster: Arc<EventBroadcaster>,
+    telemetry_server: Arc<TelemetryServer>,
+    store: Option<Arc<EventStore>>,
+    cache: Option<Arc<TtlCache>>,
+) {
     ACTIVE_WS_CONNECTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     info!("WebSocket connection established");
 
     // Send initial connection confirmation with recent events
-    let recent_events = state.broadcaster.get_recent_events(Some(200));
-    let broadcaster_stats = state.broadcaster.get_stats();
+    let recent_events = broadcaster.get_recent_events(Some(200));
+    let broadcaster_stats = broadcaster.get_stats();
+    let has_db = store.is_some();
 
     let initial_state = WebSocketResponse {
         r#type: "connected".to_string(),
         data: serde_json::json!({
             "message": "Connected to TART telemetry (1024-node scale)",
             "recent_events": recent_events.len(),
-            "total_nodes": state.telemetry_server.connection_count(),
+            "total_nodes": telemetry_server.connection_count(),
             "broadcaster_stats": broadcaster_stats,
             "recent_event_samples": recent_events.iter().take(200).map(|e| {
                 serde_json::json!({
@@ -1853,7 +1864,7 @@ async fn websocket_connection(mut socket: WebSocket, state: ApiState) {
     }
 
     // Default to subscribing to all events
-    let mut event_receiver = state.broadcaster.subscribe_all();
+    let mut event_receiver = broadcaster.subscribe_all();
     let mut current_filter = SubscriptionFilter::All;
 
     // Stats update interval (5 seconds)
@@ -1921,18 +1932,18 @@ async fn websocket_connection(mut socket: WebSocket, state: ApiState) {
                                     // Update subscription based on filter
                                     event_receiver = match &filter {
                                         SubscriptionFilter::All => {
-                                            state.broadcaster.subscribe_all()
+                                            broadcaster.subscribe_all()
                                         }
                                         SubscriptionFilter::Node { node_id } => {
-                                            state.broadcaster.subscribe_node(node_id)
+                                            broadcaster.subscribe_node(node_id)
                                         }
                                         SubscriptionFilter::EventType { event_type: _ } => {
                                             // For now, use main channel and client-side filtering
-                                            state.broadcaster.subscribe_all()
+                                            broadcaster.subscribe_all()
                                         }
                                         SubscriptionFilter::EventTypeRange { start: _, end: _ } => {
                                             // For now, use main channel and client-side filtering
-                                            state.broadcaster.subscribe_all()
+                                            broadcaster.subscribe_all()
                                         }
                                     };
                                     current_filter = filter.clone();
@@ -1952,7 +1963,7 @@ async fn websocket_connection(mut socket: WebSocket, state: ApiState) {
                                 }
                                 WebSocketRequest::Unsubscribe => {
                                     // Reset to all events
-                                    event_receiver = state.broadcaster.subscribe_all();
+                                    event_receiver = broadcaster.subscribe_all();
                                     current_filter = SubscriptionFilter::All;
 
                                     let response = WebSocketResponse {
@@ -1966,7 +1977,7 @@ async fn websocket_connection(mut socket: WebSocket, state: ApiState) {
                                     }
                                 }
                                 WebSocketRequest::GetRecentEvents { limit } => {
-                                    let events = state.broadcaster.get_recent_events(limit);
+                                    let events = broadcaster.get_recent_events(limit);
 
                                     let response = WebSocketResponse {
                                         r#type: "recent_events".to_string(),
@@ -2076,14 +2087,15 @@ async fn websocket_connection(mut socket: WebSocket, state: ApiState) {
             }
 
             // Periodic stats updates (read from cache to avoid N*DB queries for N WS clients)
-            _ = stats_interval.tick() => {
-                let stats_result = cache_or_compute(&state.cache, "stats", || async {
-                    state.store.get_stats("1 hour", "24 hours").await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            _ = stats_interval.tick(), if has_db => {
+                let stats_result = cache_or_compute(cache.as_ref().unwrap(), "stats", || {
+                    let store = store.clone().unwrap();
+                    async move { store.get_stats("1 hour", "24 hours").await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR) }
                 }).await;
 
                 if let Ok(db_stats) = stats_result {
-                    let broadcaster_stats = state.broadcaster.get_stats();
-                    let node_ids = state.telemetry_server.get_connection_ids();
+                    let broadcaster_stats = broadcaster.get_stats();
+                    let node_ids = telemetry_server.get_connection_ids();
 
                     let response = WebSocketResponse {
                         r#type: "stats".to_string(),
@@ -2114,15 +2126,16 @@ async fn websocket_connection(mut socket: WebSocket, state: ApiState) {
             }
 
             // Metrics channel updates (if subscribed, read from cache)
-            _ = metrics_interval.tick(), if metrics_subscribed => {
-                let metrics_result = cache_or_compute(&state.cache, "aggregated_metrics", || async {
-                    state.store.get_aggregated_metrics().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            _ = metrics_interval.tick(), if metrics_subscribed && has_db => {
+                let metrics_result = cache_or_compute(cache.as_ref().unwrap(), "aggregated_metrics", || {
+                    let store = store.clone().unwrap();
+                    async move { store.get_aggregated_metrics().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR) }
                 }).await;
 
                 if let Ok(metrics) = metrics_result {
                     // Enrich with core status from cache (pre-warmed every 2s)
                     let mut data = (*metrics).clone();
-                    if let Some(cores) = state.cache.get("cores_status") {
+                    if let Some(cores) = cache.as_ref().unwrap().get("cores_status") {
                         data["cores"] = (*cores).clone();
                     }
 
@@ -2141,8 +2154,8 @@ async fn websocket_connection(mut socket: WebSocket, state: ApiState) {
             }
 
             // Alerts channel updates (if subscribed) - read from cache instead of hitting DB
-            _ = alerts_interval.tick(), if alerts_subscribed => {
-                if let Some(cached_anomalies) = state.cache.get("anomalies") {
+            _ = alerts_interval.tick(), if alerts_subscribed && has_db => {
+                if let Some(cached_anomalies) = cache.as_ref().unwrap().get("anomalies") {
                     // Only send if there are new alerts and they differ from last sent
                     if *cached_anomalies != last_alerts {
                         let alerts_array = cached_anomalies.get("alerts").cloned().unwrap_or(serde_json::json!([]));
@@ -2178,3 +2191,44 @@ async fn websocket_connection(mut socket: WebSocket, state: ApiState) {
         events_received
     );
 }
+
+// ---------------------------------------------------------------------------
+// Minimal API for --no-database mode (WebSocket + health only, no DB routes)
+// ---------------------------------------------------------------------------
+
+/// Lightweight state for --no-database mode. Only carries the components needed
+/// for WebSocket event streaming and health checks — no DB store or cache.
+#[derive(Clone)]
+pub struct MinimalApiState {
+    pub telemetry_server: Arc<TelemetryServer>,
+    pub broadcaster: Arc<EventBroadcaster>,
+}
+
+/// Create a minimal router for --no-database mode.
+/// Only registers WebSocket and health endpoints — no DB-backed routes.
+pub fn create_minimal_router(state: MinimalApiState) -> Router {
+    Router::new()
+        .route("/api/health", get(health_check))
+        .route("/api/ws", get(minimal_websocket_handler))
+        .layer(TimeoutLayer::new(std::time::Duration::from_secs(30)))
+        .layer(CorsLayer::permissive())
+        .with_state(state)
+}
+
+async fn minimal_websocket_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<MinimalApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let current = ACTIVE_WS_CONNECTIONS.load(std::sync::atomic::Ordering::Relaxed);
+    if current >= MAX_WS_CONNECTIONS {
+        warn!(
+            "WebSocket connection limit reached ({})",
+            MAX_WS_CONNECTIONS
+        );
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+    Ok(ws.on_upgrade(move |socket| {
+        websocket_connection(socket, state.broadcaster, state.telemetry_server, None, None)
+    }))
+}
+

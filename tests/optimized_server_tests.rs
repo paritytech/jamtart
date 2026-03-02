@@ -18,7 +18,7 @@ async fn setup_optimized_test_server() -> (Arc<TelemetryServer>, u16) {
     let _ = store.cleanup_test_data().await;
 
     let server = Arc::new(
-        TelemetryServer::with_options("127.0.0.1:0", store, true)
+        TelemetryServer::with_options("127.0.0.1:0", Some(store), true)
             .await
             .unwrap(),
     );
