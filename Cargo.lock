@@ -4118,6 +4118,7 @@ dependencies = [
  "serde",
  "serde_bytes",
  "serde_json",
+ "socket2 0.5.10",
  "sqlx",
  "thiserror 1.0.69",
  "tikv-jemallocator",

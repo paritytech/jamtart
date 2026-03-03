@@ -38,6 +38,12 @@ struct Cli {
     /// HTTP API bind address
     #[arg(long, env = "API_BIND", default_value = "0.0.0.0:8080")]
     api_bind: String,
+
+    /// Number of dedicated ingestion runtimes for TCP connections.
+    /// Each runtime is a single-thread tokio runtime with its own SO_REUSEPORT listener.
+    /// 0 = legacy single-runtime mode (all tasks on main runtime).
+    #[arg(long, env = "INGESTION_THREADS", default_value_t = 0)]
+    ingestion_threads: usize,
 }
 
 /// Configure TCP socket buffer sizes for better performance.
@@ -182,19 +188,34 @@ async fn main() -> anyhow::Result<()> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     // Start telemetry server
+    let ingestion_threads = args.ingestion_threads;
     info!("Starting telemetry server on {}", args.telemetry_bind);
     let telemetry_server = Arc::new(
-        TelemetryServer::with_options(&args.telemetry_bind, store.clone(), args.no_rate_limit)
-            .await?,
+        TelemetryServer::with_options(
+            &args.telemetry_bind,
+            store.clone(),
+            args.no_rate_limit,
+            ingestion_threads,
+        )
+        .await?,
     );
-    let telemetry_server_clone = Arc::clone(&telemetry_server);
 
-    // Spawn telemetry server task with shutdown support
-    tokio::spawn(async move {
-        if let Err(e) = telemetry_server_clone.run_until_shutdown(shutdown_rx).await {
-            error!("Telemetry server error: {}", e);
-        }
-    });
+    // Spawn TCP ingestion: either dedicated runtimes (SO_REUSEPORT) or single-runtime
+    let _ingestion_handles = if ingestion_threads > 0 {
+        info!(
+            "Spawning {} dedicated ingestion runtimes (SO_REUSEPORT)",
+            ingestion_threads
+        );
+        Some(telemetry_server.spawn_ingestion_runtimes(ingestion_threads, shutdown_rx))
+    } else {
+        let telemetry_server_clone = Arc::clone(&telemetry_server);
+        tokio::spawn(async move {
+            if let Err(e) = telemetry_server_clone.run_until_shutdown(shutdown_rx).await {
+                error!("Telemetry server error: {}", e);
+            }
+        });
+        None
+    };
 
     // Get the broadcaster from telemetry server for API WebSocket connections
     let broadcaster = telemetry_server.get_broadcaster();
@@ -400,6 +421,11 @@ async fn main() -> anyhow::Result<()> {
 
     info!("=== TART Backend Configuration ===");
     info!("Mode: {}", if store.is_none() { "no-database (WebSocket-only)" } else { "full (DB + WebSocket)" });
+    if ingestion_threads > 0 {
+        info!("Ingestion: {} dedicated runtimes (SO_REUSEPORT)", ingestion_threads);
+    } else {
+        info!("Ingestion: single runtime (legacy)");
+    }
     info!("Max concurrent connections: 1024");
     if !args.no_rate_limit {
         info!("Max events per second per node: 100 (+50 burst)");

@@ -13,6 +13,30 @@ use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, error, info, warn};
 
+/// Create a TCP listener with SO_REUSEPORT enabled using socket2.
+///
+/// Multiple listeners can bind to the same address and the kernel distributes
+/// incoming connections across them. This enables per-runtime accept loops
+/// without a shared listener.
+fn create_reuseport_listener(addr: &SocketAddr) -> Result<std::net::TcpListener, std::io::Error> {
+    let socket = socket2::Socket::new(
+        socket2::Domain::for_address(*addr),
+        socket2::Type::STREAM,
+        Some(socket2::Protocol::TCP),
+    )?;
+    socket.set_reuse_port(true)?;
+    socket.set_reuse_address(true)?;
+    socket.set_nonblocking(true)?;
+
+    // Set receive buffer to 256KB (matching existing configure_socket_receive_buffer)
+    socket.set_recv_buffer_size(256 * 1024)?;
+
+    socket.bind(&(*addr).into())?;
+    socket.listen(1024)?;
+
+    Ok(socket.into())
+}
+
 /// Configure TCP socket receive buffer size for better performance.
 ///
 /// Sets SO_RCVBUF to 256KB for improved throughput with many concurrent node connections.
@@ -91,7 +115,10 @@ pub struct NodeConnection {
 /// # }
 /// ```
 pub struct TelemetryServer {
-    listener: TcpListener,
+    /// Listener for single-runtime mode. None in multi-runtime (SO_REUSEPORT) mode.
+    listener: Option<TcpListener>,
+    /// Bind address, kept for spawning SO_REUSEPORT listeners in multi-runtime mode.
+    bind_address: SocketAddr,
     connections: Arc<DashMap<String, NodeConnection>>,
     /// EventStore reference - owned by BatchWriter but kept here for lifetime management
     /// and potential future direct queries. None in --no-database mode.
@@ -110,19 +137,42 @@ pub struct TelemetryServer {
 
 impl TelemetryServer {
     pub async fn new(bind_address: &str, store: Arc<EventStore>) -> Result<Self, std::io::Error> {
-        Self::with_options(bind_address, Some(store), false).await
+        Self::with_options(bind_address, Some(store), false, 0).await
     }
 
+    /// Create a new TelemetryServer.
+    ///
+    /// If `ingestion_threads > 0`, the server will NOT bind a listener here — instead,
+    /// `spawn_ingestion_runtimes()` creates N SO_REUSEPORT listeners, each on its own
+    /// single-thread tokio runtime. This eliminates work-stealing contention when handling
+    /// 1024+ TCP connections.
+    ///
+    /// If `ingestion_threads == 0`, behaves as before: single listener on current runtime.
     pub async fn with_options(
         bind_address: &str,
         store: Option<Arc<EventStore>>,
         no_rate_limit: bool,
+        ingestion_threads: usize,
     ) -> Result<Self, std::io::Error> {
-        let listener = TcpListener::bind(bind_address).await?;
-        info!("Telemetry server listening on {}", bind_address);
+        let bind_addr: SocketAddr = bind_address.parse().map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("bad address: {e}"))
+        })?;
 
-        #[cfg(unix)]
-        configure_socket_receive_buffer(&listener);
+        let listener = if ingestion_threads == 0 {
+            let listener = TcpListener::bind(bind_addr).await?;
+            info!("Telemetry server listening on {}", bind_address);
+
+            #[cfg(unix)]
+            configure_socket_receive_buffer(&listener);
+
+            Some(listener)
+        } else {
+            info!(
+                "Telemetry server will use {} dedicated ingestion runtimes on {}",
+                ingestion_threads, bind_address
+            );
+            None
+        };
 
         // Initialize metrics
         metrics::describe_counter!(
@@ -155,6 +205,7 @@ impl TelemetryServer {
 
         Ok(Self {
             listener,
+            bind_address: bind_addr,
             connections: Arc::new(DashMap::new()),
             batch_writer,
             rate_limiter: Arc::new(RateLimiter::new()),
@@ -167,8 +218,9 @@ impl TelemetryServer {
     }
 
     pub async fn run(&self) -> Result<(), std::io::Error> {
+        let listener = self.listener.as_ref().expect("run() requires single-runtime mode (ingestion_threads=0)");
         loop {
-            match self.listener.accept().await {
+            match listener.accept().await {
                 Ok((stream, addr)) => {
                     self.spawn_connection(stream, addr);
                 }
@@ -179,14 +231,15 @@ impl TelemetryServer {
         }
     }
 
-    /// Run the server until a shutdown signal is received.
+    /// Run the server until a shutdown signal is received (single-runtime mode).
     pub async fn run_until_shutdown(
         &self,
         mut shutdown: tokio::sync::watch::Receiver<bool>,
     ) -> Result<(), std::io::Error> {
+        let listener = self.listener.as_ref().expect("run_until_shutdown() requires single-runtime mode (ingestion_threads=0)");
         loop {
             tokio::select! {
-                result = self.listener.accept() => {
+                result = listener.accept() => {
                     match result {
                         Ok((stream, addr)) => {
                             self.spawn_connection(stream, addr);
@@ -203,6 +256,107 @@ impl TelemetryServer {
             }
         }
         Ok(())
+    }
+
+    /// Spawn N dedicated ingestion runtimes, each with its own SO_REUSEPORT listener.
+    ///
+    /// Each runtime is a single-thread tokio runtime running on its own OS thread.
+    /// The kernel distributes incoming TCP connections across the listeners.
+    /// Returns the join handles for the OS threads (for shutdown coordination).
+    pub fn spawn_ingestion_runtimes(
+        &self,
+        n: usize,
+        shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> Vec<std::thread::JoinHandle<()>> {
+        let mut handles = Vec::with_capacity(n);
+
+        for i in 0..n {
+            let bind_addr = self.bind_address;
+            let mut shutdown = shutdown.clone();
+            let connections = Arc::clone(&self.connections);
+            let batch_writer = self.batch_writer.clone();
+            let rate_limiter = Arc::clone(&self.rate_limiter);
+            let broadcaster = Arc::clone(&self.broadcaster);
+            let rate_limit_disabled = self.rate_limit_disabled;
+            let connection_watch = Arc::clone(&self.connection_watch);
+
+            let handle = std::thread::Builder::new()
+                .name(format!("ingestion-{i}"))
+                .spawn(move || {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap_or_else(|e| panic!("ingestion runtime {i}: {e}"));
+
+                    rt.block_on(async move {
+                        let std_listener = match create_reuseport_listener(&bind_addr) {
+                            Ok(l) => l,
+                            Err(e) => {
+                                error!("ingestion-{i}: failed to bind {bind_addr}: {e}");
+                                return;
+                            }
+                        };
+
+                        let listener = TcpListener::from_std(std_listener)
+                            .expect("ingestion: TcpListener::from_std");
+
+                        info!("ingestion-{i}: listening on {bind_addr} (SO_REUSEPORT)");
+
+                        loop {
+                            tokio::select! {
+                                result = listener.accept() => {
+                                    match result {
+                                        Ok((stream, addr)) => {
+                                            // Check connection limit
+                                            if !rate_limiter.allow_connection(&addr) {
+                                                drop(stream);
+                                                continue;
+                                            }
+
+                                            info!(
+                                                "New connection from {} ({}/{})",
+                                                addr,
+                                                rate_limiter.connection_count(),
+                                                crate::rate_limiter::MAX_CONNECTIONS
+                                            );
+
+                                            let rl = Arc::clone(&rate_limiter);
+                                            let ctx = ConnectionContext {
+                                                connections: Arc::clone(&connections),
+                                                batch_writer: batch_writer.clone(),
+                                                rate_limiter: rl.clone(),
+                                                broadcaster: Arc::clone(&broadcaster),
+                                                rate_limit_disabled,
+                                                connection_watch: Arc::clone(&connection_watch),
+                                            };
+
+                                            tokio::spawn(async move {
+                                                let result = handle_connection_optimized(stream, addr, ctx).await;
+                                                rl.connection_closed();
+                                                if let Err(e) = result {
+                                                    error!("Connection error from {}: {}", addr, e);
+                                                }
+                                            });
+                                        }
+                                        Err(e) => {
+                                            error!("ingestion-{i}: accept error: {e}");
+                                        }
+                                    }
+                                }
+                                _ = shutdown.changed() => {
+                                    info!("ingestion-{i}: shutdown signal received");
+                                    break;
+                                }
+                            }
+                        }
+                    });
+                })
+                .unwrap_or_else(|e| panic!("failed to spawn ingestion thread {i}: {e}"));
+
+            handles.push(handle);
+        }
+
+        handles
     }
 
     fn spawn_connection(&self, stream: TcpStream, addr: SocketAddr) {
@@ -294,7 +448,10 @@ impl TelemetryServer {
     ///
     /// Useful in tests that bind to port 0 to discover the assigned port.
     pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
-        self.listener.local_addr()
+        match &self.listener {
+            Some(listener) => listener.local_addr(),
+            None => Ok(self.bind_address),
+        }
     }
 
     pub async fn flush_writes(&self) -> anyhow::Result<()> {

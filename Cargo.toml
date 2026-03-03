@@ -56,6 +56,9 @@ futures = "0.3"
 hex = "0.4"
 rand = "0.8"
 
+# Networking
+socket2 = { version = "0.5", features = ["all"] }
+
 # Performance optimizations
 parking_lot = "0.12"
 metrics = "0.23"
@@ -113,7 +116,7 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 panic = "abort"
-strip = "symbols"
+debug = true
 
 [profile.profiling]
 inherits = "release"

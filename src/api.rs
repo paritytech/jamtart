@@ -1820,6 +1820,11 @@ async fn websocket_handler(
 /// Send timeout for WebSocket messages - prevents slow clients from blocking
 const WS_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// Max events per WS message. Opportunistic batching: after receiving one event,
+/// drain up to this many more via try_recv() (non-blocking). At batch=10,
+/// ws-synth measured 1.2M events/s vs 158K unbatched.
+const WS_BATCH_SIZE: usize = 10;
+
 async fn websocket_connection(
     mut socket: WebSocket,
     broadcaster: Arc<EventBroadcaster>,
@@ -1883,16 +1888,28 @@ async fn websocket_connection(
     let mut events_received = 0u64;
     let mut last_event_time = chrono::Utc::now();
 
+    // Debug: track WS loop health
+    let mut debug_events_since_log = 0u64;
+    let mut debug_last_log = tokio::time::Instant::now();
+    let mut debug_send_time_us = 0u64;
+    let mut debug_sends_since_log = 0u64;
+    let mut debug_lagged_total = 0u64;
+    let mut debug_loop_iterations = 0u64;
+
     loop {
+        debug_loop_iterations += 1;
         tokio::select! {
             // Real-time event streaming from broadcaster
-            Ok(event) = event_receiver.recv() => {
-                events_received += 1;
+            result = event_receiver.recv() => {
+            match result {
+            Ok(event) => {
+                // Opportunistic batching: collect first event, then drain more via try_recv()
+                let mut batch: Vec<std::sync::Arc<str>> = Vec::with_capacity(WS_BATCH_SIZE);
 
-                // Use pre-serialized JSON if available (avoids re-serializing per subscriber)
-                let msg = if let Some(ref json) = event.serialized_json {
-                    json.to_string()
+                if let Some(ref json) = event.serialized_json {
+                    batch.push(std::sync::Arc::clone(json));
                 } else {
+                    // Fallback: serialize on the fly
                     let response = WebSocketResponse {
                         r#type: "event".to_string(),
                         data: serde_json::json!({
@@ -1903,23 +1920,97 @@ async fn websocket_connection(
                         }),
                         timestamp: chrono::Utc::now(),
                     };
-                    match serialize_ws_message(&response) {
-                        Some(m) => m,
-                        None => break,
-                    }
-                };
-
-                // Send with timeout to prevent slow clients from blocking
-                match tokio::time::timeout(WS_SEND_TIMEOUT, socket.send(Message::Text(msg))).await {
-                    Ok(Ok(_)) => {}
-                    Ok(Err(_)) => break, // Send error
-                    Err(_) => {
-                        warn!("WebSocket send timeout, closing slow client");
-                        break; // Timeout
+                    if let Some(m) = serialize_ws_message(&response) {
+                        batch.push(std::sync::Arc::from(m));
                     }
                 }
 
+                // Drain more events without blocking
+                while batch.len() < WS_BATCH_SIZE {
+                    match event_receiver.try_recv() {
+                        Ok(ev) => {
+                            if let Some(ref json) = ev.serialized_json {
+                                batch.push(std::sync::Arc::clone(json));
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
+                            debug_lagged_total += n;
+                        }
+                        Err(tokio::sync::broadcast::error::TryRecvError::Empty
+                            | tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+                    }
+                }
+
+                if batch.is_empty() {
+                    continue;
+                }
+
+                let batch_len = batch.len() as u64;
+                events_received += batch_len;
+                debug_events_since_log += batch_len;
+
+                // Build message: single event as-is, multiple events in batch envelope
+                let msg = if batch.len() == 1 {
+                    batch[0].to_string()
+                } else {
+                    let total_len: usize = batch.iter().map(|s| s.len()).sum::<usize>() + batch.len() + 80;
+                    let mut buf = String::with_capacity(total_len);
+                    buf.push_str(r#"{"type":"batch","data":["#);
+                    for (i, json) in batch.iter().enumerate() {
+                        if i > 0 { buf.push(','); }
+                        buf.push_str(json);
+                    }
+                    buf.push_str(r#"],"timestamp":""#);
+                    buf.push_str(&chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
+                    buf.push_str(r#""}"#);
+                    buf
+                };
+
+                // Send with timeout to prevent slow clients from blocking
+                let send_start = tokio::time::Instant::now();
+                match tokio::time::timeout(WS_SEND_TIMEOUT, socket.send(Message::Text(msg))).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => {
+                        warn!("WebSocket send error after {} events: {}", events_received, e);
+                        break;
+                    }
+                    Err(_) => {
+                        warn!("WebSocket send timeout after {} events", events_received);
+                        break;
+                    }
+                }
+                debug_send_time_us += send_start.elapsed().as_micros() as u64;
+                debug_sends_since_log += 1;
+
+                // Periodic debug log every 2 seconds
+                if debug_last_log.elapsed() >= std::time::Duration::from_secs(2) {
+                    let elapsed = debug_last_log.elapsed().as_secs_f64();
+                    let avg_send_us = if debug_sends_since_log > 0 { debug_send_time_us / debug_sends_since_log } else { 0 };
+                    warn!(
+                        "WS debug: {:.0} events/s, avg_send={}us, lagged_total={}, loops={}, broadcast_lag={}",
+                        debug_events_since_log as f64 / elapsed,
+                        avg_send_us,
+                        debug_lagged_total,
+                        debug_loop_iterations,
+                        event_receiver.len(),
+                    );
+                    debug_events_since_log = 0;
+                    debug_send_time_us = 0;
+                    debug_sends_since_log = 0;
+                    debug_loop_iterations = 0;
+                    debug_last_log = tokio::time::Instant::now();
+                }
+
                 last_event_time = chrono::Utc::now();
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                debug_lagged_total += n;
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                warn!("Broadcast channel closed, ending WS connection");
+                break;
+            }
+            } // match result
             }
 
             // Handle client messages
