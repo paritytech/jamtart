@@ -54,6 +54,7 @@ chrono = { version = "0.4", features = ["serde"] }
 dashmap = "6.0"
 futures = "0.3"
 hex = "0.4"
+tokio-stream = { version = "0.1", features = ["sync"] }
 rand = "0.8"
 
 # Networking
@@ -113,8 +114,9 @@ codegen-units = 256
 
 [profile.release]
 opt-level = 3
-lto = "fat"
-codegen-units = 1
+# lto = "fat"
+lto = false
+codegen-units = 16
 panic = "abort"
 debug = true
 

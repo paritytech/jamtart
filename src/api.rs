@@ -1775,11 +1775,11 @@ enum WebSocketRequest {
     UnsubscribeAlerts,
 }
 
-#[derive(Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(tag = "type")]
 enum SubscriptionFilter {
     All,
-    Node { node_id: String },
+    Nodes { node_ids: Vec<String> },
     EventType { event_type: u8 },
     EventTypeRange { start: u8, end: u8 },
 }
@@ -1826,6 +1826,58 @@ const WS_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// drain broadcast_lag spikes faster (observed up to 524K with batch=10).
 const WS_BATCH_SIZE: usize = 100;
 
+use crate::event_broadcaster::BroadcastEvent;
+
+/// Dual receive mode for WS event streaming.
+/// `All` uses the main broadcast channel (firehose).
+/// `Filtered` uses a StreamMap over per-node broadcast channels.
+enum EventSource {
+    All(tokio::sync::broadcast::Receiver<Arc<BroadcastEvent>>),
+    Filtered(tokio_stream::StreamMap<String, tokio_stream::wrappers::BroadcastStream<Arc<BroadcastEvent>>>),
+}
+
+impl EventSource {
+    async fn recv(&mut self) -> Result<Arc<BroadcastEvent>, tokio::sync::broadcast::error::RecvError> {
+        match self {
+            EventSource::All(rx) => rx.recv().await,
+            EventSource::Filtered(map) => {
+                use tokio_stream::StreamExt;
+                match map.next().await {
+                    Some((_key, Ok(event))) => Ok(event),
+                    Some((_key, Err(_))) => Err(tokio::sync::broadcast::error::RecvError::Lagged(0)),
+                    None => Err(tokio::sync::broadcast::error::RecvError::Closed),
+                }
+            }
+        }
+    }
+
+    fn try_recv(&mut self) -> Result<Arc<BroadcastEvent>, tokio::sync::broadcast::error::TryRecvError> {
+        match self {
+            EventSource::All(rx) => rx.try_recv(),
+            EventSource::Filtered(map) => {
+                // Poll StreamMap synchronously for batching support.
+                // Without this, a client subscribing to 512 nodes (~500K events/s)
+                // would send each event individually — as bad as the firehose.
+                use futures::Stream;
+                let waker = futures::task::noop_waker();
+                let mut cx = std::task::Context::from_waker(&waker);
+                match std::pin::Pin::new(map).poll_next(&mut cx) {
+                    std::task::Poll::Ready(Some((_key, Ok(event)))) => Ok(event),
+                    std::task::Poll::Ready(Some((_key, Err(_)))) => Err(tokio::sync::broadcast::error::TryRecvError::Lagged(0)),
+                    _ => Err(tokio::sync::broadcast::error::TryRecvError::Empty),
+                }
+            }
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            EventSource::All(rx) => rx.len(),
+            EventSource::Filtered(_) => 0,
+        }
+    }
+}
+
 async fn websocket_connection(
     mut socket: WebSocket,
     broadcaster: Arc<EventBroadcaster>,
@@ -1869,8 +1921,8 @@ async fn websocket_connection(
         return;
     }
 
-    // Default to subscribing to all events
-    let mut event_receiver = broadcaster.subscribe_all();
+    // Default to subscribing to all events via main broadcast channel
+    let mut event_source = EventSource::All(broadcaster.subscribe_all());
     let mut current_filter = SubscriptionFilter::All;
 
     // Stats update interval (5 seconds)
@@ -1895,13 +1947,11 @@ async fn websocket_connection(
     let mut debug_send_time_us = 0u64;
     let mut debug_sends_since_log = 0u64;
     let mut debug_lagged_total = 0u64;
-    let mut debug_loop_iterations = 0u64;
 
     loop {
-        debug_loop_iterations += 1;
         tokio::select! {
             // Real-time event streaming from broadcaster
-            result = event_receiver.recv() => {
+            result = event_source.recv() => {
             match result {
             Ok(event) => {
                 // Opportunistic batching: collect first event, then drain more via try_recv()
@@ -1928,7 +1978,7 @@ async fn websocket_connection(
 
                 // Drain more events without blocking
                 while batch.len() < WS_BATCH_SIZE {
-                    match event_receiver.try_recv() {
+                    match event_source.try_recv() {
                         Ok(ev) => {
                             if let Some(ref json) = ev.serialized_json {
                                 batch.push(std::sync::Arc::clone(json));
@@ -1987,18 +2037,30 @@ async fn websocket_connection(
                 if debug_last_log.elapsed() >= std::time::Duration::from_secs(2) {
                     let elapsed = debug_last_log.elapsed().as_secs_f64();
                     let avg_send_us = if debug_sends_since_log > 0 { debug_send_time_us / debug_sends_since_log } else { 0 };
+                    let filter_desc = match &current_filter {
+                        SubscriptionFilter::All => "all".to_string(),
+                        SubscriptionFilter::Nodes { node_ids } => {
+                            if node_ids.len() == 1 && node_ids[0] == "*" {
+                                "nodes(*)".to_string()
+                            } else {
+                                format!("nodes({})", node_ids.len())
+                            }
+                        }
+                        SubscriptionFilter::EventType { event_type } => format!("etype({})", event_type),
+                        SubscriptionFilter::EventTypeRange { start, end } => format!("etype({}-{})", start, end),
+                    };
                     debug!(
-                        "WS stats: {:.0} events/s, avg_send={}us, lagged_total={}, loops={}, broadcast_lag={}",
+                        "WS [{}]: {:.0} ev/s, avg_send={}us, lagged={}, lag={}, batch_avg={:.0}",
+                        filter_desc,
                         debug_events_since_log as f64 / elapsed,
                         avg_send_us,
                         debug_lagged_total,
-                        debug_loop_iterations,
-                        event_receiver.len(),
+                        event_source.len(),
+                        if debug_sends_since_log > 0 { debug_events_since_log as f64 / debug_sends_since_log as f64 } else { 0.0 },
                     );
                     debug_events_since_log = 0;
                     debug_send_time_us = 0;
                     debug_sends_since_log = 0;
-                    debug_loop_iterations = 0;
                     debug_last_log = tokio::time::Instant::now();
                 }
 
@@ -2022,23 +2084,53 @@ async fn websocket_connection(
                             match request {
                                 WebSocketRequest::Subscribe { filter } => {
                                     // Update subscription based on filter
-                                    event_receiver = match &filter {
+                                    event_source = match &filter {
                                         SubscriptionFilter::All => {
-                                            broadcaster.subscribe_all()
+                                            EventSource::All(broadcaster.subscribe_all())
                                         }
-                                        SubscriptionFilter::Node { node_id } => {
-                                            broadcaster.subscribe_node(node_id)
+                                        SubscriptionFilter::Nodes { node_ids } => {
+                                            let mut map = tokio_stream::StreamMap::new();
+                                            let subs = if node_ids.len() == 1 && node_ids[0] == "*" {
+                                                // Wildcard: subscribe to all node channels via StreamMap
+                                                broadcaster.subscribe_all_nodes()
+                                            } else {
+                                                broadcaster.subscribe_nodes(node_ids)
+                                            };
+                                            for (id, rx) in subs {
+                                                map.insert(id, tokio_stream::wrappers::BroadcastStream::new(rx));
+                                            }
+                                            EventSource::Filtered(map)
                                         }
                                         SubscriptionFilter::EventType { event_type: _ } => {
-                                            // For now, use main channel and client-side filtering
-                                            broadcaster.subscribe_all()
+                                            // Use main channel + client-side filtering
+                                            EventSource::All(broadcaster.subscribe_all())
                                         }
                                         SubscriptionFilter::EventTypeRange { start: _, end: _ } => {
-                                            // For now, use main channel and client-side filtering
-                                            broadcaster.subscribe_all()
+                                            // Use main channel + client-side filtering
+                                            EventSource::All(broadcaster.subscribe_all())
                                         }
                                     };
                                     current_filter = filter.clone();
+                                    // Reset per-subscription stats
+                                    debug_lagged_total = 0;
+                                    debug_events_since_log = 0;
+                                    debug_send_time_us = 0;
+                                    debug_sends_since_log = 0;
+                                    debug_last_log = tokio::time::Instant::now();
+
+                                    let sub_desc = match &current_filter {
+                                        SubscriptionFilter::All => "All".to_string(),
+                                        SubscriptionFilter::Nodes { node_ids } => {
+                                            if node_ids.len() == 1 && node_ids[0] == "*" {
+                                                "Nodes(* → all channels)".to_string()
+                                            } else {
+                                                format!("Nodes({})", node_ids.len())
+                                            }
+                                        }
+                                        SubscriptionFilter::EventType { event_type } => format!("EventType({})", event_type),
+                                        SubscriptionFilter::EventTypeRange { start, end } => format!("EventTypeRange({}-{})", start, end),
+                                    };
+                                    info!("WS subscribed: {}", sub_desc);
 
                                     let response = WebSocketResponse {
                                         r#type: "subscribed".to_string(),
@@ -2055,7 +2147,7 @@ async fn websocket_connection(
                                 }
                                 WebSocketRequest::Unsubscribe => {
                                     // Reset to all events
-                                    event_receiver = broadcaster.subscribe_all();
+                                    event_source = EventSource::All(broadcaster.subscribe_all());
                                     current_filter = SubscriptionFilter::All;
 
                                     let response = WebSocketResponse {
@@ -2279,8 +2371,8 @@ async fn websocket_connection(
 
     ACTIVE_WS_CONNECTIONS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     info!(
-        "WebSocket connection closed (received {} events)",
-        events_received
+        "WS closed: {} events received, lagged_total={}, filter={:?}",
+        events_received, debug_lagged_total, current_filter
     );
 }
 

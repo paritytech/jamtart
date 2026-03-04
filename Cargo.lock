@@ -4123,6 +4123,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tikv-jemallocator",
  "tokio",
+ "tokio-stream",
  "tokio-tungstenite",
  "tower 0.4.13",
  "tower-http",

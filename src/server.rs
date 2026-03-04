@@ -730,6 +730,7 @@ async fn handle_connection_optimized(
 
     // Clean up
     connections.remove(&*node_id_str);
+    broadcaster.remove_node_channel(&node_id_str);
     let _ = connection_watch.send(connections.len());
     batch_writer.node_disconnected(node_id_str).await?;
 
