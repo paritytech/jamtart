@@ -233,7 +233,7 @@ impl EventBroadcaster {
         let main_receivers = self.sender.receiver_count();
         let node_has_receivers = node_channels
             .get(&*record.node_id)
-            .map_or(false, |s| s.receiver_count() > 0);
+            .is_some_and(|s| s.receiver_count() > 0);
 
         let broadcast_event = Arc::new(BroadcastEvent {
             id: record.id,
@@ -580,7 +580,7 @@ mod tests {
             event_type: event.event_type() as u8,
             timestamp: chrono::Utc::now(),
             ws_json: None,
-            event: event,
+            event,
             event_json: Arc::from(json),
         };
         broadcaster.broadcast_event(record, node_channels);
