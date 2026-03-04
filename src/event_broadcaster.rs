@@ -48,8 +48,18 @@ enum AggregatorCommand {
     },
 }
 
-/// Broadcast event tuple: (node_id, event, event_json).
-pub type BroadcastRecord = (Arc<str>, Arc<Event>, Arc<[u8]>);
+/// Event record produced by ingestion threads with pre-serialized WS JSON.
+/// Sent via MPSC to the aggregator which does pure routing (no serialization).
+pub struct BroadcastRecord {
+    pub node_id: Arc<str>,
+    pub event: Arc<Event>,
+    pub event_json: Arc<[u8]>,
+    pub id: u64,
+    pub event_type: u8,
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    /// Pre-serialized WS envelope JSON (built in ingestion thread)
+    pub ws_json: Option<Arc<str>>,
+}
 
 /// Batch of events sent from a connection handler to the aggregator task via MPSC.
 /// One channel message per TCP read wakeup instead of one per event.
@@ -80,19 +90,19 @@ struct WsBroadcastData<'a> {
 /// WsBroadcast variant using pre-serialized Event JSON via RawValue.
 /// Avoids re-serializing the Event enum — the RawValue is embedded verbatim.
 #[derive(Serialize)]
-struct WsBroadcastRaw<'a> {
-    r#type: &'static str,
-    data: WsBroadcastDataRaw<'a>,
-    timestamp: chrono::DateTime<chrono::Utc>,
+pub(crate) struct WsBroadcastRaw<'a> {
+    pub r#type: &'static str,
+    pub data: WsBroadcastDataRaw<'a>,
+    pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
 /// Inner data payload using RawValue for the pre-serialized Event.
 #[derive(Serialize)]
-struct WsBroadcastDataRaw<'a> {
-    id: u64,
-    node_id: &'a str,
-    event_type: u8,
-    event: &'a serde_json::value::RawValue,
+pub(crate) struct WsBroadcastDataRaw<'a> {
+    pub id: u64,
+    pub node_id: &'a str,
+    pub event_type: u8,
+    pub event: &'a serde_json::value::RawValue,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -119,6 +129,34 @@ pub struct BroadcasterStats {
     pub events_in_buffer: usize,
     pub dropped_events: u64,
     pub undelivered_events: u64, // Events with no subscribers but still in buffer
+}
+
+/// Build the WS envelope JSON from pre-serialized Event JSON.
+/// Uses RawValue to embed the event verbatim (no re-serialization).
+/// `ws_buf` is a reusable buffer owned by the caller (avoids per-event allocation).
+pub(crate) fn build_ws_envelope(
+    id: u64,
+    node_id: &str,
+    event_type: u8,
+    event_json: &[u8],
+    timestamp: chrono::DateTime<chrono::Utc>,
+    ws_buf: &mut Vec<u8>,
+) -> Option<Arc<str>> {
+    let raw_str = std::str::from_utf8(event_json).ok()?;
+    let raw_value = serde_json::value::RawValue::from_string(raw_str.to_string()).ok()?;
+    let ws_response = WsBroadcastRaw {
+        r#type: "event",
+        data: WsBroadcastDataRaw {
+            id,
+            node_id,
+            event_type,
+            event: &raw_value,
+        },
+        timestamp,
+    };
+    ws_buf.clear();
+    serde_json::to_writer(&mut *ws_buf, &ws_response).ok()?;
+    Some(Arc::from(unsafe { std::str::from_utf8_unchecked(ws_buf) }))
 }
 
 /// High-performance event broadcaster designed for 1024+ nodes.
@@ -185,106 +223,44 @@ impl EventBroadcaster {
         }
     }
 
-    /// Broadcast an event to all subscribers.
-    /// Called only from the aggregator task — `node_channels` is the aggregator's local HashMap.
-    /// No locks on the hot path (node_channels is plain HashMap, not behind RwLock).
+    /// Route a pre-built event record to subscribers and ring buffer.
+    /// Called only from the aggregator task — no serialization, pure routing.
     fn broadcast_event(
         &self,
-        node_id: Arc<str>,
-        event: Arc<Event>,
-        event_json: &[u8],
-        ws_buf: &mut Vec<u8>,
+        record: BroadcastRecord,
         node_channels: &mut HashMap<String, broadcast::Sender<Arc<BroadcastEvent>>>,
-    ) -> u64 {
-        let id = self.event_counter.fetch_add(1, Ordering::Relaxed);
-
+    ) {
         let main_receivers = self.sender.receiver_count();
         let node_has_receivers = node_channels
-            .get(&*node_id)
+            .get(&*record.node_id)
             .map_or(false, |s| s.receiver_count() > 0);
 
-        // Fast path: no subscribers at all.
-        if main_receivers == 0 && !node_has_receivers {
-            // Ensure node channel exists for future subscribers
-            if !node_channels.contains_key(&*node_id) {
-                let (tx, _) = broadcast::channel(NODE_CHANNEL_SIZE);
-                node_channels.insert(node_id.to_string(), tx);
-                self.node_channel_count.store(node_channels.len(), Ordering::Relaxed);
-            }
+        let broadcast_event = Arc::new(BroadcastEvent {
+            id: record.id,
+            node_id: record.node_id.clone(),
+            event_type: record.event_type,
+            timestamp: record.timestamp,
+            event: record.event,
+            serialized_json: record.ws_json,
+            event_json: if main_receivers > 0 || node_has_receivers {
+                Some(record.event_json)
+            } else {
+                None
+            },
+        });
 
-            let broadcast_event = Arc::new(BroadcastEvent {
-                id,
-                node_id,
-                event_type: event.event_type() as u8,
-                timestamp: chrono::Utc::now(),
-                event,
-                serialized_json: None,
-                event_json: None,
-            });
-            self.total_broadcast.fetch_add(1, Ordering::Relaxed);
-            self.undelivered_events.fetch_add(1, Ordering::Relaxed);
-
-            {
-                let mut recent = self.recent_events.lock();
-                if recent.len() >= MAX_RETAINED_EVENTS {
-                    recent.pop_front();
-                }
-                recent.push_back(broadcast_event);
-            }
-
-            return id;
-        }
-
-        let event_type = event.event_type() as u8;
-        let mut broadcast_event = BroadcastEvent {
-            id,
-            node_id: node_id.clone(),
-            event_type,
-            timestamp: chrono::Utc::now(),
-            event,
-            serialized_json: None,
-            event_json: Some(Arc::from(event_json)),
-        };
-
-        // Pre-serialize WS envelope using RawValue to avoid re-serializing the Event.
-        if main_receivers > 0 || node_has_receivers {
-            if let Ok(raw_str) = std::str::from_utf8(event_json) {
-                if let Ok(raw_value) = serde_json::value::RawValue::from_string(raw_str.to_string())
-                {
-                    let ws_response = WsBroadcastRaw {
-                        r#type: "event",
-                        data: WsBroadcastDataRaw {
-                            id: broadcast_event.id,
-                            node_id: &broadcast_event.node_id,
-                            event_type: broadcast_event.event_type,
-                            event: &raw_value,
-                        },
-                        timestamp: broadcast_event.timestamp,
-                    };
-                    ws_buf.clear();
-                    if serde_json::to_writer(&mut *ws_buf, &ws_response).is_ok() {
-                        let json_str = unsafe { std::str::from_utf8_unchecked(ws_buf) };
-                        broadcast_event.serialized_json = Some(Arc::from(json_str));
-                    }
-                }
-            }
-        }
-
-        let broadcast_event = Arc::new(broadcast_event);
-
-        // Broadcast to main channel
         if main_receivers > 0 {
             let _ = self.sender.send(broadcast_event.clone());
         }
         self.total_broadcast.fetch_add(1, Ordering::Relaxed);
 
         // Dispatch to per-node channel (create on first event for this node)
-        if let Some(sender) = node_channels.get(&*node_id) {
+        if let Some(sender) = node_channels.get(&*record.node_id) {
             let _ = sender.send(broadcast_event.clone());
         } else {
             let (tx, _) = broadcast::channel(NODE_CHANNEL_SIZE);
             let _ = tx.send(broadcast_event.clone());
-            node_channels.insert(node_id.to_string(), tx);
+            node_channels.insert(record.node_id.to_string(), tx);
             self.node_channel_count.store(node_channels.len(), Ordering::Relaxed);
         }
 
@@ -296,8 +272,6 @@ impl EventBroadcaster {
             }
             recent.push_back(broadcast_event);
         }
-
-        id
     }
 
     /// Submit an event to the aggregation channel for processing.
@@ -310,9 +284,19 @@ impl EventBroadcaster {
     /// is full (backpressure).
     /// Returns `true` if the event was submitted, `false` if the channel is full.
     pub fn send_event(&self, node_id: Arc<str>, event: Arc<Event>, event_json: Arc<[u8]>) -> bool {
+        let id = self.next_event_id();
+        let event_type = event.event_type() as u8;
         self.event_sender
             .try_send(IncomingBatch {
-                events: vec![(node_id, event, event_json)],
+                events: vec![BroadcastRecord {
+                    node_id,
+                    event_type,
+                    id,
+                    timestamp: chrono::Utc::now(),
+                    ws_json: None,
+                    event,
+                    event_json,
+                }],
             })
             .is_ok()
     }
@@ -325,6 +309,12 @@ impl EventBroadcaster {
             return true;
         }
         self.event_sender.try_send(IncomingBatch { events }).is_ok()
+    }
+
+    /// Assign a unique event ID. Called from ingestion threads.
+    /// `fetch_add` is always atomic — `Relaxed` only affects cross-variable ordering.
+    pub fn next_event_id(&self) -> u64 {
+        self.event_counter.fetch_add(1, Ordering::Relaxed)
     }
 
     /// Spawn the aggregator task that drains the MPSC channel and calls `broadcast_event()`.
@@ -348,9 +338,6 @@ impl EventBroadcaster {
         let this = Arc::clone(self);
 
         tokio::spawn(async move {
-            // Reusable buffer for building WS envelope JSON (avoids per-event allocation)
-            let mut ws_buf: Vec<u8> = Vec::with_capacity(4096);
-
             // Node channels owned exclusively by this task — no lock needed
             let mut node_channels: HashMap<String, broadcast::Sender<Arc<BroadcastEvent>>> =
                 HashMap::with_capacity(1024);
@@ -368,8 +355,8 @@ impl EventBroadcaster {
                         let drain_start = tokio::time::Instant::now();
                         let mut drain_events = 0u64;
 
-                        for (node_id, event, event_json) in batch.events {
-                            this.broadcast_event(node_id, event, &event_json, &mut ws_buf, &mut node_channels);
+                        for record in batch.events {
+                            this.broadcast_event(record, &mut node_channels);
                             drain_events += 1;
                         }
 
@@ -377,8 +364,8 @@ impl EventBroadcaster {
                         while (drain_events as usize) < AGGREGATOR_DRAIN_LIMIT {
                             match receiver.try_recv() {
                                 Ok(batch) => {
-                                    for (node_id, event, event_json) in batch.events {
-                                        this.broadcast_event(node_id, event, &event_json, &mut ws_buf, &mut node_channels);
+                                    for record in batch.events {
+                                        this.broadcast_event(record, &mut node_channels);
                                         drain_events += 1;
                                     }
                                 }
@@ -565,10 +552,18 @@ mod tests {
         nid: &str,
         event: Arc<Event>,
         json: &[u8],
-        ws_buf: &mut Vec<u8>,
         node_channels: &mut HashMap<String, broadcast::Sender<Arc<BroadcastEvent>>>,
-    ) -> u64 {
-        broadcaster.broadcast_event(node_id(nid), event, json, ws_buf, node_channels)
+    ) {
+        let record = BroadcastRecord {
+            id: broadcaster.next_event_id(),
+            node_id: node_id(nid),
+            event_type: event.event_type() as u8,
+            timestamp: chrono::Utc::now(),
+            ws_json: None,
+            event: event,
+            event_json: Arc::from(json),
+        };
+        broadcaster.broadcast_event(record, node_channels);
     }
 
     /// Helper: start aggregator and send events via MPSC (for subscribe tests).
@@ -607,13 +602,11 @@ mod tests {
     async fn test_broadcast_and_receive() {
         let broadcaster = EventBroadcaster::new();
         let mut rx = broadcaster.subscribe_all();
-        let mut ws_buf = Vec::new();
         let mut nc = HashMap::new();
 
         let event = make_test_event("node_1");
         let event_json = make_test_json(&event);
-        let id = broadcast_direct(&broadcaster, "node_1", event, &event_json, &mut ws_buf, &mut nc);
-        assert_eq!(id, 0);
+        broadcast_direct(&broadcaster, "node_1", event, &event_json, &mut nc);
 
         let received = rx.recv().await.unwrap();
         assert_eq!(received.id, 0);
@@ -625,12 +618,11 @@ mod tests {
         let broadcaster = EventBroadcaster::new();
         let mut rx1 = broadcaster.subscribe_all();
         let mut rx2 = broadcaster.subscribe_all();
-        let mut ws_buf = Vec::new();
         let mut nc = HashMap::new();
 
         let event = make_test_event("node_1");
         let event_json = make_test_json(&event);
-        broadcast_direct(&broadcaster, "node_1", event, &event_json, &mut ws_buf, &mut nc);
+        broadcast_direct(&broadcaster, "node_1", event, &event_json, &mut nc);
 
         let e1 = rx1.recv().await.unwrap();
         let e2 = rx2.recv().await.unwrap();
@@ -687,7 +679,6 @@ mod tests {
     #[tokio::test]
     async fn test_recent_events() {
         let broadcaster = EventBroadcaster::new();
-        let mut ws_buf = Vec::new();
         let mut nc = HashMap::new();
 
         // Broadcast 5 events
@@ -695,7 +686,7 @@ mod tests {
             let nid = format!("node_{}", i);
             let event = make_test_event(&nid);
             let event_json = make_test_json(&event);
-            broadcast_direct(&broadcaster, &nid, event, &event_json, &mut ws_buf, &mut nc);
+            broadcast_direct(&broadcaster, &nid, event, &event_json, &mut nc);
         }
 
         // Get last 3
@@ -712,18 +703,17 @@ mod tests {
     #[tokio::test]
     async fn test_recent_events_by_node() {
         let broadcaster = EventBroadcaster::new();
-        let mut ws_buf = Vec::new();
         let mut nc = HashMap::new();
 
         for _ in 0..3 {
             let event = make_test_event("node_a");
             let event_json = make_test_json(&event);
-            broadcast_direct(&broadcaster, "node_a", event, &event_json, &mut ws_buf, &mut nc);
+            broadcast_direct(&broadcaster, "node_a", event, &event_json, &mut nc);
         }
         for _ in 0..2 {
             let event = make_test_event("node_b");
             let event_json = make_test_json(&event);
-            broadcast_direct(&broadcaster, "node_b", event, &event_json, &mut ws_buf, &mut nc);
+            broadcast_direct(&broadcaster, "node_b", event, &event_json, &mut nc);
         }
 
         let node_a_events = broadcaster.get_recent_events_by_node("node_a", 10);
@@ -737,13 +727,12 @@ mod tests {
     #[tokio::test]
     async fn test_recent_events_ring_buffer() {
         let broadcaster = EventBroadcaster::new();
-        let mut ws_buf = Vec::new();
         let mut nc = HashMap::new();
 
         for _ in 0..(MAX_RETAINED_EVENTS + 100) {
             let event = make_test_event("node_1");
             let event_json = make_test_json(&event);
-            broadcast_direct(&broadcaster, "node_1", event, &event_json, &mut ws_buf, &mut nc);
+            broadcast_direct(&broadcaster, "node_1", event, &event_json, &mut nc);
         }
 
         let recent = broadcaster.get_recent_events(None);
@@ -755,12 +744,11 @@ mod tests {
     async fn test_get_stats() {
         let broadcaster = EventBroadcaster::new();
         let _rx = broadcaster.subscribe_all();
-        let mut ws_buf = Vec::new();
         let mut nc = HashMap::new();
 
         let event = make_test_event("node_1");
         let event_json = make_test_json(&event);
-        broadcast_direct(&broadcaster, "node_1", event, &event_json, &mut ws_buf, &mut nc);
+        broadcast_direct(&broadcaster, "node_1", event, &event_json, &mut nc);
 
         let stats = broadcaster.get_stats();
         assert_eq!(stats.total_events_broadcast, 1);
@@ -810,24 +798,40 @@ mod tests {
     #[tokio::test]
     async fn test_broadcast_with_preserialized_json() {
         let broadcaster = EventBroadcaster::new();
-        let _rx = broadcaster.subscribe_all(); // need a subscriber so serialization happens
-        let mut ws_buf = Vec::new();
+        let _rx = broadcaster.subscribe_all(); // need a subscriber so event_json is stored
         let mut nc = HashMap::new();
+        let mut ws_buf = Vec::new();
 
         let event = make_test_event("node_1");
         let event_json = make_test_json(&event);
-        broadcast_direct(&broadcaster, "node_1", event, &event_json, &mut ws_buf, &mut nc);
+        let id = broadcaster.next_event_id();
+        let event_type = event.event_type() as u8;
+        let timestamp = chrono::Utc::now();
+        let ws_json = build_ws_envelope(id, "node_1", event_type, &event_json, timestamp, &mut ws_buf);
+
+        let record = BroadcastRecord {
+            id,
+            node_id: node_id("node_1"),
+            event_type,
+            timestamp,
+            ws_json,
+            event,
+            event_json: Arc::from(&*event_json),
+        };
+        broadcaster.broadcast_event(record, &mut nc);
 
         let recent = broadcaster.get_recent_events(Some(1));
         assert_eq!(recent.len(), 1);
         let be = &recent[0];
 
+        // serialized_json should be present (built by build_ws_envelope)
         assert!(be.serialized_json.is_some());
-        let ws_json: serde_json::Value =
+        let parsed: serde_json::Value =
             serde_json::from_str(be.serialized_json.as_ref().unwrap()).unwrap();
-        assert_eq!(ws_json["type"], "event");
-        assert_eq!(ws_json["data"]["node_id"], "node_1");
+        assert_eq!(parsed["type"], "event");
+        assert_eq!(parsed["data"]["node_id"], "node_1");
 
+        // event_json should be stored (we had a subscriber)
         assert!(be.event_json.is_some());
         assert_eq!(&**be.event_json.as_ref().unwrap(), &*event_json);
     }

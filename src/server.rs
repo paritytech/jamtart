@@ -1,6 +1,6 @@
 use crate::batch_writer::{BatchWriter, EventRecord};
 use crate::decoder::{decode_message_frame, Decode, DecodingError};
-use crate::event_broadcaster::{BroadcastRecord, EventBroadcaster};
+use crate::event_broadcaster::{build_ws_envelope, BroadcastRecord, EventBroadcaster};
 use crate::events::{Event, NodeInformation};
 use crate::rate_limiter::RateLimiter;
 use crate::store::EventStore;
@@ -594,6 +594,7 @@ async fn handle_connection_optimized(
     // wakeup instead of one per event.
     let mut broadcast_batch: Vec<BroadcastRecord> = Vec::with_capacity(64);
     let mut db_batch: Vec<EventRecord> = Vec::with_capacity(64);
+    let mut ws_buf: Vec<u8> = Vec::with_capacity(4096);
 
     // Read events
     loop {
@@ -631,12 +632,24 @@ async fn handle_connection_optimized(
                                 serde_json::to_vec(&*event).unwrap_or_else(|_| b"{}".to_vec()),
                             );
 
+                            // Build WS envelope in ingestion thread (parallelized across 8 runtimes)
+                            let id = broadcaster.next_event_id();
+                            let event_type = event.event_type() as u8;
+                            let timestamp = chrono::Utc::now();
+                            let ws_json = build_ws_envelope(
+                                id, &node_id_str, event_type, &event_json, timestamp, &mut ws_buf,
+                            );
+
                             // Accumulate for batch send after inner loop
-                            broadcast_batch.push((
-                                node_id_str.clone(),
-                                Arc::clone(&event),
-                                Arc::clone(&event_json),
-                            ));
+                            broadcast_batch.push(BroadcastRecord {
+                                node_id: node_id_str.clone(),
+                                event: Arc::clone(&event),
+                                event_json: Arc::clone(&event_json),
+                                id,
+                                event_type,
+                                timestamp,
+                                ws_json,
+                            });
                             db_batch.push((node_id_str.clone(), event_count, event, event_json));
                             batch_received += 1;
 

@@ -2091,7 +2091,9 @@ async fn websocket_connection(
                                         SubscriptionFilter::Nodes { node_ids } => {
                                             let mut map = tokio_stream::StreamMap::new();
                                             let subs = if node_ids.len() == 1 && node_ids[0] == "*" {
-                                                // Wildcard: subscribe to all node channels via StreamMap
+                                                // Wildcard: subscribe to all node channels via StreamMap.
+                                                // Intentionally uses StreamMap (not main channel) to benchmark
+                                                // StreamMap performance vs the firehose.
                                                 broadcaster.subscribe_all_nodes().await
                                             } else {
                                                 broadcaster.subscribe_nodes(node_ids).await

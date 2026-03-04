@@ -479,12 +479,31 @@ Connect to receive live events as they arrive from nodes.
   "filter": { "type": "All" }
 }
 
-// Subscribe to specific node
+// Subscribe to specific nodes
 {
   "type": "Subscribe",
   "filter": {
-    "type": "Node",
-    "node_id": "a1b2c3d4..."
+    "type": "Nodes",
+    "node_ids": ["a1b2c3d4..."]
+  }
+}
+
+// Subscribe to multiple nodes
+{
+  "type": "Subscribe",
+  "filter": {
+    "type": "Nodes",
+    "node_ids": ["a1b2c3d4...", "e5f6a7b8..."]
+  }
+}
+
+// Subscribe to all node channels (wildcard) — uses per-node StreamMap internally,
+// intended for performance evaluation of the StreamMap implementation.
+{
+  "type": "Subscribe",
+  "filter": {
+    "type": "Nodes",
+    "node_ids": ["*"]
   }
 }
 
@@ -520,14 +539,13 @@ Connect to receive live events as they arrive from nodes.
   "timestamp": "2025-10-28T14:30:00Z"
 }
 
-// New event
+// New event (single)
 {
   "type": "event",
   "data": {
     "id": 12345,
     "node_id": "a1b2c3d4...",
     "event_type": 11,
-    "latency_ms": 2,
     "event": {
       "BestBlockChanged": {
         "slot": 1234,
@@ -535,6 +553,16 @@ Connect to receive live events as they arrive from nodes.
       }
     }
   },
+  "timestamp": "2025-10-28T14:30:00Z"
+}
+
+// Batched events (up to 100 per frame, opportunistic)
+{
+  "type": "batch",
+  "data": [
+    { "id": 12345, "node_id": "a1b2c3d4...", "event_type": 11, "event": { /* ... */ } },
+    { "id": 12346, "node_id": "a1b2c3d4...", "event_type": 12, "event": { /* ... */ } }
+  ],
   "timestamp": "2025-10-28T14:30:00Z"
 }
 
@@ -814,8 +842,8 @@ class TartWebSocket {
     this.send({ type: "Subscribe", filter });
   }
 
-  subscribeToNode(nodeId) {
-    this.subscribe({ type: "Node", node_id: nodeId });
+  subscribeToNodes(nodeIds) {
+    this.subscribe({ type: "Nodes", node_ids: nodeIds });
   }
 
   getRecentEvents(limit = 100) {
@@ -857,8 +885,8 @@ client.on("stats", (data) => {
   console.log("Stats:", data);
 });
 
-// Subscribe to specific node
-client.subscribeToNode("a1b2c3d4...");
+// Subscribe to specific nodes
+client.subscribeToNodes(["a1b2c3d4...", "e5f6a7b8..."]);
 
 // Keep-alive
 setInterval(() => client.ping(), 30000);
