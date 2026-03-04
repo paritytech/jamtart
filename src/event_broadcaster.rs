@@ -27,6 +27,11 @@ const CHANNEL_CLEANUP_INTERVAL: u64 = 30;
 /// Matches BROADCAST_CHANNEL_SIZE to handle the same burst capacity.
 const AGGREGATION_CHANNEL_SIZE: usize = 500_000;
 
+/// Max events per aggregator drain cycle before yielding to tokio.
+/// At 600K events/s this gives ~60 yields/s = yield every ~16ms,
+/// preventing WS loop starvation (observed 700ms stalls without this).
+const AGGREGATOR_DRAIN_LIMIT: usize = 10_000;
+
 /// Broadcast event tuple: (node_id, event, event_json).
 pub type BroadcastRecord = (Arc<str>, Arc<Event>, Arc<[u8]>);
 
@@ -338,17 +343,63 @@ impl EventBroadcaster {
             // Reusable buffer for building WS envelope JSON (avoids per-event allocation)
             let mut ws_buf: Vec<u8> = Vec::with_capacity(4096);
 
+            // Debug stats
+            let mut debug_last_log = tokio::time::Instant::now();
+            let mut debug_events_total = 0u64;
+            let mut debug_drain_max_events = 0u64;
+            let mut debug_drain_max_us = 0u64;
+            let mut debug_drain_count = 0u64;
+
             // Drain all available batches per wakeup for throughput
             while let Some(batch) = receiver.recv().await {
+                let drain_start = tokio::time::Instant::now();
+                let mut drain_events = 0u64;
+
                 for (node_id, event, event_json) in batch.events {
                     let _ = this.broadcast_event(node_id, event, &event_json, &mut ws_buf);
+                    drain_events += 1;
                 }
 
-                // Drain any additional buffered batches without awaiting
-                while let Ok(batch) = receiver.try_recv() {
-                    for (node_id, event, event_json) in batch.events {
-                        let _ = this.broadcast_event(node_id, event, &event_json, &mut ws_buf);
+                // Drain additional buffered batches, but yield after AGGREGATOR_DRAIN_LIMIT
+                // to prevent starving the WS send loop on the same tokio runtime.
+                while (drain_events as usize) < AGGREGATOR_DRAIN_LIMIT {
+                    match receiver.try_recv() {
+                        Ok(batch) => {
+                            for (node_id, event, event_json) in batch.events {
+                                let _ = this.broadcast_event(node_id, event, &event_json, &mut ws_buf);
+                                drain_events += 1;
+                            }
+                        }
+                        Err(_) => break,
                     }
+                }
+
+                let drain_us = drain_start.elapsed().as_micros() as u64;
+                debug_events_total += drain_events;
+                debug_drain_count += 1;
+                if drain_events > debug_drain_max_events {
+                    debug_drain_max_events = drain_events;
+                }
+                if drain_us > debug_drain_max_us {
+                    debug_drain_max_us = drain_us;
+                }
+
+                // Log every 2 seconds
+                if debug_last_log.elapsed() >= std::time::Duration::from_secs(2) {
+                    let elapsed = debug_last_log.elapsed().as_secs_f64();
+                    debug!(
+                        "Aggregator stats: {:.0} events/s, drains={}, max_drain_events={}, max_drain_us={}, mpsc_lag={}",
+                        debug_events_total as f64 / elapsed,
+                        debug_drain_count,
+                        debug_drain_max_events,
+                        debug_drain_max_us,
+                        receiver.len(),
+                    );
+                    debug_events_total = 0;
+                    debug_drain_max_events = 0;
+                    debug_drain_max_us = 0;
+                    debug_drain_count = 0;
+                    debug_last_log = tokio::time::Instant::now();
                 }
             }
             trace!("Aggregator task exiting — all senders dropped");

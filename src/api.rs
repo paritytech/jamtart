@@ -17,7 +17,7 @@ use std::sync::Arc;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::timeout::TimeoutLayer;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Validates that a node_id is a valid 64-character hexadecimal string (32 bytes encoded).
 fn is_valid_node_id(node_id: &str) -> bool {
@@ -1821,9 +1821,10 @@ async fn websocket_handler(
 const WS_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Max events per WS message. Opportunistic batching: after receiving one event,
-/// drain up to this many more via try_recv() (non-blocking). At batch=10,
-/// ws-synth measured 1.2M events/s vs 158K unbatched.
-const WS_BATCH_SIZE: usize = 10;
+/// drain up to this many more via try_recv() (non-blocking). At batch=100,
+/// ws-synth measured 1.6M events/s vs 158K unbatched. Larger batches help
+/// drain broadcast_lag spikes faster (observed up to 524K with batch=10).
+const WS_BATCH_SIZE: usize = 100;
 
 async fn websocket_connection(
     mut socket: WebSocket,
@@ -1986,8 +1987,8 @@ async fn websocket_connection(
                 if debug_last_log.elapsed() >= std::time::Duration::from_secs(2) {
                     let elapsed = debug_last_log.elapsed().as_secs_f64();
                     let avg_send_us = if debug_sends_since_log > 0 { debug_send_time_us / debug_sends_since_log } else { 0 };
-                    warn!(
-                        "WS debug: {:.0} events/s, avg_send={}us, lagged_total={}, loops={}, broadcast_lag={}",
+                    debug!(
+                        "WS stats: {:.0} events/s, avg_send={}us, lagged_total={}, loops={}, broadcast_lag={}",
                         debug_events_since_log as f64 / elapsed,
                         avg_send_us,
                         debug_lagged_total,
