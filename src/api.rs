@@ -2092,10 +2092,15 @@ async fn websocket_connection(
                                             let mut map = tokio_stream::StreamMap::new();
                                             let subs = if node_ids.len() == 1 && node_ids[0] == "*" {
                                                 // Wildcard: subscribe to all node channels via StreamMap
-                                                broadcaster.subscribe_all_nodes()
+                                                broadcaster.subscribe_all_nodes().await
                                             } else {
-                                                broadcaster.subscribe_nodes(node_ids)
+                                                broadcaster.subscribe_nodes(node_ids).await
                                             };
+                                            debug!(
+                                                "WS building StreamMap: requested={}, found={}",
+                                                if node_ids.len() == 1 && node_ids[0] == "*" { "all".to_string() } else { node_ids.len().to_string() },
+                                                subs.len(),
+                                            );
                                             for (id, rx) in subs {
                                                 map.insert(id, tokio_stream::wrappers::BroadcastStream::new(rx));
                                             }

@@ -1,11 +1,11 @@
 use crate::events::Event;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc};
-use tracing::{debug, trace, warn};
+use tokio::sync::{broadcast, mpsc, oneshot};
+use tracing::debug;
 
 /// Size of the main broadcast channel
 /// 500K provides ~5 seconds of buffer at peak throughput (100K events/sec)
@@ -25,6 +25,28 @@ const AGGREGATION_CHANNEL_SIZE: usize = 500_000;
 /// At 600K events/s this gives ~60 yields/s = yield every ~16ms,
 /// preventing WS loop starvation (observed 700ms stalls without this).
 const AGGREGATOR_DRAIN_LIMIT: usize = 10_000;
+
+/// Size of the command channel for WS subscribe/unsubscribe requests.
+const COMMAND_CHANNEL_SIZE: usize = 256;
+
+/// Commands sent from WS handlers to the aggregator task.
+/// The aggregator owns the node channels HashMap — all access goes through here.
+enum AggregatorCommand {
+    SubscribeNode {
+        node_id: String,
+        reply: oneshot::Sender<Option<broadcast::Receiver<Arc<BroadcastEvent>>>>,
+    },
+    SubscribeNodes {
+        node_ids: Vec<String>,
+        reply: oneshot::Sender<Vec<(String, broadcast::Receiver<Arc<BroadcastEvent>>)>>,
+    },
+    SubscribeAllNodes {
+        reply: oneshot::Sender<Vec<(String, broadcast::Receiver<Arc<BroadcastEvent>>)>>,
+    },
+    RemoveNodeChannel {
+        node_id: String,
+    },
+}
 
 /// Broadcast event tuple: (node_id, event, event_json).
 pub type BroadcastRecord = (Arc<str>, Arc<Event>, Arc<[u8]>);
@@ -101,9 +123,8 @@ pub struct BroadcasterStats {
 
 /// High-performance event broadcaster designed for 1024+ nodes.
 ///
-/// Uses `parking_lot::RwLock` instead of `tokio::sync::RwLock` for the recent_events
-/// ring buffer and node_channels map because the critical sections contain no await
-/// points. This avoids async lock overhead on the hottest path.
+/// Node channels are owned exclusively by the aggregator task (no shared lock).
+/// WS handlers communicate via a command channel (mpsc) with oneshot replies.
 pub struct EventBroadcaster {
     /// MPSC sender for connection handlers to submit event batches to the aggregator.
     /// `try_send()` is lock-free — no contention between 1023 connection tasks.
@@ -115,15 +136,21 @@ pub struct EventBroadcaster {
     /// Main broadcast channel for all events
     sender: broadcast::Sender<Arc<BroadcastEvent>>,
 
-    /// Per-node broadcast channels for filtered subscriptions
-    node_channels: Arc<RwLock<HashMap<String, broadcast::Sender<Arc<BroadcastEvent>>>>>,
+    /// Command channel for WS handlers to subscribe/unsubscribe from node channels.
+    command_sender: mpsc::Sender<AggregatorCommand>,
+
+    /// Command receiver, taken once by `start_aggregator()`.
+    command_receiver: Mutex<Option<mpsc::Receiver<AggregatorCommand>>>,
 
     /// Ring buffer of recent events for new connections
-    /// Uses parking_lot::RwLock for fast sync access (no await points in critical section)
-    recent_events: Arc<RwLock<VecDeque<Arc<BroadcastEvent>>>>,
+    /// Uses parking_lot::Mutex for fast sync access (no await points in critical section)
+    recent_events: Arc<Mutex<VecDeque<Arc<BroadcastEvent>>>>,
 
     /// Event counter for unique IDs
     event_counter: Arc<AtomicU64>,
+
+    /// Node channel count — updated by aggregator, read by get_stats()
+    node_channel_count: Arc<AtomicUsize>,
 
     /// Statistics
     total_broadcast: Arc<AtomicU64>,
@@ -141,50 +168,49 @@ impl EventBroadcaster {
     pub fn new() -> Self {
         let (sender, _) = broadcast::channel(BROADCAST_CHANNEL_SIZE);
         let (event_sender, event_receiver) = mpsc::channel(AGGREGATION_CHANNEL_SIZE);
+        let (command_sender, command_receiver) = mpsc::channel(COMMAND_CHANNEL_SIZE);
 
-        let broadcaster = Self {
+        Self {
             event_sender,
             event_receiver: Mutex::new(Some(event_receiver)),
             sender,
-            node_channels: Arc::new(RwLock::new(HashMap::with_capacity(1024))),
-            recent_events: Arc::new(RwLock::new(VecDeque::with_capacity(MAX_RETAINED_EVENTS))),
+            command_sender,
+            command_receiver: Mutex::new(Some(command_receiver)),
+            recent_events: Arc::new(Mutex::new(VecDeque::with_capacity(MAX_RETAINED_EVENTS))),
             event_counter: Arc::new(AtomicU64::new(0)),
+            node_channel_count: Arc::new(AtomicUsize::new(0)),
             total_broadcast: Arc::new(AtomicU64::new(0)),
-            dropped_events: Arc::new(AtomicU64::new(0)), // Note: Real drops happen inside receivers
+            dropped_events: Arc::new(AtomicU64::new(0)),
             undelivered_events: Arc::new(AtomicU64::new(0)),
-        };
-
-        broadcaster
+        }
     }
 
     /// Broadcast an event to all subscribers.
-    /// Optimized for high throughput with minimal latency.
-    /// `event_json` is the pre-serialized standalone Event JSON (serialized once in server.rs).
-    /// `ws_buf` is a reusable buffer for building the WS envelope JSON.
-    pub fn broadcast_event(
+    /// Called only from the aggregator task — `node_channels` is the aggregator's local HashMap.
+    /// No locks on the hot path (node_channels is plain HashMap, not behind RwLock).
+    fn broadcast_event(
         &self,
         node_id: Arc<str>,
         event: Arc<Event>,
         event_json: &[u8],
         ws_buf: &mut Vec<u8>,
-    ) -> Result<u64, broadcast::error::SendError<Arc<BroadcastEvent>>> {
-        // Generate unique event ID
+        node_channels: &mut HashMap<String, broadcast::Sender<Arc<BroadcastEvent>>>,
+    ) -> u64 {
         let id = self.event_counter.fetch_add(1, Ordering::Relaxed);
 
         let main_receivers = self.sender.receiver_count();
-
-        // Check if anyone is listening on this node's channel
-        let node_has_receivers = {
-            let nc = self.node_channels.read();
-            nc.get(&*node_id).map_or(false, |s| s.receiver_count() > 0)
-        };
+        let node_has_receivers = node_channels
+            .get(&*node_id)
+            .map_or(false, |s| s.receiver_count() > 0);
 
         // Fast path: no subscribers at all.
-        // Still update the ring buffer for API /events catch-up, but skip
-        // JSON serialization, broadcast channel send, and node-channel dispatch.
         if main_receivers == 0 && !node_has_receivers {
-            // Ensure node channel exists (no send needed — no receivers)
-            self.ensure_node_channel(&node_id);
+            // Ensure node channel exists for future subscribers
+            if !node_channels.contains_key(&*node_id) {
+                let (tx, _) = broadcast::channel(NODE_CHANNEL_SIZE);
+                node_channels.insert(node_id.to_string(), tx);
+                self.node_channel_count.store(node_channels.len(), Ordering::Relaxed);
+            }
 
             let broadcast_event = Arc::new(BroadcastEvent {
                 id,
@@ -198,16 +224,15 @@ impl EventBroadcaster {
             self.total_broadcast.fetch_add(1, Ordering::Relaxed);
             self.undelivered_events.fetch_add(1, Ordering::Relaxed);
 
-            // Ring buffer for API recent events
             {
-                let mut recent = self.recent_events.write();
+                let mut recent = self.recent_events.lock();
                 if recent.len() >= MAX_RETAINED_EVENTS {
                     recent.pop_front();
                 }
                 recent.push_back(broadcast_event);
             }
 
-            return Ok(id);
+            return id;
         }
 
         let event_type = event.event_type() as u8;
@@ -222,10 +247,7 @@ impl EventBroadcaster {
         };
 
         // Pre-serialize WS envelope using RawValue to avoid re-serializing the Event.
-        // The event_json bytes were produced by serde_json::to_vec, so they're valid JSON.
-        // Serialize when main channel or node channel has subscribers.
         if main_receivers > 0 || node_has_receivers {
-            // SAFETY: serde_json::to_vec always produces valid UTF-8
             if let Ok(raw_str) = std::str::from_utf8(event_json) {
                 if let Ok(raw_value) = serde_json::value::RawValue::from_string(raw_str.to_string())
                 {
@@ -241,7 +263,6 @@ impl EventBroadcaster {
                     };
                     ws_buf.clear();
                     if serde_json::to_writer(&mut *ws_buf, &ws_response).is_ok() {
-                        // SAFETY: serde_json always produces valid UTF-8
                         let json_str = unsafe { std::str::from_utf8_unchecked(ws_buf) };
                         broadcast_event.serialized_json = Some(Arc::from(json_str));
                     }
@@ -252,35 +273,31 @@ impl EventBroadcaster {
         let broadcast_event = Arc::new(broadcast_event);
 
         // Broadcast to main channel
-        match self.sender.send(broadcast_event.clone()) {
-            Ok(_) => {
-                debug!("Broadcast event {} to {} receivers", id, main_receivers);
-                self.total_broadcast.fetch_add(1, Ordering::Relaxed);
-            }
-            Err(_) => {
-                self.total_broadcast.fetch_add(1, Ordering::Relaxed);
-                if main_receivers > 0 {
-                    warn!(
-                        "Unexpected broadcast error with {} active receivers",
-                        main_receivers
-                    );
-                }
-            }
+        if main_receivers > 0 {
+            let _ = self.sender.send(broadcast_event.clone());
+        }
+        self.total_broadcast.fetch_add(1, Ordering::Relaxed);
+
+        // Dispatch to per-node channel (create on first event for this node)
+        if let Some(sender) = node_channels.get(&*node_id) {
+            let _ = sender.send(broadcast_event.clone());
+        } else {
+            let (tx, _) = broadcast::channel(NODE_CHANNEL_SIZE);
+            let _ = tx.send(broadcast_event.clone());
+            node_channels.insert(node_id.to_string(), tx);
+            self.node_channel_count.store(node_channels.len(), Ordering::Relaxed);
         }
 
-        // Dispatch to per-node channel (create on first event for this node).
-        self.dispatch_to_node_channel(&node_id, &broadcast_event);
-
-        // Add to recent events ring buffer (O(1) operations with VecDeque)
+        // Ring buffer for API recent events
         {
-            let mut recent = self.recent_events.write();
+            let mut recent = self.recent_events.lock();
             if recent.len() >= MAX_RETAINED_EVENTS {
                 recent.pop_front();
             }
             recent.push_back(broadcast_event);
         }
 
-        Ok(id)
+        id
     }
 
     /// Submit an event to the aggregation channel for processing.
@@ -322,11 +339,21 @@ impl EventBroadcaster {
             .take()
             .expect("start_aggregator() must be called exactly once");
 
+        let mut cmd_receiver = self
+            .command_receiver
+            .lock()
+            .take()
+            .expect("start_aggregator() must be called exactly once");
+
         let this = Arc::clone(self);
 
         tokio::spawn(async move {
             // Reusable buffer for building WS envelope JSON (avoids per-event allocation)
             let mut ws_buf: Vec<u8> = Vec::with_capacity(4096);
+
+            // Node channels owned exclusively by this task — no lock needed
+            let mut node_channels: HashMap<String, broadcast::Sender<Arc<BroadcastEvent>>> =
+                HashMap::with_capacity(1024);
 
             // Debug stats
             let mut debug_last_log = tokio::time::Instant::now();
@@ -335,59 +362,88 @@ impl EventBroadcaster {
             let mut debug_drain_max_us = 0u64;
             let mut debug_drain_count = 0u64;
 
-            // Drain all available batches per wakeup for throughput
-            while let Some(batch) = receiver.recv().await {
-                let drain_start = tokio::time::Instant::now();
-                let mut drain_events = 0u64;
+            loop {
+                tokio::select! {
+                    Some(batch) = receiver.recv() => {
+                        let drain_start = tokio::time::Instant::now();
+                        let mut drain_events = 0u64;
 
-                for (node_id, event, event_json) in batch.events {
-                    let _ = this.broadcast_event(node_id, event, &event_json, &mut ws_buf);
-                    drain_events += 1;
-                }
+                        for (node_id, event, event_json) in batch.events {
+                            this.broadcast_event(node_id, event, &event_json, &mut ws_buf, &mut node_channels);
+                            drain_events += 1;
+                        }
 
-                // Drain additional buffered batches, but yield after AGGREGATOR_DRAIN_LIMIT
-                // to prevent starving the WS send loop on the same tokio runtime.
-                while (drain_events as usize) < AGGREGATOR_DRAIN_LIMIT {
-                    match receiver.try_recv() {
-                        Ok(batch) => {
-                            for (node_id, event, event_json) in batch.events {
-                                let _ = this.broadcast_event(node_id, event, &event_json, &mut ws_buf);
-                                drain_events += 1;
+                        // Drain additional buffered batches, but yield after AGGREGATOR_DRAIN_LIMIT
+                        while (drain_events as usize) < AGGREGATOR_DRAIN_LIMIT {
+                            match receiver.try_recv() {
+                                Ok(batch) => {
+                                    for (node_id, event, event_json) in batch.events {
+                                        this.broadcast_event(node_id, event, &event_json, &mut ws_buf, &mut node_channels);
+                                        drain_events += 1;
+                                    }
+                                }
+                                Err(_) => break,
                             }
                         }
-                        Err(_) => break,
+
+                        let drain_us = drain_start.elapsed().as_micros() as u64;
+                        debug_events_total += drain_events;
+                        debug_drain_count += 1;
+                        if drain_events > debug_drain_max_events {
+                            debug_drain_max_events = drain_events;
+                        }
+                        if drain_us > debug_drain_max_us {
+                            debug_drain_max_us = drain_us;
+                        }
+
+                        if debug_last_log.elapsed() >= std::time::Duration::from_secs(2) {
+                            let elapsed = debug_last_log.elapsed().as_secs_f64();
+                            debug!(
+                                "Aggregator stats: {:.0} events/s, drains={}, max_drain_events={}, max_drain_us={}, mpsc_lag={}",
+                                debug_events_total as f64 / elapsed,
+                                debug_drain_count,
+                                debug_drain_max_events,
+                                debug_drain_max_us,
+                                receiver.len(),
+                            );
+                            debug_events_total = 0;
+                            debug_drain_max_events = 0;
+                            debug_drain_max_us = 0;
+                            debug_drain_count = 0;
+                            debug_last_log = tokio::time::Instant::now();
+                        }
+                    }
+
+                    Some(cmd) = cmd_receiver.recv() => {
+                        match cmd {
+                            AggregatorCommand::SubscribeNode { node_id, reply } => {
+                                let rx = node_channels.get(&node_id).map(|s| s.subscribe());
+                                let _ = reply.send(rx);
+                            }
+                            AggregatorCommand::SubscribeNodes { node_ids, reply } => {
+                                let subs = node_ids.iter()
+                                    .filter_map(|id| node_channels.get(id).map(|s| (id.clone(), s.subscribe())))
+                                    .collect();
+                                let _ = reply.send(subs);
+                            }
+                            AggregatorCommand::SubscribeAllNodes { reply } => {
+                                let subs = node_channels.iter()
+                                    .map(|(id, s)| (id.clone(), s.subscribe()))
+                                    .collect();
+                                let _ = reply.send(subs);
+                            }
+                            AggregatorCommand::RemoveNodeChannel { node_id } => {
+                                if let Some(sender) = node_channels.get(&node_id) {
+                                    if sender.receiver_count() == 0 {
+                                        node_channels.remove(&node_id);
+                                        this.node_channel_count.store(node_channels.len(), Ordering::Relaxed);
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
-
-                let drain_us = drain_start.elapsed().as_micros() as u64;
-                debug_events_total += drain_events;
-                debug_drain_count += 1;
-                if drain_events > debug_drain_max_events {
-                    debug_drain_max_events = drain_events;
-                }
-                if drain_us > debug_drain_max_us {
-                    debug_drain_max_us = drain_us;
-                }
-
-                // Log every 2 seconds
-                if debug_last_log.elapsed() >= std::time::Duration::from_secs(2) {
-                    let elapsed = debug_last_log.elapsed().as_secs_f64();
-                    debug!(
-                        "Aggregator stats: {:.0} events/s, drains={}, max_drain_events={}, max_drain_us={}, mpsc_lag={}",
-                        debug_events_total as f64 / elapsed,
-                        debug_drain_count,
-                        debug_drain_max_events,
-                        debug_drain_max_us,
-                        receiver.len(),
-                    );
-                    debug_events_total = 0;
-                    debug_drain_max_events = 0;
-                    debug_drain_max_us = 0;
-                    debug_drain_count = 0;
-                    debug_last_log = tokio::time::Instant::now();
-                }
             }
-            trace!("Aggregator task exiting — all senders dropped");
         });
     }
 
@@ -396,46 +452,47 @@ impl EventBroadcaster {
         self.sender.subscribe()
     }
 
-    /// Subscribe to a specific node's channel.
+    /// Subscribe to a specific node's channel via aggregator command.
     /// Returns None if node_id hasn't connected yet (no events received).
-    pub fn subscribe_node(&self, node_id: &str) -> Option<broadcast::Receiver<Arc<BroadcastEvent>>> {
-        let channels = self.node_channels.read();
-        channels.get(node_id).map(|sender| sender.subscribe())
+    pub async fn subscribe_node(&self, node_id: &str) -> Option<broadcast::Receiver<Arc<BroadcastEvent>>> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.command_sender.send(AggregatorCommand::SubscribeNode {
+            node_id: node_id.to_string(),
+            reply: tx,
+        }).await;
+        rx.await.ok().flatten()
     }
 
-    /// Subscribe to multiple nodes. Returns receivers keyed by node_id.
+    /// Subscribe to multiple nodes via aggregator command.
     /// Node IDs that haven't connected yet are silently skipped.
-    pub fn subscribe_nodes(&self, node_ids: &[String]) -> Vec<(String, broadcast::Receiver<Arc<BroadcastEvent>>)> {
-        let channels = self.node_channels.read();
-        node_ids.iter()
-            .filter_map(|id| channels.get(id).map(|s| (id.clone(), s.subscribe())))
-            .collect()
+    pub async fn subscribe_nodes(&self, node_ids: &[String]) -> Vec<(String, broadcast::Receiver<Arc<BroadcastEvent>>)> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.command_sender.send(AggregatorCommand::SubscribeNodes {
+            node_ids: node_ids.to_vec(),
+            reply: tx,
+        }).await;
+        rx.await.unwrap_or_default()
     }
 
-    /// Subscribe to all currently-known node channels.
-    /// Returns receivers for every node that has connected.
-    pub fn subscribe_all_nodes(&self) -> Vec<(String, broadcast::Receiver<Arc<BroadcastEvent>>)> {
-        let channels = self.node_channels.read();
-        channels.iter()
-            .map(|(id, sender)| (id.clone(), sender.subscribe()))
-            .collect()
+    /// Subscribe to all currently-known node channels via aggregator command.
+    pub async fn subscribe_all_nodes(&self) -> Vec<(String, broadcast::Receiver<Arc<BroadcastEvent>>)> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.command_sender.send(AggregatorCommand::SubscribeAllNodes { reply: tx }).await;
+        rx.await.unwrap_or_default()
     }
 
     /// Remove a node's broadcast channel if no WS clients are subscribed.
     /// Called when a node's TCP connection drops.
-    pub fn remove_node_channel(&self, node_id: &str) {
-        let mut channels = self.node_channels.write();
-        if let Some(sender) = channels.get(node_id) {
-            if sender.receiver_count() == 0 {
-                channels.remove(node_id);
-            }
-        }
+    pub async fn remove_node_channel(&self, node_id: &str) {
+        let _ = self.command_sender.send(AggregatorCommand::RemoveNodeChannel {
+            node_id: node_id.to_string(),
+        }).await;
     }
 
     /// Get recent events for catch-up on new connections
     /// Returns up to `limit` most recent events
     pub fn get_recent_events(&self, limit: Option<usize>) -> Vec<Arc<BroadcastEvent>> {
-        let recent = self.recent_events.read();
+        let recent = self.recent_events.lock();
         let limit = limit.unwrap_or(recent.len()).min(recent.len());
 
         if limit == 0 {
@@ -453,7 +510,7 @@ impl EventBroadcaster {
         node_id: &str,
         limit: usize,
     ) -> Vec<Arc<BroadcastEvent>> {
-        let recent = self.recent_events.read();
+        let recent = self.recent_events.lock();
         // Single pass: collect from reverse iterator, then reverse the result
         let mut result = Vec::with_capacity(limit.min(recent.len()));
         for event in recent.iter().rev() {
@@ -473,47 +530,13 @@ impl EventBroadcaster {
         BroadcasterStats {
             total_events_broadcast: self.total_broadcast.load(Ordering::Relaxed),
             active_subscribers: self.sender.receiver_count(),
-            node_channels: self.node_channels.read().len(),
-            events_in_buffer: self.recent_events.read().len(),
+            node_channels: self.node_channel_count.load(Ordering::Relaxed),
+            events_in_buffer: self.recent_events.lock().len(),
             dropped_events: self.dropped_events.load(Ordering::Relaxed),
             undelivered_events: self.undelivered_events.load(Ordering::Relaxed),
         }
     }
 
-    /// Dispatch an event to the per-node broadcast channel, creating it on first use.
-    /// The write-lock path triggers at most once per node (1024 times total over
-    /// the server's lifetime). After that, only the read-lock fast path is taken.
-    fn dispatch_to_node_channel(&self, node_id: &Arc<str>, broadcast_event: &Arc<BroadcastEvent>) {
-        let node_channels = self.node_channels.read();
-        if let Some(sender) = node_channels.get(&**node_id) {
-            let _ = sender.send(broadcast_event.clone());
-        } else {
-            drop(node_channels);
-            let mut nc = self.node_channels.write();
-            // Double-check after acquiring write lock
-            if let Some(sender) = nc.get(&**node_id) {
-                let _ = sender.send(broadcast_event.clone());
-            } else {
-                let (tx, _) = broadcast::channel(NODE_CHANNEL_SIZE);
-                let _ = tx.send(broadcast_event.clone());
-                nc.insert(node_id.to_string(), tx);
-            }
-        }
-    }
-
-    /// Ensure a per-node broadcast channel exists, creating it on first use.
-    fn ensure_node_channel(&self, node_id: &Arc<str>) {
-        let node_channels = self.node_channels.read();
-        if node_channels.contains_key(&**node_id) {
-            return;
-        }
-        drop(node_channels);
-        let mut nc = self.node_channels.write();
-        if !nc.contains_key(&**node_id) {
-            let (tx, _) = broadcast::channel(NODE_CHANNEL_SIZE);
-            nc.insert(node_id.to_string(), tx);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -536,27 +559,45 @@ mod tests {
         Arc::from(s)
     }
 
+    /// Helper: call broadcast_event with a local node_channels HashMap (no aggregator needed).
+    fn broadcast_direct(
+        broadcaster: &EventBroadcaster,
+        nid: &str,
+        event: Arc<Event>,
+        json: &[u8],
+        ws_buf: &mut Vec<u8>,
+        node_channels: &mut HashMap<String, broadcast::Sender<Arc<BroadcastEvent>>>,
+    ) -> u64 {
+        broadcaster.broadcast_event(node_id(nid), event, json, ws_buf, node_channels)
+    }
+
+    /// Helper: start aggregator and send events via MPSC (for subscribe tests).
+    async fn send_via_aggregator(broadcaster: &Arc<EventBroadcaster>, nid: &str) {
+        let event = make_test_event(nid);
+        let json: Arc<[u8]> = Arc::from(serde_json::to_vec(&*event).unwrap());
+        broadcaster.send_event(Arc::from(nid), event, json);
+        // Give aggregator time to process
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
     #[tokio::test]
     async fn test_broadcaster_scale() {
-        let broadcaster = EventBroadcaster::new();
-        let mut ws_buf = Vec::new();
+        let broadcaster = Arc::new(EventBroadcaster::new());
+        broadcaster.start_aggregator();
 
-        // Create channels by broadcasting events for 1024 nodes
+        // Create channels by sending events for 1024 nodes via aggregator
         for i in 0..1024 {
             let nid = format!("node_{}", i);
             let event = make_test_event(&nid);
-            let json = make_test_json(&event);
-            broadcaster
-                .broadcast_event(node_id(&nid), event, &json, &mut ws_buf)
-                .unwrap();
+            let json: Arc<[u8]> = Arc::from(serde_json::to_vec(&*event).unwrap());
+            broadcaster.send_event(Arc::from(nid.as_str()), event, json);
         }
+        // Give aggregator time to process all events
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-        // Now subscribe to all — channels were created by broadcast_event
-        let receivers: Vec<_> = (0..1024)
-            .filter_map(|i| broadcaster.subscribe_node(&format!("node_{}", i)))
-            .collect();
-
-        assert_eq!(receivers.len(), 1024);
+        // Subscribe to all nodes via command
+        let subs = broadcaster.subscribe_all_nodes().await;
+        assert_eq!(subs.len(), 1024);
 
         let stats = broadcaster.get_stats();
         assert_eq!(stats.node_channels, 1024);
@@ -567,12 +608,11 @@ mod tests {
         let broadcaster = EventBroadcaster::new();
         let mut rx = broadcaster.subscribe_all();
         let mut ws_buf = Vec::new();
+        let mut nc = HashMap::new();
 
         let event = make_test_event("node_1");
         let event_json = make_test_json(&event);
-        let id = broadcaster
-            .broadcast_event(node_id("node_1"), event, &event_json, &mut ws_buf)
-            .unwrap();
+        let id = broadcast_direct(&broadcaster, "node_1", event, &event_json, &mut ws_buf, &mut nc);
         assert_eq!(id, 0);
 
         let received = rx.recv().await.unwrap();
@@ -586,12 +626,11 @@ mod tests {
         let mut rx1 = broadcaster.subscribe_all();
         let mut rx2 = broadcaster.subscribe_all();
         let mut ws_buf = Vec::new();
+        let mut nc = HashMap::new();
 
         let event = make_test_event("node_1");
         let event_json = make_test_json(&event);
-        broadcaster
-            .broadcast_event(node_id("node_1"), event, &event_json, &mut ws_buf)
-            .unwrap();
+        broadcast_direct(&broadcaster, "node_1", event, &event_json, &mut ws_buf, &mut nc);
 
         let e1 = rx1.recv().await.unwrap();
         let e2 = rx2.recv().await.unwrap();
@@ -600,32 +639,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_subscribe_node_filters() {
-        let broadcaster = EventBroadcaster::new();
-        let mut ws_buf = Vec::new();
+        let broadcaster = Arc::new(EventBroadcaster::new());
+        broadcaster.start_aggregator();
 
-        // Broadcast first to create node_1 channel
-        let setup_event = make_test_event("node_1");
-        let setup_json = make_test_json(&setup_event);
-        broadcaster
-            .broadcast_event(node_id("node_1"), setup_event, &setup_json, &mut ws_buf)
-            .unwrap();
+        // Send event to create node_1 channel
+        send_via_aggregator(&broadcaster, "node_1").await;
 
-        // Now subscribe to node_1
-        let mut rx_node1 = broadcaster.subscribe_node("node_1").expect("channel should exist");
+        // Subscribe to node_1 via command
+        let mut rx_node1 = broadcaster.subscribe_node("node_1").await.expect("channel should exist");
 
-        // Broadcast to node_1 — should be received
-        let event1 = make_test_event("node_1");
-        let json1 = make_test_json(&event1);
-        broadcaster
-            .broadcast_event(node_id("node_1"), event1, &json1, &mut ws_buf)
-            .unwrap();
-
-        // Broadcast to node_2 — should NOT be received on node_1 channel
-        let event2 = make_test_event("node_2");
-        let json2 = make_test_json(&event2);
-        broadcaster
-            .broadcast_event(node_id("node_2"), event2, &json2, &mut ws_buf)
-            .unwrap();
+        // Send more events
+        send_via_aggregator(&broadcaster, "node_1").await;
+        send_via_aggregator(&broadcaster, "node_2").await;
 
         let received = rx_node1.recv().await.unwrap();
         assert_eq!(&*received.node_id, "node_1");
@@ -638,28 +663,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_subscribe_nodes_multi() {
-        let broadcaster = EventBroadcaster::new();
-        let mut ws_buf = Vec::new();
+        let broadcaster = Arc::new(EventBroadcaster::new());
+        broadcaster.start_aggregator();
 
-        // Create channels by broadcasting
+        // Create channels via aggregator
         for nid in &["node_a", "node_b", "node_c"] {
-            let event = make_test_event(nid);
-            let json = make_test_json(&event);
-            broadcaster
-                .broadcast_event(node_id(nid), event, &json, &mut ws_buf)
-                .unwrap();
+            send_via_aggregator(&broadcaster, nid).await;
         }
 
         // Subscribe to node_a and node_b
-        let subs = broadcaster.subscribe_nodes(&["node_a".to_string(), "node_b".to_string()]);
+        let subs = broadcaster.subscribe_nodes(&["node_a".to_string(), "node_b".to_string()]).await;
         assert_eq!(subs.len(), 2);
 
         // Subscribe to non-existent node — should be skipped
-        let subs2 = broadcaster.subscribe_nodes(&["node_a".to_string(), "nonexistent".to_string()]);
+        let subs2 = broadcaster.subscribe_nodes(&["node_a".to_string(), "nonexistent".to_string()]).await;
         assert_eq!(subs2.len(), 1);
 
         // subscribe_all_nodes should return all 3
-        let all = broadcaster.subscribe_all_nodes();
+        let all = broadcaster.subscribe_all_nodes().await;
         assert_eq!(all.len(), 3);
     }
 
@@ -667,25 +688,19 @@ mod tests {
     async fn test_recent_events() {
         let broadcaster = EventBroadcaster::new();
         let mut ws_buf = Vec::new();
+        let mut nc = HashMap::new();
 
         // Broadcast 5 events
         for i in 0..5 {
-            let event = make_test_event(&format!("node_{}", i));
+            let nid = format!("node_{}", i);
+            let event = make_test_event(&nid);
             let event_json = make_test_json(&event);
-            broadcaster
-                .broadcast_event(
-                    node_id(&format!("node_{}", i)),
-                    event,
-                    &event_json,
-                    &mut ws_buf,
-                )
-                .unwrap();
+            broadcast_direct(&broadcaster, &nid, event, &event_json, &mut ws_buf, &mut nc);
         }
 
         // Get last 3
         let recent = broadcaster.get_recent_events(Some(3));
         assert_eq!(recent.len(), 3);
-        // Should be the last 3 (ids 2, 3, 4)
         assert_eq!(recent[0].id, 2);
         assert_eq!(recent[2].id, 4);
 
@@ -698,21 +713,17 @@ mod tests {
     async fn test_recent_events_by_node() {
         let broadcaster = EventBroadcaster::new();
         let mut ws_buf = Vec::new();
+        let mut nc = HashMap::new();
 
-        // Broadcast from multiple nodes
         for _ in 0..3 {
             let event = make_test_event("node_a");
             let event_json = make_test_json(&event);
-            broadcaster
-                .broadcast_event(node_id("node_a"), event, &event_json, &mut ws_buf)
-                .unwrap();
+            broadcast_direct(&broadcaster, "node_a", event, &event_json, &mut ws_buf, &mut nc);
         }
         for _ in 0..2 {
             let event = make_test_event("node_b");
             let event_json = make_test_json(&event);
-            broadcaster
-                .broadcast_event(node_id("node_b"), event, &event_json, &mut ws_buf)
-                .unwrap();
+            broadcast_direct(&broadcaster, "node_b", event, &event_json, &mut ws_buf, &mut nc);
         }
 
         let node_a_events = broadcaster.get_recent_events_by_node("node_a", 10);
@@ -727,19 +738,16 @@ mod tests {
     async fn test_recent_events_ring_buffer() {
         let broadcaster = EventBroadcaster::new();
         let mut ws_buf = Vec::new();
+        let mut nc = HashMap::new();
 
-        // Broadcast more than MAX_RETAINED_EVENTS
         for _ in 0..(MAX_RETAINED_EVENTS + 100) {
             let event = make_test_event("node_1");
             let event_json = make_test_json(&event);
-            broadcaster
-                .broadcast_event(node_id("node_1"), event, &event_json, &mut ws_buf)
-                .unwrap();
+            broadcast_direct(&broadcaster, "node_1", event, &event_json, &mut ws_buf, &mut nc);
         }
 
         let recent = broadcaster.get_recent_events(None);
         assert_eq!(recent.len(), MAX_RETAINED_EVENTS);
-        // First event in buffer should be #100 (oldest were evicted)
         assert_eq!(recent[0].id, 100);
     }
 
@@ -748,12 +756,11 @@ mod tests {
         let broadcaster = EventBroadcaster::new();
         let _rx = broadcaster.subscribe_all();
         let mut ws_buf = Vec::new();
+        let mut nc = HashMap::new();
 
         let event = make_test_event("node_1");
         let event_json = make_test_json(&event);
-        broadcaster
-            .broadcast_event(node_id("node_1"), event, &event_json, &mut ws_buf)
-            .unwrap();
+        broadcast_direct(&broadcaster, "node_1", event, &event_json, &mut ws_buf, &mut nc);
 
         let stats = broadcaster.get_stats();
         assert_eq!(stats.total_events_broadcast, 1);
@@ -763,7 +770,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_raw_value_ws_broadcast_matches_original() {
-        // Verify WsBroadcastRaw with RawValue produces identical JSON as WsBroadcast with &Event
         let event = Event::BestBlockChanged {
             timestamp: 1_000_000,
             slot: 42,
@@ -772,7 +778,6 @@ mod tests {
         let event_json = serde_json::to_vec(&event).unwrap();
         let now = chrono::Utc::now();
 
-        // Original: serialize with &Event
         let original = WsBroadcast {
             r#type: "event",
             data: WsBroadcastData {
@@ -785,7 +790,6 @@ mod tests {
         };
         let original_json = serde_json::to_string(&original).unwrap();
 
-        // New: serialize with RawValue
         let raw_str = std::str::from_utf8(&event_json).unwrap();
         let raw_value = serde_json::value::RawValue::from_string(raw_str.to_string()).unwrap();
         let raw = WsBroadcastRaw {
@@ -805,29 +809,25 @@ mod tests {
 
     #[tokio::test]
     async fn test_broadcast_with_preserialized_json() {
-        // Verify broadcast_event with pre-serialized bytes stores correct serialized_json
         let broadcaster = EventBroadcaster::new();
         let _rx = broadcaster.subscribe_all(); // need a subscriber so serialization happens
         let mut ws_buf = Vec::new();
+        let mut nc = HashMap::new();
 
         let event = make_test_event("node_1");
         let event_json = make_test_json(&event);
-        broadcaster
-            .broadcast_event(node_id("node_1"), event, &event_json, &mut ws_buf)
-            .unwrap();
+        broadcast_direct(&broadcaster, "node_1", event, &event_json, &mut ws_buf, &mut nc);
 
         let recent = broadcaster.get_recent_events(Some(1));
         assert_eq!(recent.len(), 1);
         let be = &recent[0];
 
-        // serialized_json should be present (we had a subscriber)
         assert!(be.serialized_json.is_some());
         let ws_json: serde_json::Value =
             serde_json::from_str(be.serialized_json.as_ref().unwrap()).unwrap();
         assert_eq!(ws_json["type"], "event");
         assert_eq!(ws_json["data"]["node_id"], "node_1");
 
-        // event_json should be stored on BroadcastEvent
         assert!(be.event_json.is_some());
         assert_eq!(&**be.event_json.as_ref().unwrap(), &*event_json);
     }
