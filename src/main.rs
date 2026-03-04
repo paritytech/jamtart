@@ -42,7 +42,7 @@ struct Cli {
     /// Number of dedicated ingestion runtimes for TCP connections.
     /// Each runtime is a single-thread tokio runtime with its own SO_REUSEPORT listener.
     /// 0 = legacy single-runtime mode (all tasks on main runtime).
-    #[arg(long, env = "INGESTION_THREADS", default_value_t = 0)]
+    #[arg(long, env = "INGESTION_THREADS", default_value_t = 8)]
     ingestion_threads: usize,
 }
 
