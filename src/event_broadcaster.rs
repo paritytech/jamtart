@@ -261,7 +261,8 @@ impl EventBroadcaster {
             let (tx, _) = broadcast::channel(NODE_CHANNEL_SIZE);
             let _ = tx.send(broadcast_event.clone());
             node_channels.insert(record.node_id.to_string(), tx);
-            self.node_channel_count.store(node_channels.len(), Ordering::Relaxed);
+            self.node_channel_count
+                .store(node_channels.len(), Ordering::Relaxed);
         }
 
         // Ring buffer for API recent events
@@ -441,39 +442,59 @@ impl EventBroadcaster {
 
     /// Subscribe to a specific node's channel via aggregator command.
     /// Returns None if node_id hasn't connected yet (no events received).
-    pub async fn subscribe_node(&self, node_id: &str) -> Option<broadcast::Receiver<Arc<BroadcastEvent>>> {
+    pub async fn subscribe_node(
+        &self,
+        node_id: &str,
+    ) -> Option<broadcast::Receiver<Arc<BroadcastEvent>>> {
         let (tx, rx) = oneshot::channel();
-        let _ = self.command_sender.send(AggregatorCommand::SubscribeNode {
-            node_id: node_id.to_string(),
-            reply: tx,
-        }).await;
+        let _ = self
+            .command_sender
+            .send(AggregatorCommand::SubscribeNode {
+                node_id: node_id.to_string(),
+                reply: tx,
+            })
+            .await;
         rx.await.ok().flatten()
     }
 
     /// Subscribe to multiple nodes via aggregator command.
     /// Node IDs that haven't connected yet are silently skipped.
-    pub async fn subscribe_nodes(&self, node_ids: &[String]) -> Vec<(String, broadcast::Receiver<Arc<BroadcastEvent>>)> {
+    pub async fn subscribe_nodes(
+        &self,
+        node_ids: &[String],
+    ) -> Vec<(String, broadcast::Receiver<Arc<BroadcastEvent>>)> {
         let (tx, rx) = oneshot::channel();
-        let _ = self.command_sender.send(AggregatorCommand::SubscribeNodes {
-            node_ids: node_ids.to_vec(),
-            reply: tx,
-        }).await;
+        let _ = self
+            .command_sender
+            .send(AggregatorCommand::SubscribeNodes {
+                node_ids: node_ids.to_vec(),
+                reply: tx,
+            })
+            .await;
         rx.await.unwrap_or_default()
     }
 
     /// Subscribe to all currently-known node channels via aggregator command.
-    pub async fn subscribe_all_nodes(&self) -> Vec<(String, broadcast::Receiver<Arc<BroadcastEvent>>)> {
+    pub async fn subscribe_all_nodes(
+        &self,
+    ) -> Vec<(String, broadcast::Receiver<Arc<BroadcastEvent>>)> {
         let (tx, rx) = oneshot::channel();
-        let _ = self.command_sender.send(AggregatorCommand::SubscribeAllNodes { reply: tx }).await;
+        let _ = self
+            .command_sender
+            .send(AggregatorCommand::SubscribeAllNodes { reply: tx })
+            .await;
         rx.await.unwrap_or_default()
     }
 
     /// Remove a node's broadcast channel if no WS clients are subscribed.
     /// Called when a node's TCP connection drops.
     pub async fn remove_node_channel(&self, node_id: &str) {
-        let _ = self.command_sender.send(AggregatorCommand::RemoveNodeChannel {
-            node_id: node_id.to_string(),
-        }).await;
+        let _ = self
+            .command_sender
+            .send(AggregatorCommand::RemoveNodeChannel {
+                node_id: node_id.to_string(),
+            })
+            .await;
     }
 
     /// Get recent events for catch-up on new connections
@@ -523,7 +544,6 @@ impl EventBroadcaster {
             undelivered_events: self.undelivered_events.load(Ordering::Relaxed),
         }
     }
-
 }
 
 #[cfg(test)]
@@ -638,7 +658,10 @@ mod tests {
         send_via_aggregator(&broadcaster, "node_1").await;
 
         // Subscribe to node_1 via command
-        let mut rx_node1 = broadcaster.subscribe_node("node_1").await.expect("channel should exist");
+        let mut rx_node1 = broadcaster
+            .subscribe_node("node_1")
+            .await
+            .expect("channel should exist");
 
         // Send more events
         send_via_aggregator(&broadcaster, "node_1").await;
@@ -664,11 +687,15 @@ mod tests {
         }
 
         // Subscribe to node_a and node_b
-        let subs = broadcaster.subscribe_nodes(&["node_a".to_string(), "node_b".to_string()]).await;
+        let subs = broadcaster
+            .subscribe_nodes(&["node_a".to_string(), "node_b".to_string()])
+            .await;
         assert_eq!(subs.len(), 2);
 
         // Subscribe to non-existent node — should be skipped
-        let subs2 = broadcaster.subscribe_nodes(&["node_a".to_string(), "nonexistent".to_string()]).await;
+        let subs2 = broadcaster
+            .subscribe_nodes(&["node_a".to_string(), "nonexistent".to_string()])
+            .await;
         assert_eq!(subs2.len(), 1);
 
         // subscribe_all_nodes should return all 3
@@ -807,7 +834,14 @@ mod tests {
         let id = broadcaster.next_event_id();
         let event_type = event.event_type() as u8;
         let timestamp = chrono::Utc::now();
-        let ws_json = build_ws_envelope(id, "node_1", event_type, &event_json, timestamp, &mut ws_buf);
+        let ws_json = build_ws_envelope(
+            id,
+            "node_1",
+            event_type,
+            &event_json,
+            timestamp,
+            &mut ws_buf,
+        );
 
         let record = BroadcastRecord {
             id,

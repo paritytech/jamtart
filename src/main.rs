@@ -278,8 +278,7 @@ async fn main() -> anyhow::Result<()> {
             let cache_clone = Arc::clone(&cache);
             let store_clone = Arc::clone(store);
             tokio::spawn(async move {
-                let mut warm_interval =
-                    tokio::time::interval(std::time::Duration::from_secs(2));
+                let mut warm_interval = tokio::time::interval(std::time::Duration::from_secs(2));
                 let mut evict_counter: u64 = 0;
 
                 loop {
@@ -287,7 +286,9 @@ async fn main() -> anyhow::Result<()> {
                     let first = evict_counter == 0;
 
                     if first {
-                        info!("Warming cache with all aggregation endpoints (independent spawns)...");
+                        info!(
+                            "Warming cache with all aggregation endpoints (independent spawns)..."
+                        );
                     }
 
                     macro_rules! spawn_warm {
@@ -313,17 +314,11 @@ async fn main() -> anyhow::Result<()> {
                         spawn_warm!("stats", get_stats("1 hour", "24 hours")),
                         spawn_warm!("workpackage_stats", get_workpackage_stats("24 hours")),
                         spawn_warm!("block_stats", get_block_stats("1 hour")),
-                        spawn_warm!(
-                            "guarantee_stats",
-                            get_guarantee_stats("1 hour", "24 hours")
-                        ),
+                        spawn_warm!("guarantee_stats", get_guarantee_stats("1 hour", "24 hours")),
                         spawn_warm!("da_stats", get_da_stats()),
                         spawn_warm!("failure_rates", get_failure_rates("1 hour")),
                         spawn_warm!("block_propagation", get_block_propagation("1 hour")),
-                        spawn_warm!(
-                            "network_health",
-                            get_network_health("1 hour", "24 hours")
-                        ),
+                        spawn_warm!("network_health", get_network_health("1 hour", "24 hours")),
                         spawn_warm!(
                             "guarantees_by_guarantor",
                             get_guarantees_by_guarantor("1 hour", "24 hours")
@@ -370,9 +365,7 @@ async fn main() -> anyhow::Result<()> {
                     }
 
                     if first {
-                        info!(
-                            "Initial cache warming complete (15 endpoints, independent spawns)"
-                        );
+                        info!("Initial cache warming complete (15 endpoints, independent spawns)");
                     }
 
                     evict_counter += 1;
@@ -420,9 +413,19 @@ async fn main() -> anyhow::Result<()> {
     configure_socket_buffers(&listener);
 
     info!("=== TART Backend Configuration ===");
-    info!("Mode: {}", if store.is_none() { "no-database (WebSocket-only)" } else { "full (DB + WebSocket)" });
+    info!(
+        "Mode: {}",
+        if store.is_none() {
+            "no-database (WebSocket-only)"
+        } else {
+            "full (DB + WebSocket)"
+        }
+    );
     if ingestion_threads > 0 {
-        info!("Ingestion: {} dedicated runtimes (SO_REUSEPORT)", ingestion_threads);
+        info!(
+            "Ingestion: {} dedicated runtimes (SO_REUSEPORT)",
+            ingestion_threads
+        );
     } else {
         info!("Ingestion: single runtime (legacy)");
     }

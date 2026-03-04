@@ -155,7 +155,10 @@ impl TelemetryServer {
         ingestion_threads: usize,
     ) -> Result<Self, std::io::Error> {
         let bind_addr: SocketAddr = bind_address.parse().map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("bad address: {e}"))
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("bad address: {e}"),
+            )
         })?;
 
         let listener = if ingestion_threads == 0 {
@@ -218,7 +221,10 @@ impl TelemetryServer {
     }
 
     pub async fn run(&self) -> Result<(), std::io::Error> {
-        let listener = self.listener.as_ref().expect("run() requires single-runtime mode (ingestion_threads=0)");
+        let listener = self
+            .listener
+            .as_ref()
+            .expect("run() requires single-runtime mode (ingestion_threads=0)");
         loop {
             match listener.accept().await {
                 Ok((stream, addr)) => {
@@ -236,7 +242,10 @@ impl TelemetryServer {
         &self,
         mut shutdown: tokio::sync::watch::Receiver<bool>,
     ) -> Result<(), std::io::Error> {
-        let listener = self.listener.as_ref().expect("run_until_shutdown() requires single-runtime mode (ingestion_threads=0)");
+        let listener = self
+            .listener
+            .as_ref()
+            .expect("run_until_shutdown() requires single-runtime mode (ingestion_threads=0)");
         loop {
             tokio::select! {
                 result = listener.accept() => {
@@ -637,7 +646,12 @@ async fn handle_connection_optimized(
                             let event_type = event.event_type() as u8;
                             let timestamp = chrono::Utc::now();
                             let ws_json = build_ws_envelope(
-                                id, &node_id_str, event_type, &event_json, timestamp, &mut ws_buf,
+                                id,
+                                &node_id_str,
+                                event_type,
+                                &event_json,
+                                timestamp,
+                                &mut ws_buf,
                             );
 
                             // Accumulate for batch send after inner loop

@@ -1813,7 +1813,13 @@ async fn websocket_handler(
     Ok(ws.on_upgrade(move |socket| {
         let store = Some(state.store.clone());
         let cache = Some(state.cache.clone());
-        websocket_connection(socket, state.broadcaster, state.telemetry_server, store, cache)
+        websocket_connection(
+            socket,
+            state.broadcaster,
+            state.telemetry_server,
+            store,
+            cache,
+        )
     }))
 }
 
@@ -1833,25 +1839,36 @@ use crate::event_broadcaster::BroadcastEvent;
 /// `Filtered` uses a StreamMap over per-node broadcast channels.
 enum EventSource {
     All(tokio::sync::broadcast::Receiver<Arc<BroadcastEvent>>),
-    Filtered(tokio_stream::StreamMap<String, tokio_stream::wrappers::BroadcastStream<Arc<BroadcastEvent>>>),
+    Filtered(
+        tokio_stream::StreamMap<
+            String,
+            tokio_stream::wrappers::BroadcastStream<Arc<BroadcastEvent>>,
+        >,
+    ),
 }
 
 impl EventSource {
-    async fn recv(&mut self) -> Result<Arc<BroadcastEvent>, tokio::sync::broadcast::error::RecvError> {
+    async fn recv(
+        &mut self,
+    ) -> Result<Arc<BroadcastEvent>, tokio::sync::broadcast::error::RecvError> {
         match self {
             EventSource::All(rx) => rx.recv().await,
             EventSource::Filtered(map) => {
                 use tokio_stream::StreamExt;
                 match map.next().await {
                     Some((_key, Ok(event))) => Ok(event),
-                    Some((_key, Err(_))) => Err(tokio::sync::broadcast::error::RecvError::Lagged(0)),
+                    Some((_key, Err(_))) => {
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(0))
+                    }
                     None => Err(tokio::sync::broadcast::error::RecvError::Closed),
                 }
             }
         }
     }
 
-    fn try_recv(&mut self) -> Result<Arc<BroadcastEvent>, tokio::sync::broadcast::error::TryRecvError> {
+    fn try_recv(
+        &mut self,
+    ) -> Result<Arc<BroadcastEvent>, tokio::sync::broadcast::error::TryRecvError> {
         match self {
             EventSource::All(rx) => rx.try_recv(),
             EventSource::Filtered(map) => {
@@ -1863,7 +1880,9 @@ impl EventSource {
                 let mut cx = std::task::Context::from_waker(&waker);
                 match std::pin::Pin::new(map).poll_next(&mut cx) {
                     std::task::Poll::Ready(Some((_key, Ok(event)))) => Ok(event),
-                    std::task::Poll::Ready(Some((_key, Err(_)))) => Err(tokio::sync::broadcast::error::TryRecvError::Lagged(0)),
+                    std::task::Poll::Ready(Some((_key, Err(_)))) => {
+                        Err(tokio::sync::broadcast::error::TryRecvError::Lagged(0))
+                    }
                     _ => Err(tokio::sync::broadcast::error::TryRecvError::Empty),
                 }
             }
@@ -2419,7 +2438,12 @@ async fn minimal_websocket_handler(
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
     Ok(ws.on_upgrade(move |socket| {
-        websocket_connection(socket, state.broadcaster, state.telemetry_server, None, None)
+        websocket_connection(
+            socket,
+            state.broadcaster,
+            state.telemetry_server,
+            None,
+            None,
+        )
     }))
 }
-
