@@ -1040,7 +1040,7 @@ impl EventStore {
             )
             FROM events
             WHERE node_id = $1 AND event_type = 11
-            ORDER BY created_at DESC LIMIT 1
+            ORDER BY timestamp DESC LIMIT 1
             "#,
         )
         .bind(node_id)
@@ -1057,7 +1057,7 @@ impl EventStore {
             )
             FROM events
             WHERE node_id = $1 AND event_type = 12
-            ORDER BY created_at DESC LIMIT 1
+            ORDER BY timestamp DESC LIMIT 1
             "#,
         )
         .bind(node_id)
@@ -1071,7 +1071,7 @@ impl EventStore {
             SELECT data->'Status'
             FROM events
             WHERE node_id = $1 AND event_type = 10
-            ORDER BY created_at DESC
+            ORDER BY timestamp DESC
             LIMIT 1
             "#,
         )
@@ -1085,7 +1085,7 @@ impl EventStore {
             SELECT CAST(data->'SyncStatusChanged'->>'synced' AS BOOLEAN)
             FROM events
             WHERE node_id = $1 AND event_type = 13
-            ORDER BY created_at DESC
+            ORDER BY timestamp DESC
             LIMIT 1
             "#,
         )
@@ -1147,7 +1147,7 @@ impl EventStore {
                 timestamp
             FROM events
             WHERE node_id = $1 AND event_type = 10
-            ORDER BY created_at DESC
+            ORDER BY timestamp DESC
             LIMIT 1
             "#,
         )
@@ -1178,7 +1178,7 @@ impl EventStore {
             )
             FROM events
             WHERE node_id = $1 AND event_type = 10
-            ORDER BY created_at DESC
+            ORDER BY timestamp DESC
             LIMIT 100
             "#,
         )
@@ -1192,7 +1192,7 @@ impl EventStore {
             SELECT COUNT(DISTINCT data->'BlockAnnouncementStreamOpened'->>'peer')
             FROM events
             WHERE node_id = $1 AND event_type = 60
-            AND created_at > NOW() - INTERVAL '1 hour'
+            AND timestamp > NOW() - INTERVAL '1 hour'
             "#,
         )
         .bind(node_id)
@@ -1328,7 +1328,7 @@ impl EventStore {
             SELECT data->'WorkPackageReceived'->>'submission_or_share_id'
             FROM events, hex_to_jsonb h
             WHERE event_type = 94
-            AND created_at > NOW() - INTERVAL '24 hours'
+            AND timestamp > NOW() - INTERVAL '24 hours'
             AND data->'WorkPackageReceived'->'outline'->'work_package_hash' = h.hash_arr
             "#,
         )
@@ -1348,7 +1348,7 @@ impl EventStore {
             SELECT event_type, timestamp, node_id, data
             FROM events
             WHERE event_type IN (90, 91, 92, 93, 94, 95, 96, 97, 101, 102, 105, 106, 108, 109)
-            AND created_at > NOW() - INTERVAL '24 hours'
+            AND timestamp > NOW() - INTERVAL '24 hours'
             AND (
                 (event_type IN (90, 91, 92, 93, 94, 95, 96, 97, 101, 102) AND
                     COALESCE(
@@ -1430,7 +1430,7 @@ impl EventStore {
             SELECT DISTINCT (data->'WorkReportBuilt'->'outline'->'work_report_hash')::text
             FROM events
             WHERE event_type = 102
-            AND created_at > NOW() - INTERVAL '24 hours'
+            AND timestamp > NOW() - INTERVAL '24 hours'
             AND data->'WorkReportBuilt'->>'submission_or_share_id' = ANY($1)
             AND data->'WorkReportBuilt'->'outline'->'work_report_hash' IS NOT NULL
             "#,
@@ -1447,7 +1447,7 @@ impl EventStore {
                     SELECT event_type, timestamp, node_id, data
                     FROM events
                     WHERE event_type IN (112, 113)
-                    AND created_at > NOW() - INTERVAL '24 hours'
+                    AND timestamp > NOW() - INTERVAL '24 hours'
                     AND (
                         (event_type = 112 AND (data->'GuaranteeReceived'->'outline'->'work_report_hash')::text = ANY($1))
                         OR
@@ -1500,7 +1500,7 @@ impl EventStore {
             SELECT DISTINCT (data->'WorkReportBuilt'->'outline'->'erasure_root')::text
             FROM events
             WHERE event_type = 102
-            AND created_at > NOW() - INTERVAL '24 hours'
+            AND timestamp > NOW() - INTERVAL '24 hours'
             AND data->'WorkReportBuilt'->>'submission_or_share_id' = ANY($1)
             AND data->'WorkReportBuilt'->'outline'->'erasure_root' IS NOT NULL
             "#,
@@ -1518,7 +1518,7 @@ impl EventStore {
                     SELECT event_type, timestamp, node_id, data
                     FROM events
                     WHERE event_type IN (120, 124)
-                    AND created_at > NOW() - INTERVAL '24 hours'
+                    AND timestamp > NOW() - INTERVAL '24 hours'
                     AND (
                         (event_type = 120 AND (data->'SendingShardRequest'->'erasure_root')::text = ANY($1))
                         OR
@@ -1570,7 +1570,7 @@ impl EventStore {
                         SELECT event_type, timestamp, node_id, data
                         FROM events
                         WHERE event_type = 125
-                        AND created_at > NOW() - INTERVAL '24 hours'
+                        AND timestamp > NOW() - INTERVAL '24 hours'
                         AND data->'ShardsTransferred'->>'request_id' = ANY($1)
                         ORDER BY timestamp ASC
                         "#,
@@ -2216,11 +2216,11 @@ impl EventStore {
                 SELECT
                     CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) as core_index,
                     COUNT(*) as wp_count,
-                    COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '1 hour') as wp_last_hour,
+                    COUNT(*) FILTER (WHERE timestamp > NOW() - INTERVAL '1 hour') as wp_last_hour,
                     MAX(timestamp) as last_activity
                 FROM events
                 WHERE event_type = 94
-                AND created_at > NOW() - INTERVAL '24 hours'
+                AND timestamp > NOW() - INTERVAL '24 hours'
                 AND data->'WorkPackageReceived'->>'core' IS NOT NULL
                 GROUP BY CAST(data->'WorkPackageReceived'->>'core' AS INTEGER)
             ),
@@ -2230,10 +2230,10 @@ impl EventStore {
                     COUNT(*) as guarantees_last_hour
                 FROM events g
                 INNER JOIN events wr ON wr.event_type = 94
-                    AND wr.created_at > NOW() - INTERVAL '24 hours'
+                    AND wr.timestamp > NOW() - INTERVAL '24 hours'
                     AND wr.data->'WorkPackageReceived'->>'submission_or_share_id' = g.data->'GuaranteeBuilt'->>'submission_id'
                 WHERE g.event_type = 105
-                AND g.created_at > NOW() - INTERVAL '1 hour'
+                AND g.timestamp > NOW() - INTERVAL '1 hour'
                 AND wr.data->'WorkPackageReceived'->>'core' IS NOT NULL
                 GROUP BY CAST(wr.data->'WorkPackageReceived'->>'core' AS INTEGER)
             )
@@ -2297,7 +2297,7 @@ impl EventStore {
                     timestamp
                 FROM events
                 WHERE event_type = 10
-                ORDER BY node_id, created_at DESC
+                ORDER BY node_id, timestamp DESC
             )
             SELECT jsonb_build_object(
                 'node_id', node_id,
@@ -2323,7 +2323,7 @@ impl EventStore {
             FROM events
             WHERE event_type = 105
             AND CAST(data->'GuaranteeBuilt'->'outline'->>'core' AS INTEGER) = $1
-            AND created_at > NOW() - INTERVAL '24 hours'
+            AND timestamp > NOW() - INTERVAL '24 hours'
             GROUP BY date_trunc('hour', timestamp)
             ORDER BY date_trunc('hour', timestamp) DESC
             LIMIT 24
@@ -2344,7 +2344,7 @@ impl EventStore {
             FROM events
             WHERE event_type = 105
             AND CAST(data->'GuaranteeBuilt'->'outline'->>'core' AS INTEGER) = $1
-            ORDER BY created_at DESC
+            ORDER BY timestamp DESC
             LIMIT 50
             "#,
         )
@@ -2922,7 +2922,7 @@ impl EventStore {
             FROM events
             WHERE event_type = 105
             AND data->'GuaranteeBuilt'->'outline'->>'core' IS NOT NULL
-            AND created_at > NOW() - INTERVAL '24 hours'
+            AND timestamp > NOW() - INTERVAL '24 hours'
             GROUP BY node_id, CAST(data->'GuaranteeBuilt'->'outline'->>'core' AS INTEGER)
             ORDER BY COUNT(*) DESC
             "#,
@@ -2941,7 +2941,7 @@ impl EventStore {
             )
             FROM events
             WHERE event_type = 80
-            AND created_at > NOW() - INTERVAL '24 hours'
+            AND timestamp > NOW() - INTERVAL '24 hours'
             GROUP BY node_id, data->'GeneratingTickets'->>'epoch'
             ORDER BY MAX(timestamp) DESC
             "#,
@@ -2961,7 +2961,7 @@ impl EventStore {
             FROM events
             WHERE event_type = 105
             AND data->'GuaranteeBuilt'->'outline'->>'core' IS NOT NULL
-            AND created_at > NOW() - INTERVAL '1 hour'
+            AND timestamp > NOW() - INTERVAL '1 hour'
             GROUP BY CAST(data->'GuaranteeBuilt'->'outline'->>'core' AS INTEGER)
             ORDER BY CAST(data->'GuaranteeBuilt'->'outline'->>'core' AS INTEGER)
             "#,
@@ -2981,7 +2981,7 @@ impl EventStore {
                 FROM events
                 WHERE event_type = 105
                 AND data->'GuaranteeBuilt'->'outline'->>'core' IS NOT NULL
-                AND created_at > NOW() - INTERVAL '24 hours'
+                AND timestamp > NOW() - INTERVAL '24 hours'
                 GROUP BY node_id, CAST(data->'GuaranteeBuilt'->'outline'->>'core' AS INTEGER)
             )
             SELECT jsonb_build_object(
@@ -3022,7 +3022,7 @@ impl EventStore {
                 WHERE event_type = 62
                 AND data->'BlockAnnounced'->'peer' IS NOT NULL
                 AND jsonb_typeof(data->'BlockAnnounced'->'peer') = 'array'
-                AND created_at > NOW() - INTERVAL '1 hour'
+                AND timestamp > NOW() - INTERVAL '1 hour'
             )
             SELECT jsonb_build_object(
                 'from_node', node_id,
@@ -3053,7 +3053,7 @@ impl EventStore {
             )
             FROM events
             WHERE event_type = 68
-            AND created_at > NOW() - INTERVAL '1 hour'
+            AND timestamp > NOW() - INTERVAL '1 hour'
             GROUP BY node_id
             ORDER BY COUNT(*) DESC
             "#,
@@ -3075,7 +3075,7 @@ impl EventStore {
                 WHERE event_type = 84
                 AND data->'TicketTransferred'->'peer' IS NOT NULL
                 AND jsonb_typeof(data->'TicketTransferred'->'peer') = 'array'
-                AND created_at > NOW() - INTERVAL '1 hour'
+                AND timestamp > NOW() - INTERVAL '1 hour'
             )
             SELECT jsonb_build_object(
                 'from_node', node_id,
@@ -3102,7 +3102,7 @@ impl EventStore {
                 COUNT(*) FILTER (WHERE event_type = 68) as total_transfers,
                 COUNT(*) FILTER (WHERE event_type = 84) as total_ticket_transfers
             FROM events
-            WHERE created_at > NOW() - INTERVAL '1 hour'
+            WHERE timestamp > NOW() - INTERVAL '1 hour'
             AND event_type IN (62, 68, 84)
             "#,
         )
@@ -3147,7 +3147,7 @@ impl EventStore {
             WHERE node_id = $1
             AND event_type = 94
             AND data->'WorkPackageReceived'->>'core' IS NOT NULL
-            AND created_at > NOW() - INTERVAL '24 hours'
+            AND timestamp > NOW() - INTERVAL '24 hours'
             GROUP BY CAST(data->'WorkPackageReceived'->>'core' AS INTEGER)
             ORDER BY cnt DESC
             "#,
@@ -3169,7 +3169,7 @@ impl EventStore {
             FROM events
             WHERE node_id = $1
             AND event_type = 105
-            AND created_at > NOW() - INTERVAL '24 hours'
+            AND timestamp > NOW() - INTERVAL '24 hours'
             "#,
         )
         .bind(node_id)
@@ -3198,7 +3198,7 @@ impl EventStore {
             FROM events
             WHERE node_id = $1
             AND event_type IN (80, 82)
-            AND created_at > NOW() - INTERVAL '24 hours'
+            AND timestamp > NOW() - INTERVAL '24 hours'
             "#,
         )
         .bind(node_id)
@@ -3262,7 +3262,7 @@ impl EventStore {
                 FROM events
                 WHERE event_type = 105
                 AND CAST(data->'GuaranteeBuilt'->'outline'->>'core' AS INTEGER) = $1
-                AND created_at > NOW() - INTERVAL '24 hours'
+                AND timestamp > NOW() - INTERVAL '24 hours'
                 GROUP BY node_id
             ),
             shard_requests AS (
@@ -3272,7 +3272,7 @@ impl EventStore {
                     SUM(COALESCE(CAST(data->'ShardRequested'->>'size' AS BIGINT), 0)) as bytes_requested
                 FROM events
                 WHERE event_type = 121
-                AND created_at > NOW() - INTERVAL '24 hours'
+                AND timestamp > NOW() - INTERVAL '24 hours'
                 GROUP BY node_id
             ),
             shard_transfers AS (
@@ -3282,7 +3282,7 @@ impl EventStore {
                     SUM(COALESCE(CAST(data->'ShardTransferred'->>'size' AS BIGINT), 0)) as bytes_transferred
                 FROM events
                 WHERE event_type = 124
-                AND created_at > NOW() - INTERVAL '24 hours'
+                AND timestamp > NOW() - INTERVAL '24 hours'
                 GROUP BY node_id
             ),
             shard_stored AS (
@@ -3292,7 +3292,7 @@ impl EventStore {
                     SUM(COALESCE(CAST(data->'ShardStored'->>'size' AS BIGINT), 0)) as bytes_stored
                 FROM events
                 WHERE event_type = 123
-                AND created_at > NOW() - INTERVAL '24 hours'
+                AND timestamp > NOW() - INTERVAL '24 hours'
                 GROUP BY node_id
             )
             SELECT jsonb_build_object(
@@ -3333,12 +3333,12 @@ impl EventStore {
                 COUNT(DISTINCT node_id) as active_guarantors
             FROM events
             WHERE event_type = 123
-            AND created_at > NOW() - INTERVAL '24 hours'
+            AND timestamp > NOW() - INTERVAL '24 hours'
             AND node_id IN (
                 SELECT DISTINCT node_id FROM events
                 WHERE event_type = 105
                 AND CAST(data->'GuaranteeBuilt'->'outline'->>'core' AS INTEGER) = $1
-                AND created_at > NOW() - INTERVAL '24 hours'
+                AND timestamp > NOW() - INTERVAL '24 hours'
             )
             "#,
         )
@@ -3373,7 +3373,7 @@ impl EventStore {
             SELECT data->'WorkPackageReceived'->>'submission_or_share_id'
             FROM events, hex_to_jsonb h
             WHERE event_type = 94
-            AND created_at > NOW() - INTERVAL '24 hours'
+            AND timestamp > NOW() - INTERVAL '24 hours'
             AND data->'WorkPackageReceived'->'outline'->'work_package_hash' = h.hash_arr
             "#,
         )
@@ -3400,7 +3400,7 @@ impl EventStore {
                     data,
                     LAG(timestamp) OVER (ORDER BY timestamp) as prev_timestamp
                 FROM events
-                WHERE created_at > NOW() - INTERVAL '24 hours'
+                WHERE timestamp > NOW() - INTERVAL '24 hours'
                 AND (
                     (event_type IN (90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102) AND
                         COALESCE(
@@ -3496,7 +3496,7 @@ impl EventStore {
             SELECT DISTINCT (data->'WorkReportBuilt'->'outline'->'work_report_hash')::text
             FROM events
             WHERE event_type = 102
-            AND created_at > NOW() - INTERVAL '24 hours'
+            AND timestamp > NOW() - INTERVAL '24 hours'
             AND data->'WorkReportBuilt'->>'submission_or_share_id' = ANY($1)
             AND data->'WorkReportBuilt'->'outline'->'work_report_hash' IS NOT NULL
             "#,
@@ -3545,7 +3545,7 @@ impl EventStore {
                 )
                 FROM events
                 WHERE event_type IN (112, 113)
-                AND created_at > NOW() - INTERVAL '24 hours'
+                AND timestamp > NOW() - INTERVAL '24 hours'
                 AND (
                     (event_type = 112 AND (data->'GuaranteeReceived'->'outline'->'work_report_hash')::text = ANY($1))
                     OR
@@ -3573,7 +3573,7 @@ impl EventStore {
             SELECT DISTINCT (data->'WorkReportBuilt'->'outline'->'erasure_root')::text
             FROM events
             WHERE event_type = 102
-            AND created_at > NOW() - INTERVAL '24 hours'
+            AND timestamp > NOW() - INTERVAL '24 hours'
             AND data->'WorkReportBuilt'->>'submission_or_share_id' = ANY($1)
             AND data->'WorkReportBuilt'->'outline'->'erasure_root' IS NOT NULL
             "#,
@@ -3611,7 +3611,7 @@ impl EventStore {
                 )
                 FROM events
                 WHERE event_type IN (120, 124)
-                AND created_at > NOW() - INTERVAL '24 hours'
+                AND timestamp > NOW() - INTERVAL '24 hours'
                 AND (
                     (event_type = 120 AND (data->'SendingShardRequest'->'erasure_root')::text = ANY($1))
                     OR
@@ -3656,7 +3656,7 @@ impl EventStore {
                     )
                     FROM events
                     WHERE event_type = 125
-                    AND created_at > NOW() - INTERVAL '24 hours'
+                    AND timestamp > NOW() - INTERVAL '24 hours'
                     AND data->'ShardsTransferred'->>'request_id' = ANY($1)
                     ORDER BY timestamp
                     "#,
@@ -3704,7 +3704,7 @@ impl EventStore {
                     FROM events
                     WHERE event_type = 94
                     AND node_id = $1
-                    ORDER BY created_at DESC
+                    ORDER BY timestamp DESC
                     LIMIT 1
                     "#,
                 )
@@ -4496,7 +4496,7 @@ impl EventStore {
                 SELECT
                     node_id,
                     COUNT(*) as total_guarantees,
-                    COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '{}') as guarantees_last_hour,
+                    COUNT(*) FILTER (WHERE timestamp > NOW() - INTERVAL '{}') as guarantees_last_hour,
                     array_agg(DISTINCT core_index) as cores_active,
                     MODE() WITHIN GROUP (ORDER BY core_index) as primary_core,
                     MAX(timestamp) as last_guarantee
@@ -4823,12 +4823,12 @@ impl EventStore {
                     r#"
                     WITH bucketed AS (
                         SELECT
-                            date_trunc('minute', created_at) -
-                                (EXTRACT(MINUTE FROM created_at)::int % $3) * interval '1 minute' AS bucket,
+                            date_trunc('minute', timestamp) -
+                                (EXTRACT(MINUTE FROM timestamp)::int % $3) * interval '1 minute' AS bucket,
                             node_id,
                             event_type
                         FROM events
-                        WHERE created_at > NOW() - $1::interval
+                        WHERE timestamp > NOW() - $1::interval
                     )
                     SELECT jsonb_build_object(
                         'timestamp', bucket,
@@ -4861,12 +4861,12 @@ impl EventStore {
                     r#"
                     WITH bucketed AS (
                         SELECT
-                            date_trunc('minute', created_at) -
-                                (EXTRACT(MINUTE FROM created_at)::int % $3) * interval '1 minute' AS bucket,
+                            date_trunc('minute', timestamp) -
+                                (EXTRACT(MINUTE FROM timestamp)::int % $3) * interval '1 minute' AS bucket,
                             event_type,
                             node_id
                         FROM events
-                        WHERE created_at > NOW() - $1::interval
+                        WHERE timestamp > NOW() - $1::interval
                     )
                     SELECT jsonb_build_object(
                         'timestamp', bucket,
@@ -4899,13 +4899,13 @@ impl EventStore {
                     r#"
                     WITH bucketed AS (
                         SELECT
-                            date_trunc('minute', created_at) -
-                                (EXTRACT(MINUTE FROM created_at)::int % $3) * interval '1 minute' AS bucket,
+                            date_trunc('minute', timestamp) -
+                                (EXTRACT(MINUTE FROM timestamp)::int % $3) * interval '1 minute' AS bucket,
                             CAST(data->'GuaranteeBuilt'->'outline'->>'core' AS INTEGER) as core_index,
                             node_id
                         FROM events
                         WHERE event_type = 105
-                        AND created_at > NOW() - $1::interval
+                        AND timestamp > NOW() - $1::interval
                         AND data->'GuaranteeBuilt'->'outline'->>'core' IS NOT NULL
                     )
                     SELECT jsonb_build_object(
@@ -4939,8 +4939,8 @@ impl EventStore {
                     r#"
                     WITH bucketed AS (
                         SELECT
-                            date_trunc('minute', created_at) -
-                                (EXTRACT(MINUTE FROM created_at)::int % $3) * interval '1 minute' AS bucket,
+                            date_trunc('minute', timestamp) -
+                                (EXTRACT(MINUTE FROM timestamp)::int % $3) * interval '1 minute' AS bucket,
                             CASE
                                 WHEN event_type IN (41, 44, 46) THEN 'block_authoring'
                                 WHEN event_type IN (94, 97, 99, 102, 109, 110, 112, 113) THEN 'work_package'
@@ -4950,7 +4950,7 @@ impl EventStore {
                             node_id
                         FROM events
                         WHERE event_type IN (41, 44, 46, 81, 94, 97, 99, 102, 109, 110, 112, 113)
-                        AND created_at > NOW() - $1::interval
+                        AND timestamp > NOW() - $1::interval
                     )
                     SELECT jsonb_build_object(
                         'timestamp', bucket,
@@ -5007,13 +5007,13 @@ impl EventStore {
             ),
             node_slots AS (
                 SELECT
-                    date_trunc('minute', created_at) -
-                        (EXTRACT(MINUTE FROM created_at)::int % 5) * interval '1 minute' AS bucket,
+                    date_trunc('minute', timestamp) -
+                        (EXTRACT(MINUTE FROM timestamp)::int % 5) * interval '1 minute' AS bucket,
                     node_id,
                     MAX(CAST(data->'BestBlockChanged'->>'slot' AS INTEGER)) as node_slot
                 FROM events
                 WHERE event_type = 11
-                AND created_at > NOW() - $1::interval
+                AND timestamp > NOW() - $1::interval
                 GROUP BY 1, node_id
             ),
             network_max AS (
@@ -5066,7 +5066,7 @@ impl EventStore {
                     MAX(timestamp) as last_update
                 FROM events
                 WHERE event_type = 11
-                AND created_at > NOW() - INTERVAL '5 minutes'
+                AND timestamp > NOW() - INTERVAL '5 minutes'
                 GROUP BY node_id
             ),
             network_max AS (
@@ -5113,13 +5113,13 @@ impl EventStore {
             ),
             connection_events AS (
                 SELECT
-                    date_trunc('minute', created_at) -
-                        (EXTRACT(MINUTE FROM created_at)::int % 5) * interval '1 minute' AS bucket,
+                    date_trunc('minute', timestamp) -
+                        (EXTRACT(MINUTE FROM timestamp)::int % 5) * interval '1 minute' AS bucket,
                     COUNT(DISTINCT node_id) FILTER (WHERE event_type = 1) as connections,
                     COUNT(DISTINCT node_id) FILTER (WHERE event_type = 2) as disconnections,
                     COUNT(DISTINCT node_id) as active_nodes
                 FROM events
-                WHERE created_at > NOW() - $1::interval
+                WHERE timestamp > NOW() - $1::interval
                 AND event_type IN (1, 2, 10, 11)
                 GROUP BY 1
             )
@@ -5151,7 +5151,7 @@ impl EventStore {
                     COUNT(DISTINCT DATE(timestamp)) as days_active,
                     COUNT(*) as total_events
                 FROM events
-                WHERE created_at > NOW() - $1::interval
+                WHERE timestamp > NOW() - $1::interval
                 GROUP BY node_id
             )
             SELECT jsonb_build_object(
@@ -5176,10 +5176,10 @@ impl EventStore {
             r#"
             SELECT
                 COUNT(DISTINCT node_id) as total_nodes_seen,
-                COUNT(DISTINCT node_id) FILTER (WHERE created_at > NOW() - INTERVAL '5 minutes') as currently_active,
-                COUNT(DISTINCT node_id) FILTER (WHERE created_at > NOW() - INTERVAL '1 hour') as active_last_hour
+                COUNT(DISTINCT node_id) FILTER (WHERE timestamp > NOW() - INTERVAL '5 minutes') as currently_active,
+                COUNT(DISTINCT node_id) FILTER (WHERE timestamp > NOW() - INTERVAL '1 hour') as active_last_hour
             FROM events
-            WHERE created_at > NOW() - $1::interval
+            WHERE timestamp > NOW() - $1::interval
             "#,
         )
         .bind(format!("{} hours", duration_hours))
@@ -5206,24 +5206,24 @@ impl EventStore {
             r#"
             SELECT
                 -- Last second
-                COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '1 second') as events_1s,
-                COUNT(*) FILTER (WHERE event_type = 11 AND created_at > NOW() - INTERVAL '1 second') as blocks_1s,
+                COUNT(*) FILTER (WHERE timestamp > NOW() - INTERVAL '1 second') as events_1s,
+                COUNT(*) FILTER (WHERE event_type = 11 AND timestamp > NOW() - INTERVAL '1 second') as blocks_1s,
                 -- Last 10 seconds
-                COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '10 seconds') as events_10s,
-                COUNT(*) FILTER (WHERE event_type = 11 AND created_at > NOW() - INTERVAL '10 seconds') as blocks_10s,
-                COUNT(*) FILTER (WHERE event_type = 12 AND created_at > NOW() - INTERVAL '10 seconds') as finalized_10s,
-                COUNT(DISTINCT node_id) FILTER (WHERE created_at > NOW() - INTERVAL '10 seconds') as nodes_10s,
+                COUNT(*) FILTER (WHERE timestamp > NOW() - INTERVAL '10 seconds') as events_10s,
+                COUNT(*) FILTER (WHERE event_type = 11 AND timestamp > NOW() - INTERVAL '10 seconds') as blocks_10s,
+                COUNT(*) FILTER (WHERE event_type = 12 AND timestamp > NOW() - INTERVAL '10 seconds') as finalized_10s,
+                COUNT(DISTINCT node_id) FILTER (WHERE timestamp > NOW() - INTERVAL '10 seconds') as nodes_10s,
                 -- Failures last minute
                 COUNT(*) FILTER (WHERE event_type IN (41, 44, 46, 81, 83, 92, 99, 107, 111, 113, 122, 127)
-                    AND created_at > NOW() - INTERVAL '1 minute') as failures_1m,
+                    AND timestamp > NOW() - INTERVAL '1 minute') as failures_1m,
                 -- Work packages last minute
                 COUNT(*) FILTER (WHERE event_type BETWEEN 90 AND 113
-                    AND created_at > NOW() - INTERVAL '1 minute') as wp_events_1m,
+                    AND timestamp > NOW() - INTERVAL '1 minute') as wp_events_1m,
                 -- Latest slots
                 MAX(CAST(data->'BestBlockChanged'->>'slot' AS INTEGER)) FILTER (WHERE event_type = 11) as latest_slot,
                 MAX(CAST(data->'FinalizedBlockChanged'->>'slot' AS INTEGER)) FILTER (WHERE event_type = 12) as finalized_slot
             FROM events
-            WHERE created_at > NOW() - INTERVAL '1 minute'
+            WHERE timestamp > NOW() - INTERVAL '1 minute'
             "#,
         )
         .fetch_one(&self.pool)
@@ -5339,7 +5339,7 @@ impl EventStore {
                     MAX(CAST(data->'BestBlockChanged'->>'slot' AS INTEGER)) as slot
                 FROM events
                 WHERE event_type = 11
-                AND created_at > NOW() - INTERVAL '30 seconds'
+                AND timestamp > NOW() - INTERVAL '30 seconds'
                 GROUP BY node_id
             ),
             network_max AS (
@@ -5388,7 +5388,7 @@ impl EventStore {
                 node_id,
                 MAX(timestamp) as last_seen
             FROM events
-            WHERE created_at > NOW() - INTERVAL '10 minutes'
+            WHERE timestamp > NOW() - INTERVAL '10 minutes'
             GROUP BY node_id
             HAVING MAX(timestamp) < NOW() - INTERVAL '5 minutes'
             LIMIT 5
@@ -5495,7 +5495,7 @@ impl EventStore {
                         n.last_seen_at as last_active,
                         (SELECT MAX(CAST(data->'BestBlockChanged'->>'slot' AS INTEGER))
                          FROM events WHERE node_id = n.node_id AND event_type = 11
-                         AND created_at > NOW() - INTERVAL '5 minutes') as latest_slot
+                         AND timestamp > NOW() - INTERVAL '5 minutes') as latest_slot
                     FROM nodes n
                     WHERE n.is_connected = true
                 )
@@ -5778,7 +5778,7 @@ impl EventStore {
                 OR data->'Accumulated'->>'hash' = $1
                 OR data->>'hash' = $1
             )
-            AND created_at > NOW() - INTERVAL '24 hours'
+            AND timestamp > NOW() - INTERVAL '24 hours'
             ORDER BY timestamp
             "#,
         )
@@ -6039,7 +6039,7 @@ impl EventStore {
                 FROM events
                 WHERE event_type = 94
                 AND CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) = $1
-                AND created_at > NOW() - INTERVAL '24 hours'
+                AND timestamp > NOW() - INTERVAL '24 hours'
             ),
             guarantee_activity AS (
                 SELECT
@@ -6049,7 +6049,7 @@ impl EventStore {
                 FROM events e
                 INNER JOIN core_wp_ids c ON e.data->'GuaranteeBuilt'->>'submission_id' = c.wp_id
                 WHERE e.event_type = 105
-                AND e.created_at > NOW() - INTERVAL '24 hours'
+                AND e.timestamp > NOW() - INTERVAL '24 hours'
                 GROUP BY e.node_id
             ),
             shard_activity AS (
@@ -6062,7 +6062,7 @@ impl EventStore {
                     COALESCE(SUM(CAST(data->'ShardTransferred'->>'size' AS BIGINT)) FILTER (WHERE event_type = 124), 0) as bytes_transferred
                 FROM events
                 WHERE event_type IN (121, 123, 124)
-                AND created_at > NOW() - INTERVAL '24 hours'
+                AND timestamp > NOW() - INTERVAL '24 hours'
                 GROUP BY node_id
             ),
             import_exports AS (
@@ -6077,7 +6077,7 @@ impl EventStore {
                     AND e1.event_type = 124
                     AND e2.timestamp < e1.timestamp
                     AND e1.timestamp < e2.timestamp + INTERVAL '10 seconds'
-                WHERE e1.created_at > NOW() - INTERVAL '1 hour'
+                WHERE e1.timestamp > NOW() - INTERVAL '1 hour'
                 GROUP BY e1.node_id, e2.node_id
             )
             SELECT jsonb_build_object(
@@ -6119,7 +6119,7 @@ impl EventStore {
                     COALESCE(SUM(CAST(data->'ShardTransferred'->>'size' AS BIGINT)), 0) as bytes
                 FROM events
                 WHERE event_type = 124
-                AND created_at > NOW() - INTERVAL '1 hour'
+                AND timestamp > NOW() - INTERVAL '1 hour'
                 AND data->'ShardTransferred'->>'to_peer' IS NOT NULL
                 GROUP BY node_id, data->'ShardTransferred'->>'to_peer'
             )
@@ -6261,7 +6261,7 @@ impl EventStore {
                     CAST(data->'BlockTransferred'->>'slot' AS BIGINT)
                 ) = $1
                 AND event_type IN (11, 12, 40, 43, 62, 68)
-                AND created_at > NOW() - INTERVAL '7 days'
+                AND timestamp > NOW() - INTERVAL '7 days'
             ),
             slot_authoring AS (
                 SELECT event_id, node_id, created_at
@@ -6328,7 +6328,7 @@ impl EventStore {
                         CAST(data->'BlockTransferred'->>'slot' AS BIGINT)
                     ) = $1
                     AND event_type IN (11, 12, 40, 43, 62, 68)
-                    AND created_at > NOW() - INTERVAL '7 days'
+                    AND timestamp > NOW() - INTERVAL '7 days'
                 ),
                 slot_authoring AS (
                     SELECT event_id, node_id, timestamp
@@ -6416,8 +6416,8 @@ impl EventStore {
             )
             FROM events
             WHERE node_id = $1
-            AND ($2::timestamptz IS NULL OR created_at >= $2)
-            AND ($3::timestamptz IS NULL OR created_at <= $3)
+            AND ($2::timestamptz IS NULL OR timestamp >= $2)
+            AND ($3::timestamptz IS NULL OR timestamp <= $3)
             AND ($4::text[] IS NULL OR CASE
                 WHEN event_type BETWEEN 10 AND 13 THEN 'status'
                 WHEN event_type BETWEEN 20 AND 28 THEN 'connection'
@@ -6433,7 +6433,7 @@ impl EventStore {
                 WHEN event_type BETWEEN 190 AND 199 THEN 'preimage'
                 ELSE 'other'
             END = ANY($4))
-            ORDER BY created_at DESC
+            ORDER BY timestamp DESC
             LIMIT $5
             "#,
         )
@@ -6468,8 +6468,8 @@ impl EventStore {
             )
             FROM events
             WHERE node_id = $1
-            AND ($2::timestamptz IS NULL OR created_at >= $2)
-            AND ($3::timestamptz IS NULL OR created_at <= $3)
+            AND ($2::timestamptz IS NULL OR timestamp >= $2)
+            AND ($3::timestamptz IS NULL OR timestamp <= $3)
             GROUP BY CASE
                 WHEN event_type BETWEEN 10 AND 13 THEN 'status'
                 WHEN event_type BETWEEN 20 AND 28 THEN 'connection'
@@ -6568,7 +6568,7 @@ impl EventStore {
                     OR data->'GuaranteeShared'->>'hash' = ANY($1)
                     OR data->'Accumulated'->>'hash' = ANY($1)
                 )
-                AND created_at > NOW() - INTERVAL '24 hours'
+                AND timestamp > NOW() - INTERVAL '24 hours'
             )
             SELECT jsonb_build_object(
                 'hash', wp_hash,

@@ -772,7 +772,7 @@ async fn get_cores_status(
                     COUNT(*) as cnt
                 FROM events
                 WHERE event_type IN (93, 94)
-                AND created_at > NOW() - INTERVAL '{}'
+                AND timestamp > NOW() - INTERVAL '{}'
                 GROUP BY core_idx
                 ORDER BY core_idx
                 "#,
@@ -1857,8 +1857,8 @@ impl EventSource {
                 use tokio_stream::StreamExt;
                 match map.next().await {
                     Some((_key, Ok(event))) => Ok(event),
-                    Some((_key, Err(_))) => {
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(0))
+                    Some((_key, Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)))) => {
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n))
                     }
                     None => Err(tokio::sync::broadcast::error::RecvError::Closed),
                 }
@@ -1880,8 +1880,8 @@ impl EventSource {
                 let mut cx = std::task::Context::from_waker(&waker);
                 match std::pin::Pin::new(map).poll_next(&mut cx) {
                     std::task::Poll::Ready(Some((_key, Ok(event)))) => Ok(event),
-                    std::task::Poll::Ready(Some((_key, Err(_)))) => {
-                        Err(tokio::sync::broadcast::error::TryRecvError::Lagged(0))
+                    std::task::Poll::Ready(Some((_key, Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)))) ) => {
+                        Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n))
                     }
                     _ => Err(tokio::sync::broadcast::error::TryRecvError::Empty),
                 }
