@@ -158,13 +158,16 @@ For production with 1024 nodes, configure PostgreSQL:
 
 ```bash
 # In postgresql.conf or docker-compose.yml
-shared_buffers = 2GB
-max_connections = 300
-effective_cache_size = 8GB
-work_mem = 16MB
+shared_buffers = 8GB
+max_connections = 250
+effective_cache_size = 24GB
+work_mem = 128MB
 maintenance_work_mem = 512MB
 wal_buffers = 16MB
-max_wal_size = 4GB
+max_wal_size = 16GB
+max_parallel_workers_per_gather = 4
+max_parallel_workers = 16
+jit = off
 ```
 
 ### Linux System Tuning
