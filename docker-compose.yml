@@ -3,7 +3,7 @@ services:
   postgres:
     image: timescale/timescaledb:latest-pg17
     container_name: tart-timescaledb
-    shm_size: 512mb
+    shm_size: 10gb
     environment:
       # WARNING: Default credentials for LOCAL DEVELOPMENT only
       # For production, override these with strong passwords via environment variables or secrets
@@ -18,11 +18,11 @@ services:
     command:
       - postgres
       - -c
-      - shared_buffers=256MB
+      - shared_buffers=8GB
       - -c
       - max_connections=250
       - -c
-      - effective_cache_size=1GB
+      - effective_cache_size=24GB
       - -c
       - maintenance_work_mem=128MB
       - -c
@@ -36,11 +36,11 @@ services:
       - -c
       - effective_io_concurrency=200
       - -c
-      - work_mem=16MB
+      - work_mem=128MB
       - -c
       - min_wal_size=2GB
       - -c
-      - max_wal_size=8GB
+      - max_wal_size=16GB
       - -c
       - synchronous_commit=local
       - -c
@@ -52,7 +52,11 @@ services:
       - -c
       - autovacuum_vacuum_cost_limit=1000
       - -c
-      - jit=on
+      - jit=off
+      - -c
+      - max_parallel_workers_per_gather=4
+      - -c
+      - max_parallel_workers=16
       - -c
       - log_min_duration_statement=1000
     restart: unless-stopped
