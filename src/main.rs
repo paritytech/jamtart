@@ -289,6 +289,8 @@ async fn main() -> anyhow::Result<()> {
         {
             let cache_clone = Arc::clone(&cache);
             let store_clone = Arc::clone(store);
+            let tracker_clone = Arc::clone(&metrics_tracker);
+            let ts_clone_for_cache = Arc::clone(&telemetry_server);
             tokio::spawn(async move {
                 let mut warm_interval = tokio::time::interval(std::time::Duration::from_secs(2));
                 let mut evict_counter: u64 = 0;
@@ -335,18 +337,33 @@ async fn main() -> anyhow::Result<()> {
                             "guarantees_by_guarantor",
                             get_guarantees_by_guarantor("1 hour", "24 hours")
                         ),
-                        spawn_warm!("live_counters", get_live_counters()),
                         spawn_warm!(
                             "da_stats_enhanced",
                             get_da_stats_enhanced("1 hour", "24 hours")
                         ),
                         spawn_warm!("execution_metrics", get_execution_metrics("1 hour")),
-                        spawn_warm!("realtime_60", get_realtime_metrics(60)),
                         spawn_warm!(
                             "timeseries_throughput_5_1",
                             get_timeseries_metrics("throughput", 5, 1)
                         ),
                     ];
+
+                    // Warm live_counters and realtime_60 from in-memory LiveCounters (instant, no SQL)
+                    {
+                        let lc = tracker_clone.live_counters();
+                        let active_nodes = ts_clone_for_cache.connection_count();
+                        let last_10s = lc.sum_last_n_seconds(10);
+                        let last_1m = lc.sum_last_n_seconds(60);
+                        cache_clone.insert(
+                            "live_counters".to_string(),
+                            lc.build_live_snapshot(&last_10s, &last_1m, active_nodes),
+                        );
+                        let per_second = lc.per_second_history(60);
+                        cache_clone.insert(
+                            "realtime_60".to_string(),
+                            lc.build_realtime_snapshot(60, &per_second, active_nodes),
+                        );
+                    }
 
                     let anomaly_handle = {
                         let cache = Arc::clone(&cache_clone);

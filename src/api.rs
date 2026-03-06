@@ -1002,9 +1002,18 @@ async fn get_realtime_metrics(
     Query(params): Query<RealtimeMetricsQuery>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let seconds = params.seconds.unwrap_or(60);
-    let key = format!("realtime_{}", seconds);
+    let seconds = params.seconds.unwrap_or(60).clamp(10, 300);
 
+    if let Some(ref tracker) = state.metrics_tracker {
+        let lc = tracker.live_counters();
+        let per_second = lc.per_second_history(seconds as u64);
+        let active_nodes = state.telemetry_server.connection_count();
+        let snapshot = lc.build_realtime_snapshot(seconds, &per_second, active_nodes);
+        return Ok((no_cache_headers(), Json(Arc::new(snapshot))));
+    }
+
+    // Fallback to SQL
+    let key = format!("realtime_{}", seconds);
     let result = cache_or_compute(&state.cache, &key, || async {
         state
             .store
@@ -1021,8 +1030,17 @@ async fn get_realtime_metrics(
 
 /// Get live counters - ultra-lightweight for high-frequency polling.
 /// Returns current slot, active nodes, and rate calculations.
-/// Reads from cache (warmed every 2s by background task).
+/// Served from in-memory LiveCounters (no SQL).
 async fn get_live_counters(State(state): State<ApiState>) -> Result<impl IntoResponse, StatusCode> {
+    if let Some(ref tracker) = state.metrics_tracker {
+        let lc = tracker.live_counters();
+        let last_10s = lc.sum_last_n_seconds(10);
+        let last_1m = lc.sum_last_n_seconds(60);
+        let active_nodes = state.telemetry_server.connection_count();
+        let snapshot = lc.build_live_snapshot(&last_10s, &last_1m, active_nodes);
+        return Ok((no_cache_headers(), Json(Arc::new(snapshot))));
+    }
+    // Fallback to SQL
     let result = cache_or_compute(&state.cache, "live_counters", || async {
         state.store.get_live_counters().await.map_err(|e| {
             error!("Failed to get live counters: {}", e);

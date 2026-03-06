@@ -284,25 +284,14 @@ impl EventBroadcaster {
             recent.push_back(broadcast_event.clone());
         }
 
-        // Forward relevant events to MetricsTracker task (non-blocking)
+        // Forward all events to MetricsTracker task (non-blocking)
         if let Some(ref tx) = self.metrics_tx {
-            match broadcast_event.event.as_ref() {
-                Event::BlockAnnounced { .. }
-                | Event::BlockTransferred { .. }
-                | Event::WorkPackageReceived { .. }
-                | Event::Authorized { .. }
-                | Event::Refined { .. }
-                | Event::WorkReportBuilt { .. }
-                | Event::GuaranteeBuilt { .. }
-                | Event::GuaranteesDistributed { .. } => {
-                    let _ = tx.try_send(MetricsEvent {
-                        node_id: broadcast_event.node_id.clone(),
-                        event: broadcast_event.event.clone(),
-                        wall_clock: Instant::now(),
-                    });
-                }
-                _ => {}
-            }
+            let _ = tx.try_send(MetricsEvent {
+                node_id: broadcast_event.node_id.clone(),
+                event: broadcast_event.event.clone(),
+                event_type: broadcast_event.event_type,
+                wall_clock: Instant::now(),
+            });
         }
     }
 
