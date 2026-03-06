@@ -13,11 +13,13 @@ use tokio::sync::mpsc;
 use tracing::debug;
 
 use crate::events::Event;
+use crate::live_counters::LiveCounters;
 
 /// Message sent from the broadcaster aggregator to the tracker task.
 pub struct MetricsEvent {
     pub node_id: Arc<str>,
     pub event: Arc<Event>,
+    pub event_type: u8,
     pub wall_clock: Instant,
 }
 
@@ -26,6 +28,7 @@ pub struct MetricsTracker {
     block_propagation_snapshot: RwLock<Arc<serde_json::Value>>,
     cores_status_snapshot: RwLock<Arc<serde_json::Value>>,
     core_processing: RwLock<HashMap<u16, Arc<serde_json::Value>>>,
+    live_counters: Arc<LiveCounters>,
 }
 
 impl Default for MetricsTracker {
@@ -40,6 +43,7 @@ impl MetricsTracker {
             block_propagation_snapshot: RwLock::new(Arc::new(serde_json::json!(null))),
             cores_status_snapshot: RwLock::new(Arc::new(serde_json::json!(null))),
             core_processing: RwLock::new(HashMap::new()),
+            live_counters: Arc::new(LiveCounters::new()),
         }
     }
 
@@ -53,6 +57,10 @@ impl MetricsTracker {
 
     pub fn get_core_processing_snapshot(&self, core: u16) -> Option<Arc<serde_json::Value>> {
         self.core_processing.read().get(&core).cloned()
+    }
+
+    pub fn live_counters(&self) -> &Arc<LiveCounters> {
+        &self.live_counters
     }
 }
 
@@ -501,17 +509,44 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
     sorted[idx.min(sorted.len() - 1)]
 }
 
+/// Extract slot from event for LiveCounters slot tracking.
+fn extract_slot(event: &Event) -> Option<u32> {
+    match event {
+        Event::BestBlockChanged { slot, .. } | Event::FinalizedBlockChanged { slot, .. } => {
+            Some(*slot)
+        }
+        _ => None,
+    }
+}
+
 /// Run the metrics tracker task. Spawned via `tokio::spawn` in main.rs.
 pub async fn run(shared: Arc<MetricsTracker>, mut rx: mpsc::Receiver<MetricsEvent>) {
-    let mut state = TrackerState::new(shared);
+    let mut state = TrackerState::new(shared.clone());
+    let live_counters = shared.live_counters.clone();
     debug!("MetricsTracker task started");
+
+    let now_secs = || -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    };
 
     loop {
         match rx.recv().await {
             Some(event) => {
+                // Update LiveCounters for every event (cheap atomics)
+                live_counters.record(now_secs(), event.event_type, extract_slot(&event.event));
+                // Process filtered events for block propagation / WP pipeline
                 state.process_event(event);
+
                 // Drain remaining buffered events
                 while let Ok(event) = rx.try_recv() {
+                    live_counters.record(
+                        now_secs(),
+                        event.event_type,
+                        extract_slot(&event.event),
+                    );
                     state.process_event(event);
                 }
                 state.maybe_rebuild_snapshots();
@@ -636,17 +671,21 @@ mod tests {
     }
 
     fn metrics_event(node_id: &str, event: Arc<Event>) -> MetricsEvent {
+        let event_type = event.event_type() as u8;
         MetricsEvent {
             node_id: Arc::from(node_id),
             event,
+            event_type,
             wall_clock: Instant::now(),
         }
     }
 
     fn metrics_event_at(node_id: &str, event: Arc<Event>, wall_clock: Instant) -> MetricsEvent {
+        let event_type = event.event_type() as u8;
         MetricsEvent {
             node_id: Arc::from(node_id),
             event,
+            event_type,
             wall_clock,
         }
     }
