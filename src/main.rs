@@ -331,7 +331,7 @@ async fn main() -> anyhow::Result<()> {
                         spawn_warm!("guarantee_stats", get_guarantee_stats("1 hour", "24 hours")),
                         spawn_warm!("da_stats", get_da_stats()),
                         spawn_warm!("failure_rates", get_failure_rates("1 hour")),
-                        spawn_warm!("block_propagation", get_block_propagation("1 hour")),
+                        // block_propagation served from in-memory MetricsTracker (Fix 5)
                         spawn_warm!("network_health", get_network_health("1 hour", "24 hours")),
                         spawn_warm!(
                             "guarantees_by_guarantor",
