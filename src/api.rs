@@ -183,6 +183,8 @@ pub struct ApiState {
     pub jam_rpc: Option<Arc<JamRpcClient>>,
     /// In-memory TTL cache for expensive analytics queries
     pub cache: Arc<TtlCache>,
+    /// In-memory metrics tracker (replaces self-JOIN SQL queries)
+    pub metrics_tracker: Option<Arc<crate::metrics_tracker::MetricsTracker>>,
 }
 
 pub fn create_api_router(state: ApiState) -> Router {
@@ -1110,6 +1112,23 @@ async fn get_core_work_packages(
             })
     })
     .await?;
+
+    // Overwrite self-JOIN fields with in-memory stats if available
+    if let Some(ref tracker) = state.metrics_tracker {
+        if let Some(processing) = tracker.get_core_processing_snapshot(core_index as u16) {
+            let mut val = result.as_ref().clone();
+            if let Some(obj) = val.as_object_mut() {
+                if let Some(avg) = processing.get("avg_processing_time_ms") {
+                    obj.insert("avg_processing_time_ms".into(), avg.clone());
+                }
+                if let Some(count) = processing.get("completed_last_hour") {
+                    obj.insert("completed_last_hour".into(), count.clone());
+                }
+            }
+            return Ok((cache_headers(2), Json(Arc::new(val))));
+        }
+    }
+
     Ok((cache_headers(2), Json(result)))
 }
 
@@ -1178,6 +1197,15 @@ async fn get_block_propagation(
     Query(dq): Query<DurationQuery>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
+    // Try in-memory tracker first (instant, replaces 28s+ SQL self-JOIN)
+    if let Some(ref tracker) = state.metrics_tracker {
+        let snapshot = tracker.get_block_propagation_snapshot();
+        if !snapshot.is_null() {
+            return Ok((cache_headers(2), Json(snapshot)));
+        }
+    }
+
+    // Fallback to SQL
     let duration = dq.duration.unwrap_or(DurationPreset::OneHour);
     let cache_key = format!("block_propagation_{}", duration.cache_suffix());
     let result = cache_or_compute(&state.cache, &cache_key, || async {
@@ -1368,6 +1396,27 @@ async fn get_core_metrics(
             })
     })
     .await?;
+
+    // Overwrite self-JOIN latency fields with in-memory stats if available
+    if let Some(ref tracker) = state.metrics_tracker {
+        if let Some(processing) = tracker.get_core_processing_snapshot(core_index as u16) {
+            let mut val = result.as_ref().clone();
+            if let Some(obj) = val.as_object_mut() {
+                if let Some(avg) = processing.get("avg_completion_ms") {
+                    obj.insert("network_latency_ms".into(), avg.clone());
+                    obj.insert("average_completion_time_ms".into(), avg.clone());
+                }
+                if let Some(p95) = processing.get("p95_completion_ms") {
+                    obj.insert("p95_latency_ms".into(), p95.clone());
+                }
+                if let Some(count) = processing.get("sample_count") {
+                    obj.insert("sample_count".into(), count.clone());
+                }
+            }
+            return Ok((cache_headers(2), Json(Arc::new(val))));
+        }
+    }
+
     Ok((cache_headers(2), Json(result)))
 }
 

@@ -1,9 +1,11 @@
 use crate::events::Event;
+use crate::metrics_tracker::MetricsEvent;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::debug;
 
@@ -194,6 +196,9 @@ pub struct EventBroadcaster {
     total_broadcast: Arc<AtomicU64>,
     dropped_events: Arc<AtomicU64>,
     undelivered_events: Arc<AtomicU64>,
+
+    /// Optional sender for metrics tracker task (filtered events only)
+    metrics_tx: Option<mpsc::Sender<MetricsEvent>>,
 }
 
 impl Default for EventBroadcaster {
@@ -204,6 +209,10 @@ impl Default for EventBroadcaster {
 
 impl EventBroadcaster {
     pub fn new() -> Self {
+        Self::with_metrics_tx(None)
+    }
+
+    pub fn with_metrics_tx(metrics_tx: Option<mpsc::Sender<MetricsEvent>>) -> Self {
         let (sender, _) = broadcast::channel(BROADCAST_CHANNEL_SIZE);
         let (event_sender, event_receiver) = mpsc::channel(AGGREGATION_CHANNEL_SIZE);
         let (command_sender, command_receiver) = mpsc::channel(COMMAND_CHANNEL_SIZE);
@@ -220,6 +229,7 @@ impl EventBroadcaster {
             total_broadcast: Arc::new(AtomicU64::new(0)),
             dropped_events: Arc::new(AtomicU64::new(0)),
             undelivered_events: Arc::new(AtomicU64::new(0)),
+            metrics_tx,
         }
     }
 
@@ -271,7 +281,28 @@ impl EventBroadcaster {
             if recent.len() >= MAX_RETAINED_EVENTS {
                 recent.pop_front();
             }
-            recent.push_back(broadcast_event);
+            recent.push_back(broadcast_event.clone());
+        }
+
+        // Forward relevant events to MetricsTracker task (non-blocking)
+        if let Some(ref tx) = self.metrics_tx {
+            match broadcast_event.event.as_ref() {
+                Event::BlockAnnounced { .. }
+                | Event::BlockTransferred { .. }
+                | Event::WorkPackageReceived { .. }
+                | Event::Authorized { .. }
+                | Event::Refined { .. }
+                | Event::WorkReportBuilt { .. }
+                | Event::GuaranteeBuilt { .. }
+                | Event::GuaranteesDistributed { .. } => {
+                    let _ = tx.try_send(MetricsEvent {
+                        node_id: broadcast_event.node_id.clone(),
+                        event: broadcast_event.event.clone(),
+                        wall_clock: Instant::now(),
+                    });
+                }
+                _ => {}
+            }
         }
     }
 

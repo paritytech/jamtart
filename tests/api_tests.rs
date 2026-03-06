@@ -55,6 +55,7 @@ async fn setup_test_api() -> (TestServer, Arc<TelemetryServer>, u16) {
         cache: Arc::new(tart_backend::cache::TtlCache::new(
             std::time::Duration::ZERO,
         )),
+        metrics_tracker: None,
     };
 
     let app = create_api_router(api_state);
