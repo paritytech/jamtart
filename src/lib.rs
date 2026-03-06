@@ -8,6 +8,7 @@ pub mod event_broadcaster;
 pub mod events;
 pub mod health;
 pub mod jam_rpc;
+pub mod metrics_tracker;
 pub mod node_id;
 pub mod rate_limiter;
 pub mod retry;

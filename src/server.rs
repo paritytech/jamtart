@@ -154,6 +154,17 @@ impl TelemetryServer {
         no_rate_limit: bool,
         ingestion_threads: usize,
     ) -> Result<Self, std::io::Error> {
+        Self::with_options_and_metrics(bind_address, store, no_rate_limit, ingestion_threads, None)
+            .await
+    }
+
+    pub async fn with_options_and_metrics(
+        bind_address: &str,
+        store: Option<Arc<EventStore>>,
+        no_rate_limit: bool,
+        ingestion_threads: usize,
+        metrics_tx: Option<tokio::sync::mpsc::Sender<crate::metrics_tracker::MetricsEvent>>,
+    ) -> Result<Self, std::io::Error> {
         let bind_addr: SocketAddr = bind_address.parse().map_err(|e| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -203,7 +214,7 @@ impl TelemetryServer {
 
         let (connection_watch, connection_watch_rx) = tokio::sync::watch::channel(0usize);
 
-        let broadcaster = Arc::new(EventBroadcaster::new());
+        let broadcaster = Arc::new(EventBroadcaster::with_metrics_tx(metrics_tx));
         broadcaster.start_aggregator();
 
         Ok(Self {

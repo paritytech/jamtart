@@ -187,15 +187,27 @@ async fn main() -> anyhow::Result<()> {
     // Create shutdown signal for TCP server
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
+    // Create metrics tracker channel and shared handle
+    let metrics_tracker = Arc::new(tart_backend::metrics_tracker::MetricsTracker::new());
+    let (metrics_tx, metrics_rx) =
+        tokio::sync::mpsc::channel::<tart_backend::metrics_tracker::MetricsEvent>(50_000);
+
+    // Spawn the metrics tracker task (separate from aggregator for isolation)
+    {
+        let tracker = Arc::clone(&metrics_tracker);
+        tokio::spawn(tart_backend::metrics_tracker::run(tracker, metrics_rx));
+    }
+
     // Start telemetry server
     let ingestion_threads = args.ingestion_threads;
     info!("Starting telemetry server on {}", args.telemetry_bind);
     let telemetry_server = Arc::new(
-        TelemetryServer::with_options(
+        TelemetryServer::with_options_and_metrics(
             &args.telemetry_bind,
             store.clone(),
             args.no_rate_limit,
             ingestion_threads,
+            Some(metrics_tx),
         )
         .await?,
     );
@@ -383,6 +395,7 @@ async fn main() -> anyhow::Result<()> {
             health_monitor,
             jam_rpc,
             cache,
+            metrics_tracker: Some(Arc::clone(&metrics_tracker)),
         };
 
         create_api_router(api_state)
