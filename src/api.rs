@@ -306,6 +306,9 @@ pub fn create_api_router(state: ApiState) -> Router {
         .layer(TimeoutLayer::new(std::time::Duration::from_secs(30))) // Innermost: timeout on handler
         .layer(DefaultBodyLimit::max(256 * 1024)) // Body limit before handler
         .layer(CompressionLayer::new())
+        .layer(tower_http::trace::TraceLayer::new_for_http()
+            .make_span_with(tower_http::trace::DefaultMakeSpan::new().level(tracing::Level::DEBUG))
+            .on_response(tower_http::trace::DefaultOnResponse::new().level(tracing::Level::DEBUG)))
         .layer(CorsLayer::permissive()) // Outermost: cheap CORS preflight
         .with_state(state)
 }
