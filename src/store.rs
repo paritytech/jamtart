@@ -241,6 +241,7 @@ impl EventStore {
         &self,
         limit: i64,
         offset: i64,
+        duration: &str,
     ) -> Result<Vec<serde_json::Value>, sqlx::Error> {
         let rows = sqlx::query(
             r#"
@@ -254,6 +255,7 @@ impl EventStore {
                 n.implementation_version
             FROM events e
             JOIN nodes n ON e.node_id = n.node_id
+            WHERE e.timestamp > NOW() - $3::interval
             ORDER BY e.timestamp DESC
             LIMIT $1
             OFFSET $2
@@ -261,6 +263,7 @@ impl EventStore {
         )
         .bind(limit)
         .bind(offset)
+        .bind(duration)
         .fetch_all(&self.pool)
         .await?;
 
@@ -304,6 +307,7 @@ impl EventStore {
             FROM events e
             JOIN nodes n ON e.node_id = n.node_id
             WHERE e.node_id = $1
+              AND e.timestamp > NOW() - INTERVAL '5 minutes'
             ORDER BY e.timestamp DESC
             LIMIT $2
             "#,

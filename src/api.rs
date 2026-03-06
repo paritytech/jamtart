@@ -422,6 +422,7 @@ async fn get_node_details(
 struct EventsQuery {
     limit: Option<i64>,
     offset: Option<i64>,
+    duration: Option<DurationPreset>,
 }
 
 async fn get_node_events(
@@ -459,8 +460,9 @@ async fn get_recent_events(
 ) -> Result<impl IntoResponse, StatusCode> {
     let limit = query.limit.unwrap_or(50).clamp(1, MAX_QUERY_LIMIT);
     let offset = query.offset.unwrap_or(0).max(0);
+    let duration = query.duration.unwrap_or(DurationPreset::FiveMin);
 
-    match state.store.get_recent_events(limit, offset).await {
+    match state.store.get_recent_events(limit, offset, duration.as_pg_interval()).await {
         Ok(events) => {
             let has_more = events.len() as i64 == limit;
             Ok(Json(serde_json::json!({
