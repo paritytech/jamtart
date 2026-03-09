@@ -243,7 +243,9 @@ impl EventStore {
         offset: i64,
         duration: &str,
     ) -> Result<Vec<serde_json::Value>, sqlx::Error> {
-        let rows = sqlx::query(
+        // Inline the interval literal so the planner can do TimescaleDB chunk exclusion.
+        // Safe: duration comes from DurationPreset::as_pg_interval() (hardcoded strings).
+        let query = format!(
             r#"
             SELECT
                 e.timestamp,
@@ -255,15 +257,16 @@ impl EventStore {
                 n.implementation_version
             FROM events e
             JOIN nodes n ON e.node_id = n.node_id
-            WHERE e.timestamp > NOW() - $3::interval
+            WHERE e.timestamp > NOW() - INTERVAL '{}'
             ORDER BY e.timestamp DESC
             LIMIT $1
             OFFSET $2
             "#,
-        )
+            duration
+        );
+        let rows = sqlx::query(&query)
         .bind(limit)
         .bind(offset)
-        .bind(duration)
         .fetch_all(&self.pool)
         .await?;
 
