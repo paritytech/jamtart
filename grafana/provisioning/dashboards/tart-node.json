@@ -109,7 +109,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/nodes/${node_id}/status",
+          "url": "http://tart-backend:8080/api/grafana/node-stats?node=${node_id}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -197,10 +197,10 @@
           },
           "format": "table",
           "parser": "backend",
-          "root_selector": "category_counts",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/nodes/${node_id}/timeline",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&group_by=event_type&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -623,10 +623,10 @@
           },
           "format": "table",
           "parser": "backend",
-          "root_selector": "event_breakdown",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/nodes/${node_id}/status",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&group_by=event_type&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1725,10 +1725,10 @@
           },
           "format": "table",
           "parser": "backend",
-          "root_selector": "data",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/metrics/timeseries/grouped?metric=events&group_by=event_type&duration=1&interval=1",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?group_by=event_type&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1857,10 +1857,10 @@
           },
           "format": "table",
           "parser": "backend",
-          "root_selector": "data",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/metrics/timeseries/grouped?metric=events&group_by=node&duration=1&interval=1",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?group_by=node&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1886,111 +1886,6 @@
           }
         }
       ]
-    },
-    {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 25
-      },
-      "id": 9,
-      "title": "Recent Events",
-      "type": "row"
-    },
-    {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "jamtart-api"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 10,
-        "w": 24,
-        "x": 0,
-        "y": 26
-      },
-      "id": 10,
-      "options": {
-        "showHeader": true,
-        "cellHeight": "sm",
-        "sortBy": [
-          {
-            "desc": true,
-            "displayName": "Time"
-          }
-        ],
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        }
-      },
-      "targets": [
-        {
-          "columns": [
-            {
-              "selector": "created_at",
-              "text": "Time",
-              "type": "timestamp"
-            },
-            {
-              "selector": "category",
-              "text": "Category",
-              "type": "string"
-            },
-            {
-              "selector": "event_type",
-              "text": "Type",
-              "type": "number"
-            },
-            {
-              "selector": "data",
-              "text": "Data",
-              "type": "string"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "jamtart-api"
-          },
-          "format": "table",
-          "parser": "backend",
-          "root_selector": "events",
-          "source": "url",
-          "type": "json",
-          "url": "http://tart-backend:8080/api/nodes/${node_id}/events?limit=50",
-          "url_options": {
-            "method": "GET",
-            "data": "",
-            "headers": [],
-            "params": []
-          },
-          "refId": "A"
-        }
-      ],
-      "title": "Recent Events",
-      "type": "table"
     },
     {
       "collapsed": false,
@@ -2102,10 +1997,10 @@
           },
           "format": "table",
           "parser": "backend",
-          "root_selector": "nodes",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/nodes",
+          "url": "http://tart-backend:8080/api/grafana/nodes",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2189,10 +2084,10 @@
           },
           "format": "table",
           "parser": "backend",
-          "root_selector": "by_category",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/analytics/failure-rates",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?group_by=event_type&event_types=41,44,46,92,107,111,113&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2297,10 +2192,10 @@
           "format": "table",
           "parser": "backend",
           "refId": "A",
-          "root_selector": "ticket_activity",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/validators/cores",
+          "url": "http://tart-backend:8080/api/grafana/cores?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2321,13 +2216,13 @@
         "y": 54
       },
       "id": 16,
-      "title": "Event Inspector: $event_group / $event_name",
+      "title": "Event Inspector",
       "type": "row"
     },
     {
       "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "jamtart-pg"
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
       },
       "fieldConfig": {
         "defaults": {
@@ -2402,24 +2297,63 @@
       },
       "targets": [
         {
+          "columns": [
+            {
+              "selector": "timestamp",
+              "text": "",
+              "type": "timestamp"
+            },
+            {
+              "selector": "event_type",
+              "text": "Event Type",
+              "type": "string"
+            },
+            {
+              "selector": "events",
+              "text": "Events",
+              "type": "number"
+            }
+          ],
           "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "jamtart-pg"
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
           },
-          "editorMode": "code",
-          "format": "time_series",
-          "rawQuery": true,
-          "rawSql": "SELECT $__timeGroup(timestamp, $__interval) AS time, event_name AS metric, count(*) AS cnt\nFROM events_view\nWHERE $__timeFilter(timestamp)\n  AND node_id = '$node_id'\n  AND event_group IN ($event_group)\n  AND event_name IN ($event_name)\nGROUP BY 1, 2 ORDER BY 1",
+          "format": "table",
+          "parser": "backend",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&group_by=event_type&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          },
           "refId": "A"
         }
       ],
       "title": "Filtered events per interval",
+      "transformations": [
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "Event Type"
+            ],
+            "keepFields": false,
+            "naming": {
+              "asLabels": true
+            }
+          }
+        }
+      ],
       "type": "timeseries"
     },
     {
       "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "jamtart-pg"
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
       },
       "fieldConfig": {
         "defaults": {
@@ -2494,110 +2428,58 @@
       },
       "targets": [
         {
+          "columns": [
+            {
+              "selector": "timestamp",
+              "text": "",
+              "type": "timestamp"
+            },
+            {
+              "selector": "event_type",
+              "text": "Event Type",
+              "type": "string"
+            },
+            {
+              "selector": "events",
+              "text": "Events",
+              "type": "number"
+            }
+          ],
           "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "jamtart-pg"
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
           },
-          "editorMode": "code",
-          "format": "time_series",
-          "rawQuery": true,
-          "rawSql": "SELECT $__timeGroup(timestamp, $__interval) AS time, event_group AS metric, count(*) AS cnt\nFROM events_view\nWHERE $__timeFilter(timestamp)\n  AND node_id = '$node_id'\n  AND event_group IN ($event_group)\n  AND event_name IN ($event_name)\nGROUP BY 1, 2 ORDER BY 1",
+          "format": "table",
+          "parser": "backend",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&group_by=event_type&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          },
           "refId": "A"
         }
       ],
       "title": "Filtered events by group",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "jamtart-pg"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "auto"
-            },
-            "inspect": true
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "data"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 500
-              },
-              {
-                "id": "custom.inspect",
-                "value": true
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "time"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 180
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 10,
-        "w": 24,
-        "x": 0,
-        "y": 63
-      },
-      "id": 19,
-      "options": {
-        "showHeader": true,
-        "sortBy": [
-          {
-            "desc": true,
-            "displayName": "time"
-          }
-        ]
-      },
-      "targets": [
+      "transformations": [
         {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "jamtart-pg"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT timestamp AS time, event_group, event_name, data::text AS data\nFROM events_view\nWHERE $__timeFilter(timestamp)\n  AND node_id = '$node_id'\n  AND event_group IN ($event_group)\n  AND event_name IN ($event_name)\nORDER BY timestamp DESC\nLIMIT 200",
-          "refId": "A"
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "Event Type"
+            ],
+            "keepFields": false,
+            "naming": {
+              "asLabels": true
+            }
+          }
         }
       ],
-      "title": "Filtered event details",
-      "type": "table"
+      "type": "timeseries"
     }
   ],
   "schemaVersion": 39,
@@ -2623,14 +2505,14 @@
             "type": "json",
             "source": "url",
             "parser": "backend",
-            "url": "http://tart-backend:8080/api/nodes",
+            "url": "http://tart-backend:8080/api/grafana/nodes",
             "url_options": {
               "method": "GET",
               "data": "",
               "headers": [],
               "params": []
             },
-            "root_selector": "nodes",
+            "root_selector": "",
             "columns": [
               {
                 "selector": "node_id",
@@ -2646,60 +2528,6 @@
         "includeAll": false,
         "multi": false,
         "description": "Select a node ID \u2014 dynamically loaded from the API."
-      },
-      {
-        "current": {
-          "selected": true,
-          "text": [
-            "All"
-          ],
-          "value": [
-            "$__all"
-          ]
-        },
-        "datasource": {
-          "type": "grafana-postgresql-datasource",
-          "uid": "jamtart-pg"
-        },
-        "definition": "SELECT DISTINCT group_name FROM event_types ORDER BY 1",
-        "includeAll": true,
-        "multi": true,
-        "name": "event_group",
-        "label": "Event Group",
-        "options": [],
-        "query": "SELECT DISTINCT group_name FROM event_types ORDER BY 1",
-        "refresh": 1,
-        "regex": "",
-        "skipUrlSync": false,
-        "sort": 1,
-        "type": "query"
-      },
-      {
-        "current": {
-          "selected": true,
-          "text": [
-            "All"
-          ],
-          "value": [
-            "$__all"
-          ]
-        },
-        "datasource": {
-          "type": "grafana-postgresql-datasource",
-          "uid": "jamtart-pg"
-        },
-        "definition": "SELECT DISTINCT name FROM event_types WHERE group_name IN ($event_group) ORDER BY 1",
-        "includeAll": true,
-        "multi": true,
-        "name": "event_name",
-        "label": "Event Name",
-        "options": [],
-        "query": "SELECT DISTINCT name FROM event_types WHERE group_name IN ($event_group) ORDER BY 1",
-        "refresh": 1,
-        "regex": "",
-        "skipUrlSync": false,
-        "sort": 1,
-        "type": "query"
       }
     ]
   },
@@ -2709,7 +2537,7 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "TART-node",
-  "uid": "tart-node",
+  "title": "TART Node (Grafana API)",
+  "uid": "tart-grafana-node",
   "version": 1
 }

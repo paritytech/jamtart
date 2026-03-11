@@ -101,7 +101,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/metrics/live",
+          "url": "http://tart-backend:8080/api/grafana/stats",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -173,7 +173,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/metrics/live",
+          "url": "http://tart-backend:8080/api/grafana/stats",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -245,7 +245,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/metrics/live",
+          "url": "http://tart-backend:8080/api/grafana/stats",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -326,7 +326,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/metrics/live",
+          "url": "http://tart-backend:8080/api/grafana/stats",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -399,7 +399,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/metrics/live",
+          "url": "http://tart-backend:8080/api/grafana/stats",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -411,90 +411,6 @@
       ],
       "title": "Blocks/sec (10s)",
       "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "jamtart-api"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "max": 100,
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 40
-              },
-              {
-                "color": "green",
-                "value": 70
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 20,
-        "y": 1
-      },
-      "id": 7,
-      "options": {
-        "minVizHeight": 75,
-        "minVizWidth": 75,
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showThresholdLabels": false,
-        "showThresholdMarkers": true,
-        "sizing": "auto"
-      },
-      "targets": [
-        {
-          "columns": [
-            {
-              "selector": "health_score",
-              "text": "Health Score",
-              "type": "number"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "jamtart-api"
-          },
-          "format": "table",
-          "parser": "backend",
-          "root_selector": "",
-          "source": "url",
-          "type": "json",
-          "url": "http://tart-backend:8080/api/analytics/network-health",
-          "url_options": {
-            "method": "GET",
-            "data": "",
-            "headers": [],
-            "params": []
-          },
-          "refId": "A"
-        }
-      ],
-      "title": "Health Score",
-      "type": "gauge"
     },
     {
       "collapsed": false,
@@ -1585,7 +1501,7 @@
           "root_selector": "data",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/metrics/timeseries/grouped?metric=events&group_by=event_type&duration=1&interval=1",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?group_by=event_type&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1717,7 +1633,7 @@
           "root_selector": "data",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/metrics/timeseries/grouped?metric=events&group_by=node&duration=1&interval=1",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?group_by=node&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1818,7 +1734,7 @@
           "root_selector": "by_category",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/analytics/failure-rates",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?group_by=event_type&event_types=41,44,46,92,107,111,113,122,127,130&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1943,7 +1859,7 @@
           "root_selector": "data",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/metrics/timeseries?metric=events&duration=1&interval=1",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2061,7 +1977,7 @@
           "root_selector": "data",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/metrics/timeseries?metric=blocks&duration=1&interval=1",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2183,7 +2099,7 @@
           "root_selector": "data",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/metrics/timeseries?metric=throughput&duration=1&interval=1",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2289,7 +2205,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/blocks",
+          "url": "http://tart-backend:8080/api/grafana/stats",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2383,7 +2299,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/guarantees",
+          "url": "http://tart-backend:8080/api/grafana/stats",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2472,7 +2388,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/workpackages",
+          "url": "http://tart-backend:8080/api/grafana/stats",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2492,258 +2408,6 @@
         "w": 24,
         "x": 0,
         "y": 32
-      },
-      "id": 20,
-      "title": "Network Health",
-      "type": "row"
-    },
-    {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "jamtart-api"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "healthy": {
-                  "color": "green",
-                  "index": 0
-                },
-                "degraded": {
-                  "color": "yellow",
-                  "index": 1
-                },
-                "unhealthy": {
-                  "color": "red",
-                  "index": 2
-                }
-              },
-              "type": "value"
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "score"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 60
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "status"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 90
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 33
-      },
-      "id": 21,
-      "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
-        "showHeader": true
-      },
-      "targets": [
-        {
-          "columns": [
-            {
-              "selector": "name",
-              "text": "Component",
-              "type": "string"
-            },
-            {
-              "selector": "status",
-              "text": "Status",
-              "type": "string"
-            },
-            {
-              "selector": "score",
-              "text": "Score",
-              "type": "number"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "jamtart-api"
-          },
-          "format": "table",
-          "parser": "backend",
-          "root_selector": "components",
-          "source": "url",
-          "type": "json",
-          "url": "http://tart-backend:8080/api/analytics/network-health",
-          "url_options": {
-            "method": "GET",
-            "data": "",
-            "headers": [],
-            "params": []
-          },
-          "refId": "A"
-        }
-      ],
-      "title": "Health Components",
-      "type": "table"
-    },
-    {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "jamtart-api"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "critical": {
-                  "color": "red",
-                  "index": 0
-                },
-                "warning": {
-                  "color": "yellow",
-                  "index": 1
-                },
-                "info": {
-                  "color": "blue",
-                  "index": 2
-                }
-              },
-              "type": "value"
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "severity"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 80
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 33
-      },
-      "id": 22,
-      "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
-        "showHeader": true
-      },
-      "targets": [
-        {
-          "columns": [
-            {
-              "selector": "severity",
-              "text": "Severity",
-              "type": "string"
-            },
-            {
-              "selector": "component",
-              "text": "Component",
-              "type": "string"
-            },
-            {
-              "selector": "message",
-              "text": "Message",
-              "type": "string"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "jamtart-api"
-          },
-          "format": "table",
-          "parser": "backend",
-          "root_selector": "alerts",
-          "source": "url",
-          "type": "json",
-          "url": "http://tart-backend:8080/api/analytics/network-health",
-          "url_options": {
-            "method": "GET",
-            "data": "",
-            "headers": [],
-            "params": []
-          },
-          "refId": "A"
-        }
-      ],
-      "title": "Alerts",
-      "type": "table"
-    },
-    {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 41
       },
       "id": 23,
       "title": "Nodes & Data Availability",
@@ -2856,7 +2520,7 @@
           "root_selector": "nodes",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/nodes",
+          "url": "http://tart-backend:8080/api/grafana/nodes",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2961,7 +2625,7 @@
           "root_selector": "by_node",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/da/stats",
+          "url": "http://tart-backend:8080/api/grafana/node-stats",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -3085,7 +2749,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/da/stats",
+          "url": "http://tart-backend:8080/api/grafana/node-stats-aggregate",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -3113,8 +2777,8 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "TART-global",
-  "uid": "tart-global",
+  "title": "TART Global (Grafana API)",
+  "uid": "tart-grafana-global",
   "version": 1,
   "weekStart": ""
 }

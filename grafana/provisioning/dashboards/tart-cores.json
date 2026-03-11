@@ -110,7 +110,7 @@
           "root_selector": "summary",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/cores/status",
+          "url": "http://tart-backend:8080/api/grafana/cores?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -227,7 +227,7 @@
           "root_selector": "data",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/metrics/timeseries/grouped?metric=guarantees&group_by=core&duration=1&interval=1",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?group_by=core&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -358,7 +358,7 @@
           "root_selector": "data",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/metrics/timeseries/grouped?metric=failures&group_by=category&duration=1&interval=1",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?group_by=category&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -557,7 +557,7 @@
           "root_selector": "cores",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/cores/status",
+          "url": "http://tart-backend:8080/api/grafana/cores?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -682,7 +682,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/cores/${core_index}/metrics",
+          "url": "http://tart-backend:8080/api/grafana/cores?core=${core_index}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -830,7 +830,7 @@
           "root_selector": "validators",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/cores/${core_index}/validators",
+          "url": "http://tart-backend:8080/api/grafana/cores?core=${core_index}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -927,7 +927,7 @@
           "root_selector": "work_packages",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/cores/${core_index}/work-packages",
+          "url": "http://tart-backend:8080/api/grafana/cores?core=${core_index}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1020,7 +1020,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/cores/${core_index}/bottlenecks",
+          "url": "http://tart-backend:8080/api/grafana/cores?core=${core_index}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1129,7 +1129,7 @@
           "root_selector": "by_category",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/analytics/failure-rates",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?group_by=event_type&event_types=41,44,46,92,107,111,113&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1165,7 +1165,7 @@
             "type": "json",
             "source": "url",
             "parser": "backend",
-            "url": "http://tart-backend:8080/api/cores/status",
+            "url": "http://tart-backend:8080/api/grafana/cores?start=${__from:date:iso}&end=${__to:date:iso}",
             "url_options": {
               "method": "GET",
               "data": "",
@@ -1196,8 +1196,8 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "TART-cores",
-  "uid": "tart-cores",
+  "title": "TART Cores (Grafana API)",
+  "uid": "tart-grafana-cores",
   "version": 1,
   "weekStart": ""
 }

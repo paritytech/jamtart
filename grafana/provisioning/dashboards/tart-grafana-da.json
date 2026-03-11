@@ -1,0 +1,737 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Data availability layer — storage, peer health, and preimage statistics per node",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "title": "DA Storage",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 1
+      },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "avg_shards_size",
+              "text": "Avg Shards Size",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "filters": [],
+          "format": "table",
+          "global_query_id": "",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/node-stats-aggregate?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          }
+        }
+      ],
+      "title": "Total DA Storage (Avg)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 18,
+        "x": 6,
+        "y": 1
+      },
+      "id": 3,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "timestamp",
+              "text": "",
+              "type": "timestamp"
+            },
+            {
+              "selector": "node_id",
+              "text": "Node",
+              "type": "string"
+            },
+            {
+              "selector": "num_shards",
+              "text": "Shards",
+              "type": "number"
+            },
+            {
+              "selector": "shards_size",
+              "text": "Shards Size",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "filters": [],
+          "format": "table",
+          "global_query_id": "",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "data",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/node-stats?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          }
+        }
+      ],
+      "title": "DA Storage per Node",
+      "type": "timeseries",
+      "transformations": [
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "Node"
+            ],
+            "keepFields": false,
+            "naming": {
+              "asLabels": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 9
+      },
+      "id": 4,
+      "title": "Peer Health",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Peers",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 10
+      },
+      "id": 5,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "timestamp",
+              "text": "",
+              "type": "timestamp"
+            },
+            {
+              "selector": "node_id",
+              "text": "Node",
+              "type": "string"
+            },
+            {
+              "selector": "num_peers",
+              "text": "Peers",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "filters": [],
+          "format": "table",
+          "global_query_id": "",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "data",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/node-stats?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          }
+        }
+      ],
+      "title": "Peer Counts per Node",
+      "type": "timeseries",
+      "transformations": [
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "Node"
+            ],
+            "keepFields": false,
+            "naming": {
+              "asLabels": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Peers",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Min Peers"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Max Peers"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Avg Peers"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "yellow",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 10
+      },
+      "id": 6,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "timestamp",
+              "text": "",
+              "type": "timestamp"
+            },
+            {
+              "selector": "avg_peers",
+              "text": "Avg Peers",
+              "type": "number"
+            },
+            {
+              "selector": "min_peers",
+              "text": "Min Peers",
+              "type": "number"
+            },
+            {
+              "selector": "max_peers",
+              "text": "Max Peers",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "filters": [],
+          "format": "table",
+          "global_query_id": "",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "data",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/node-stats-aggregate?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          }
+        }
+      ],
+      "title": "Network Peer Health",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 18
+      },
+      "id": 7,
+      "title": "Preimages",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 19
+      },
+      "id": 8,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "timestamp",
+              "text": "",
+              "type": "timestamp"
+            },
+            {
+              "selector": "node_id",
+              "text": "Node",
+              "type": "string"
+            },
+            {
+              "selector": "num_preimages",
+              "text": "Preimages",
+              "type": "number"
+            },
+            {
+              "selector": "preimages_size",
+              "text": "Preimages Size",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "filters": [],
+          "format": "table",
+          "global_query_id": "",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "data",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/node-stats?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          }
+        }
+      ],
+      "title": "Preimage Stats",
+      "type": "timeseries",
+      "transformations": [
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "Node"
+            ],
+            "keepFields": false,
+            "naming": {
+              "asLabels": true
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": [
+    "api",
+    "da"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "utc",
+  "title": "TART Data Availability",
+  "uid": "tart-grafana-da",
+  "refresh": "30s",
+  "version": 1,
+  "weekStart": ""
+}

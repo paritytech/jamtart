@@ -1,0 +1,682 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Block production analytics — contents, convergence, rate, and pipeline",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "title": "Block Overview",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 0,
+        "y": 1
+      },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "latest_slot",
+              "text": "Latest Slot",
+              "type": "number"
+            },
+            {
+              "selector": "finalized_slot",
+              "text": "Finalized Slot",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "filters": [],
+          "format": "table",
+          "global_query_id": "",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/stats?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          }
+        }
+      ],
+      "title": "Latest / Finalized Slot",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 1
+      },
+      "id": 3,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "timestamp",
+              "text": "",
+              "type": "timestamp"
+            },
+            {
+              "selector": "value",
+              "text": "Blocks",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "filters": [],
+          "format": "table",
+          "global_query_id": "",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "data",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?event_types=42&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          }
+        }
+      ],
+      "title": "Block Rate",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 9
+      },
+      "id": 4,
+      "title": "Block Contents",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Count",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 30,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 10
+      },
+      "id": 5,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "timestamp",
+              "text": "",
+              "type": "timestamp"
+            },
+            {
+              "selector": "num_guarantees",
+              "text": "Guarantees",
+              "type": "number"
+            },
+            {
+              "selector": "num_assurances",
+              "text": "Assurances",
+              "type": "number"
+            },
+            {
+              "selector": "num_preimages",
+              "text": "Preimages",
+              "type": "number"
+            },
+            {
+              "selector": "num_tickets",
+              "text": "Tickets",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "filters": [],
+          "format": "table",
+          "global_query_id": "",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "data",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/blocks/contents?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          }
+        }
+      ],
+      "title": "Block Contents",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 18
+      },
+      "id": 6,
+      "title": "Convergence & Pipeline",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Latency (ms)",
+            "axisPlacement": "auto",
+            "fillOpacity": 60,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 1,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p99 (ms)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p50 (ms)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 19
+      },
+      "id": 7,
+      "options": {
+        "barRadius": 0,
+        "barWidth": 0.8,
+        "fullHighlight": false,
+        "groupWidth": 0.7,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "orientation": "vertical",
+        "showValue": "auto",
+        "stacking": "none",
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "xTickLabelRotation": 0
+      },
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "slot",
+              "text": "Slot",
+              "type": "string"
+            },
+            {
+              "selector": "p50_ms",
+              "text": "p50 (ms)",
+              "type": "number"
+            },
+            {
+              "selector": "p99_ms",
+              "text": "p99 (ms)",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "filters": [],
+          "format": "table",
+          "global_query_id": "",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "data",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/blocks/convergence?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          }
+        }
+      ],
+      "title": "Validator Convergence",
+      "type": "barchart"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 19
+      },
+      "id": 8,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "timestamp",
+              "text": "",
+              "type": "timestamp"
+            },
+            {
+              "selector": "event_type",
+              "text": "Event Type",
+              "type": "string"
+            },
+            {
+              "selector": "value",
+              "text": "Count",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "filters": [],
+          "format": "table",
+          "global_query_id": "",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "data",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?group_by=event_type&event_types=42,43,47,62,68&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          }
+        }
+      ],
+      "title": "Block Pipeline",
+      "type": "timeseries",
+      "transformations": [
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "Event Type"
+            ],
+            "keepFields": false,
+            "naming": {
+              "asLabels": true
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": [
+    "api",
+    "blocks"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "utc",
+  "title": "TART Blocks",
+  "uid": "tart-grafana-blocks",
+  "refresh": "30s",
+  "version": 1,
+  "weekStart": ""
+}
