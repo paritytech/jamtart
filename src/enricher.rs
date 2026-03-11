@@ -1,14 +1,14 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
-use schnellru::{ByLength, LruMap};
 
 use crate::batch_writer::NodeId;
 use crate::events::Event;
 
 /// Maximum entries per map per node (hard cap to prevent unbounded growth).
-const MAX_MAP_ENTRIES: u32 = 10_000;
+const MAX_MAP_ENTRIES: usize = 50_000;
 
 /// TTL for stale entries.
 const STALE_TTL: Duration = Duration::from_secs(60);
@@ -32,19 +32,11 @@ pub fn new_enricher_map() -> EnricherMap {
     Arc::new(DashMap::new())
 }
 
-trait HasInsertedAt {
-    fn inserted_at(&self) -> Instant;
-}
-
 struct SubmissionContext {
     core: u16,
     work_package_hash: Option<[u8; 32]>,
     service_ids: Vec<u32>,
     inserted_at: Instant,
-}
-
-impl HasInsertedAt for SubmissionContext {
-    fn inserted_at(&self) -> Instant { self.inserted_at }
 }
 
 struct ChainEntry {
@@ -53,21 +45,17 @@ struct ChainEntry {
     inserted_at: Instant,
 }
 
-impl HasInsertedAt for ChainEntry {
-    fn inserted_at(&self) -> Instant { self.inserted_at }
-}
-
 pub struct NodeEventEnricher {
     /// submission_or_share_id / submission_id -> context
-    submissions: LruMap<u64, SubmissionContext, ByLength>,
+    submissions: HashMap<u64, SubmissionContext>,
     /// built_id -> context (GuaranteeBuilt event_id)
-    built_ids: LruMap<u64, ChainEntry, ByLength>,
+    built_ids: HashMap<u64, ChainEntry>,
     /// sending_id -> context (SendingGuarantee event_id)
-    sending_ids: LruMap<u64, ChainEntry, ByLength>,
+    sending_ids: HashMap<u64, ChainEntry>,
     /// request_id -> context (SendingSegmentShardRequest / SendingSegmentRequest event_id)
-    request_ids: LruMap<u64, ChainEntry, ByLength>,
+    request_ids: HashMap<u64, ChainEntry>,
     /// reconstructing_id -> context (ReconstructingSegments event_id)
-    reconstructing_ids: LruMap<u64, ChainEntry, ByLength>,
+    reconstructing_ids: HashMap<u64, ChainEntry>,
     last_activity: Instant,
     call_count: u64,
 }
@@ -75,14 +63,27 @@ pub struct NodeEventEnricher {
 impl Default for NodeEventEnricher {
     fn default() -> Self {
         Self {
-            submissions: LruMap::new(ByLength::new(MAX_MAP_ENTRIES)),
-            built_ids: LruMap::new(ByLength::new(MAX_MAP_ENTRIES)),
-            sending_ids: LruMap::new(ByLength::new(MAX_MAP_ENTRIES)),
-            request_ids: LruMap::new(ByLength::new(MAX_MAP_ENTRIES)),
-            reconstructing_ids: LruMap::new(ByLength::new(MAX_MAP_ENTRIES)),
+            submissions: HashMap::new(),
+            built_ids: HashMap::new(),
+            sending_ids: HashMap::new(),
+            request_ids: HashMap::new(),
+            reconstructing_ids: HashMap::new(),
             last_activity: Instant::now(),
             call_count: 0,
         }
+    }
+}
+
+/// Evict the oldest 25% of entries when the map exceeds the limit.
+fn cap_map<V>(map: &mut HashMap<u64, V>, limit: usize, get_age: impl Fn(&V) -> Instant) {
+    if map.len() < limit {
+        return;
+    }
+    let to_remove = map.len() / 4;
+    let mut by_age: Vec<(u64, Instant)> = map.iter().map(|(&k, v)| (k, get_age(v))).collect();
+    by_age.sort_unstable_by_key(|(_, t)| *t); // oldest first
+    for (k, _) in by_age.into_iter().take(to_remove) {
+        map.remove(&k);
     }
 }
 
@@ -202,6 +203,7 @@ impl NodeEventEnricher {
             fields.service_ids = Some(service_ids.clone());
             fields.wp_hash = Some(outline.work_package_hash);
 
+            cap_map(&mut self.submissions, MAX_MAP_ENTRIES, |v| v.inserted_at);
             self.submissions.insert(
                 *submission_or_share_id,
                 SubmissionContext {
@@ -235,6 +237,7 @@ impl NodeEventEnricher {
         // GuaranteeBuilt -> store in built_ids
         if let Event::GuaranteeBuilt { .. } = event {
             if let Some(core) = fields.core {
+                cap_map(&mut self.built_ids, MAX_MAP_ENTRIES, |v| v.inserted_at);
                 self.built_ids.insert(
                     event_id,
                     ChainEntry {
@@ -255,6 +258,7 @@ impl NodeEventEnricher {
                 }
             }
             if let Some(core) = fields.core {
+                cap_map(&mut self.sending_ids, MAX_MAP_ENTRIES, |v| v.inserted_at);
                 self.sending_ids.insert(
                     event_id,
                     ChainEntry {
@@ -285,6 +289,7 @@ impl NodeEventEnricher {
             Event::SendingSegmentShardRequest { .. }
             | Event::SendingSegmentRequest { .. } => {
                 if let Some(core) = fields.core {
+                    cap_map(&mut self.request_ids, MAX_MAP_ENTRIES, |v| v.inserted_at);
                     self.request_ids.insert(
                         event_id,
                         ChainEntry {
@@ -321,6 +326,7 @@ impl NodeEventEnricher {
         // ReconstructingSegments -> store in reconstructing_ids
         if let Event::ReconstructingSegments { .. } = event {
             if let Some(core) = fields.core {
+                cap_map(&mut self.reconstructing_ids, MAX_MAP_ENTRIES, |v| v.inserted_at);
                 self.reconstructing_ids.insert(
                     event_id,
                     ChainEntry {
@@ -356,18 +362,16 @@ impl NodeEventEnricher {
     /// Evict entries older than [`STALE_TTL`] from all internal maps.
     fn evict_stale(&mut self) {
         let cutoff = STALE_TTL;
-
-        fn collect_stale<V: HasInsertedAt>(map: &LruMap<u64, V, ByLength>, cutoff: Duration) -> Vec<u64> {
-            map.iter().filter_map(|(k, v)| {
-                if v.inserted_at().elapsed() > cutoff { Some(*k) } else { None }
-            }).collect()
-        }
-
-        for k in collect_stale(&self.submissions, cutoff) { self.submissions.remove(&k); }
-        for k in collect_stale(&self.built_ids, cutoff) { self.built_ids.remove(&k); }
-        for k in collect_stale(&self.sending_ids, cutoff) { self.sending_ids.remove(&k); }
-        for k in collect_stale(&self.request_ids, cutoff) { self.request_ids.remove(&k); }
-        for k in collect_stale(&self.reconstructing_ids, cutoff) { self.reconstructing_ids.remove(&k); }
+        self.submissions
+            .retain(|_, ctx| ctx.inserted_at.elapsed() <= cutoff);
+        self.built_ids
+            .retain(|_, e| e.inserted_at.elapsed() <= cutoff);
+        self.sending_ids
+            .retain(|_, e| e.inserted_at.elapsed() <= cutoff);
+        self.request_ids
+            .retain(|_, e| e.inserted_at.elapsed() <= cutoff);
+        self.reconstructing_ids
+            .retain(|_, e| e.inserted_at.elapsed() <= cutoff);
     }
 }
 
@@ -563,28 +567,26 @@ mod tests {
     }
 
     #[test]
-    fn test_lru_eviction() {
+    fn test_partial_eviction() {
         let mut enricher = NodeEventEnricher::default();
 
-        // Insert MAX_MAP_ENTRIES + 100 submissions — LRU evicts oldest, keeps capacity
-        let total = MAX_MAP_ENTRIES as u64 + 100;
-        for i in 0..total {
+        // Insert MAX_MAP_ENTRIES + 1 submissions to trigger partial eviction
+        for i in 0..=MAX_MAP_ENTRIES {
             let event = Event::WorkPackageReceived {
                 timestamp: 1000,
-                submission_or_share_id: i,
+                submission_or_share_id: i as u64,
                 core: 1,
                 outline: make_wp_outline(&[10], [0u8; 32]),
             };
-            enricher.process(&event, i);
+            enricher.process(&event, i as u64);
         }
 
-        // LRU keeps exactly MAX_MAP_ENTRIES entries (oldest evicted, not all cleared)
-        assert_eq!(enricher.submissions.len(), MAX_MAP_ENTRIES as usize);
+        // After partial eviction (25% removed), map should have ~75% of MAX_MAP_ENTRIES + 1
+        let expected = MAX_MAP_ENTRIES - MAX_MAP_ENTRIES / 4 + 1;
+        assert_eq!(enricher.submissions.len(), expected);
 
-        // The oldest entry (id=0) should have been evicted
-        assert!(enricher.submissions.peek(&0u64).is_none());
         // The newest entry should still be present
-        assert!(enricher.submissions.peek(&(total - 1)).is_some());
+        assert!(enricher.submissions.contains_key(&(MAX_MAP_ENTRIES as u64)));
     }
 
     #[test]
