@@ -233,6 +233,21 @@ async fn main() -> anyhow::Result<()> {
     let broadcaster = telemetry_server.get_broadcaster();
     let batch_writer = Arc::new(telemetry_server.get_batch_writer());
 
+    // Spawn tracker flush tasks (SlotTracker + WpTracker) — only when DB is available
+    if let Some(ref store) = store {
+        let slot_tracker = telemetry_server.get_slot_tracker();
+        let wp_tracker = telemetry_server.get_wp_tracker();
+        let pool = store.pool().clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+                tart_backend::slot_tracker::flush_slot_tracker(&slot_tracker, &pool).await;
+                tart_backend::wp_tracker::flush_wp_tracker(&wp_tracker, &pool).await;
+            }
+        });
+    }
+
     // Build the HTTP router: full (with DB) or minimal (WebSocket-only)
     let mut app = if let Some(ref store) = store {
         // Initialize health monitoring system

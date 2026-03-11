@@ -17,8 +17,10 @@ pub mod node_id;
 pub mod rate_limiter;
 pub mod retry;
 pub mod server;
+pub mod slot_tracker;
 pub mod store;
 pub mod types;
+pub mod wp_tracker;
 
 pub use events::{Event, EventType, NodeInformation};
 pub use jam_rpc::{JamRpcClient, NetworkStats, ServiceInfo};

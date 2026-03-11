@@ -4,7 +4,9 @@ use crate::enricher::EnricherMap;
 use crate::event_broadcaster::{build_ws_envelope, BroadcastRecord, EventBroadcaster};
 use crate::events::{Event, NodeInformation};
 use crate::rate_limiter::RateLimiter;
+use crate::slot_tracker::{self, SlotTracker};
 use crate::store::EventStore;
+use crate::wp_tracker::{self, WpTracker};
 use bytes::{Buf, BytesMut};
 use dashmap::DashMap;
 use std::io::Cursor;
@@ -131,6 +133,8 @@ pub struct TelemetryServer {
     /// When true, rate limiting is disabled (--no-rate-limit flag)
     rate_limit_disabled: bool,
     enricher_map: EnricherMap,
+    slot_tracker: SlotTracker,
+    wp_tracker: WpTracker,
     connection_watch: Arc<tokio::sync::watch::Sender<usize>>,
     /// Kept alive so the watch channel stays open (senders fail when all receivers drop)
     #[allow(dead_code)]
@@ -229,6 +233,8 @@ impl TelemetryServer {
             store,
             rate_limit_disabled: no_rate_limit,
             enricher_map: crate::enricher::new_enricher_map(),
+            slot_tracker: slot_tracker::new_slot_tracker(),
+            wp_tracker: wp_tracker::new_wp_tracker(),
             connection_watch: Arc::new(connection_watch),
             _connection_watch_rx: connection_watch_rx,
         })
@@ -302,6 +308,8 @@ impl TelemetryServer {
             let broadcaster = Arc::clone(&self.broadcaster);
             let rate_limit_disabled = self.rate_limit_disabled;
             let enricher_map = Arc::clone(&self.enricher_map);
+            let slot_tracker = Arc::clone(&self.slot_tracker);
+            let wp_tracker = Arc::clone(&self.wp_tracker);
             let connection_watch = Arc::clone(&self.connection_watch);
 
             let handle = std::thread::Builder::new()
@@ -352,6 +360,8 @@ impl TelemetryServer {
                                                 broadcaster: Arc::clone(&broadcaster),
                                                 rate_limit_disabled,
                                                 enricher_map: Arc::clone(&enricher_map),
+                                                slot_tracker: Arc::clone(&slot_tracker),
+                                                wp_tracker: Arc::clone(&wp_tracker),
                                                 connection_watch: Arc::clone(&connection_watch),
                                             };
 
@@ -407,6 +417,8 @@ impl TelemetryServer {
             broadcaster: Arc::clone(&self.broadcaster),
             rate_limit_disabled: self.rate_limit_disabled,
             enricher_map: Arc::clone(&self.enricher_map),
+            slot_tracker: Arc::clone(&self.slot_tracker),
+            wp_tracker: Arc::clone(&self.wp_tracker),
             connection_watch: Arc::clone(&self.connection_watch),
         };
 
@@ -462,6 +474,14 @@ impl TelemetryServer {
         self.batch_writer.clone()
     }
 
+    pub fn get_slot_tracker(&self) -> SlotTracker {
+        Arc::clone(&self.slot_tracker)
+    }
+
+    pub fn get_wp_tracker(&self) -> WpTracker {
+        Arc::clone(&self.wp_tracker)
+    }
+
     /// Flush all pending batch writes to database
     ///
     /// **For testing only**: Forces immediate flush of all buffered
@@ -502,6 +522,8 @@ struct ConnectionContext {
     broadcaster: Arc<EventBroadcaster>,
     rate_limit_disabled: bool,
     enricher_map: EnricherMap,
+    slot_tracker: SlotTracker,
+    wp_tracker: WpTracker,
     connection_watch: Arc<tokio::sync::watch::Sender<usize>>,
 }
 
@@ -517,6 +539,8 @@ async fn handle_connection_optimized(
         broadcaster,
         rate_limit_disabled,
         enricher_map,
+        slot_tracker,
+        wp_tracker,
         connection_watch,
     } = ctx;
     // Set TCP nodelay for lower latency
@@ -678,6 +702,78 @@ async fn handle_connection_optimized(
                                     .or_default();
                                 enricher.process(&event, this_event_id)
                             };
+
+                            // Update SlotTracker for block propagation convergence
+                            if let Some(slot) = enriched.slot {
+                                let evt_ts = event.timestamp();
+                                let et_raw = event.event_type() as u16;
+                                match et_raw {
+                                    42 => { // Authored
+                                        slot_tracker.entry(slot)
+                                            .and_modify(|s| {
+                                                s.authored_at = Some(evt_ts);
+                                                s.record(et_raw, evt_ts);
+                                            })
+                                            .or_insert_with(|| {
+                                                crate::slot_tracker::SlotState::new(et_raw, evt_ts, Some(evt_ts))
+                                            });
+                                    }
+                                    11 | 12 | 40 | 43 => { // BestBlockChanged, FinalizedBlockChanged, Authoring, Importing
+                                        slot_tracker.entry(slot).and_modify(|s| {
+                                            s.record(et_raw, evt_ts);
+                                        });
+                                    }
+                                    _ => {}
+                                }
+                            }
+
+                            // Update WpTracker for work package pipeline tracking
+                            {
+                                let et_raw = event.event_type() as u16;
+                                let evt_ts = event.timestamp();
+                                match et_raw {
+                                    94 => { // WorkPackageReceived
+                                        if let Some(hash) = enriched.wp_hash {
+                                            let core = enriched.core.unwrap_or(0);
+                                            let sids = enriched.service_ids.clone().unwrap_or_default();
+                                            wp_tracker.entry(hash)
+                                                .and_modify(|s| {
+                                                    s.received_by += 1;
+                                                    s.last_updated = evt_ts;
+                                                    s.dirty = true;
+                                                    s.last_activity = std::time::Instant::now();
+                                                })
+                                                .or_insert(crate::wp_tracker::WpState {
+                                                    first_seen: evt_ts,
+                                                    last_updated: evt_ts,
+                                                    core,
+                                                    service_ids: sids,
+                                                    received_by: 1,
+                                                    stage: 0,
+                                                    received_at: Some(evt_ts),
+                                                    dirty: true,
+                                                    ..Default::default()
+                                                });
+                                        }
+                                    }
+                                    92 => { // WorkPackageFailed
+                                        if let Some(hash) = enriched.wp_hash {
+                                            wp_tracker.entry(hash).and_modify(|s| {
+                                                s.mark_failed(evt_ts);
+                                            });
+                                        }
+                                    }
+                                    95 | 101 | 102 | 105 | 109 => {
+                                        if let Some(hash) = enriched.wp_hash {
+                                            let ordinal = crate::wp_tracker::event_type_to_ordinal(et_raw);
+                                            wp_tracker.entry(hash).and_modify(|s| {
+                                                s.update_stage(ordinal, evt_ts);
+                                            });
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
 
                             // Build WS envelope in ingestion thread (parallelized across 8 runtimes)
                             let id = broadcaster.next_event_id();
