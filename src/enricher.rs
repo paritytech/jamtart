@@ -368,3 +368,246 @@ impl NodeEventEnricher {
             .retain(|_, e| e.inserted_at.elapsed() <= cutoff);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::Event;
+    use crate::types::*;
+
+    fn make_wp_outline(service_ids: &[u32], wp_hash: [u8; 32]) -> WorkPackageOutline {
+        WorkPackageSummary {
+            work_package_size: 100,
+            work_package_hash: wp_hash,
+            anchor: [0u8; 32],
+            lookup_anchor_slot: 0,
+            prerequisites: vec![],
+            work_items: service_ids
+                .iter()
+                .map(|&sid| WorkItemSummary {
+                    service_id: sid,
+                    payload_size: 0,
+                    refine_gas_limit: 0,
+                    accumulate_gas_limit: 0,
+                    sum_of_extrinsic_lengths: 0,
+                    imports: vec![],
+                    num_exported_segments: 0,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn test_wp_received_populates_submission() {
+        let mut enricher = NodeEventEnricher::default();
+        let wp_hash = [42u8; 32];
+        let event = Event::WorkPackageReceived {
+            timestamp: 1000,
+            submission_or_share_id: 100,
+            core: 5,
+            outline: make_wp_outline(&[10, 20, 30], wp_hash),
+        };
+
+        let fields = enricher.process(&event, 1);
+
+        assert_eq!(fields.core, Some(5));
+        assert_eq!(fields.submission_id, Some(100));
+        assert_eq!(fields.service_ids, Some(vec![10, 20, 30]));
+        assert_eq!(fields.wp_hash, Some(wp_hash));
+    }
+
+    #[test]
+    fn test_submission_chain_lookup() {
+        let mut enricher = NodeEventEnricher::default();
+        let wp_hash = [42u8; 32];
+
+        // First: WPReceived stores context
+        let wp_event = Event::WorkPackageReceived {
+            timestamp: 1000,
+            submission_or_share_id: 100,
+            core: 5,
+            outline: make_wp_outline(&[10, 20], wp_hash),
+        };
+        enricher.process(&wp_event, 1);
+
+        // Then: Authorized with same submission_or_share_id inherits
+        let auth_event = Event::Authorized {
+            timestamp: 1001,
+            submission_or_share_id: 100,
+            cost: IsAuthorizedCost {
+                total: ExecCost { gas_used: 500, elapsed_ns: 100 },
+                load_ns: 50,
+                host_call: ExecCost { gas_used: 200, elapsed_ns: 40 },
+            },
+        };
+        let fields = enricher.process(&auth_event, 2);
+
+        assert_eq!(fields.core, Some(5));
+        assert_eq!(fields.submission_id, Some(100));
+        assert_eq!(fields.service_ids, Some(vec![10, 20]));
+        assert_eq!(fields.wp_hash, Some(wp_hash));
+    }
+
+    #[test]
+    fn test_guarantee_chain() {
+        let mut enricher = NodeEventEnricher::default();
+        let wp_hash = [42u8; 32];
+
+        // WPReceived → stores submission context
+        let wp_event = Event::WorkPackageReceived {
+            timestamp: 1000,
+            submission_or_share_id: 100,
+            core: 3,
+            outline: make_wp_outline(&[10], wp_hash),
+        };
+        enricher.process(&wp_event, 1);
+
+        // GuaranteeBuilt (submission_id=100) → inherits core from submission, stores in built_ids
+        let built_event = Event::GuaranteeBuilt {
+            timestamp: 1001,
+            submission_id: 100,
+            outline: GuaranteeSummary {
+                work_report_hash: [0u8; 32],
+                slot: 10,
+                guarantors: vec![],
+            },
+        };
+        let fields = enricher.process(&built_event, 2);
+        assert_eq!(fields.core, Some(3));
+
+        // SendingGuarantee (built_id=2) → looks up built_ids, stores in sending_ids
+        let sending_event = Event::SendingGuarantee {
+            timestamp: 1002,
+            built_id: 2,
+            recipient: [0u8; 32],
+        };
+        let fields = enricher.process(&sending_event, 3);
+        assert_eq!(fields.core, Some(3));
+
+        // GuaranteeSent (sending_id=3) → looks up sending_ids
+        let sent_event = Event::GuaranteeSent {
+            timestamp: 1003,
+            sending_id: 3,
+        };
+        let fields = enricher.process(&sent_event, 4);
+        assert_eq!(fields.core, Some(3));
+    }
+
+    #[test]
+    fn test_segment_chain() {
+        let mut enricher = NodeEventEnricher::default();
+        let wp_hash = [42u8; 32];
+
+        // WPReceived
+        let wp_event = Event::WorkPackageReceived {
+            timestamp: 1000,
+            submission_or_share_id: 100,
+            core: 7,
+            outline: make_wp_outline(&[10], wp_hash),
+        };
+        enricher.process(&wp_event, 1);
+
+        // SendingSegmentShardRequest (submission_id=100) → inherits core, stores in request_ids
+        let request_event = Event::SendingSegmentShardRequest {
+            timestamp: 1001,
+            submission_id: 100,
+            assurer: [0u8; 32],
+            proofs: false,
+            shards: vec![],
+        };
+        let fields = enricher.process(&request_event, 2);
+        assert_eq!(fields.core, Some(7));
+
+        // SegmentShardRequestSent (request_id=2) → looks up request_ids
+        let sent_event = Event::SegmentShardRequestSent {
+            timestamp: 1002,
+            request_id: 2,
+        };
+        let fields = enricher.process(&sent_event, 3);
+        assert_eq!(fields.core, Some(7));
+    }
+
+    #[test]
+    fn test_reconstructing_chain() {
+        let mut enricher = NodeEventEnricher::default();
+        let wp_hash = [42u8; 32];
+
+        // WPReceived
+        let wp_event = Event::WorkPackageReceived {
+            timestamp: 1000,
+            submission_or_share_id: 100,
+            core: 2,
+            outline: make_wp_outline(&[10], wp_hash),
+        };
+        enricher.process(&wp_event, 1);
+
+        // ReconstructingSegments (submission_id=100) → inherits core, stores in reconstructing_ids
+        let recon_event = Event::ReconstructingSegments {
+            timestamp: 1001,
+            submission_id: 100,
+            segments: vec![],
+            kind: ReconstructionKind::Trivial,
+        };
+        let fields = enricher.process(&recon_event, 2);
+        assert_eq!(fields.core, Some(2));
+
+        // SegmentsReconstructed (reconstructing_id=2) → looks up reconstructing_ids
+        let done_event = Event::SegmentsReconstructed {
+            timestamp: 1002,
+            reconstructing_id: 2,
+        };
+        let fields = enricher.process(&done_event, 3);
+        assert_eq!(fields.core, Some(2));
+    }
+
+    #[test]
+    fn test_cap_map_clears() {
+        let mut enricher = NodeEventEnricher::default();
+
+        // Insert MAX_MAP_ENTRIES + 1 submissions to trigger cap
+        // cap_map clears when len >= limit, so the (MAX_MAP_ENTRIES+1)th insert triggers clear
+        for i in 0..=MAX_MAP_ENTRIES {
+            let event = Event::WorkPackageReceived {
+                timestamp: 1000,
+                submission_or_share_id: i as u64,
+                core: 1,
+                outline: make_wp_outline(&[10], [0u8; 32]),
+            };
+            enricher.process(&event, i as u64);
+        }
+
+        // After cap triggers, map was cleared, then the last insert added 1 entry
+        assert_eq!(enricher.submissions.len(), 1);
+    }
+
+    #[test]
+    fn test_dropped_event_no_enrich() {
+        let mut enricher = NodeEventEnricher::default();
+
+        let event = Event::Dropped {
+            timestamp: 1000,
+            last_timestamp: 999,
+            num: 5,
+        };
+        let fields = enricher.process(&event, 1);
+
+        assert!(fields.slot.is_none());
+        assert!(fields.core.is_none());
+        assert!(fields.submission_id.is_none());
+        assert!(fields.service_ids.is_none());
+        assert!(fields.wp_hash.is_none());
+    }
+
+    #[test]
+    fn test_slot_extraction() {
+        let mut enricher = NodeEventEnricher::default();
+
+        let event = Event::BestBlockChanged {
+            timestamp: 1000,
+            slot: 42,
+            hash: [0u8; 32],
+        };
+        let fields = enricher.process(&event, 1);
+        assert_eq!(fields.slot, Some(42));
+    }
+}

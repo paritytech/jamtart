@@ -474,6 +474,10 @@ impl TelemetryServer {
         self.batch_writer.clone()
     }
 
+    pub fn get_enricher_map(&self) -> EnricherMap {
+        Arc::clone(&self.enricher_map)
+    }
+
     pub fn get_slot_tracker(&self) -> SlotTracker {
         Arc::clone(&self.slot_tracker)
     }

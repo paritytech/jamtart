@@ -23,6 +23,19 @@ pub fn router() -> Router<ApiState> {
         .route("/node-stats-aggregate", get(node_stats_aggregate))
         .route("/db-stats", get(db_stats))
         .route("/bottlenecks", get(bottlenecks))
+        .route("/wp-funnel", get(wp_funnel))
+}
+
+/// Map sqlx errors to appropriate HTTP status codes.
+/// Protocol errors (used for validation) → 400, everything else → 500.
+fn map_sqlx_error(context: &str, e: sqlx::Error) -> StatusCode {
+    if matches!(&e, sqlx::Error::Protocol(_)) {
+        tracing::warn!("{context} bad request: {e}");
+        StatusCode::BAD_REQUEST
+    } else {
+        tracing::error!("{context} error: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    }
 }
 
 #[derive(Deserialize)]
@@ -66,25 +79,43 @@ async fn timeseries(
         )
         .await
         .map(Json)
-        .map_err(|e| {
-            tracing::error!("grafana/timeseries error: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+        .map_err(|e| map_sqlx_error("grafana/timeseries", e))
 }
 
 async fn stats(
     Query(q): Query<TimeRangeQuery>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    state
+    let mut result = state
         .store
         .grafana_stats(q.start, q.end)
         .await
-        .map(Json)
-        .map_err(|e| {
-            tracing::error!("grafana/stats error: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+        .map_err(|e| map_sqlx_error("grafana/stats", e))?;
+
+    // Merge real-time data from LiveCounters (events_per_sec, blocks_per_sec, slots)
+    if let Some(ref tracker) = state.metrics_tracker {
+        let lc = tracker.live_counters();
+        let last_10s = lc.sum_last_n_seconds(10);
+        let active_nodes = state.telemetry_server.connection_count();
+        if let Some(obj) = result.as_object_mut() {
+            obj.insert(
+                "events_per_sec_10s".into(),
+                serde_json::json!(last_10s.events as f64 / 10.0),
+            );
+            obj.insert(
+                "blocks_per_sec_10s".into(),
+                serde_json::json!(last_10s.blocks as f64 / 10.0),
+            );
+            obj.insert("best_slot".into(), serde_json::json!(lc.latest_slot()));
+            obj.insert(
+                "finalized_slot".into(),
+                serde_json::json!(lc.finalized_slot()),
+            );
+            obj.insert("active_nodes".into(), serde_json::json!(active_nodes));
+        }
+    }
+
+    Ok(Json(result))
 }
 
 async fn cores(
@@ -96,10 +127,7 @@ async fn cores(
         .grafana_cores(q.start, q.end, q.core)
         .await
         .map(Json)
-        .map_err(|e| {
-            tracing::error!("grafana/cores error: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+        .map_err(|e| map_sqlx_error("grafana/cores", e))
 }
 
 async fn blocks_convergence(
@@ -111,10 +139,7 @@ async fn blocks_convergence(
         .grafana_blocks_convergence(q.start, q.end)
         .await
         .map(Json)
-        .map_err(|e| {
-            tracing::error!("grafana/blocks/convergence error: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+        .map_err(|e| map_sqlx_error("grafana/blocks/convergence", e))
 }
 
 async fn blocks_contents(
@@ -126,10 +151,7 @@ async fn blocks_contents(
         .grafana_blocks_contents(q.start, q.end)
         .await
         .map(Json)
-        .map_err(|e| {
-            tracing::error!("grafana/blocks/contents error: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+        .map_err(|e| map_sqlx_error("grafana/blocks/contents", e))
 }
 
 async fn services(
@@ -141,10 +163,7 @@ async fn services(
         .grafana_services(q.start, q.end)
         .await
         .map(Json)
-        .map_err(|e| {
-            tracing::error!("grafana/services error: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+        .map_err(|e| map_sqlx_error("grafana/services", e))
 }
 
 async fn nodes(
@@ -155,10 +174,7 @@ async fn nodes(
         .grafana_nodes()
         .await
         .map(Json)
-        .map_err(|e| {
-            tracing::error!("grafana/nodes error: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+        .map_err(|e| map_sqlx_error("grafana/nodes", e))
 }
 
 async fn node_stats(
@@ -173,10 +189,7 @@ async fn node_stats(
         .grafana_node_stats(q.start, q.end, nodes.as_deref())
         .await
         .map(Json)
-        .map_err(|e| {
-            tracing::error!("grafana/node-stats error: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+        .map_err(|e| map_sqlx_error("grafana/node-stats", e))
 }
 
 async fn node_stats_aggregate(
@@ -191,10 +204,7 @@ async fn node_stats_aggregate(
         .grafana_node_stats_aggregate(q.start, q.end, nodes.as_deref())
         .await
         .map(Json)
-        .map_err(|e| {
-            tracing::error!("grafana/node-stats-aggregate error: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+        .map_err(|e| map_sqlx_error("grafana/node-stats-aggregate", e))
 }
 
 async fn db_stats(
@@ -205,10 +215,7 @@ async fn db_stats(
         .grafana_db_stats()
         .await
         .map(Json)
-        .map_err(|e| {
-            tracing::error!("grafana/db-stats error: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+        .map_err(|e| map_sqlx_error("grafana/db-stats", e))
 }
 
 async fn bottlenecks(
@@ -220,8 +227,17 @@ async fn bottlenecks(
         .grafana_bottlenecks(q.start, q.end, q.core)
         .await
         .map(Json)
-        .map_err(|e| {
-            tracing::error!("grafana/bottlenecks error: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+        .map_err(|e| map_sqlx_error("grafana/bottlenecks", e))
+}
+
+async fn wp_funnel(
+    Query(q): Query<TimeRangeQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    state
+        .store
+        .grafana_wp_funnel(q.start, q.end)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/wp-funnel", e))
 }

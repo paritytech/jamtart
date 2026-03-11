@@ -94,13 +94,22 @@ impl EventStore {
         let interval_secs = interval_to_seconds(interval).unwrap_or(60);
         let pg_interval = interval_to_pg(interval);
 
-        // Select aggregate table
+        // Select aggregate table (interval-based, then retention-aware upgrade)
+        let age = Utc::now() - start;
         let table = if group_by == Some("core") {
             "core_stats_1m"
         } else if interval_secs < 60 {
-            "event_stats_30s"
+            if age > chrono::Duration::days(3) {
+                "event_stats_1m" // 30s retention is 3 days, upgrade silently
+            } else {
+                "event_stats_30s"
+            }
         } else if interval_secs < 3600 {
-            "event_stats_1m"
+            if age > chrono::Duration::days(30) {
+                "event_stats_1h" // 1m retention is 30 days, upgrade silently
+            } else {
+                "event_stats_1m"
+            }
         } else {
             "event_stats_1h"
         };

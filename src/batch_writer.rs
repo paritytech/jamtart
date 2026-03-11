@@ -641,3 +641,130 @@ async fn flush_events(store: &Arc<EventStore>, event_batch: &mut Vec<EventRecord
     );
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::Event;
+    use crate::types::*;
+    use std::sync::Arc;
+
+    fn zero_exec() -> ExecCost {
+        ExecCost { gas_used: 0, elapsed_ns: 0 }
+    }
+
+    fn zero_refine_host() -> RefineHostCallCost {
+        RefineHostCallCost {
+            lookup: zero_exec(), vm: zero_exec(), mem: zero_exec(),
+            invoke: zero_exec(), other: zero_exec(),
+        }
+    }
+
+    fn zero_accum_host() -> AccumulateHostCallCost {
+        AccumulateHostCallCost {
+            state: zero_exec(), lookup: zero_exec(), preimage: zero_exec(),
+            service: zero_exec(), transfer: zero_exec(), transfer_dest_gas: 0,
+            other: zero_exec(),
+        }
+    }
+
+    /// Test: BlockExecuted gas extraction produces correct service_rows
+    #[test]
+    fn test_service_rows_from_block_executed() {
+        let event = Event::BlockExecuted {
+            timestamp: 1000,
+            authoring_or_importing_id: 1,
+            accumulate_costs: vec![
+                (10, AccumulateCost {
+                    num_calls: 1, num_transfers: 0, num_items: 1,
+                    total: ExecCost { gas_used: 500, elapsed_ns: 100 },
+                    load_ns: 50, host_call: zero_accum_host(),
+                }),
+                (20, AccumulateCost {
+                    num_calls: 2, num_transfers: 1, num_items: 3,
+                    total: ExecCost { gas_used: 1200, elapsed_ns: 200 },
+                    load_ns: 60, host_call: zero_accum_host(),
+                }),
+            ],
+        };
+
+        // Simulate the extraction pattern from flush_events
+        let mut service_rows: Vec<(i32, Option<i64>)> = Vec::new();
+        if let Event::BlockExecuted { accumulate_costs, .. } = &event {
+            for (service_id, cost) in accumulate_costs {
+                service_rows.push((*service_id as i32, Some(cost.total.gas_used as i64)));
+            }
+        }
+
+        assert_eq!(service_rows.len(), 2);
+        assert_eq!(service_rows[0], (10, Some(500)));
+        assert_eq!(service_rows[1], (20, Some(1200)));
+    }
+
+    /// Test: Authorized gas assigns to first service only
+    #[test]
+    fn test_authorized_gas_first_only() {
+        let event = Event::Authorized {
+            timestamp: 1000,
+            submission_or_share_id: 100,
+            cost: IsAuthorizedCost {
+                total: ExecCost { gas_used: 999, elapsed_ns: 50 },
+                load_ns: 10,
+                host_call: ExecCost { gas_used: 100, elapsed_ns: 20 },
+            },
+        };
+
+        let gas = event.gas_per_service_item(3);
+        assert_eq!(gas.len(), 3);
+        assert_eq!(gas[0], Some(999));
+        assert_eq!(gas[1], None);
+        assert_eq!(gas[2], None);
+    }
+
+    /// Test: Status event fields are correctly extracted for node_stats rows
+    #[test]
+    fn test_node_stats_from_status() {
+        let event = Event::Status {
+            timestamp: 1000,
+            num_peers: 50,
+            num_val_peers: 30,
+            num_sync_peers: 10,
+            num_guarantees: vec![0, 3, 5, 0, 2],
+            num_shards: 100,
+            shards_size: 50000,
+            num_preimages: 20,
+            preimages_size: 1000,
+        };
+
+        // Simulate the extraction pattern from flush_events
+        if let Event::Status {
+            num_peers, num_val_peers, num_sync_peers,
+            num_guarantees, num_shards, shards_size,
+            num_preimages, preimages_size, ..
+        } = &event {
+            let min_g = num_guarantees.iter().copied().min().unwrap_or(0) as i16;
+            let max_g = num_guarantees.iter().copied().max().unwrap_or(0) as i16;
+            let avg_g = if num_guarantees.is_empty() {
+                0.0
+            } else {
+                num_guarantees.iter().map(|&v| v as f32).sum::<f32>()
+                    / num_guarantees.len() as f32
+            };
+            let zero_g = num_guarantees.iter().filter(|&&v| v == 0).count() as i16;
+
+            assert_eq!(min_g, 0);
+            assert_eq!(max_g, 5);
+            assert!((avg_g - 2.0).abs() < f32::EPSILON);
+            assert_eq!(zero_g, 2);
+            assert_eq!(*num_peers, 50);
+            assert_eq!(*num_val_peers, 30);
+            assert_eq!(*num_sync_peers, 10);
+            assert_eq!(*num_shards, 100);
+            assert_eq!(*shards_size, 50000);
+            assert_eq!(*num_preimages, 20);
+            assert_eq!(*preimages_size, 1000);
+        } else {
+            panic!("Expected Status event");
+        }
+    }
+}

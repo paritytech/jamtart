@@ -233,17 +233,24 @@ async fn main() -> anyhow::Result<()> {
     let broadcaster = telemetry_server.get_broadcaster();
     let batch_writer = Arc::new(telemetry_server.get_batch_writer());
 
-    // Spawn tracker flush tasks (SlotTracker + WpTracker) — only when DB is available
+    // Spawn tracker flush tasks (SlotTracker + WpTracker + Enricher cleanup)
     if let Some(ref store) = store {
         let slot_tracker = telemetry_server.get_slot_tracker();
         let wp_tracker = telemetry_server.get_wp_tracker();
+        let enricher_map = telemetry_server.get_enricher_map();
         let pool = store.pool().clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            let mut tick_count: u64 = 0;
             loop {
                 interval.tick().await;
                 tart_backend::slot_tracker::flush_slot_tracker(&slot_tracker, &pool).await;
                 tart_backend::wp_tracker::flush_wp_tracker(&wp_tracker, &pool).await;
+                // Sweep stale enrichers every 30 ticks (~2.5 min)
+                tick_count += 1;
+                if tick_count % 30 == 0 {
+                    enricher_map.retain(|_, e| !e.is_stale());
+                }
             }
         });
     }

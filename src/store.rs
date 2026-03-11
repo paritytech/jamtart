@@ -605,7 +605,7 @@ impl EventStore {
     /// Only called for the 21 low-volume pipeline event types + BlockExecuted.
     pub async fn store_event_services_batch(
         &self,
-        rows: &[(i64, &str, i16, i32, Option<i64>)], // (pg_micros, node_id, event_type, service_id, gas_used)
+        rows: &[(i64, &str, i16, i32, Option<i64>)], // (unix_micros, node_id, event_type, service_id, gas_used)
     ) -> Result<(), sqlx::Error> {
         if rows.is_empty() {
             return Ok(());
@@ -619,11 +619,11 @@ impl EventStore {
         buf.extend_from_slice(&0i32.to_be_bytes());
         buf.extend_from_slice(&0i32.to_be_bytes());
 
-        for (pg_micros, node_id, event_type, service_id, gas_used) in rows {
+        for (unix_micros, node_id, event_type, service_id, gas_used) in rows {
             buf.extend_from_slice(&FIELD_COUNT.to_be_bytes());
 
             // timestamp (TIMESTAMPTZ)
-            let ts = *pg_micros - PG_EPOCH_UNIX_MICROS;
+            let ts = *unix_micros - PG_EPOCH_UNIX_MICROS;
             buf.extend_from_slice(&8i32.to_be_bytes());
             buf.extend_from_slice(&ts.to_be_bytes());
 
@@ -680,14 +680,14 @@ impl EventStore {
         buf.extend_from_slice(&0i32.to_be_bytes());
         buf.extend_from_slice(&0i32.to_be_bytes());
 
-        for (pg_micros, node_id, num_peers, num_val_peers, num_sync_peers,
+        for (unix_micros, node_id, num_peers, num_val_peers, num_sync_peers,
              num_shards, shards_size, num_preimages, preimages_size,
              min_guarantees, max_guarantees, avg_guarantees, zero_guarantee_cores) in rows
         {
             buf.extend_from_slice(&FIELD_COUNT.to_be_bytes());
 
             // timestamp
-            let ts = *pg_micros - PG_EPOCH_UNIX_MICROS;
+            let ts = *unix_micros - PG_EPOCH_UNIX_MICROS;
             buf.extend_from_slice(&8i32.to_be_bytes());
             buf.extend_from_slice(&ts.to_be_bytes());
 
