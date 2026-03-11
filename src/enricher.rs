@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
+use tracing::debug;
 
 use crate::batch_writer::NodeId;
 use crate::events::Event;
@@ -79,12 +80,19 @@ fn cap_map<V>(map: &mut HashMap<u64, V>, limit: usize, get_age: impl Fn(&V) -> I
     if map.len() < limit {
         return;
     }
-    let to_remove = map.len() / 4;
+    let before = map.len();
+    let to_remove = before / 4;
     let mut by_age: Vec<(u64, Instant)> = map.iter().map(|(&k, v)| (k, get_age(v))).collect();
     by_age.sort_unstable_by_key(|(_, t)| *t); // oldest first
     for (k, _) in by_age.into_iter().take(to_remove) {
         map.remove(&k);
     }
+    debug!(
+        before,
+        after = map.len(),
+        removed = to_remove,
+        "enricher partial eviction"
+    );
 }
 
 impl NodeEventEnricher {

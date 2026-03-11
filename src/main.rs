@@ -149,7 +149,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "tart_backend=info,tower_http=info,sqlx=warn".into()),
+                .unwrap_or_else(|_| "tart_backend=info,tower_http=debug,sqlx=warn".into()),
         )
         .with(tracing_subscriber::fmt::layer())
         .init();

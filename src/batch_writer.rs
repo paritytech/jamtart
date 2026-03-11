@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::Mutex;
 use tokio::time::interval;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::enricher::EnrichedFields;
 use crate::events::{Event, NodeInformation};
@@ -253,6 +253,13 @@ async fn writer_worker(
     let mut stats_interval = interval(NODE_STATS_INTERVAL);
     stats_interval.tick().await;
 
+    // Periodic flush stats (logged at DEBUG every 5s)
+    let mut flush_stats_last = std::time::Instant::now();
+    let mut flush_stats_events: u64 = 0;
+    let mut flush_stats_count: u32 = 0;
+    let mut flush_stats_total_us: u64 = 0;
+    let mut flush_stats_max_us: u64 = 0;
+
     loop {
         // Phase 1: Acquire lock and drain available events into local batch.
         // Hold lock only for try_recv() calls (microseconds), release before DB I/O.
@@ -270,14 +277,40 @@ async fn writer_worker(
         // Phase 2: Flush EVENT batch to DB (slow, milliseconds — NO lock held)
         // In no-database mode, just discard the events (channel was drained to prevent OOM)
         if !event_batch.is_empty() {
+            let batch_len = event_batch.len() as u64;
             if let Some(ref store) = store {
+                let t0 = std::time::Instant::now();
                 let result = flush_events(store, &mut event_batch).await;
+                let elapsed_us = t0.elapsed().as_micros() as u64;
+                flush_stats_events += batch_len;
+                flush_stats_count += 1;
+                flush_stats_total_us += elapsed_us;
+                flush_stats_max_us = flush_stats_max_us.max(elapsed_us);
                 if let Err(e) = result {
                     error!("Writer {} event flush error: {}", id, e);
                 }
             } else {
                 event_batch.clear();
             }
+        }
+
+        // Periodic flush stats (every 5 seconds)
+        let stats_elapsed = flush_stats_last.elapsed();
+        if stats_elapsed.as_secs() >= 5 && flush_stats_count > 0 {
+            let avg_us = flush_stats_total_us / flush_stats_count as u64;
+            debug!(
+                "Writer {}: {:.0} events/s, flushes={}, avg_flush={}us, max_flush={}us",
+                id,
+                flush_stats_events as f64 / stats_elapsed.as_secs_f64(),
+                flush_stats_count,
+                avg_us,
+                flush_stats_max_us,
+            );
+            flush_stats_events = 0;
+            flush_stats_count = 0;
+            flush_stats_total_us = 0;
+            flush_stats_max_us = 0;
+            flush_stats_last = std::time::Instant::now();
         }
 
         // Phase 3: Flush node connect/disconnect immediately
@@ -511,7 +544,7 @@ async fn flush_events(store: &Arc<EventStore>, event_batch: &mut Vec<EventRecord
 
     let start = std::time::Instant::now();
 
-    debug!("Flushing {} events", event_count);
+    trace!("Flushing {} events", event_count);
 
     // Collect event_services rows and node_stats rows before consuming the batch
     let mut service_rows: Vec<(i64, String, i16, i32, Option<i64>)> = Vec::new();
@@ -634,7 +667,7 @@ async fn flush_events(store: &Arc<EventStore>, event_batch: &mut Vec<EventRecord
     // Update metrics
     metrics::counter!("telemetry_events_flushed").increment(event_count as u64);
 
-    debug!(
+    trace!(
         "Flush completed: {} events in {:?}",
         event_count,
         start.elapsed()

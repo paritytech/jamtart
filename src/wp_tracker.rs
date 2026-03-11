@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, TimeZone, Utc};
 use dashmap::DashMap;
 use sqlx::PgPool;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::types::JCE_EPOCH_UNIX_MICROS;
 
@@ -260,6 +260,17 @@ DO UPDATE SET
 
     for hash in &to_evict {
         tracker.remove(hash);
+    }
+
+    let flushed = to_flush.len();
+    let evicted = to_evict.len();
+    if flushed > 0 || evicted > 0 {
+        debug!(
+            flushed,
+            evicted,
+            active = tracker.len(),
+            "wp_tracker flush complete"
+        );
     }
 }
 

@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use parking_lot::RwLock;
 use tokio::sync::mpsc;
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::events::Event;
 use crate::live_counters::LiveCounters;
@@ -523,7 +523,7 @@ fn extract_slot(event: &Event) -> Option<u32> {
 pub async fn run(shared: Arc<MetricsTracker>, mut rx: mpsc::Receiver<MetricsEvent>) {
     let mut state = TrackerState::new(shared.clone());
     let live_counters = shared.live_counters.clone();
-    debug!("MetricsTracker task started");
+    info!("MetricsTracker task started");
 
     let now_secs = || -> u64 {
         std::time::SystemTime::now()
@@ -553,7 +553,7 @@ pub async fn run(shared: Arc<MetricsTracker>, mut rx: mpsc::Receiver<MetricsEven
                 state.maybe_cleanup();
             }
             None => {
-                debug!("MetricsTracker channel closed, shutting down");
+                info!("MetricsTracker channel closed, shutting down");
                 break;
             }
         }
