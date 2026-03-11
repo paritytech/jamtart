@@ -301,6 +301,8 @@ pub fn create_api_router(state: ApiState) -> Router {
             axum::routing::post(batch_workpackage_journeys),
         )
         .route("/api/ws", get(websocket_handler))
+        // Grafana-optimized API endpoints
+        .nest("/api/grafana", crate::grafana::router())
         // Middleware layers wrap bottom-up: last .layer() is outermost.
         // Order (outermost first): CORS → Compression → Headers → Body limit → Timeout
         .layer(TimeoutLayer::new(std::time::Duration::from_secs(30))) // Innermost: timeout on handler

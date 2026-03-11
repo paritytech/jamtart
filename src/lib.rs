@@ -7,6 +7,8 @@ pub mod encoding;
 pub mod enricher;
 pub mod event_broadcaster;
 pub mod events;
+pub mod grafana;
+pub mod grafana_store;
 pub mod health;
 pub mod jam_rpc;
 pub mod live_counters;
