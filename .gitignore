@@ -98,6 +98,7 @@ build/
 docs/_build/
 docs/build/
 
-# Markdown files (except README)
+# Markdown files (except README and docs/)
 *.md
 !README.md
+!docs/*.md
