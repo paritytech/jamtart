@@ -155,7 +155,7 @@ impl EventStore {
         .execute(&self.write_pool)
         .await?;
 
-        tracing::debug!("Batch inserted/updated {} node connections", nodes.len());
+        tracing::trace!("Batch inserted/updated {} node connections", nodes.len());
         Ok(())
     }
 
@@ -185,7 +185,7 @@ impl EventStore {
         .execute(&self.write_pool)
         .await?;
 
-        tracing::debug!("Batch disconnected {} nodes", node_ids.len());
+        tracing::trace!("Batch disconnected {} nodes", node_ids.len());
         Ok(())
     }
 
@@ -417,7 +417,7 @@ impl EventStore {
             .await
             {
                 Ok(_) => {
-                    tracing::debug!("Stats cache updated successfully");
+                    tracing::trace!("Stats cache updated successfully");
                 }
                 Err(e) => {
                     tracing::warn!("Failed to update stats cache: {}", e);
@@ -524,7 +524,7 @@ impl EventStore {
         copy_in.send(buf.as_slice()).await?;
         let rows_affected = copy_in.finish().await?;
 
-        tracing::debug!(
+        tracing::trace!(
             "COPY completed: {} events ({} rows affected)",
             events.len(),
             rows_affected
@@ -584,7 +584,7 @@ impl EventStore {
 
         match tx.commit().await {
             Ok(_) => {
-                tracing::debug!(
+                tracing::trace!(
                     "Successfully committed simple batch of {} events",
                     event_count
                 );

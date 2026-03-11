@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{broadcast, mpsc, oneshot};
-use tracing::debug;
+use tracing::trace;
 
 /// Size of the main broadcast channel
 /// 500K provides ~5 seconds of buffer at peak throughput (100K events/sec)
@@ -406,7 +406,7 @@ impl EventBroadcaster {
 
                         if debug_last_log.elapsed() >= std::time::Duration::from_secs(2) {
                             let elapsed = debug_last_log.elapsed().as_secs_f64();
-                            debug!(
+                            trace!(
                                 "Aggregator stats: {:.0} events/s, drains={}, max_drain_events={}, max_drain_us={}, mpsc_lag={}",
                                 debug_events_total as f64 / elapsed,
                                 debug_drain_count,
