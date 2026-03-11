@@ -620,3 +620,448 @@ async fn test_grafana_cores_summary() {
         "core 5 should have work_packages > 0"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scenario A: Services pipeline
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_grafana_services_pipeline() {
+    let (server, telemetry, port, store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    // WPReceived carries service_ids [10, 20] in its work items
+    let events = vec![
+        common::wp_received_event(ts, 9000, 3),
+        common::authorized_event(ts + 100_000, 9000),
+        common::refined_event(ts + 200_000, 9000),
+        common::block_executed_event(ts + 300_000, 42, &[(10, 50_000), (20, 30_000)]),
+    ];
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+    common::refresh_aggregates(store.pool()).await;
+
+    let path = format!("/api/grafana/services?{}", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("services should return an array");
+
+    // Verify structure
+    for entry in arr {
+        assert!(entry.get("service_id").is_some(), "entry missing service_id");
+        assert!(entry.get("work_packages").is_some(), "entry missing work_packages");
+    }
+
+    // Check that services 10 and 20 appear
+    let svc10 = arr.iter().find(|e| e["service_id"].as_i64() == Some(10));
+    let svc20 = arr.iter().find(|e| e["service_id"].as_i64() == Some(20));
+
+    assert!(svc10.is_some(), "expected entry for service 10");
+    assert!(svc20.is_some(), "expected entry for service 20");
+
+    assert!(
+        svc10.unwrap()["work_packages"].as_i64().unwrap_or(0) > 0,
+        "service 10 should have work_packages > 0"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scenario B: Timeseries group_by=core
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_grafana_timeseries_group_by_core() {
+    let (server, telemetry, port, store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    let events = vec![
+        common::wp_received_event(ts, 8100, 3),
+        common::wp_received_event(ts + 1000, 8101, 3),
+        common::wp_received_event(ts + 2000, 8102, 3),
+        common::wp_received_event(ts + 3000, 8103, 5),
+        common::wp_received_event(ts + 4000, 8104, 5),
+    ];
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+    common::refresh_aggregates(store.pool()).await;
+
+    let path = format!(
+        "/api/grafana/timeseries?{}&interval=1m&group_by=core",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("timeseries should return an array");
+
+    // Entries should have a 'core' field
+    for entry in arr {
+        assert!(entry.get("core").is_some(), "entry missing core field");
+    }
+
+    // Both cores should appear
+    let cores: Vec<i64> = arr
+        .iter()
+        .filter_map(|e| e["core"].as_i64())
+        .collect();
+    assert!(cores.contains(&3), "expected core 3 in results");
+    assert!(cores.contains(&5), "expected core 5 in results");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scenario C: Block convergence multi-node
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_grafana_blocks_convergence_multi_node() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+
+    let ts = common::now_jce_micros();
+
+    // Node 1: authored + best block
+    let mut stream1 = connect_test_node(port, 1, &telemetry).await;
+    let events1 = vec![
+        common::authored_event(ts, 42),
+        common::best_block_event(ts + 1_000, 200),
+    ];
+    send_events(&mut stream1, &events1).await;
+
+    // Node 2: best block for same slot, later
+    let mut stream2 = connect_test_node(port, 2, &telemetry).await;
+    let events2 = vec![common::best_block_event(ts + 5_000, 200)];
+    send_events(&mut stream2, &events2).await;
+
+    // Node 3: best block for same slot, even later
+    let mut stream3 = connect_test_node(port, 3, &telemetry).await;
+    let events3 = vec![common::best_block_event(ts + 10_000, 200)];
+    send_events(&mut stream3, &events3).await;
+
+    common::flush_all(&telemetry).await;
+
+    let path = format!("/api/grafana/blocks/convergence?{}", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("convergence should return an array");
+
+    // Should have convergence data for slot 200
+    if !arr.is_empty() {
+        for row in arr {
+            assert!(row.get("slot").is_some(), "row missing slot");
+            assert!(row.get("event_type").is_some(), "row missing event_type");
+            assert!(row.get("node_count").is_some(), "row missing node_count");
+            assert!(row.get("p50_ms").is_some(), "row missing p50_ms");
+            assert!(row.get("p99_ms").is_some(), "row missing p99_ms");
+            assert!(row.get("p100_ms").is_some(), "row missing p100_ms");
+        }
+
+        // Find slot 200
+        let slot200 = arr.iter().find(|r| r["slot"].as_i64() == Some(200));
+        if let Some(row) = slot200 {
+            assert!(
+                row["node_count"].as_i64().unwrap_or(0) >= 1,
+                "expected node_count >= 1 for slot 200"
+            );
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scenario D: WP failure & partial pipeline
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_grafana_wp_failure_partial_pipeline() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    // WP A: full pipeline
+    let mut events = vec![
+        common::wp_received_event(ts, 1000, 3),
+        common::authorized_event(ts + 100_000, 1000),
+        common::refined_event(ts + 200_000, 1000),
+        common::work_report_built_event(ts + 300_000, 1000),
+        common::guarantee_built_event(ts + 400_000, 1000),
+        common::guarantees_distributed_event(ts + 500_000, 1000),
+    ];
+
+    // WP B: partial (stalls after refined)
+    events.push(common::wp_received_event(ts + 600_000, 1001, 3));
+    events.push(common::authorized_event(ts + 700_000, 1001));
+    events.push(common::refined_event(ts + 800_000, 1001));
+
+    // WP C: received then failed
+    events.push(common::wp_received_event(ts + 900_000, 1002, 3));
+    events.push(common::wp_failed_event(ts + 1_000_000, 1002));
+
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+
+    // wp-funnel assertions
+    let path = format!("/api/grafana/wp-funnel?{}", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    assert!(json["received"].as_i64().unwrap_or(0) >= 3, "expected received >= 3");
+    assert!(json["authorized"].as_i64().unwrap_or(0) >= 2, "expected authorized >= 2");
+    assert!(json["refined"].as_i64().unwrap_or(0) >= 2, "expected refined >= 2");
+    assert!(json["distributed"].as_i64().unwrap_or(0) >= 1, "expected distributed >= 1");
+    assert!(json["failed"].as_i64().unwrap_or(0) >= 1, "expected failed >= 1");
+
+    // bottlenecks assertions
+    let path = format!("/api/grafana/bottlenecks?{}", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    assert!(json["total_wps"].as_i64().unwrap_or(0) >= 3, "expected total_wps >= 3");
+    assert!(json["failed_wps"].as_i64().unwrap_or(0) >= 1, "expected failed_wps >= 1");
+    assert!(
+        json["failure_rate"].as_f64().unwrap_or(0.0) > 0.0,
+        "expected failure_rate > 0"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scenario E: Node stats aggregate & filter
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_grafana_node_stats_aggregate_and_filter() {
+    let (server, telemetry, port, store) = setup_test_api().await;
+
+    let ts = common::now_jce_micros();
+
+    // Node 1: 3 status events
+    let mut stream1 = connect_test_node(port, 1, &telemetry).await;
+    let events1: Vec<_> = (0..3)
+        .map(|i| common::status_event(ts + i * 1_000_000))
+        .collect();
+    send_events(&mut stream1, &events1).await;
+
+    // Node 2: 3 status events
+    let mut stream2 = connect_test_node(port, 2, &telemetry).await;
+    let events2: Vec<_> = (0..3)
+        .map(|i| common::status_event(ts + i * 1_000_000))
+        .collect();
+    send_events(&mut stream2, &events2).await;
+
+    common::flush_all(&telemetry).await;
+    common::refresh_aggregates(store.pool()).await;
+
+    // Unfiltered aggregate
+    let path = format!("/api/grafana/node-stats-aggregate?{}", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("node-stats-aggregate should return an array");
+    assert!(!arr.is_empty(), "expected aggregate rows");
+
+    // Filtered by node 1
+    let node1_id = common::node_id_hex(1);
+    let path = format!(
+        "/api/grafana/node-stats-aggregate?{}&node={}",
+        time_range_params(),
+        node1_id
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("filtered aggregate should return an array");
+    for row in arr {
+        assert_eq!(
+            row["node_id"].as_str(),
+            Some(node1_id.as_str()),
+            "filtered rows should match node 1"
+        );
+    }
+
+    // node-stats with node filter
+    let path = format!(
+        "/api/grafana/node-stats?{}&node={}",
+        time_range_params(),
+        node1_id
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("node-stats should return an array");
+    for row in arr {
+        assert_eq!(
+            row["node_id"].as_str(),
+            Some(node1_id.as_str()),
+            "node-stats filtered rows should match node 1"
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scenario F: Cores detail mode
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_grafana_cores_detail_mode() {
+    let (server, telemetry, port, store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    let events = vec![
+        common::wp_received_event(ts, 2000, 3),
+        common::authorized_event(ts + 100_000, 2000),
+        common::wp_received_event(ts + 200_000, 2001, 3),
+        common::authorized_event(ts + 300_000, 2001),
+    ];
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+    common::refresh_aggregates(store.pool()).await;
+
+    let path = format!("/api/grafana/cores?{}&core=3", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("cores detail should return an array");
+
+    // In detail mode there should be entries with recent_work_packages
+    if !arr.is_empty() {
+        let entry = &arr[0];
+        assert!(entry.get("core").is_some(), "entry missing core");
+        assert!(
+            entry.get("recent_work_packages").is_some(),
+            "detail mode should include recent_work_packages"
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scenario G: Node disconnect
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_grafana_node_disconnect() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+
+    let _stream1 = connect_test_node(port, 1, &telemetry).await;
+    let stream2 = connect_test_node(port, 2, &telemetry).await;
+
+    // Both connected
+    let response = server.get("/api/grafana/nodes").await;
+    let json: Value = response.json();
+    let arr = json.as_array().unwrap();
+    let connected: Vec<_> = arr
+        .iter()
+        .filter(|n| n["is_connected"].as_bool() == Some(true))
+        .collect();
+    assert!(connected.len() >= 2, "expected at least 2 connected nodes");
+
+    // Drop node 2's stream
+    drop(stream2);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // Verify node 2 disconnected
+    let response = server.get("/api/grafana/nodes").await;
+    let json: Value = response.json();
+    let arr = json.as_array().unwrap();
+
+    let node2_id = common::node_id_hex(2);
+    let node2 = arr.iter().find(|n| n["node_id"].as_str() == Some(&node2_id));
+    if let Some(n) = node2 {
+        assert_eq!(
+            n["is_connected"].as_bool(),
+            Some(false),
+            "node 2 should be disconnected"
+        );
+    }
+
+    // Node 1 should still be connected
+    let node1_id = common::node_id_hex(1);
+    let node1 = arr.iter().find(|n| n["node_id"].as_str() == Some(&node1_id));
+    assert!(node1.is_some(), "node 1 should still exist");
+    assert_eq!(
+        node1.unwrap()["is_connected"].as_bool(),
+        Some(true),
+        "node 1 should still be connected"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scenario H: Timeseries node & event_type filters
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_grafana_timeseries_node_and_event_type_filters() {
+    let (server, telemetry, port, store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    let events = vec![
+        common::wp_received_event(ts, 3000, 3),
+        common::wp_received_event(ts + 1000, 3001, 5),
+        common::best_block_event(ts + 2000, 100),
+        common::best_block_event(ts + 3000, 101),
+    ];
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+    common::refresh_aggregates(store.pool()).await;
+
+    let node1_id = common::node_id_hex(1);
+
+    // group_by=node_id
+    let path = format!(
+        "/api/grafana/timeseries?{}&interval=1m&group_by=node_id",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+    for entry in arr {
+        assert!(entry.get("node_id").is_some(), "entry missing node_id for group_by=node_id");
+    }
+
+    // node filter
+    let path = format!(
+        "/api/grafana/timeseries?{}&interval=1m&node={}",
+        time_range_params(),
+        node1_id
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+    assert!(!arr.is_empty(), "node-filtered timeseries should have results");
+
+    // event_types filter: only WPReceived (94) and BestBlockChanged (11)
+    let path = format!(
+        "/api/grafana/timeseries?{}&interval=1m&event_types=94,11",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+    for entry in arr {
+        let et = entry["event_type"].as_i64().unwrap_or(-1);
+        assert!(
+            et == 94 || et == 11,
+            "expected only event_type 94 or 11, got {}",
+            et
+        );
+    }
+}

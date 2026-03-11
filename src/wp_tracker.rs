@@ -304,3 +304,83 @@ impl From<&WpState> for WpStateSnapshot {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sequential_pipeline() {
+        let mut state = WpState::default();
+        state.update_stage(0, 100);
+        state.update_stage(1, 200);
+        state.update_stage(2, 300);
+        state.update_stage(3, 400);
+        state.update_stage(4, 500);
+        state.update_stage(5, 600);
+
+        assert_eq!(state.received_at, Some(100));
+        assert_eq!(state.authorized_at, Some(200));
+        assert_eq!(state.refined_at, Some(300));
+        assert_eq!(state.report_built_at, Some(400));
+        assert_eq!(state.guarantee_built_at, Some(500));
+        assert_eq!(state.distributed_at, Some(600));
+        assert_eq!(state.stage, 5);
+        assert!(state.dirty);
+        assert_eq!(state.last_updated, 600);
+    }
+
+    #[test]
+    fn idempotent_stage() {
+        let mut state = WpState::default();
+        state.update_stage(0, 100);
+        state.update_stage(0, 999);
+        assert_eq!(state.received_at, Some(100)); // not overwritten
+        assert_eq!(state.last_updated, 999); // last_updated still advances
+    }
+
+    #[test]
+    fn out_of_order_stage() {
+        let mut state = WpState::default();
+        state.update_stage(3, 100);
+        state.update_stage(1, 200);
+        assert_eq!(state.stage, 3); // only advances forward
+        assert_eq!(state.report_built_at, Some(100));
+        assert_eq!(state.authorized_at, Some(200));
+    }
+
+    #[test]
+    fn mark_failed() {
+        let mut state = WpState::default();
+        state.mark_failed(500);
+        assert_eq!(state.failed_at, Some(500));
+        assert!(state.dirty);
+        assert_eq!(state.last_updated, 500);
+    }
+
+    #[test]
+    fn mark_failed_idempotent() {
+        let mut state = WpState::default();
+        state.mark_failed(500);
+        state.mark_failed(999);
+        assert_eq!(state.failed_at, Some(500)); // first call wins
+        assert_eq!(state.last_updated, 999); // last_updated still advances
+    }
+
+    #[test]
+    fn event_type_to_ordinal_known() {
+        assert_eq!(event_type_to_ordinal(94), 0);
+        assert_eq!(event_type_to_ordinal(95), 1);
+        assert_eq!(event_type_to_ordinal(101), 2);
+        assert_eq!(event_type_to_ordinal(102), 3);
+        assert_eq!(event_type_to_ordinal(105), 4);
+        assert_eq!(event_type_to_ordinal(109), 5);
+    }
+
+    #[test]
+    fn event_type_to_ordinal_unknown() {
+        assert_eq!(event_type_to_ordinal(0), 0);
+        assert_eq!(event_type_to_ordinal(999), 0);
+        assert_eq!(event_type_to_ordinal(92), 0); // failure handled separately
+    }
+}

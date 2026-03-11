@@ -1587,6 +1587,14 @@ impl Encode for Event {
             } => {
                 submission_id.encode(buf)?;
             }
+            Event::WorkPackageFailed {
+                submission_or_share_id,
+                reason,
+                ..
+            } => {
+                submission_or_share_id.encode(buf)?;
+                reason.encode(buf)?;
+            }
             _ => {
                 todo!("Event::Encode not implemented for {:?}", self.event_type())
             }
@@ -1647,6 +1655,7 @@ impl Encode for Event {
             Event::GuaranteeBuilt { outline, .. } => 8 + outline.encoded_size(),
             Event::WorkReportBuilt { outline, .. } => 8 + outline.encoded_size(),
             Event::GuaranteesDistributed { .. } => 8, // submission_id only
+            Event::WorkPackageFailed { reason, .. } => 8 + reason.encoded_size(),
             _ => todo!(
                 "Event::encoded_size not implemented for {:?}",
                 self.event_type()

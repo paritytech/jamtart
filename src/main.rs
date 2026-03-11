@@ -244,7 +244,12 @@ async fn main() -> anyhow::Result<()> {
             let mut tick_count: u64 = 0;
             loop {
                 interval.tick().await;
-                tart_backend::slot_tracker::flush_slot_tracker(&slot_tracker, &pool).await;
+                tart_backend::slot_tracker::flush_slot_tracker(
+                    &slot_tracker,
+                    &pool,
+                    std::time::Duration::from_secs(10),
+                    std::time::Duration::from_secs(60),
+                ).await;
                 tart_backend::wp_tracker::flush_wp_tracker(&wp_tracker, &pool).await;
                 // Sweep stale enrichers every 30 ticks (~2.5 min)
                 tick_count += 1;

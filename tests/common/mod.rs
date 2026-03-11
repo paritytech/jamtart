@@ -181,7 +181,7 @@ pub async fn refresh_aggregates(pool: &sqlx::PgPool) {
 pub async fn flush_all(server: &Arc<TelemetryServer>) {
     sleep(Duration::from_millis(100)).await;
     server.flush_writes().await.expect("Flush writes failed");
-    server.flush_trackers().await;
+    server.flush_trackers_for_test().await;
 }
 
 /// Construct a Status event (event_type=10) with the given timestamp.
@@ -251,7 +251,11 @@ pub fn wp_received_event(ts: u64, submission_id: u64, core: u16) -> Event {
         core,
         outline: WorkPackageSummary {
             work_package_size: 2048,
-            work_package_hash: [0xCC; 32],
+            work_package_hash: {
+                let mut h = [0xCC; 32];
+                h[..8].copy_from_slice(&submission_id.to_le_bytes());
+                h
+            },
             anchor: [0xAA; 32],
             lookup_anchor_slot: 100,
             prerequisites: vec![],
@@ -355,6 +359,22 @@ pub fn guarantees_distributed_event(ts: u64, submission_id: u64) -> Event {
         timestamp: ts,
         submission_id,
     }
+}
+
+/// Construct a WorkPackageFailed event (event_type=92).
+#[allow(dead_code)]
+pub fn wp_failed_event(ts: u64, submission_id: u64) -> Event {
+    Event::WorkPackageFailed {
+        timestamp: ts,
+        submission_or_share_id: submission_id,
+        reason: BoundedString::new("test failure").unwrap(),
+    }
+}
+
+/// Returns the hex-encoded node_id for a test node created with `connect_test_node(port, id, server)`.
+#[allow(dead_code)]
+pub fn node_id_hex(node_id: u8) -> String {
+    hex::encode([node_id; 32])
 }
 
 /// Construct a BlockExecuted event (event_type=47) with service gas data.

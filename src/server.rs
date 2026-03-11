@@ -490,7 +490,27 @@ impl TelemetryServer {
     /// For testing only — in production these flush every 5s via the periodic task.
     pub async fn flush_trackers(&self) {
         if let Some(ref store) = self.store {
-            crate::slot_tracker::flush_slot_tracker(&self.slot_tracker, store.pool()).await;
+            crate::slot_tracker::flush_slot_tracker(
+                &self.slot_tracker,
+                store.pool(),
+                std::time::Duration::from_secs(10),
+                std::time::Duration::from_secs(60),
+            )
+            .await;
+            crate::wp_tracker::flush_wp_tracker(&self.wp_tracker, store.pool()).await;
+        }
+    }
+
+    /// Test-only flush: bypasses the age gate so slot_tracker entries flush immediately.
+    pub async fn flush_trackers_for_test(&self) {
+        if let Some(ref store) = self.store {
+            crate::slot_tracker::flush_slot_tracker(
+                &self.slot_tracker,
+                store.pool(),
+                std::time::Duration::ZERO,
+                std::time::Duration::from_secs(3600),
+            )
+            .await;
             crate::wp_tracker::flush_wp_tracker(&self.wp_tracker, store.pool()).await;
         }
     }

@@ -99,9 +99,12 @@ fn timestamp_to_datetime(authored_at: u64) -> DateTime<Utc> {
     Utc.timestamp_opt(secs, nsecs).unwrap()
 }
 
-pub async fn flush_slot_tracker(tracker: &SlotTracker, pool: &PgPool) {
-    let age_insert = Duration::from_secs(10);
-    let age_evict = Duration::from_secs(60);
+pub async fn flush_slot_tracker(
+    tracker: &SlotTracker,
+    pool: &PgPool,
+    age_insert: Duration,
+    age_evict: Duration,
+) {
     let now = Instant::now();
 
     // Phase 1: Collect — never hold DashMap guards across await
@@ -223,5 +226,82 @@ pub async fn flush_slot_tracker(tracker: &SlotTracker, pool: &PgPool) {
             evicted = to_evict.len(),
             "slot_tracker flush complete"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_creates_initial_state() {
+        let state = SlotState::new(11, 1000, Some(500));
+        assert_eq!(state.authored_at, Some(500));
+        assert_eq!(state.stages.get(&11), Some(&vec![1000u64]));
+        assert!(state.dirty);
+        assert!(!state.flushed);
+    }
+
+    #[test]
+    fn record_adds_to_existing_stage() {
+        let mut state = SlotState::new(11, 1000, None);
+        state.record(11, 2000);
+        assert_eq!(state.stages[&11], vec![1000, 2000]);
+    }
+
+    #[test]
+    fn record_creates_new_stage() {
+        let mut state = SlotState::new(11, 1000, None);
+        state.record(12, 2000);
+        assert_eq!(state.stages[&12], vec![2000]);
+        assert_eq!(state.stages[&11], vec![1000]);
+    }
+
+    #[test]
+    fn convergence_single_timestamp() {
+        // offset = (1500 - 1000) / 1000 = 0 ms
+        let state = SlotState::new(11, 1500, Some(1000));
+        let rows = state.compute_convergence(42);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].slot, 42);
+        assert_eq!(rows[0].event_type, 11);
+        assert_eq!(rows[0].node_count, 1);
+        assert_eq!(rows[0].p50_ms, rows[0].p99_ms);
+        assert_eq!(rows[0].p99_ms, rows[0].p100_ms);
+    }
+
+    #[test]
+    fn convergence_multiple_timestamps() {
+        let mut state = SlotState::new(11, 1_000, Some(0));
+        // Add 99 more timestamps: 2_000, 3_000, ..., 100_000
+        for i in 2..=100u64 {
+            state.record(11, i * 1_000);
+        }
+        let rows = state.compute_convergence(1);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].node_count, 100);
+        // offsets_ms sorted: [1, 2, ..., 100] (each i*1000 / 1000 = i)
+        // p50 = offsets[50] = 51
+        assert_eq!(rows[0].p50_ms, 51);
+        // p99_idx = min((100 * 0.99) as usize, 99) = min(99, 99) = 99
+        assert_eq!(rows[0].p99_ms, 100);
+        assert_eq!(rows[0].p100_ms, 100);
+    }
+
+    #[test]
+    fn convergence_no_authored_at_returns_empty() {
+        let state = SlotState::new(11, 1000, None);
+        assert!(state.compute_convergence(1).is_empty());
+    }
+
+    #[test]
+    fn convergence_mixed_stages() {
+        let mut state = SlotState::new(11, 2000, Some(1000));
+        state.record(12, 5000); // different event type
+        let rows = state.compute_convergence(1);
+        assert_eq!(rows.len(), 2);
+        let types: Vec<i16> = rows.iter().map(|r| r.event_type).collect();
+        assert!(types.contains(&11));
+        assert!(types.contains(&12));
     }
 }
