@@ -424,12 +424,12 @@ impl EventStore {
                 slot,
                 timestamp,
                 node_id,
-                (data->'outline'->>'num_guarantees')::INT   AS num_guarantees,
-                (data->'outline'->>'num_assurances')::INT   AS num_assurances,
-                (data->'outline'->>'num_preimages')::INT    AS num_preimages,
-                (data->'outline'->>'num_tickets')::INT      AS num_tickets,
-                (data->'outline'->>'num_disputes')::INT     AS num_disputes,
-                (data->'outline'->>'extrinsic_size')::INT   AS extrinsic_size
+                (data->'Authored'->'outline'->>'num_guarantees')::INT       AS num_guarantees,
+                (data->'Authored'->'outline'->>'num_assurances')::INT       AS num_assurances,
+                (data->'Authored'->'outline'->>'num_preimages')::INT        AS num_preimages,
+                (data->'Authored'->'outline'->>'num_tickets')::INT          AS num_tickets,
+                (data->'Authored'->'outline'->>'num_dispute_verdicts')::INT AS num_disputes,
+                (data->'Authored'->'outline'->>'size_bytes')::INT           AS extrinsic_size
             FROM events
             WHERE event_type = 42
               AND slot IS NOT NULL

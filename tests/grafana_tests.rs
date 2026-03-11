@@ -325,10 +325,11 @@ async fn test_grafana_blocks_contents_from_authored() {
 
     let ts = common::now_jce_micros();
 
-    // Send a BestBlockChanged first (so the enricher has a slot), then Authored
+    // Authoring is the first event → event_id = 0.
+    // Authored references authoring_id = 0 so the enricher propagates the slot.
     let events = vec![
-        common::best_block_event(ts, 100),
-        common::authored_event(ts + 1000, 42),
+        common::authoring_event(ts, 200),          // event_id = 0, slot = 200
+        common::authored_event(ts + 1000, 0),       // authoring_id = 0 → inherits slot 200
     ];
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
@@ -341,13 +342,21 @@ async fn test_grafana_blocks_contents_from_authored() {
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
+    let arr = json.as_array().expect("blocks/contents should return an array");
+
     assert!(
-        json.is_array(),
-        "blocks/contents should return an array"
+        !arr.is_empty(),
+        "blocks/contents should return rows after Authoring→Authored"
     );
-    // The response may be empty if the enricher didn't populate slot for
-    // the Authored event. We only verify the endpoint returns 200 with
-    // valid JSON array structure.
+
+    let row = &arr[0];
+    assert_eq!(row["slot"].as_i64(), Some(200), "slot should be 200");
+    assert_eq!(row["num_guarantees"].as_i64(), Some(3), "num_guarantees should be 3");
+    assert_eq!(row["num_assurances"].as_i64(), Some(2), "num_assurances should be 2");
+    assert_eq!(row["num_preimages"].as_i64(), Some(1), "num_preimages should be 1");
+    assert_eq!(row["num_tickets"].as_i64(), Some(2), "num_tickets should be 2");
+    assert_eq!(row["num_disputes"].as_i64(), Some(0), "num_disputes should be 0");
+    assert_eq!(row["extrinsic_size"].as_i64(), Some(2048), "extrinsic_size should be 2048");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

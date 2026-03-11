@@ -221,6 +221,16 @@ pub fn finalized_block_event(ts: u64, slot: u32) -> Event {
     }
 }
 
+/// Construct an Authoring event (event_type=40) with the given slot.
+#[allow(dead_code)]
+pub fn authoring_event(ts: u64, slot: u32) -> Event {
+    Event::Authoring {
+        timestamp: ts,
+        slot,
+        parent: [0u8; 32],
+    }
+}
+
 /// Construct an Authored event (event_type=42) with BlockOutline.
 #[allow(dead_code)]
 pub fn authored_event(ts: u64, authoring_id: u64) -> Event {

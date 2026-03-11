@@ -46,6 +46,11 @@ struct ChainEntry {
     inserted_at: Instant,
 }
 
+struct SlotEntry {
+    slot: u32,
+    inserted_at: Instant,
+}
+
 pub struct NodeEventEnricher {
     /// submission_or_share_id / submission_id -> context
     submissions: HashMap<u64, SubmissionContext>,
@@ -57,6 +62,10 @@ pub struct NodeEventEnricher {
     request_ids: HashMap<u64, ChainEntry>,
     /// reconstructing_id -> context (ReconstructingSegments event_id)
     reconstructing_ids: HashMap<u64, ChainEntry>,
+    /// authoring event_id -> slot (for Authored/AuthoringFailed/BlockExecuted correlation)
+    authoring_ids: HashMap<u64, SlotEntry>,
+    /// importing event_id -> slot (for BlockVerified/BlockVerificationFailed/BlockExecuted correlation)
+    importing_ids: HashMap<u64, SlotEntry>,
     last_activity: Instant,
     call_count: u64,
 }
@@ -69,6 +78,8 @@ impl Default for NodeEventEnricher {
             sending_ids: HashMap::new(),
             request_ids: HashMap::new(),
             reconstructing_ids: HashMap::new(),
+            authoring_ids: HashMap::new(),
+            importing_ids: HashMap::new(),
             last_activity: Instant::now(),
             call_count: 0,
         }
@@ -121,6 +132,40 @@ impl NodeEventEnricher {
             | Event::BlockAnnounced { slot, .. }
             | Event::BlockTransferred { slot, .. } => {
                 fields.slot = Some(*slot);
+            }
+            _ => {}
+        }
+
+        // --- 1b. Store authoring/importing context for slot chain correlation ---
+        if let Event::Authoring { slot, .. } = event {
+            cap_map(&mut self.authoring_ids, MAX_MAP_ENTRIES, |v| v.inserted_at);
+            self.authoring_ids.insert(event_id, SlotEntry { slot: *slot, inserted_at: Instant::now() });
+        }
+        if let Event::Importing { slot, .. } = event {
+            cap_map(&mut self.importing_ids, MAX_MAP_ENTRIES, |v| v.inserted_at);
+            self.importing_ids.insert(event_id, SlotEntry { slot: *slot, inserted_at: Instant::now() });
+        }
+
+        // --- 1c. Propagate slot via authoring_id / importing_id chains ---
+        match event {
+            Event::Authored { authoring_id, .. } | Event::AuthoringFailed { authoring_id, .. } => {
+                if let Some(entry) = self.authoring_ids.get(authoring_id) {
+                    fields.slot = fields.slot.or(Some(entry.slot));
+                }
+            }
+            Event::BlockVerified { importing_id, .. }
+            | Event::BlockVerificationFailed { importing_id, .. } => {
+                if let Some(entry) = self.importing_ids.get(importing_id) {
+                    fields.slot = fields.slot.or(Some(entry.slot));
+                }
+            }
+            Event::BlockExecuted { authoring_or_importing_id, .. }
+            | Event::BlockExecutionFailed { authoring_or_importing_id, .. } => {
+                if let Some(entry) = self.authoring_ids.get(authoring_or_importing_id)
+                    .or_else(|| self.importing_ids.get(authoring_or_importing_id))
+                {
+                    fields.slot = fields.slot.or(Some(entry.slot));
+                }
             }
             _ => {}
         }
@@ -380,6 +425,10 @@ impl NodeEventEnricher {
             .retain(|_, e| e.inserted_at.elapsed() <= cutoff);
         self.reconstructing_ids
             .retain(|_, e| e.inserted_at.elapsed() <= cutoff);
+        self.authoring_ids
+            .retain(|_, e| e.inserted_at.elapsed() <= cutoff);
+        self.importing_ids
+            .retain(|_, e| e.inserted_at.elapsed() <= cutoff);
     }
 }
 
@@ -626,5 +675,135 @@ mod tests {
         };
         let fields = enricher.process(&event, 1);
         assert_eq!(fields.slot, Some(42));
+    }
+
+    #[test]
+    fn test_authoring_to_authored_slot() {
+        let mut enricher = NodeEventEnricher::default();
+
+        // Authoring carries slot directly
+        let authoring = Event::Authoring {
+            timestamp: 1000,
+            slot: 200,
+            parent: [0u8; 32],
+        };
+        let fields = enricher.process(&authoring, 1);
+        assert_eq!(fields.slot, Some(200));
+
+        // Authored links via authoring_id — should inherit slot
+        let authored = Event::Authored {
+            timestamp: 1001,
+            authoring_id: 1,
+            outline: crate::types::BlockSummary {
+                size_bytes: 1024,
+                hash: [0u8; 32],
+                num_tickets: 0,
+                num_preimages: 0,
+                total_preimages_size: 0,
+                num_guarantees: 3,
+                num_assurances: 2,
+                num_dispute_verdicts: 0,
+            },
+        };
+        let fields = enricher.process(&authored, 2);
+        assert_eq!(fields.slot, Some(200));
+    }
+
+    #[test]
+    fn test_authoring_to_authoring_failed_slot() {
+        let mut enricher = NodeEventEnricher::default();
+
+        let authoring = Event::Authoring {
+            timestamp: 1000,
+            slot: 150,
+            parent: [0u8; 32],
+        };
+        enricher.process(&authoring, 1);
+
+        let failed = Event::AuthoringFailed {
+            timestamp: 1001,
+            authoring_id: 1,
+            reason: crate::types::BoundedString::new("test failure").unwrap(),
+        };
+        let fields = enricher.process(&failed, 2);
+        assert_eq!(fields.slot, Some(150));
+    }
+
+    #[test]
+    fn test_importing_to_block_verified_slot() {
+        let mut enricher = NodeEventEnricher::default();
+
+        let importing = Event::Importing {
+            timestamp: 1000,
+            slot: 300,
+            outline: crate::types::BlockSummary {
+                size_bytes: 512,
+                hash: [0u8; 32],
+                num_tickets: 0,
+                num_preimages: 0,
+                total_preimages_size: 0,
+                num_guarantees: 0,
+                num_assurances: 0,
+                num_dispute_verdicts: 0,
+            },
+        };
+        enricher.process(&importing, 1);
+
+        let verified = Event::BlockVerified {
+            timestamp: 1001,
+            importing_id: 1,
+        };
+        let fields = enricher.process(&verified, 2);
+        assert_eq!(fields.slot, Some(300));
+    }
+
+    #[test]
+    fn test_importing_to_block_executed_slot() {
+        let mut enricher = NodeEventEnricher::default();
+
+        let importing = Event::Importing {
+            timestamp: 1000,
+            slot: 400,
+            outline: crate::types::BlockSummary {
+                size_bytes: 512,
+                hash: [0u8; 32],
+                num_tickets: 0,
+                num_preimages: 0,
+                total_preimages_size: 0,
+                num_guarantees: 0,
+                num_assurances: 0,
+                num_dispute_verdicts: 0,
+            },
+        };
+        enricher.process(&importing, 1);
+
+        let executed = Event::BlockExecuted {
+            timestamp: 1001,
+            authoring_or_importing_id: 1,
+            accumulate_costs: vec![],
+        };
+        let fields = enricher.process(&executed, 2);
+        assert_eq!(fields.slot, Some(400));
+    }
+
+    #[test]
+    fn test_authoring_to_block_executed_slot() {
+        let mut enricher = NodeEventEnricher::default();
+
+        let authoring = Event::Authoring {
+            timestamp: 1000,
+            slot: 500,
+            parent: [0u8; 32],
+        };
+        enricher.process(&authoring, 1);
+
+        // BlockExecuted with authoring_or_importing_id pointing to Authoring
+        let executed = Event::BlockExecuted {
+            timestamp: 1001,
+            authoring_or_importing_id: 1,
+            accumulate_costs: vec![],
+        };
+        let fields = enricher.process(&executed, 2);
+        assert_eq!(fields.slot, Some(500));
     }
 }
