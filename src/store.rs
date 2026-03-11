@@ -443,45 +443,71 @@ impl EventStore {
 
         // PostgreSQL epoch: 2000-01-01 00:00:00 UTC in Unix microseconds
         const PG_EPOCH_UNIX_MICROS: i64 = 946_684_800_000_000;
-        const FIELD_COUNT: i16 = 5;
+        const FIELD_COUNT: i16 = 8;
 
         // Build binary COPY payload
-        let mut buf: Vec<u8> = Vec::with_capacity(19 + events.len() * 250 + 2);
+        let mut buf: Vec<u8> = Vec::with_capacity(19 + events.len() * 280 + 2);
 
         // Header: 11-byte magic + flags (i32) + header extension length (i32)
         buf.extend_from_slice(b"PGCOPY\n\xff\r\n\0");
         buf.extend_from_slice(&0i32.to_be_bytes()); // flags
         buf.extend_from_slice(&0i32.to_be_bytes()); // header extension length
 
-        for (node_id, event_id, event, event_json) in &events {
+        for record in &events {
             // Field count
             buf.extend_from_slice(&FIELD_COUNT.to_be_bytes());
 
             // Column 1: timestamp (TIMESTAMPTZ) — i64 microseconds since PG epoch
-            let unix_micros = JCE_EPOCH_UNIX_MICROS + event.timestamp() as i64;
+            let unix_micros = JCE_EPOCH_UNIX_MICROS + record.event.timestamp() as i64;
             let pg_micros = unix_micros - PG_EPOCH_UNIX_MICROS;
             buf.extend_from_slice(&8i32.to_be_bytes());
             buf.extend_from_slice(&pg_micros.to_be_bytes());
 
             // Column 2: node_id (TEXT) — length + UTF-8 bytes
-            let node_bytes = node_id.as_bytes();
+            let node_bytes = record.node_id.as_bytes();
             buf.extend_from_slice(&(node_bytes.len() as i32).to_be_bytes());
             buf.extend_from_slice(node_bytes);
 
             // Column 3: event_id (BIGINT) — i64 big-endian
             buf.extend_from_slice(&8i32.to_be_bytes());
-            buf.extend_from_slice(&(*event_id as i64).to_be_bytes());
+            buf.extend_from_slice(&(record.event_id as i64).to_be_bytes());
 
             // Column 4: event_type (SMALLINT) — i16 big-endian
-            let event_type = event.event_type() as i16;
+            let event_type = record.event.event_type() as i16;
             buf.extend_from_slice(&2i32.to_be_bytes());
             buf.extend_from_slice(&event_type.to_be_bytes());
 
             // Column 5: data (JSONB) — version byte (0x01) + pre-serialized JSON bytes
-            // Uses event_json from server.rs (serialized once, shared via Arc)
-            buf.extend_from_slice(&(event_json.len() as i32 + 1).to_be_bytes()); // +1 for version byte
+            buf.extend_from_slice(&(record.event_json.len() as i32 + 1).to_be_bytes());
             buf.push(1u8); // JSONB version 1
-            buf.extend_from_slice(event_json);
+            buf.extend_from_slice(&record.event_json);
+
+            // Column 6: slot (INT, nullable)
+            match record.enriched.slot {
+                Some(s) => {
+                    buf.extend_from_slice(&4i32.to_be_bytes());
+                    buf.extend_from_slice(&(s as i32).to_be_bytes());
+                }
+                None => buf.extend_from_slice(&(-1i32).to_be_bytes()), // NULL
+            }
+
+            // Column 7: core (SMALLINT, nullable)
+            match record.enriched.core {
+                Some(c) => {
+                    buf.extend_from_slice(&2i32.to_be_bytes());
+                    buf.extend_from_slice(&(c as i16).to_be_bytes());
+                }
+                None => buf.extend_from_slice(&(-1i32).to_be_bytes()), // NULL
+            }
+
+            // Column 8: submission_id (BIGINT, nullable)
+            match record.enriched.submission_id {
+                Some(sid) => {
+                    buf.extend_from_slice(&8i32.to_be_bytes());
+                    buf.extend_from_slice(&(sid as i64).to_be_bytes());
+                }
+                None => buf.extend_from_slice(&(-1i32).to_be_bytes()), // NULL
+            }
         }
 
         // Trailer: -1 as i16
@@ -491,7 +517,7 @@ impl EventStore {
         let mut conn = self.write_pool.acquire().await?;
         let mut copy_in = conn
             .copy_in_raw(
-                "COPY events (timestamp, node_id, event_id, event_type, data) FROM STDIN WITH (FORMAT binary)",
+                "COPY events (timestamp, node_id, event_id, event_type, data, slot, core, submission_id) FROM STDIN WITH (FORMAT binary)",
             )
             .await?;
 
@@ -511,33 +537,40 @@ impl EventStore {
         let mut tx = self.write_pool.begin().await?;
         let event_count = events.len();
 
-        for (node_id, event_id, event, event_json_bytes) in events {
-            let event_type = event.event_type() as i16;
-            let unix_timestamp_micros = JCE_EPOCH_UNIX_MICROS + event.timestamp() as i64;
+        for record in events {
+            let event_type = record.event.event_type() as i16;
+            let unix_timestamp_micros = JCE_EPOCH_UNIX_MICROS + record.event.timestamp() as i64;
             let timestamp =
                 DateTime::from_timestamp_micros(unix_timestamp_micros).unwrap_or_else(|| {
                     tracing::warn!(
                         "Invalid event timestamp for node {}: {} (unix micros: {})",
-                        node_id,
-                        event.timestamp(),
+                        record.node_id,
+                        record.event.timestamp(),
                         unix_timestamp_micros
                     );
                     Utc::now()
                 });
-            let event_json: serde_json::Value = serde_json::from_slice(&event_json_bytes)
-                .map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
+            let event_json: serde_json::Value =
+                serde_json::from_slice(&record.event_json)
+                    .map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
+            let slot = record.enriched.slot.map(|s| s as i32);
+            let core = record.enriched.core.map(|c| c as i16);
+            let submission_id = record.enriched.submission_id.map(|s| s as i64);
 
             sqlx::query(
                 r#"
-                INSERT INTO events (timestamp, node_id, event_id, event_type, data)
-                VALUES ($1, $2, $3, $4, $5)
+                INSERT INTO events (timestamp, node_id, event_id, event_type, data, slot, core, submission_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 "#,
             )
             .bind(timestamp)
-            .bind(&*node_id)
-            .bind(event_id as i64)
+            .bind(&*record.node_id)
+            .bind(record.event_id as i64)
             .bind(event_type)
             .bind(event_json)
+            .bind(slot)
+            .bind(core)
+            .bind(submission_id)
             .execute(&mut *tx)
             .await
             .map_err(|e| {
@@ -566,6 +599,159 @@ impl EventStore {
                 Err(e)
             }
         }
+    }
+
+    /// Store event_services rows using PostgreSQL COPY for service junction table.
+    /// Only called for the 21 low-volume pipeline event types + BlockExecuted.
+    pub async fn store_event_services_batch(
+        &self,
+        rows: &[(i64, &str, i16, i32, Option<i64>)], // (pg_micros, node_id, event_type, service_id, gas_used)
+    ) -> Result<(), sqlx::Error> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+
+        const PG_EPOCH_UNIX_MICROS: i64 = 946_684_800_000_000;
+        const FIELD_COUNT: i16 = 5;
+
+        let mut buf: Vec<u8> = Vec::with_capacity(19 + rows.len() * 60 + 2);
+        buf.extend_from_slice(b"PGCOPY\n\xff\r\n\0");
+        buf.extend_from_slice(&0i32.to_be_bytes());
+        buf.extend_from_slice(&0i32.to_be_bytes());
+
+        for (pg_micros, node_id, event_type, service_id, gas_used) in rows {
+            buf.extend_from_slice(&FIELD_COUNT.to_be_bytes());
+
+            // timestamp (TIMESTAMPTZ)
+            let ts = *pg_micros - PG_EPOCH_UNIX_MICROS;
+            buf.extend_from_slice(&8i32.to_be_bytes());
+            buf.extend_from_slice(&ts.to_be_bytes());
+
+            // node_id (TEXT)
+            let node_bytes = node_id.as_bytes();
+            buf.extend_from_slice(&(node_bytes.len() as i32).to_be_bytes());
+            buf.extend_from_slice(node_bytes);
+
+            // event_type (SMALLINT)
+            buf.extend_from_slice(&2i32.to_be_bytes());
+            buf.extend_from_slice(&event_type.to_be_bytes());
+
+            // service_id (INT)
+            buf.extend_from_slice(&4i32.to_be_bytes());
+            buf.extend_from_slice(&service_id.to_be_bytes());
+
+            // gas_used (BIGINT, nullable)
+            match gas_used {
+                Some(g) => {
+                    buf.extend_from_slice(&8i32.to_be_bytes());
+                    buf.extend_from_slice(&g.to_be_bytes());
+                }
+                None => buf.extend_from_slice(&(-1i32).to_be_bytes()),
+            }
+        }
+
+        buf.extend_from_slice(&(-1i16).to_be_bytes());
+
+        let mut conn = self.write_pool.acquire().await?;
+        let mut copy_in = conn
+            .copy_in_raw(
+                "COPY event_services (timestamp, node_id, event_type, service_id, gas_used) FROM STDIN WITH (FORMAT binary)",
+            )
+            .await?;
+        copy_in.send(buf.as_slice()).await?;
+        copy_in.finish().await?;
+        Ok(())
+    }
+
+    /// Store node_stats rows using PostgreSQL COPY for Status event extraction.
+    pub async fn store_node_stats_batch(
+        &self,
+        rows: &[(i64, &str, i32, i32, i32, i32, i64, i32, i32, i16, i16, f32, i16)],
+    ) -> Result<(), sqlx::Error> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+
+        const PG_EPOCH_UNIX_MICROS: i64 = 946_684_800_000_000;
+        const FIELD_COUNT: i16 = 13;
+
+        let mut buf: Vec<u8> = Vec::with_capacity(19 + rows.len() * 80 + 2);
+        buf.extend_from_slice(b"PGCOPY\n\xff\r\n\0");
+        buf.extend_from_slice(&0i32.to_be_bytes());
+        buf.extend_from_slice(&0i32.to_be_bytes());
+
+        for (pg_micros, node_id, num_peers, num_val_peers, num_sync_peers,
+             num_shards, shards_size, num_preimages, preimages_size,
+             min_guarantees, max_guarantees, avg_guarantees, zero_guarantee_cores) in rows
+        {
+            buf.extend_from_slice(&FIELD_COUNT.to_be_bytes());
+
+            // timestamp
+            let ts = *pg_micros - PG_EPOCH_UNIX_MICROS;
+            buf.extend_from_slice(&8i32.to_be_bytes());
+            buf.extend_from_slice(&ts.to_be_bytes());
+
+            // node_id
+            let node_bytes = node_id.as_bytes();
+            buf.extend_from_slice(&(node_bytes.len() as i32).to_be_bytes());
+            buf.extend_from_slice(node_bytes);
+
+            // num_peers (INT)
+            buf.extend_from_slice(&4i32.to_be_bytes());
+            buf.extend_from_slice(&num_peers.to_be_bytes());
+
+            // num_val_peers (INT)
+            buf.extend_from_slice(&4i32.to_be_bytes());
+            buf.extend_from_slice(&num_val_peers.to_be_bytes());
+
+            // num_sync_peers (INT)
+            buf.extend_from_slice(&4i32.to_be_bytes());
+            buf.extend_from_slice(&num_sync_peers.to_be_bytes());
+
+            // num_shards (INT)
+            buf.extend_from_slice(&4i32.to_be_bytes());
+            buf.extend_from_slice(&num_shards.to_be_bytes());
+
+            // shards_size (BIGINT)
+            buf.extend_from_slice(&8i32.to_be_bytes());
+            buf.extend_from_slice(&shards_size.to_be_bytes());
+
+            // num_preimages (INT)
+            buf.extend_from_slice(&4i32.to_be_bytes());
+            buf.extend_from_slice(&num_preimages.to_be_bytes());
+
+            // preimages_size (INT)
+            buf.extend_from_slice(&4i32.to_be_bytes());
+            buf.extend_from_slice(&preimages_size.to_be_bytes());
+
+            // min_guarantees (SMALLINT)
+            buf.extend_from_slice(&2i32.to_be_bytes());
+            buf.extend_from_slice(&min_guarantees.to_be_bytes());
+
+            // max_guarantees (SMALLINT)
+            buf.extend_from_slice(&2i32.to_be_bytes());
+            buf.extend_from_slice(&max_guarantees.to_be_bytes());
+
+            // avg_guarantees (REAL / float4)
+            buf.extend_from_slice(&4i32.to_be_bytes());
+            buf.extend_from_slice(&avg_guarantees.to_be_bytes());
+
+            // zero_guarantee_cores (SMALLINT)
+            buf.extend_from_slice(&2i32.to_be_bytes());
+            buf.extend_from_slice(&zero_guarantee_cores.to_be_bytes());
+        }
+
+        buf.extend_from_slice(&(-1i16).to_be_bytes());
+
+        let mut conn = self.write_pool.acquire().await?;
+        let mut copy_in = conn
+            .copy_in_raw(
+                "COPY node_stats (timestamp, node_id, num_peers, num_val_peers, num_sync_peers, num_shards, shards_size, num_preimages, preimages_size, min_guarantees, max_guarantees, avg_guarantees, zero_guarantee_cores) FROM STDIN WITH (FORMAT binary)",
+            )
+            .await?;
+        copy_in.send(buf.as_slice()).await?;
+        copy_in.finish().await?;
+        Ok(())
     }
 
     /// Batch update node statistics from application-level counters.

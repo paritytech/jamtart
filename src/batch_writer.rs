@@ -7,16 +7,24 @@ use tokio::sync::Mutex;
 use tokio::time::interval;
 use tracing::{debug, error, info, warn};
 
+use crate::enricher::EnrichedFields;
 use crate::events::{Event, NodeInformation};
 use crate::store::EventStore;
+use crate::types::JCE_EPOCH_UNIX_MICROS;
 
 /// Shared string type for node IDs in hot paths.
 /// Arc<str> clone is a single atomic increment vs 64-byte heap allocation for String.
 pub type NodeId = Arc<str>;
 
-/// Event record with pre-serialized JSON: (node_id, event_id, event, event_json).
+/// Event record with pre-serialized JSON and enriched fields.
 /// Used throughout the write pipeline (batch_writer → store).
-pub type EventRecord = (NodeId, u64, Arc<Event>, Arc<[u8]>);
+pub struct EventRecord {
+    pub node_id: NodeId,
+    pub event_id: u64,
+    pub event: Arc<Event>,
+    pub event_json: Arc<[u8]>,
+    pub enriched: EnrichedFields,
+}
 
 /// Number of parallel DB writer tasks (work-stealing pool).
 /// More workers = more concurrent COPY operations in flight while waiting on DB I/O.
@@ -53,12 +61,7 @@ enum WriterCommand {
     NodeDisconnected {
         node_id: NodeId,
     },
-    Event {
-        node_id: NodeId,
-        event_id: u64,
-        event: Arc<Event>,
-        event_json: Arc<[u8]>,
-    },
+    Event(EventRecord),
     EventBatch {
         events: Vec<EventRecord>,
     },
@@ -163,20 +166,9 @@ impl BatchWriter {
     }
 
     /// Queue an event for writing (non-blocking)
-    pub fn write_event(
-        &self,
-        node_id: NodeId,
-        event_id: u64,
-        event: Arc<Event>,
-        event_json: Arc<[u8]>,
-    ) -> Result<()> {
+    pub fn write_event(&self, record: EventRecord) -> Result<()> {
         self.sender
-            .try_send(WriterCommand::Event {
-                node_id,
-                event_id,
-                event,
-                event_json,
-            })
+            .try_send(WriterCommand::Event(record))
             .map_err(|e| anyhow::anyhow!("Channel full: {}", e))?;
         Ok(())
     }
@@ -452,20 +444,15 @@ fn handle_command(
     flush_response: &mut Option<tokio::sync::oneshot::Sender<Result<()>>>,
 ) -> CommandAction {
     match cmd {
-        WriterCommand::Event {
-            node_id,
-            event_id,
-            event,
-            event_json,
-        } => {
-            *node_counts.entry(node_id.clone()).or_default() += 1;
-            event_batch.push((node_id, event_id, event, event_json));
+        WriterCommand::Event(record) => {
+            *node_counts.entry(record.node_id.clone()).or_default() += 1;
+            event_batch.push(record);
             CommandAction::Continue
         }
         WriterCommand::EventBatch { events } => {
-            for (node_id, event_id, event, event_json) in events {
-                *node_counts.entry(node_id.clone()).or_default() += 1;
-                event_batch.push((node_id, event_id, event, event_json));
+            for record in events {
+                *node_counts.entry(record.node_id.clone()).or_default() += 1;
+                event_batch.push(record);
             }
             CommandAction::Continue
         }
@@ -489,6 +476,31 @@ fn handle_command(
     }
 }
 
+/// Event types that generate rows in event_services junction table.
+const SERVICE_EVENT_TYPES: &[u16] = &[
+    47,  // BlockExecuted (direct, not enriched)
+    92,  // WorkPackageFailed
+    93,  // DuplicateWorkPackage
+    94,  // WorkPackageReceived
+    95,  // Authorized
+    96,  // ExtrinsicDataReceived
+    97,  // ImportsReceived
+    98,  // SharingWorkPackage
+    99,  // WorkPackageSharingFailed
+    100, // BundleSent
+    101, // Refined
+    102, // WorkReportBuilt
+    103, // WorkReportSignatureSent
+    104, // WorkReportSignatureReceived
+    105, // GuaranteeBuilt
+    109, // GuaranteesDistributed
+    160, // WorkPackageHashMapped
+    161, // SegmentsRootMapped
+    168, // ReconstructingSegments
+    170, // SegmentsReconstructed
+    172, // SegmentsVerified
+];
+
 /// Flush only events to database (node updates are decoupled).
 async fn flush_events(store: &Arc<EventStore>, event_batch: &mut Vec<EventRecord>) -> Result<()> {
     let event_count = event_batch.len();
@@ -501,12 +513,123 @@ async fn flush_events(store: &Arc<EventStore>, event_batch: &mut Vec<EventRecord
 
     debug!("Flushing {} events", event_count);
 
-    // Process events using batch insert
+    // Collect event_services rows and node_stats rows before consuming the batch
+    let mut service_rows: Vec<(i64, String, i16, i32, Option<i64>)> = Vec::new();
+    let mut stats_rows: Vec<(i64, String, i32, i32, i32, i32, i64, i32, i32, i16, i16, f32, i16)> =
+        Vec::new();
+
+    for record in event_batch.iter() {
+        let et = record.event.event_type() as u16;
+        let unix_micros = JCE_EPOCH_UNIX_MICROS + record.event.timestamp() as i64;
+
+        // event_services: enriched events with service_ids
+        if SERVICE_EVENT_TYPES.contains(&et) && et != 47 {
+            if let Some(ref sids) = record.enriched.service_ids {
+                let gas = record.event.gas_per_service_item(sids.len());
+                for (i, sid) in sids.iter().enumerate() {
+                    service_rows.push((
+                        unix_micros,
+                        record.node_id.to_string(),
+                        et as i16,
+                        *sid as i32,
+                        gas.get(i).copied().flatten(),
+                    ));
+                }
+            }
+        }
+
+        // event_services: BlockExecuted (direct, no enricher needed)
+        if et == 47 {
+            if let crate::events::Event::BlockExecuted {
+                accumulate_costs, ..
+            } = &*record.event
+            {
+                for (service_id, cost) in accumulate_costs {
+                    service_rows.push((
+                        unix_micros,
+                        record.node_id.to_string(),
+                        47i16,
+                        *service_id as i32,
+                        Some(cost.total.gas_used as i64),
+                    ));
+                }
+            }
+        }
+
+        // node_stats: Status events
+        if et == 10 {
+            if let crate::events::Event::Status {
+                num_peers,
+                num_val_peers,
+                num_sync_peers,
+                num_guarantees,
+                num_shards,
+                shards_size,
+                num_preimages,
+                preimages_size,
+                ..
+            } = &*record.event
+            {
+                let min_g = num_guarantees.iter().copied().min().unwrap_or(0) as i16;
+                let max_g = num_guarantees.iter().copied().max().unwrap_or(0) as i16;
+                let avg_g = if num_guarantees.is_empty() {
+                    0.0
+                } else {
+                    num_guarantees.iter().map(|&v| v as f32).sum::<f32>()
+                        / num_guarantees.len() as f32
+                };
+                let zero_g = num_guarantees.iter().filter(|&&v| v == 0).count() as i16;
+
+                stats_rows.push((
+                    unix_micros,
+                    record.node_id.to_string(),
+                    *num_peers as i32,
+                    *num_val_peers as i32,
+                    *num_sync_peers as i32,
+                    *num_shards as i32,
+                    *shards_size as i64,
+                    *num_preimages as i32,
+                    *preimages_size as i32,
+                    min_g,
+                    max_g,
+                    avg_g,
+                    zero_g,
+                ));
+            }
+        }
+    }
+
+    // Flush events to DB
     let batch = std::mem::take(event_batch);
     store.store_events_batch(batch).await.map_err(|e| {
         error!("Failed to store event batch: {}", e);
         anyhow::anyhow!("Event batch storage failed: {}", e)
     })?;
+
+    // Flush event_services (independent, failure doesn't roll back events)
+    if !service_rows.is_empty() {
+        let refs: Vec<(i64, &str, i16, i32, Option<i64>)> = service_rows
+            .iter()
+            .map(|(ts, nid, et, sid, g)| (*ts, nid.as_str(), *et, *sid, *g))
+            .collect();
+        if let Err(e) = store.store_event_services_batch(&refs).await {
+            warn!("Failed to flush event_services: {}", e);
+        }
+    }
+
+    // Flush node_stats (independent)
+    if !stats_rows.is_empty() {
+        let refs: Vec<(i64, &str, i32, i32, i32, i32, i64, i32, i32, i16, i16, f32, i16)> =
+            stats_rows
+                .iter()
+                .map(|(ts, nid, a, b, c, d, e, f, g, h, i, j, k)| {
+                    (*ts, nid.as_str(), *a, *b, *c, *d, *e, *f, *g, *h, *i, *j, *k)
+                })
+                .collect();
+        if let Err(e) = store.store_node_stats_batch(&refs).await {
+            warn!("Failed to flush node_stats: {}", e);
+        }
+    }
 
     // Update metrics
     metrics::counter!("telemetry_events_flushed").increment(event_count as u64);

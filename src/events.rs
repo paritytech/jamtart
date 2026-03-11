@@ -1161,6 +1161,105 @@ impl Event {
     }
 }
 
+impl Event {
+    /// Extract slot from events that have a direct slot field.
+    pub fn slot(&self) -> Option<u32> {
+        match self {
+            Event::BestBlockChanged { slot, .. }
+            | Event::FinalizedBlockChanged { slot, .. }
+            | Event::Authoring { slot, .. }
+            | Event::Importing { slot, .. }
+            | Event::BlockAnnounced { slot, .. }
+            | Event::BlockTransferred { slot, .. } => Some(*slot),
+            _ => None,
+        }
+    }
+
+    /// Extract core from events that have a direct core field.
+    pub fn core(&self) -> Option<u16> {
+        match self {
+            Event::WorkPackageReceived { core, .. }
+            | Event::DuplicateWorkPackage { core, .. } => Some(*core),
+            _ => None,
+        }
+    }
+
+    /// Extract submission_id (or equivalent: submission_or_share_id, share_id).
+    pub fn submission_id(&self) -> Option<u64> {
+        match self {
+            // submission_or_share_id events
+            Event::WorkPackageFailed { submission_or_share_id, .. }
+            | Event::DuplicateWorkPackage { submission_or_share_id, .. }
+            | Event::WorkPackageReceived { submission_or_share_id, .. }
+            | Event::Authorized { submission_or_share_id, .. }
+            | Event::ExtrinsicDataReceived { submission_or_share_id, .. }
+            | Event::ImportsReceived { submission_or_share_id, .. }
+            | Event::Refined { submission_or_share_id, .. }
+            | Event::WorkReportBuilt { submission_or_share_id, .. } => {
+                Some(*submission_or_share_id)
+            }
+            // submission_id events
+            Event::SharingWorkPackage { submission_id, .. }
+            | Event::WorkPackageSharingFailed { submission_id, .. }
+            | Event::BundleSent { submission_id, .. }
+            | Event::WorkReportSignatureReceived { submission_id, .. }
+            | Event::GuaranteeBuilt { submission_id, .. }
+            | Event::GuaranteesDistributed { submission_id, .. }
+            | Event::WorkPackageHashMapped { submission_id, .. }
+            | Event::SegmentsRootMapped { submission_id, .. }
+            | Event::SendingSegmentShardRequest { submission_id, .. }
+            | Event::ReconstructingSegments { submission_id, .. }
+            | Event::SegmentVerificationFailed { submission_id, .. }
+            | Event::SegmentsVerified { submission_id, .. }
+            | Event::SendingSegmentRequest { submission_id, .. } => Some(*submission_id),
+            // share_id events (same u64 namespace as submission_or_share_id)
+            Event::WorkReportSignatureSent { share_id, .. } => Some(*share_id),
+            _ => None,
+        }
+    }
+
+    /// Extract service IDs from WorkPackageReceived outline.
+    pub fn service_ids(&self) -> Vec<u32> {
+        match self {
+            Event::WorkPackageReceived { outline, .. } => {
+                outline.work_items.iter().map(|wi| wi.service_id).collect()
+            }
+            _ => vec![],
+        }
+    }
+
+    /// Extract work package hash from WorkPackageReceived outline.
+    pub fn work_package_hash(&self) -> Option<[u8; 32]> {
+        match self {
+            Event::WorkPackageReceived { outline, .. } => Some(outline.work_package_hash),
+            Event::DuplicateWorkPackage { hash, .. } => Some(*hash),
+            _ => None,
+        }
+    }
+
+    /// Returns gas_used per work item (indexed same as service_ids).
+    /// For Refined: per-work-item gas from costs array.
+    /// For Authorized: WP-level auth gas to first service only (prevents SUM overcounting).
+    pub fn gas_per_service_item(&self, service_count: usize) -> Vec<Option<i64>> {
+        match self {
+            Event::Refined { costs, .. } => {
+                costs.iter().map(|c| Some(c.total.gas_used as i64)).collect()
+            }
+            Event::Authorized { cost, .. } => {
+                let mut result = Vec::with_capacity(service_count);
+                if service_count > 0 {
+                    result.push(Some(cost.total.gas_used as i64));
+                    for _ in 1..service_count {
+                        result.push(None);
+                    }
+                }
+                result
+            }
+            _ => vec![],
+        }
+    }
+}
+
 impl Encode for (ServiceId, AccumulateCost) {
     fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodingError> {
         self.0.encode(buf)?;

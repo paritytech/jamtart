@@ -1,5 +1,6 @@
 use crate::batch_writer::{BatchWriter, EventRecord};
 use crate::decoder::{decode_message_frame, Decode, DecodingError};
+use crate::enricher::EnricherMap;
 use crate::event_broadcaster::{build_ws_envelope, BroadcastRecord, EventBroadcaster};
 use crate::events::{Event, NodeInformation};
 use crate::rate_limiter::RateLimiter;
@@ -129,6 +130,7 @@ pub struct TelemetryServer {
     broadcaster: Arc<EventBroadcaster>,
     /// When true, rate limiting is disabled (--no-rate-limit flag)
     rate_limit_disabled: bool,
+    enricher_map: EnricherMap,
     connection_watch: Arc<tokio::sync::watch::Sender<usize>>,
     /// Kept alive so the watch channel stays open (senders fail when all receivers drop)
     #[allow(dead_code)]
@@ -226,6 +228,7 @@ impl TelemetryServer {
             broadcaster,
             store,
             rate_limit_disabled: no_rate_limit,
+            enricher_map: crate::enricher::new_enricher_map(),
             connection_watch: Arc::new(connection_watch),
             _connection_watch_rx: connection_watch_rx,
         })
@@ -298,6 +301,7 @@ impl TelemetryServer {
             let rate_limiter = Arc::clone(&self.rate_limiter);
             let broadcaster = Arc::clone(&self.broadcaster);
             let rate_limit_disabled = self.rate_limit_disabled;
+            let enricher_map = Arc::clone(&self.enricher_map);
             let connection_watch = Arc::clone(&self.connection_watch);
 
             let handle = std::thread::Builder::new()
@@ -347,6 +351,7 @@ impl TelemetryServer {
                                                 rate_limiter: rl.clone(),
                                                 broadcaster: Arc::clone(&broadcaster),
                                                 rate_limit_disabled,
+                                                enricher_map: Arc::clone(&enricher_map),
                                                 connection_watch: Arc::clone(&connection_watch),
                                             };
 
@@ -401,6 +406,7 @@ impl TelemetryServer {
             rate_limiter: rate_limiter.clone(),
             broadcaster: Arc::clone(&self.broadcaster),
             rate_limit_disabled: self.rate_limit_disabled,
+            enricher_map: Arc::clone(&self.enricher_map),
             connection_watch: Arc::clone(&self.connection_watch),
         };
 
@@ -495,6 +501,7 @@ struct ConnectionContext {
     rate_limiter: Arc<RateLimiter>,
     broadcaster: Arc<EventBroadcaster>,
     rate_limit_disabled: bool,
+    enricher_map: EnricherMap,
     connection_watch: Arc<tokio::sync::watch::Sender<usize>>,
 }
 
@@ -509,6 +516,7 @@ async fn handle_connection_optimized(
         rate_limiter,
         broadcaster,
         rate_limit_disabled,
+        enricher_map,
         connection_watch,
     } = ctx;
     // Set TCP nodelay for lower latency
@@ -634,7 +642,18 @@ async fn handle_connection_optimized(
                     let mut cursor = Cursor::new(msg_data);
                     match Event::decode_event(&mut cursor, core_count) {
                         Ok(event) => {
-                            event_count += 1;
+                            // EventId assignment: post-increment (JIP-3 §implicit IDs).
+                            // First event = ID 0, each subsequent = previous + 1,
+                            // except Dropped events advance by `num`.
+                            let this_event_id = event_count;
+                            match &event {
+                                Event::Dropped { num, .. } => {
+                                    event_count += num;
+                                }
+                                _ => {
+                                    event_count += 1;
+                                }
+                            }
 
                             // Apply rate limiting (unless disabled)
                             if !rate_limit_disabled && !rate_limiter.allow_event(&node_id_str) {
@@ -651,6 +670,14 @@ async fn handle_connection_optimized(
                             let event_json: Arc<[u8]> = Arc::from(
                                 serde_json::to_vec(&*event).unwrap_or_else(|_| b"{}".to_vec()),
                             );
+
+                            // Enrich event with cross-event correlation (core, services, wp_hash)
+                            let enriched = {
+                                let mut enricher = enricher_map
+                                    .entry(node_id_str.clone())
+                                    .or_default();
+                                enricher.process(&event, this_event_id)
+                            };
 
                             // Build WS envelope in ingestion thread (parallelized across 8 runtimes)
                             let id = broadcaster.next_event_id();
@@ -675,7 +702,13 @@ async fn handle_connection_optimized(
                                 timestamp,
                                 ws_json,
                             });
-                            db_batch.push((node_id_str.clone(), event_count, event, event_json));
+                            db_batch.push(EventRecord {
+                                node_id: node_id_str.clone(),
+                                event_id: this_event_id,
+                                event,
+                                event_json,
+                                enriched,
+                            });
                             batch_received += 1;
 
                             buffer.advance(4 + size as usize);
