@@ -52,6 +52,7 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # Utilities
 dashmap = "6.0"
+schnellru = { path = "../schnellru" }
 futures = "0.3"
 hex = "0.4"
 tokio-stream = { version = "0.1", features = ["sync"] }

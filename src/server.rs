@@ -749,23 +749,31 @@ async fn handle_connection_optimized(
                                         if let Some(hash) = enriched.wp_hash {
                                             let core = enriched.core.unwrap_or(0);
                                             let sids = enriched.service_ids.clone().unwrap_or_default();
+                                            let nid = node_id_str.clone();
                                             wp_tracker.entry(hash)
                                                 .and_modify(|s| {
-                                                    s.received_by += 1;
+                                                    if s.received_nodes.insert(nid.clone()) {
+                                                        s.received_by += 1;
+                                                    }
                                                     s.last_updated = evt_ts;
                                                     s.dirty = true;
                                                     s.last_activity = std::time::Instant::now();
                                                 })
-                                                .or_insert(crate::wp_tracker::WpState {
-                                                    first_seen: evt_ts,
-                                                    last_updated: evt_ts,
-                                                    core,
-                                                    service_ids: sids,
-                                                    received_by: 1,
-                                                    stage: 0,
-                                                    received_at: Some(evt_ts),
-                                                    dirty: true,
-                                                    ..Default::default()
+                                                .or_insert_with(|| {
+                                                    let mut received_nodes = std::collections::HashSet::new();
+                                                    received_nodes.insert(nid);
+                                                    crate::wp_tracker::WpState {
+                                                        first_seen: evt_ts,
+                                                        last_updated: evt_ts,
+                                                        core,
+                                                        service_ids: sids,
+                                                        received_by: 1,
+                                                        received_nodes,
+                                                        stage: 0,
+                                                        received_at: Some(evt_ts),
+                                                        dirty: true,
+                                                        ..Default::default()
+                                                    }
                                                 });
                                         }
                                     }
@@ -776,7 +784,17 @@ async fn handle_connection_optimized(
                                             });
                                         }
                                     }
-                                    95 | 101 | 102 | 105 | 109 => {
+                                    105 => { // GuaranteeBuilt — also count guarantors
+                                        if let Some(hash) = enriched.wp_hash {
+                                            wp_tracker.entry(hash).and_modify(|s| {
+                                                if s.guaranteed_nodes.insert(node_id_str.clone()) {
+                                                    s.guaranteed_by += 1;
+                                                }
+                                                s.update_stage(4, evt_ts);
+                                            });
+                                        }
+                                    }
+                                    95 | 101 | 102 | 109 => {
                                         if let Some(hash) = enriched.wp_hash {
                                             let ordinal = crate::wp_tracker::event_type_to_ordinal(et_raw);
                                             wp_tracker.entry(hash).and_modify(|s| {

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -29,6 +30,10 @@ pub struct WpState {
     pub service_ids: Vec<u32>,
     pub received_by: u16,
     pub guaranteed_by: u16,
+    /// Nodes that contributed to received_by (in-memory dedup only).
+    pub received_nodes: HashSet<Arc<str>>,
+    /// Nodes that contributed to guaranteed_by (in-memory dedup only).
+    pub guaranteed_nodes: HashSet<Arc<str>>,
     /// 0=received, 1=authorized, 2=refined, 3=report_built,
     /// 4=guarantee_built, 5=distributed
     pub stage: u8,
@@ -52,6 +57,8 @@ impl Default for WpState {
             service_ids: Vec::new(),
             received_by: 0,
             guaranteed_by: 0,
+            received_nodes: HashSet::new(),
+            guaranteed_nodes: HashSet::new(),
             stage: 0,
             received_at: None,
             authorized_at: None,

@@ -10,7 +10,7 @@ const VALID_INTERVALS: &[&str] = &[
 ];
 
 /// Whitelisted group_by columns for dynamic SQL.
-const VALID_GROUP_BY: &[&str] = &["node_id", "event_type", "core"];
+const VALID_GROUP_BY: &[&str] = &["node_id", "node", "event_type", "core"];
 
 /// Whitelisted aggregate table names for dynamic SQL.
 const VALID_TABLES: &[&str] = &[
@@ -122,7 +122,10 @@ impl EventStore {
         }
 
         // Build SELECT columns
-        let group_col = group_by.unwrap_or("event_type");
+        let group_col = match group_by.unwrap_or("event_type") {
+            "node" => "node_id",
+            other => other,
+        };
         let select_group = if group_col == "core" {
             "core".to_string()
         } else {
