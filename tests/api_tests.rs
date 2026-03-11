@@ -212,19 +212,20 @@ async fn test_events_endpoint_with_data() {
     // Connect a node and send events
     let mut stream = connect_test_node_with_server(telemetry_port, 4, &telemetry_server).await;
 
-    // Send some events
+    // Send some events (use current time so they fall within the query window)
+    let now = common::now_jce_micros();
     let events = vec![
         Event::SyncStatusChanged {
-            timestamp: 1_000_000,
+            timestamp: now,
             synced: false,
         },
         Event::BestBlockChanged {
-            timestamp: 2_000_000,
+            timestamp: now + 1_000_000,
             slot: 100,
             hash: [0xAA; 32],
         },
         Event::Status {
-            timestamp: 3_000_000,
+            timestamp: now + 2_000_000,
             num_val_peers: 5,
             num_peers: 10,
             num_sync_peers: 8,
@@ -275,10 +276,11 @@ async fn test_events_pagination() {
     // Connect a node and send many events
     let mut stream = connect_test_node_with_server(telemetry_port, 5, &telemetry_server).await;
 
-    // Send 10 events
+    // Send 10 events (use current time so they fall within the query window)
+    let now = common::now_jce_micros();
     for i in 0..10 {
         let event = Event::BestBlockChanged {
-            timestamp: i as u64 * 1_000_000,
+            timestamp: now + i as u64 * 1_000_000,
             slot: i,
             hash: [i as u8; 32],
         };
@@ -326,10 +328,11 @@ async fn test_node_events_endpoint() {
     let node1_id = hex::encode([6u8; 32]);
     let node2_id = hex::encode([7u8; 32]);
 
-    // Send events from node 1
+    // Send events from node 1 (use current time so they fall within the query window)
+    let now = common::now_jce_micros();
     for i in 0..3 {
         let event = Event::BestBlockChanged {
-            timestamp: i as u64 * 1_000_000,
+            timestamp: now + i as u64 * 1_000_000,
             slot: i,
             hash: [6u8; 32],
         };
@@ -340,7 +343,7 @@ async fn test_node_events_endpoint() {
     // Send events from node 2
     for i in 0..2 {
         let event = Event::FinalizedBlockChanged {
-            timestamp: i as u64 * 1_000_000,
+            timestamp: now + i as u64 * 1_000_000,
             slot: i,
             hash: [7u8; 32],
         };

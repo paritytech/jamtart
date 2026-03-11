@@ -846,7 +846,7 @@ impl EventStore {
     ///
     /// **DANGER**: Deletes ALL data. Only use in test/dev environments.
     pub async fn cleanup_test_data(&self) -> Result<(), sqlx::Error> {
-        sqlx::query("TRUNCATE TABLE events, nodes, stats_cache CASCADE")
+        sqlx::query("TRUNCATE TABLE events, nodes, stats_cache, node_stats, event_services, wp_tracking, slot_convergence CASCADE")
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -1028,17 +1028,18 @@ impl EventStore {
         .await?;
 
         // Get per-core work package stats
+        // Alias as core_index to avoid ambiguity with the table's `core` column
         let core_stats: Vec<(i32, i64)> = sqlx::query_as(&format!(
             r#"
             SELECT
-                CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) as core,
+                CAST(data->'WorkPackageReceived'->>'core' AS INTEGER) as core_index,
                 COUNT(*) as count
             FROM events
             WHERE event_type = 94
             AND timestamp > NOW() - INTERVAL '{}'
             AND data->'WorkPackageReceived'->>'core' IS NOT NULL
-            GROUP BY core
-            ORDER BY core
+            GROUP BY core_index
+            ORDER BY core_index
             "#,
             interval
         ))

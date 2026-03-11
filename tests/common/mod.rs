@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
-use tart_backend::events::NodeInformation;
+use tart_backend::events::{Event, NodeInformation};
 use tart_backend::types::*;
 use tart_backend::TelemetryServer;
 use tokio::time::sleep;
@@ -151,5 +151,246 @@ pub fn test_node_info(peer_id: [u8; 32]) -> NodeInformation {
         implementation_version: BoundedString::new("1.0.0").unwrap(),
         gp_version: BoundedString::new("0.1.0").unwrap(),
         additional_info: BoundedString::new("Test node").unwrap(),
+    }
+}
+
+/// Force-refresh all continuous aggregates used by grafana endpoints.
+/// TimescaleDB continuous aggregates don't auto-refresh fast enough in tests.
+#[allow(dead_code)]
+pub async fn refresh_aggregates(pool: &sqlx::PgPool) {
+    // The refresh window covers a generous range so test data is always included
+    let aggregates = [
+        "event_stats_30s",
+        "event_stats_1m",
+        "event_stats_1h",
+        "core_stats_1m",
+        "service_stats_1m",
+        "node_stats_1m",
+    ];
+    for agg in aggregates {
+        let sql = format!(
+            "CALL refresh_continuous_aggregate('{agg}', NOW() - INTERVAL '1 hour', NOW() + INTERVAL '1 hour')"
+        );
+        // Some aggregates may not exist in all test schemas — ignore errors
+        let _ = sqlx::query(&sql).execute(pool).await;
+    }
+}
+
+/// Flush batch_writer + trackers. Combined helper for grafana tests.
+#[allow(dead_code)]
+pub async fn flush_all(server: &Arc<TelemetryServer>) {
+    sleep(Duration::from_millis(100)).await;
+    server.flush_writes().await.expect("Flush writes failed");
+    server.flush_trackers().await;
+}
+
+/// Construct a Status event (event_type=10) with the given timestamp.
+/// num_guarantees has TEST_CORE_COUNT elements (required by the decoder).
+#[allow(dead_code)]
+pub fn status_event(ts: u64) -> Event {
+    Event::Status {
+        timestamp: ts,
+        num_peers: 25,
+        num_val_peers: 20,
+        num_sync_peers: 5,
+        num_guarantees: vec![3; TEST_CORE_COUNT],
+        num_shards: 100,
+        shards_size: 50000,
+        num_preimages: 10,
+        preimages_size: 4096,
+    }
+}
+
+/// Construct a BestBlockChanged event (event_type=11).
+#[allow(dead_code)]
+pub fn best_block_event(ts: u64, slot: u32) -> Event {
+    Event::BestBlockChanged {
+        timestamp: ts,
+        slot,
+        hash: [0xBB; 32],
+    }
+}
+
+/// Construct a FinalizedBlockChanged event (event_type=12).
+#[allow(dead_code)]
+pub fn finalized_block_event(ts: u64, slot: u32) -> Event {
+    Event::FinalizedBlockChanged {
+        timestamp: ts,
+        slot,
+        hash: [0xFF; 32],
+    }
+}
+
+/// Construct an Authored event (event_type=42) with BlockOutline.
+#[allow(dead_code)]
+pub fn authored_event(ts: u64, authoring_id: u64) -> Event {
+    use tart_backend::types::BlockSummary;
+    Event::Authored {
+        timestamp: ts,
+        authoring_id,
+        outline: BlockSummary {
+            size_bytes: 2048,
+            hash: [0xAA; 32],
+            num_tickets: 2,
+            num_preimages: 1,
+            total_preimages_size: 512,
+            num_guarantees: 3,
+            num_assurances: 2,
+            num_dispute_verdicts: 0,
+        },
+    }
+}
+
+/// Construct a WorkPackageReceived event (event_type=94).
+#[allow(dead_code)]
+pub fn wp_received_event(ts: u64, submission_id: u64, core: u16) -> Event {
+    use tart_backend::types::*;
+    Event::WorkPackageReceived {
+        timestamp: ts,
+        submission_or_share_id: submission_id,
+        core,
+        outline: WorkPackageSummary {
+            work_package_size: 2048,
+            work_package_hash: [0xCC; 32],
+            anchor: [0xAA; 32],
+            lookup_anchor_slot: 100,
+            prerequisites: vec![],
+            work_items: vec![
+                WorkItemSummary {
+                    service_id: 10,
+                    payload_size: 512,
+                    refine_gas_limit: 1_000_000,
+                    accumulate_gas_limit: 500_000,
+                    sum_of_extrinsic_lengths: 128,
+                    imports: vec![],
+                    num_exported_segments: 2,
+                },
+                WorkItemSummary {
+                    service_id: 20,
+                    payload_size: 256,
+                    refine_gas_limit: 2_000_000,
+                    accumulate_gas_limit: 300_000,
+                    sum_of_extrinsic_lengths: 64,
+                    imports: vec![],
+                    num_exported_segments: 1,
+                },
+            ],
+        },
+    }
+}
+
+/// Construct an Authorized event (event_type=95).
+#[allow(dead_code)]
+pub fn authorized_event(ts: u64, submission_id: u64) -> Event {
+    use tart_backend::types::*;
+    Event::Authorized {
+        timestamp: ts,
+        submission_or_share_id: submission_id,
+        cost: IsAuthorizedCost {
+            total: ExecCost { gas_used: 100_000, elapsed_ns: 200_000 },
+            load_ns: 50_000,
+            host_call: ExecCost { gas_used: 30_000, elapsed_ns: 60_000 },
+        },
+    }
+}
+
+/// Construct a Refined event (event_type=101).
+#[allow(dead_code)]
+pub fn refined_event(ts: u64, submission_id: u64) -> Event {
+    use tart_backend::types::*;
+    Event::Refined {
+        timestamp: ts,
+        submission_or_share_id: submission_id,
+        costs: vec![
+            RefineCost {
+                total: ExecCost { gas_used: 500_000, elapsed_ns: 1_000_000 },
+                load_ns: 100_000,
+                host_call: RefineHostCallCost {
+                    lookup: ExecCost { gas_used: 50_000, elapsed_ns: 100_000 },
+                    vm: ExecCost { gas_used: 200_000, elapsed_ns: 400_000 },
+                    mem: ExecCost { gas_used: 30_000, elapsed_ns: 60_000 },
+                    invoke: ExecCost { gas_used: 100_000, elapsed_ns: 200_000 },
+                    other: ExecCost { gas_used: 20_000, elapsed_ns: 40_000 },
+                },
+            },
+        ],
+    }
+}
+
+/// Construct a WorkReportBuilt event (event_type=102).
+#[allow(dead_code)]
+pub fn work_report_built_event(ts: u64, submission_id: u64) -> Event {
+    use tart_backend::types::*;
+    Event::WorkReportBuilt {
+        timestamp: ts,
+        submission_or_share_id: submission_id,
+        outline: WorkReportSummary {
+            work_report_hash: [0xDD; 32],
+            bundle_size: 4096,
+            erasure_root: [0xEE; 32],
+            segments_root: [0x11; 32],
+        },
+    }
+}
+
+/// Construct a GuaranteeBuilt event (event_type=105).
+#[allow(dead_code)]
+pub fn guarantee_built_event(ts: u64, submission_id: u64) -> Event {
+    use tart_backend::types::*;
+    Event::GuaranteeBuilt {
+        timestamp: ts,
+        submission_id,
+        outline: GuaranteeSummary {
+            work_report_hash: [0xBB; 32],
+            slot: 200,
+            guarantors: vec![0, 1, 2],
+        },
+    }
+}
+
+/// Construct a GuaranteesDistributed event (event_type=109).
+#[allow(dead_code)]
+pub fn guarantees_distributed_event(ts: u64, submission_id: u64) -> Event {
+    Event::GuaranteesDistributed {
+        timestamp: ts,
+        submission_id,
+    }
+}
+
+/// Construct a BlockExecuted event (event_type=47) with service gas data.
+#[allow(dead_code)]
+pub fn block_executed_event(ts: u64, authoring_id: u64, services: &[(u32, u64)]) -> Event {
+    use tart_backend::types::*;
+    let accumulate_costs: Vec<(ServiceId, AccumulateCost)> = services
+        .iter()
+        .map(|(sid, gas)| {
+            (
+                *sid,
+                AccumulateCost {
+                    num_calls: 1,
+                    num_transfers: 0,
+                    num_items: 1,
+                    total: ExecCost {
+                        gas_used: *gas,
+                        elapsed_ns: gas * 2,
+                    },
+                    load_ns: 1000,
+                    host_call: AccumulateHostCallCost {
+                        state: ExecCost { gas_used: 0, elapsed_ns: 0 },
+                        lookup: ExecCost { gas_used: 0, elapsed_ns: 0 },
+                        preimage: ExecCost { gas_used: 0, elapsed_ns: 0 },
+                        service: ExecCost { gas_used: 0, elapsed_ns: 0 },
+                        transfer: ExecCost { gas_used: 0, elapsed_ns: 0 },
+                        transfer_dest_gas: 0,
+                        other: ExecCost { gas_used: 0, elapsed_ns: 0 },
+                    },
+                },
+            )
+        })
+        .collect();
+    Event::BlockExecuted {
+        timestamp: ts,
+        authoring_or_importing_id: authoring_id,
+        accumulate_costs,
     }
 }

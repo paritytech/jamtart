@@ -759,10 +759,12 @@ impl EventStore {
     /// TimescaleDB metadata: table sizes, row counts, compression stats.
     pub async fn grafana_db_stats(&self) -> Result<serde_json::Value, sqlx::Error> {
         // Hypertable sizes
+        // hypertable_detailed_size returns (table_bytes, index_bytes, toast_bytes, total_bytes, node_name)
+        // — no hypertable_name column, so we supply it as a literal.
         let table_rows = sqlx::query(
             r#"
             SELECT
-                hypertable_name::TEXT AS table_name,
+                'events'::TEXT AS table_name,
                 total_bytes::BIGINT,
                 table_bytes::BIGINT,
                 index_bytes::BIGINT,
@@ -770,7 +772,7 @@ impl EventStore {
             FROM hypertable_detailed_size('events')
             UNION ALL
             SELECT
-                hypertable_name::TEXT,
+                'node_stats'::TEXT,
                 total_bytes::BIGINT,
                 table_bytes::BIGINT,
                 index_bytes::BIGINT,
@@ -778,7 +780,7 @@ impl EventStore {
             FROM hypertable_detailed_size('node_stats')
             UNION ALL
             SELECT
-                hypertable_name::TEXT,
+                'event_services'::TEXT,
                 total_bytes::BIGINT,
                 table_bytes::BIGINT,
                 index_bytes::BIGINT,
@@ -833,21 +835,22 @@ impl EventStore {
             })
             .collect();
 
-        // Compression stats
+        // Compression stats — chunk_compression_stats returns per-chunk rows,
+        // so we aggregate to get per-hypertable totals.
         let compression_rows = sqlx::query(
             r#"
             SELECT
-                hypertable_name::TEXT AS table_name,
-                number_compressed_chunks::BIGINT,
-                before_compression_total_bytes::BIGINT,
-                after_compression_total_bytes::BIGINT
+                'events'::TEXT AS table_name,
+                COUNT(*) FILTER (WHERE compression_status = 'Compressed')::BIGINT AS compressed_chunks,
+                COALESCE(SUM(before_compression_total_bytes), 0)::BIGINT AS before_compression_bytes,
+                COALESCE(SUM(after_compression_total_bytes), 0)::BIGINT AS after_compression_bytes
             FROM chunk_compression_stats('events')
             UNION ALL
             SELECT
-                hypertable_name::TEXT,
-                number_compressed_chunks::BIGINT,
-                before_compression_total_bytes::BIGINT,
-                after_compression_total_bytes::BIGINT
+                'node_stats'::TEXT,
+                COUNT(*) FILTER (WHERE compression_status = 'Compressed')::BIGINT,
+                COALESCE(SUM(before_compression_total_bytes), 0)::BIGINT,
+                COALESCE(SUM(after_compression_total_bytes), 0)::BIGINT
             FROM chunk_compression_stats('node_stats')
             "#,
         )
@@ -859,9 +862,9 @@ impl EventStore {
             .map(|row| {
                 serde_json::json!({
                     "table_name": row.get::<String, _>("table_name"),
-                    "compressed_chunks": row.get::<i64, _>("number_compressed_chunks"),
-                    "before_compression_bytes": row.get::<i64, _>("before_compression_total_bytes"),
-                    "after_compression_bytes": row.get::<i64, _>("after_compression_total_bytes"),
+                    "compressed_chunks": row.get::<i64, _>("compressed_chunks"),
+                    "before_compression_bytes": row.get::<i64, _>("before_compression_bytes"),
+                    "after_compression_bytes": row.get::<i64, _>("after_compression_bytes"),
                 })
             })
             .collect();

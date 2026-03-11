@@ -1574,6 +1574,19 @@ impl Encode for Event {
                 submission_id.encode(buf)?;
                 outline.encode(buf)?;
             }
+            Event::WorkReportBuilt {
+                submission_or_share_id,
+                outline,
+                ..
+            } => {
+                submission_or_share_id.encode(buf)?;
+                outline.encode(buf)?;
+            }
+            Event::GuaranteesDistributed {
+                submission_id, ..
+            } => {
+                submission_id.encode(buf)?;
+            }
             _ => {
                 todo!("Event::Encode not implemented for {:?}", self.event_type())
             }
@@ -1632,6 +1645,8 @@ impl Encode for Event {
             Event::Authorized { cost, .. } => 8 + cost.encoded_size(),
             Event::Refined { costs, .. } => 8 + costs.encoded_size(),
             Event::GuaranteeBuilt { outline, .. } => 8 + outline.encoded_size(),
+            Event::WorkReportBuilt { outline, .. } => 8 + outline.encoded_size(),
+            Event::GuaranteesDistributed { .. } => 8, // submission_id only
             _ => todo!(
                 "Event::encoded_size not implemented for {:?}",
                 self.event_type()

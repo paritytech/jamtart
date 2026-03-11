@@ -486,6 +486,15 @@ impl TelemetryServer {
         Arc::clone(&self.wp_tracker)
     }
 
+    /// Flush slot_tracker and wp_tracker to database on-demand.
+    /// For testing only — in production these flush every 5s via the periodic task.
+    pub async fn flush_trackers(&self) {
+        if let Some(ref store) = self.store {
+            crate::slot_tracker::flush_slot_tracker(&self.slot_tracker, store.pool()).await;
+            crate::wp_tracker::flush_wp_tracker(&self.wp_tracker, store.pool()).await;
+        }
+    }
+
     /// Flush all pending batch writes to database
     ///
     /// **For testing only**: Forces immediate flush of all buffered
