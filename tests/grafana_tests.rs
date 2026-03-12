@@ -208,14 +208,15 @@ async fn test_grafana_timeseries_with_events() {
     let json: Value = response.json();
     let arr = json.as_array().expect("timeseries should return an array");
 
-    // Verify structure: each entry has ts, event_type, count
+    // Verify structure: each entry has ts, event_type, event_type_name, count
     for entry in arr {
         assert!(entry.get("ts").is_some(), "entry missing ts");
         assert!(entry.get("event_type").is_some(), "entry missing event_type");
+        assert!(entry.get("event_type_name").is_some(), "entry missing event_type_name");
         assert!(entry.get("count").is_some(), "entry missing count");
     }
 
-    // Sum up counts per event type
+    // Sum up counts per event type and verify names
     let wp_count: i64 = arr
         .iter()
         .filter(|e| e["event_type"].as_i64() == Some(94))
@@ -229,6 +230,15 @@ async fn test_grafana_timeseries_with_events() {
 
     assert_eq!(wp_count, 5, "expected 5 WPReceived events");
     assert_eq!(bb_count, 3, "expected 3 BestBlockChanged events");
+
+    // Verify event_type_name mappings
+    for entry in arr {
+        match entry["event_type"].as_i64() {
+            Some(94) => assert_eq!(entry["event_type_name"].as_str(), Some("WorkPackageReceived")),
+            Some(11) => assert_eq!(entry["event_type_name"].as_str(), Some("BestBlockChanged")),
+            _ => {}
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

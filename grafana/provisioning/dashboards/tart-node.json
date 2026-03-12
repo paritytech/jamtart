@@ -607,7 +607,7 @@
         {
           "columns": [
             {
-              "selector": "event_type",
+              "selector": "event_type_name",
               "text": "Event Type",
               "type": "number"
             },
@@ -1709,7 +1709,7 @@
               "type": "timestamp"
             },
             {
-              "selector": "event_type",
+              "selector": "event_type_name",
               "text": "Event Type",
               "type": "string"
             },
@@ -2087,7 +2087,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/timeseries?group_by=event_type&event_types=41,44,46,92,107,111,113&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/timeseries?group_by=event_type&event_types=failures&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2304,7 +2304,7 @@
               "type": "timestamp"
             },
             {
-              "selector": "event_type",
+              "selector": "event_type_name",
               "text": "Event Type",
               "type": "string"
             },
@@ -2435,7 +2435,7 @@
               "type": "timestamp"
             },
             {
-              "selector": "event_type",
+              "selector": "event_type_name",
               "text": "Event Type",
               "type": "string"
             },

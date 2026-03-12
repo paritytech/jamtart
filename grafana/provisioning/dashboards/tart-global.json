@@ -101,7 +101,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/stats",
+          "url": "http://localhost:8080/api/grafana/stats?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -159,7 +159,7 @@
         {
           "columns": [
             {
-              "selector": "latest_slot",
+              "selector": "best_slot",
               "text": "Best Slot",
               "type": "number"
             }
@@ -173,7 +173,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/stats",
+          "url": "http://localhost:8080/api/grafana/stats?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -245,7 +245,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/stats",
+          "url": "http://localhost:8080/api/grafana/stats?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -312,7 +312,7 @@
         {
           "columns": [
             {
-              "selector": "last_10s.events_per_second",
+              "selector": "events_per_sec_10s",
               "text": "Events/sec",
               "type": "number"
             }
@@ -326,7 +326,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/stats",
+          "url": "http://localhost:8080/api/grafana/stats?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -385,7 +385,7 @@
         {
           "columns": [
             {
-              "selector": "last_10s.blocks_per_second",
+              "selector": "blocks_per_sec_10s",
               "text": "Blocks/sec",
               "type": "number"
             }
@@ -399,7 +399,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/stats",
+          "url": "http://localhost:8080/api/grafana/stats?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1482,12 +1482,12 @@
               "type": "timestamp"
             },
             {
-              "selector": "event_type",
+              "selector": "event_type_name",
               "text": "Event Type",
               "type": "string"
             },
             {
-              "selector": "events",
+              "selector": "count",
               "text": "Events",
               "type": "number"
             }
@@ -1619,7 +1619,7 @@
               "type": "string"
             },
             {
-              "selector": "events",
+              "selector": "count",
               "text": "Events",
               "type": "number"
             }
@@ -1705,23 +1705,18 @@
         {
           "columns": [
             {
-              "selector": "category",
-              "text": "Category",
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "event_type_name",
+              "text": "Event Type",
               "type": "string"
             },
             {
-              "selector": "attempts",
-              "text": "Attempts",
-              "type": "number"
-            },
-            {
-              "selector": "failures",
-              "text": "Failures",
-              "type": "number"
-            },
-            {
-              "selector": "rate",
-              "text": "Rate",
+              "selector": "count",
+              "text": "Count",
               "type": "number"
             }
           ],
@@ -1731,10 +1726,10 @@
           },
           "format": "table",
           "parser": "backend",
-          "root_selector": "by_category",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/timeseries?group_by=event_type&event_types=41,44,46,92,107,111,113,122,127,130&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/timeseries?group_by=event_type&event_types=failures&interval=1h&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1845,7 +1840,7 @@
               "type": "timestamp"
             },
             {
-              "selector": "total_events",
+              "selector": "count",
               "text": "Total Events",
               "type": "number"
             }
@@ -1958,13 +1953,8 @@
               "type": "timestamp"
             },
             {
-              "selector": "blocks",
+              "selector": "count",
               "text": "Blocks",
-              "type": "number"
-            },
-            {
-              "selector": "max_slot",
-              "text": "Max Slot",
               "type": "number"
             }
           ],
@@ -1972,12 +1962,12 @@
             "type": "yesoreyeram-infinity-datasource",
             "uid": "jamtart-api"
           },
-          "format": "timeseries",
+          "format": "table",
           "parser": "backend",
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/timeseries?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/timeseries?event_types=42&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2205,7 +2195,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/stats",
+          "url": "http://localhost:8080/api/grafana/stats?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2299,7 +2289,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/stats",
+          "url": "http://localhost:8080/api/grafana/stats?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2388,7 +2378,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/stats",
+          "url": "http://localhost:8080/api/grafana/stats?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2517,7 +2507,7 @@
           },
           "format": "table",
           "parser": "backend",
-          "root_selector": "nodes",
+          "root_selector": "",
           "source": "url",
           "type": "json",
           "url": "http://localhost:8080/api/grafana/nodes",
@@ -2557,7 +2547,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "shard_size_bytes"
+              "options": "Shard Size"
             },
             "properties": [
               {
@@ -2601,7 +2591,7 @@
               "type": "number"
             },
             {
-              "selector": "shard_size_bytes",
+              "selector": "shards_size",
               "text": "Shard Size",
               "type": "number"
             },
@@ -2611,7 +2601,7 @@
               "type": "number"
             },
             {
-              "selector": "preimage_size_bytes",
+              "selector": "preimages_size",
               "text": "Preimage Size",
               "type": "number"
             }
@@ -2622,10 +2612,10 @@
           },
           "format": "table",
           "parser": "backend",
-          "root_selector": "by_node",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/node-stats",
+          "url": "http://localhost:8080/api/grafana/node-stats?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2663,7 +2653,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Total Shard Size"
+              "options": "Max Shard Size"
             },
             "properties": [
               {
@@ -2675,7 +2665,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Total Preimage Size"
+              "options": "Max Preimage Size"
             },
             "properties": [
               {
@@ -2710,33 +2700,33 @@
         {
           "columns": [
             {
-              "selector": "aggregate.total_shards",
-              "text": "Total Shards",
+              "selector": "max_shards",
+              "text": "Max Shards",
               "type": "number"
             },
             {
-              "selector": "aggregate.total_shard_size_bytes",
-              "text": "Total Shard Size",
+              "selector": "max_shards_size",
+              "text": "Max Shard Size",
               "type": "number"
             },
             {
-              "selector": "aggregate.total_preimages",
-              "text": "Total Preimages",
+              "selector": "max_preimages",
+              "text": "Max Preimages",
               "type": "number"
             },
             {
-              "selector": "aggregate.total_preimages_size_bytes",
-              "text": "Total Preimage Size",
+              "selector": "max_preimages_size",
+              "text": "Max Preimage Size",
               "type": "number"
             },
             {
-              "selector": "aggregate.average_shards_per_node",
-              "text": "Avg Shards/Node",
+              "selector": "avg_peers",
+              "text": "Avg Peers",
               "type": "number"
             },
             {
-              "selector": "aggregate.node_count",
-              "text": "Reporting Nodes",
+              "selector": "status_count",
+              "text": "Reports",
               "type": "number"
             }
           ],
@@ -2749,7 +2739,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/node-stats-aggregate",
+          "url": "http://localhost:8080/api/grafana/node-stats-aggregate?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",

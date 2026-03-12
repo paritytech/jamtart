@@ -544,13 +544,13 @@
       "targets": [{
         "columns": [
           { "selector": "ts", "text": "", "type": "timestamp" },
-          { "selector": "event_type", "text": "Event Type", "type": "string" },
+          { "selector": "event_type_name", "text": "Event Type", "type": "string" },
           { "selector": "count", "text": "Count", "type": "number" }
         ],
         "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
         "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
         "refId": "A", "root_selector": "", "source": "url", "type": "json",
-        "url": "http://localhost:8080/api/grafana/timeseries?group_by=event_type&event_types=42,43,47,62,68&start=${__from:date:iso}&end=${__to:date:iso}",
+        "url": "http://localhost:8080/api/grafana/timeseries?group_by=event_type&event_types=blocks&start=${__from:date:iso}&end=${__to:date:iso}",
         "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
       }],
       "title": "Block Pipeline",

@@ -336,7 +336,7 @@
               "type": "timestamp"
             },
             {
-              "selector": "event_type",
+              "selector": "event_type_name",
               "text": "Event Type",
               "type": "number"
             },
@@ -1102,7 +1102,7 @@
               "type": "timestamp"
             },
             {
-              "selector": "event_type",
+              "selector": "event_type_name",
               "text": "Event Type",
               "type": "number"
             },

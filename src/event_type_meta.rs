@@ -1,10 +1,22 @@
 use serde::Serialize;
+use std::collections::HashMap;
+use std::sync::LazyLock;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct EventTypeMeta {
     pub id: i16,
     pub name: &'static str,
     pub group: &'static str,
+}
+
+/// O(1) lookup from event type ID to human-readable name.
+static ID_TO_NAME: LazyLock<HashMap<i16, &'static str>> = LazyLock::new(|| {
+    event_type_metadata().iter().map(|m| (m.id, m.name)).collect()
+});
+
+/// Returns the human-readable name for an event type ID, or "Unknown" if not found.
+pub fn event_type_name(id: i16) -> &'static str {
+    ID_TO_NAME.get(&id).copied().unwrap_or("Unknown")
 }
 
 /// All 99 event types with canonical names from JIP-3 / polkajam telemetry.rs.
@@ -235,5 +247,17 @@ mod tests {
     #[test]
     fn group_unknown_returns_none() {
         assert!(event_type_group("foobar").is_none());
+    }
+
+    #[test]
+    fn event_type_name_known() {
+        assert_eq!(event_type_name(42), "Authored");
+        assert_eq!(event_type_name(92), "WorkPackageFailed");
+        assert_eq!(event_type_name(0), "Dropped");
+    }
+
+    #[test]
+    fn event_type_name_unknown() {
+        assert_eq!(event_type_name(9999), "Unknown");
     }
 }

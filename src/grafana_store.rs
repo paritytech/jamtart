@@ -196,6 +196,9 @@ impl EventStore {
                 } else if group_col == "event_type" {
                     let et: i16 = row.get("event_type");
                     obj["event_type"] = serde_json::json!(et);
+                    obj["event_type_name"] = serde_json::json!(
+                        crate::event_type_meta::event_type_name(et)
+                    );
                 } else if group_col == "node_id" {
                     let nid: String = row.get("node_id");
                     obj["node_id"] = serde_json::json!(nid);
@@ -405,9 +408,11 @@ impl EventStore {
         let results: Vec<serde_json::Value> = rows
             .iter()
             .map(|row| {
+                let et: i16 = row.get("event_type");
                 serde_json::json!({
                     "slot": row.get::<i32, _>("slot"),
-                    "event_type": row.get::<i16, _>("event_type"),
+                    "event_type": et,
+                    "event_type_name": crate::event_type_meta::event_type_name(et),
                     "node_count": row.get::<i16, _>("node_count"),
                     "p50_ms": row.get::<i32, _>("p50_ms"),
                     "p99_ms": row.get::<i32, _>("p99_ms"),
