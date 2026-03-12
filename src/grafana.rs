@@ -21,6 +21,7 @@ pub fn router() -> Router<ApiState> {
         .route("/blocks/convergence", get(blocks_convergence))
         .route("/blocks/contents", get(blocks_contents))
         .route("/services", get(services))
+        .route("/services/timeseries", get(services_timeseries))
         .route("/nodes", get(nodes))
         .route("/node-stats", get(node_stats))
         .route("/node-stats-aggregate", get(node_stats_aggregate))
@@ -167,6 +168,44 @@ async fn services(
         .await
         .map(Json)
         .map_err(|e| map_sqlx_error("grafana/services", e))
+}
+
+#[derive(Deserialize)]
+struct ServiceTimeseriesQuery {
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    interval: Option<String>,
+    service: Option<String>,
+    event_types: Option<String>,
+}
+
+async fn services_timeseries(
+    Query(q): Query<ServiceTimeseriesQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let interval = q.interval.as_deref().unwrap_or("1m");
+    let services: Option<Vec<i32>> = q.service.map(|s| {
+        s.split(',')
+            .filter_map(|v| v.trim().parse().ok())
+            .collect()
+    });
+    let event_types: Option<Vec<i16>> = q
+        .event_types
+        .map(|s| crate::event_type_meta::expand_event_types(&s))
+        .filter(|v| !v.is_empty());
+
+    state
+        .store
+        .grafana_services_timeseries(
+            q.start,
+            q.end,
+            interval,
+            services.as_deref(),
+            event_types.as_deref(),
+        )
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/services/timeseries", e))
 }
 
 async fn nodes(

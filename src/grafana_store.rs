@@ -534,6 +534,73 @@ impl EventStore {
         Ok(serde_json::Value::Array(results))
     }
 
+    // ── 6b. grafana_services_timeseries ────────────────────────────────
+
+    /// Per-service time-series from the service_stats_1m continuous aggregate.
+    pub async fn grafana_services_timeseries(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        interval: &str,
+        services: Option<&[i32]>,
+        event_types: Option<&[i16]>,
+    ) -> Result<serde_json::Value, sqlx::Error> {
+        if !VALID_INTERVALS.contains(&interval) {
+            return Err(sqlx::Error::Protocol(format!(
+                "invalid interval: {interval}"
+            )));
+        }
+        let pg_interval = interval_to_pg(interval);
+
+        let mut wheres = vec!["bucket >= $1".to_string(), "bucket < $2".to_string()];
+        let mut bind_idx = 3u32;
+
+        if services.is_some() {
+            wheres.push(format!("service_id = ANY(${bind_idx})"));
+            bind_idx += 1;
+        }
+        if event_types.is_some() {
+            wheres.push(format!("event_type = ANY(${bind_idx})"));
+        }
+
+        let where_clause = wheres.join(" AND ");
+        let sql = format!(
+            r#"SELECT
+                time_bucket('{pg_interval}'::interval, bucket) AS ts,
+                service_id,
+                SUM(event_count)::BIGINT AS count,
+                SUM(total_gas)::BIGINT AS gas
+            FROM service_stats_1m
+            WHERE {where_clause}
+            GROUP BY ts, service_id
+            ORDER BY ts, service_id"#
+        );
+
+        let mut query = sqlx::query(&sql).bind(start).bind(end);
+        if let Some(svc) = services {
+            query = query.bind(svc);
+        }
+        if let Some(et) = event_types {
+            query = query.bind(et);
+        }
+
+        let rows = query.fetch_all(self.pool()).await?;
+
+        let results: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|row| {
+                serde_json::json!({
+                    "ts": row.get::<DateTime<Utc>, _>("ts"),
+                    "service_id": row.get::<i32, _>("service_id"),
+                    "count": row.get::<Option<i64>, _>("count").unwrap_or(0),
+                    "gas": row.get::<Option<i64>, _>("gas").unwrap_or(0),
+                })
+            })
+            .collect();
+
+        Ok(serde_json::Value::Array(results))
+    }
+
     // ── 7. grafana_nodes ───────────────────────────────────────────────
 
     /// All nodes from the nodes table.

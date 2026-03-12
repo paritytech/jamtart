@@ -124,6 +124,10 @@ async fn test_grafana_all_endpoints_empty_200() {
             time_range_params()
         ),
         format!("/api/grafana/services?{}", time_range_params()),
+        format!(
+            "/api/grafana/services/timeseries?{}&interval=1m",
+            time_range_params()
+        ),
         "/api/grafana/nodes".to_string(),
         format!("/api/grafana/node-stats?{}", time_range_params()),
         format!(
@@ -1170,4 +1174,121 @@ async fn test_grafana_event_types_filtered_by_group() {
             "all filtered entries should be in blocks group"
         );
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Services timeseries
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_grafana_services_timeseries_invalid_interval() {
+    let (server, _telemetry, _port, _store) = setup_test_api().await;
+
+    let path = format!(
+        "/api/grafana/services/timeseries?{}&interval=99x",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_grafana_services_timeseries_with_data() {
+    let (server, telemetry, port, store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    // WPReceived for core 3 (enricher maps core → service via work items)
+    // BlockExecuted carries per-service gas: services 10 and 20
+    let events = vec![
+        common::wp_received_event(ts, 9500, 3),
+        common::authorized_event(ts + 100_000, 9500),
+        common::refined_event(ts + 200_000, 9500),
+        common::block_executed_event(ts + 300_000, 42, &[(10, 50_000), (20, 30_000)]),
+    ];
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+    common::refresh_aggregates(store.pool()).await;
+
+    let path = format!(
+        "/api/grafana/services/timeseries?{}&interval=1m",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+
+    // Verify structure
+    for entry in arr {
+        assert!(entry.get("ts").is_some(), "entry missing ts");
+        assert!(entry.get("service_id").is_some(), "entry missing service_id");
+        assert!(entry.get("count").is_some(), "entry missing count");
+        assert!(entry.get("gas").is_some(), "entry missing gas");
+    }
+}
+
+#[tokio::test]
+async fn test_grafana_services_timeseries_service_filter() {
+    let (server, telemetry, port, store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    let events = vec![
+        common::block_executed_event(ts, 42, &[(10, 50_000), (20, 30_000)]),
+    ];
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+    common::refresh_aggregates(store.pool()).await;
+
+    // Filter to service 10 only
+    let path = format!(
+        "/api/grafana/services/timeseries?{}&interval=1m&service=10",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+
+    for entry in arr {
+        assert_eq!(
+            entry["service_id"].as_i64(),
+            Some(10),
+            "service filter should only return service 10"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_grafana_services_timeseries_event_type_filter() {
+    let (server, telemetry, port, store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    let events = vec![
+        common::wp_received_event(ts, 9600, 3),
+        common::authorized_event(ts + 100_000, 9600),
+        common::refined_event(ts + 200_000, 9600),
+        common::block_executed_event(ts + 300_000, 42, &[(10, 50_000)]),
+    ];
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+    common::refresh_aggregates(store.pool()).await;
+
+    // Filter by event_types using group name
+    let path = format!(
+        "/api/grafana/services/timeseries?{}&interval=1m&event_types=wp_pipeline",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    assert!(json.is_array(), "should return array");
 }
