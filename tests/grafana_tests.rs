@@ -466,15 +466,18 @@ async fn test_grafana_bottlenecks_with_pipeline() {
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
-    assert!(json.get("total_wps").is_some(), "missing total_wps");
-    assert!(json.get("failed_wps").is_some(), "missing failed_wps");
-    assert!(json.get("failure_rate").is_some(), "missing failure_rate");
+    let arr = json.as_array().expect("bottlenecks should return an array");
+    assert!(!arr.is_empty(), "bottlenecks array should not be empty");
+    let entry = &arr[0];
+    assert!(entry.get("total_wps").is_some(), "missing total_wps");
+    assert!(entry.get("failed_wps").is_some(), "missing failed_wps");
+    assert!(entry.get("failure_rate").is_some(), "missing failure_rate");
     assert!(
-        json.get("stage_timing").is_some(),
+        entry.get("stage_timing").is_some(),
         "missing stage_timing"
     );
 
-    let stage_timing = &json["stage_timing"];
+    let stage_timing = &entry["stage_timing"];
     assert!(
         stage_timing.get("authorize").is_some(),
         "stage_timing missing authorize"
@@ -501,7 +504,7 @@ async fn test_grafana_bottlenecks_with_pipeline() {
     );
 
     assert!(
-        json["total_wps"].as_i64().unwrap_or(0) >= 1,
+        entry["total_wps"].as_i64().unwrap_or(0) >= 1,
         "expected total_wps >= 1"
     );
 }
@@ -886,16 +889,19 @@ async fn test_grafana_wp_failure_partial_pipeline() {
     assert!(json["distributed"].as_i64().unwrap_or(0) >= 1, "expected distributed >= 1");
     assert!(json["failed"].as_i64().unwrap_or(0) >= 1, "expected failed >= 1");
 
-    // bottlenecks assertions
+    // bottlenecks assertions (returns array after wrapping for Infinity plugin)
     let path = format!("/api/grafana/bottlenecks?{}", time_range_params());
     let response = server.get(&path).await;
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
-    assert!(json["total_wps"].as_i64().unwrap_or(0) >= 3, "expected total_wps >= 3");
-    assert!(json["failed_wps"].as_i64().unwrap_or(0) >= 1, "expected failed_wps >= 1");
+    let arr = json.as_array().expect("bottlenecks should return an array");
+    assert!(!arr.is_empty(), "bottlenecks array should not be empty");
+    let entry = &arr[0];
+    assert!(entry["total_wps"].as_i64().unwrap_or(0) >= 3, "expected total_wps >= 3");
+    assert!(entry["failed_wps"].as_i64().unwrap_or(0) >= 1, "expected failed_wps >= 1");
     assert!(
-        json["failure_rate"].as_f64().unwrap_or(0.0) > 0.0,
+        entry["failure_rate"].as_f64().unwrap_or(0.0) > 0.0,
         "expected failure_rate > 0"
     );
 }
@@ -1002,17 +1008,14 @@ async fn test_grafana_cores_detail_mode() {
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
-    let arr = json.as_array().expect("cores detail should return an array");
-
-    // In detail mode there should be entries with recent_work_packages
-    if !arr.is_empty() {
-        let entry = &arr[0];
-        assert!(entry.get("core").is_some(), "entry missing core");
-        assert!(
-            entry.get("recent_work_packages").is_some(),
-            "detail mode should include recent_work_packages"
-        );
-    }
+    // Single-core query returns an object (not array) so Infinity plugin
+    // can navigate into nested fields like "recent_work_packages"
+    assert!(json.is_object(), "single-core query should return an object");
+    assert!(json.get("core").is_some(), "entry missing core");
+    assert!(
+        json.get("recent_work_packages").is_some(),
+        "detail mode should include recent_work_packages"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1257,9 +1260,9 @@ async fn test_grafana_services_timeseries_service_filter() {
 
     for entry in arr {
         assert_eq!(
-            entry["service_id"].as_i64(),
-            Some(10),
-            "service filter should only return service 10"
+            entry["service_id"].as_str(),
+            Some("0xa"),
+            "service filter should only return service 10 (0xa)"
         );
     }
 }
@@ -1291,4 +1294,72 @@ async fn test_grafana_services_timeseries_event_type_filter() {
 
     let json: Value = response.json();
     assert!(json.is_array(), "should return array");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Timeseries with core filter
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_grafana_timeseries_core_filter() {
+    let (server, telemetry, port, store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    // Send WP events for two different cores
+    // Core 3: received + failed
+    let events = vec![
+        common::wp_received_event(ts, 9000, 3),
+        common::wp_failed_event(ts + 1000, 9000),
+        common::wp_received_event(ts + 2000, 9001, 3),
+        common::wp_failed_event(ts + 3000, 9001),
+        // Core 5: received + failed
+        common::wp_received_event(ts + 4000, 9002, 5),
+        common::wp_failed_event(ts + 5000, 9002),
+    ];
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+    common::refresh_aggregates(store.pool()).await;
+
+    // Query failures filtered to core 3
+    let path = format!(
+        "/api/grafana/timeseries?{}&interval=1m&group_by=event_type&event_types=92&core=3",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+
+    // Should have data (core 3 had 2 WorkPackageFailed events)
+    let total_count: i64 = arr.iter().filter_map(|e| e["count"].as_i64()).sum();
+    assert_eq!(total_count, 2, "core 3 should have 2 failure events");
+
+    // Query failures for core 5
+    let path = format!(
+        "/api/grafana/timeseries?{}&interval=1m&group_by=event_type&event_types=92&core=5",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+    let total_count: i64 = arr.iter().filter_map(|e| e["count"].as_i64()).sum();
+    assert_eq!(total_count, 1, "core 5 should have 1 failure event");
+
+    // Query without core filter — should get all 3
+    let path = format!(
+        "/api/grafana/timeseries?{}&interval=1m&group_by=event_type&event_types=92",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+    let total_count: i64 = arr.iter().filter_map(|e| e["count"].as_i64()).sum();
+    assert!(total_count >= 3, "unfiltered should have at least 3 failure events, got {total_count}");
 }

@@ -51,6 +51,7 @@ struct TimeseriesQuery {
     group_by: Option<String>,
     node: Option<String>,
     event_types: Option<String>,
+    core: Option<i16>,
 }
 
 #[derive(Deserialize)]
@@ -80,6 +81,7 @@ async fn timeseries(
             q.group_by.as_deref(),
             q.node.as_deref(),
             event_types.as_deref(),
+            q.core,
         )
         .await
         .map(Json)

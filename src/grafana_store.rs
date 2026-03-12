@@ -79,6 +79,7 @@ impl EventStore {
         group_by: Option<&str>,
         node: Option<&str>,
         event_types: Option<&[i16]>,
+        core: Option<i16>,
     ) -> Result<serde_json::Value, sqlx::Error> {
         // Validate interval
         if !VALID_INTERVALS.contains(&interval) {
@@ -100,7 +101,7 @@ impl EventStore {
 
         // Select aggregate table (interval-based, then retention-aware upgrade)
         let age = Utc::now() - start;
-        let table = if group_by == Some("core") {
+        let table = if group_by == Some("core") || core.is_some() {
             "core_stats_1m"
         } else if interval_secs < 60 {
             if age > chrono::Duration::days(3) {
@@ -148,6 +149,11 @@ impl EventStore {
             bind_idx += 1;
         }
 
+        if core.is_some() && table == "core_stats_1m" && group_by != Some("core") {
+            wheres.push(format!("core = ${bind_idx}"));
+            bind_idx += 1;
+        }
+
         if event_types.is_some() {
             wheres.push(format!("event_type = ANY(${bind_idx})"));
             // bind_idx += 1; // last bind
@@ -176,6 +182,11 @@ impl EventStore {
         if let Some(n) = node {
             if table != "core_stats_1m" {
                 query = query.bind(n.to_string());
+            }
+        }
+        if let Some(c) = core {
+            if table == "core_stats_1m" && group_by != Some("core") {
+                query = query.bind(c);
             }
         }
         if let Some(types) = event_types {
