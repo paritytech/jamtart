@@ -781,6 +781,50 @@ async fn test_grafana_blocks_convergence_multi_node() {
             );
         }
     }
+
+    // Test event_type filter: only BestBlockChanged (11)
+    let path = format!(
+        "/api/grafana/blocks/convergence?event_type=11&{}",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let arr = response.json::<Value>().as_array().cloned().unwrap_or_default();
+    for row in &arr {
+        assert_eq!(
+            row["event_type"].as_i64(),
+            Some(11),
+            "event_type filter should return only type 11, got {:?}",
+            row["event_type"]
+        );
+    }
+
+    // Test event_type filter: only Authored (42)
+    let path = format!(
+        "/api/grafana/blocks/convergence?event_type=42&{}",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let arr = response.json::<Value>().as_array().cloned().unwrap_or_default();
+    for row in &arr {
+        assert_eq!(
+            row["event_type"].as_i64(),
+            Some(42),
+            "event_type filter should return only type 42, got {:?}",
+            row["event_type"]
+        );
+    }
+
+    // Test event_type filter: non-existent type returns empty
+    let path = format!(
+        "/api/grafana/blocks/convergence?event_type=99&{}",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let arr = response.json::<Value>().as_array().cloned().unwrap_or_default();
+    assert!(arr.is_empty(), "non-existent event_type should return empty array");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

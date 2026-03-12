@@ -371,26 +371,36 @@ impl EventStore {
         &self,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
+        event_type: Option<i16>,
     ) -> Result<serde_json::Value, sqlx::Error> {
-        let rows = sqlx::query(
-            r#"
-            SELECT
-                slot,
-                event_type,
-                node_count,
-                p50_ms,
-                p99_ms,
-                p100_ms,
-                authored_at
-            FROM slot_convergence
-            WHERE authored_at >= $1 AND authored_at < $2
-            ORDER BY slot ASC, event_type ASC
-            "#,
-        )
-        .bind(start)
-        .bind(end)
-        .fetch_all(self.pool())
-        .await?;
+        let rows = if let Some(et) = event_type {
+            sqlx::query(
+                r#"
+                SELECT slot, event_type, node_count, p50_ms, p99_ms, p100_ms, authored_at
+                FROM slot_convergence
+                WHERE authored_at >= $1 AND authored_at < $2 AND event_type = $3
+                ORDER BY slot ASC
+                "#,
+            )
+            .bind(start)
+            .bind(end)
+            .bind(et)
+            .fetch_all(self.pool())
+            .await?
+        } else {
+            sqlx::query(
+                r#"
+                SELECT slot, event_type, node_count, p50_ms, p99_ms, p100_ms, authored_at
+                FROM slot_convergence
+                WHERE authored_at >= $1 AND authored_at < $2
+                ORDER BY slot ASC, event_type ASC
+                "#,
+            )
+            .bind(start)
+            .bind(end)
+            .fetch_all(self.pool())
+            .await?
+        };
 
         let results: Vec<serde_json::Value> = rows
             .iter()

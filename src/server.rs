@@ -752,9 +752,13 @@ async fn handle_connection_optimized(
                                             });
                                     }
                                     11 | 12 | 40 | 43 => { // BestBlockChanged, FinalizedBlockChanged, Authoring, Importing
-                                        slot_tracker.entry(slot).and_modify(|s| {
-                                            s.record(et_raw, evt_ts);
-                                        });
+                                        slot_tracker.entry(slot)
+                                            .and_modify(|s| {
+                                                s.record(et_raw, evt_ts);
+                                            })
+                                            .or_insert_with(|| {
+                                                crate::slot_tracker::SlotState::new(et_raw, evt_ts, None)
+                                            });
                                     }
                                     _ => {}
                                 }

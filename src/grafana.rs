@@ -24,6 +24,7 @@ pub fn router() -> Router<ApiState> {
         .route("/db-stats", get(db_stats))
         .route("/bottlenecks", get(bottlenecks))
         .route("/wp-funnel", get(wp_funnel))
+        .route("/event-types", get(event_types))
 }
 
 /// Map sqlx errors to appropriate HTTP status codes.
@@ -54,6 +55,7 @@ struct TimeRangeQuery {
     end: DateTime<Utc>,
     node: Option<String>,
     core: Option<i16>,
+    event_type: Option<i16>,
 }
 
 async fn timeseries(
@@ -62,10 +64,8 @@ async fn timeseries(
 ) -> Result<impl IntoResponse, StatusCode> {
     let interval = q.interval.as_deref().unwrap_or("1m");
     let event_types: Option<Vec<i16>> = q.event_types.map(|s| {
-        s.split(',')
-            .filter_map(|v| v.trim().parse().ok())
-            .collect()
-    });
+        crate::event_type_meta::expand_event_types(&s)
+    }).filter(|v| !v.is_empty());
 
     state
         .store
@@ -136,7 +136,7 @@ async fn blocks_convergence(
 ) -> Result<impl IntoResponse, StatusCode> {
     state
         .store
-        .grafana_blocks_convergence(q.start, q.end)
+        .grafana_blocks_convergence(q.start, q.end, q.event_type)
         .await
         .map(Json)
         .map_err(|e| map_sqlx_error("grafana/blocks/convergence", e))
@@ -240,4 +240,8 @@ async fn wp_funnel(
         .await
         .map(Json)
         .map_err(|e| map_sqlx_error("grafana/wp-funnel", e))
+}
+
+async fn event_types() -> impl IntoResponse {
+    Json(crate::event_type_meta::event_type_metadata())
 }
