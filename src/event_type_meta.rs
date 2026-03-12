@@ -185,9 +185,11 @@ pub fn event_type_group(name: &str) -> Option<&'static [i16]> {
 }
 
 /// Expand an event_types query parameter string into a deduplicated list of IDs.
-/// Accepts comma-separated mix of numeric IDs and group names.
+/// Accepts comma-separated mix of numeric IDs, group names, and event names.
+/// Grafana multi-select may wrap values in curly braces: "{a,b}" — these are stripped.
 /// Example: "failures,42" → [20, 22, 25, ..., 42, ..., 199]
 pub fn expand_event_types(input: &str) -> Vec<i16> {
+    let input = input.strip_prefix('{').and_then(|s| s.strip_suffix('}')).unwrap_or(input);
     let mut result = Vec::new();
     for token in input.split(',') {
         let token = token.trim();
@@ -262,6 +264,20 @@ mod tests {
     fn expand_unknown_group_ignored() {
         let result = expand_event_types("42,nonexistent,10");
         assert_eq!(result, vec![10, 42]);
+    }
+
+    #[test]
+    fn expand_grafana_curly_braces() {
+        let result = expand_event_types("{tickets,connections}");
+        assert!(result.contains(&80)); // GeneratingTickets (tickets group)
+        assert!(result.contains(&21)); // ConnectingIn (connections group)
+        assert!(!result.contains(&42)); // Authored should not be present
+    }
+
+    #[test]
+    fn expand_curly_braces_unknown_ignored() {
+        let result = expand_event_types("{nonexistent}");
+        assert!(result.is_empty());
     }
 
     #[test]

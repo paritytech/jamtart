@@ -42,94 +42,6 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "fixed"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 0,
-        "y": 1
-      },
-      "id": 2,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "targets": [
-        {
-          "columns": [
-            {
-              "selector": "total_cores",
-              "text": "Total",
-              "type": "number"
-            },
-            {
-              "selector": "active_cores",
-              "text": "Active",
-              "type": "number"
-            },
-            {
-              "selector": "idle_cores",
-              "text": "Idle",
-              "type": "number"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "jamtart-api"
-          },
-          "filters": [],
-          "format": "table",
-          "global_query_id": "",
-          "parser": "backend",
-          "refId": "A",
-          "root_selector": "summary",
-          "source": "url",
-          "type": "json",
-          "url": "http://localhost:8080/api/grafana/cores?start=${__from:date:iso}&end=${__to:date:iso}",
-          "url_options": {
-            "method": "GET",
-            "data": "",
-            "headers": [],
-            "params": []
-          }
-        }
-      ],
-      "title": "Core Summary",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "jamtart-api"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
             "mode": "palette-classic"
           },
           "custom": {
@@ -178,9 +90,9 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 4,
-        "w": 9,
-        "x": 6,
+        "h": 6,
+        "w": 12,
+        "x": 0,
         "y": 1
       },
       "id": 3,
@@ -205,13 +117,13 @@
               "type": "timestamp"
             },
             {
-              "selector": "core_index",
+              "selector": "core",
               "text": "Core",
-              "type": "number"
+              "type": "string"
             },
             {
-              "selector": "guarantees",
-              "text": "",
+              "selector": "count",
+              "text": "Count",
               "type": "number"
             }
           ],
@@ -227,7 +139,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/timeseries?group_by=core&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/timeseries?group_by=core&interval=1m&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -309,9 +221,9 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 4,
-        "w": 9,
-        "x": 15,
+        "h": 6,
+        "w": 12,
+        "x": 12,
         "y": 1
       },
       "id": 4,
@@ -338,11 +250,11 @@
             {
               "selector": "event_type_name",
               "text": "Event Type",
-              "type": "number"
+              "type": "string"
             },
             {
               "selector": "count",
-              "text": "",
+              "text": "Count",
               "type": "number"
             }
           ],
@@ -358,7 +270,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/timeseries?group_by=event_type&event_types=failures&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/timeseries?group_by=event_type&event_types=failures&interval=1m&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -433,54 +345,13 @@
             ]
           }
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Status"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "options": {
-                      "idle": {
-                        "color": "blue",
-                        "index": 0,
-                        "text": "idle"
-                      },
-                      "active": {
-                        "color": "green",
-                        "index": 1,
-                        "text": "active"
-                      },
-                      "overloaded": {
-                        "color": "red",
-                        "index": 2,
-                        "text": "overloaded"
-                      }
-                    },
-                    "type": "value"
-                  }
-                ]
-              },
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "mode": "basic",
-                  "type": "color-background"
-                }
-              }
-            ]
-          }
-        ]
+        "overrides": []
       },
       "gridPos": {
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 5
+        "y": 7
       },
       "id": 5,
       "options": {
@@ -505,43 +376,23 @@
         {
           "columns": [
             {
-              "selector": "core_index",
+              "selector": "core",
               "text": "Core",
               "type": "number"
             },
             {
-              "selector": "status",
-              "text": "Status",
-              "type": "string"
-            },
-            {
-              "selector": "gas_used",
-              "text": "Gas Used",
+              "selector": "work_packages",
+              "text": "Work Packages",
               "type": "number"
             },
             {
-              "selector": "utilization_pct",
-              "text": "Utilization %",
+              "selector": "guarantees",
+              "text": "Guarantees",
               "type": "number"
             },
             {
-              "selector": "da_load",
-              "text": "DA Load",
-              "type": "number"
-            },
-            {
-              "selector": "work_packages_last_hour",
-              "text": "WPs/Hour",
-              "type": "number"
-            },
-            {
-              "selector": "guarantees_last_hour",
-              "text": "Guarantees/Hour",
-              "type": "number"
-            },
-            {
-              "selector": "last_active_slot",
-              "text": "Last Active Slot",
+              "selector": "failures",
+              "text": "Failures",
               "type": "number"
             }
           ],
@@ -554,7 +405,7 @@
           "global_query_id": "",
           "parser": "backend",
           "refId": "A",
-          "root_selector": "cores",
+          "root_selector": "",
           "source": "url",
           "type": "json",
           "url": "http://localhost:8080/api/grafana/cores?start=${__from:date:iso}&end=${__to:date:iso}",
@@ -630,43 +481,23 @@
         {
           "columns": [
             {
-              "selector": "gas_utilization_pct",
-              "text": "Gas Util %",
+              "selector": "total_wps",
+              "text": "Total WPs",
               "type": "number"
             },
             {
-              "selector": "throughput_per_second",
-              "text": "Throughput/s",
+              "selector": "failed_wps",
+              "text": "Failed WPs",
               "type": "number"
             },
             {
-              "selector": "processing_efficiency_pct",
-              "text": "Processing %",
+              "selector": "failure_rate",
+              "text": "Failure Rate",
               "type": "number"
             },
             {
-              "selector": "accumulate_efficiency_pct",
-              "text": "Accumulate %",
-              "type": "number"
-            },
-            {
-              "selector": "work_packages_processed_24h",
-              "text": "WPs (24h)",
-              "type": "number"
-            },
-            {
-              "selector": "stats.wps_received",
-              "text": "WPs Received",
-              "type": "number"
-            },
-            {
-              "selector": "stats.guarantees_built",
-              "text": "Guarantees Built",
-              "type": "number"
-            },
-            {
-              "selector": "stats.refinements_completed",
-              "text": "Refinements Done",
+              "selector": "avg_pipeline_ms",
+              "text": "Avg Pipeline (ms)",
               "type": "number"
             }
           ],
@@ -682,7 +513,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/cores?core=${core_index}&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/bottlenecks?core=${core_index}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -691,156 +522,8 @@
           }
         }
       ],
-      "title": "Core Metrics",
+      "title": "Pipeline Stats",
       "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "jamtart-api"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "fixed"
-          },
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "auto"
-            },
-            "inspect": false
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Active"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "options": {
-                      "true": {
-                        "color": "green",
-                        "index": 0,
-                        "text": "Yes"
-                      },
-                      "false": {
-                        "color": "red",
-                        "index": 1,
-                        "text": "No"
-                      }
-                    },
-                    "type": "value"
-                  }
-                ]
-              },
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "mode": "basic",
-                  "type": "color-background"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 12,
-        "x": 12,
-        "y": 16
-      },
-      "id": 8,
-      "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
-        "showHeader": true
-      },
-      "targets": [
-        {
-          "columns": [
-            {
-              "selector": "node_id",
-              "text": "Node ID",
-              "type": "string"
-            },
-            {
-              "selector": "validator_index",
-              "text": "Index",
-              "type": "number"
-            },
-            {
-              "selector": "implementation_name",
-              "text": "Impl",
-              "type": "string"
-            },
-            {
-              "selector": "implementation_version",
-              "text": "Version",
-              "type": "string"
-            },
-            {
-              "selector": "is_active",
-              "text": "Active",
-              "type": "string"
-            },
-            {
-              "selector": "guarantee_count",
-              "text": "Guarantees",
-              "type": "number"
-            },
-            {
-              "selector": "latest_slot",
-              "text": "Latest Slot",
-              "type": "number"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "jamtart-api"
-          },
-          "filters": [],
-          "format": "table",
-          "global_query_id": "",
-          "parser": "backend",
-          "refId": "A",
-          "root_selector": "validators",
-          "source": "url",
-          "type": "json",
-          "url": "http://localhost:8080/api/grafana/cores?core=${core_index}&start=${__from:date:iso}&end=${__to:date:iso}",
-          "url_options": {
-            "method": "GET",
-            "data": "",
-            "headers": [],
-            "params": []
-          }
-        }
-      ],
-      "title": "Core Validators",
-      "type": "table"
     },
     {
       "datasource": {
@@ -874,7 +557,7 @@
       },
       "gridPos": {
         "h": 6,
-        "w": 12,
+        "w": 24,
         "x": 0,
         "y": 22
       },
@@ -895,23 +578,28 @@
         {
           "columns": [
             {
-              "selector": "work_package_hash",
+              "selector": "wp_hash",
               "text": "WP Hash",
               "type": "string"
             },
             {
-              "selector": "status",
-              "text": "Status",
-              "type": "string"
+              "selector": "stage",
+              "text": "Stage",
+              "type": "number"
             },
             {
-              "selector": "submitted_at",
-              "text": "Submitted",
+              "selector": "first_seen",
+              "text": "First Seen",
               "type": "timestamp"
             },
             {
-              "selector": "node_id",
-              "text": "Node",
+              "selector": "received_by",
+              "text": "Received By",
+              "type": "string"
+            },
+            {
+              "selector": "guaranteed_by",
+              "text": "Guaranteed By",
               "type": "string"
             }
           ],
@@ -924,7 +612,7 @@
           "global_query_id": "",
           "parser": "backend",
           "refId": "A",
-          "root_selector": "work_packages",
+          "root_selector": "recent_work_packages",
           "source": "url",
           "type": "json",
           "url": "http://localhost:8080/api/grafana/cores?core=${core_index}&start=${__from:date:iso}&end=${__to:date:iso}",
@@ -966,7 +654,7 @@
         "h": 6,
         "w": 12,
         "x": 12,
-        "y": 22
+        "y": 16
       },
       "id": 10,
       "options": {
@@ -988,23 +676,43 @@
         {
           "columns": [
             {
-              "selector": "stats.bottleneck_count",
-              "text": "Bottlenecks",
+              "selector": "stage_timing.authorize.p50_ms",
+              "text": "Authorize p50",
               "type": "number"
             },
             {
-              "selector": "stats.failure_rate",
-              "text": "Failure Rate",
+              "selector": "stage_timing.authorize.p95_ms",
+              "text": "Authorize p95",
               "type": "number"
             },
             {
-              "selector": "stats.total_events",
-              "text": "Total Events",
+              "selector": "stage_timing.refine.p50_ms",
+              "text": "Refine p50",
               "type": "number"
             },
             {
-              "selector": "stats.total_failures",
-              "text": "Total Failures",
+              "selector": "stage_timing.refine.p95_ms",
+              "text": "Refine p95",
+              "type": "number"
+            },
+            {
+              "selector": "stage_timing.guarantee.p50_ms",
+              "text": "Guarantee p50",
+              "type": "number"
+            },
+            {
+              "selector": "stage_timing.guarantee.p95_ms",
+              "text": "Guarantee p95",
+              "type": "number"
+            },
+            {
+              "selector": "stage_timing.pipeline_total.p50_ms",
+              "text": "Total p50",
+              "type": "number"
+            },
+            {
+              "selector": "stage_timing.pipeline_total.p95_ms",
+              "text": "Total p95",
               "type": "number"
             }
           ],
@@ -1020,7 +728,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/cores?core=${core_index}&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/bottlenecks?core=${core_index}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1029,7 +737,7 @@
           }
         }
       ],
-      "title": "Core Bottlenecks",
+      "title": "Stage Timing (ms)",
       "type": "stat"
     },
     {
@@ -1041,7 +749,7 @@
         "y": 28
       },
       "id": 11,
-      "title": "Validator-Core Mapping",
+      "title": "Failures",
       "type": "row"
     },
     {
@@ -1104,7 +812,7 @@
             {
               "selector": "event_type_name",
               "text": "Event Type",
-              "type": "number"
+              "type": "string"
             },
             {
               "selector": "count",
@@ -1306,12 +1014,12 @@
               "headers": [],
               "params": []
             },
-            "root_selector": "cores",
+            "root_selector": "",
             "columns": [
               {
-                "selector": "core_index",
-                "text": "core_index",
-                "type": "number"
+                "selector": "core",
+                "text": "core",
+                "type": "string"
               }
             ],
             "format": "table"

@@ -421,7 +421,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/timeseries?event_types=system&group_by=event_type&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/timeseries?event_types=system&group_by=event_type&interval=1m&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "data": "",
             "headers": [],
