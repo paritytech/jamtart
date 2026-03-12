@@ -1,5 +1,6 @@
 use anyhow::Result;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::{self, Receiver, Sender};
@@ -46,6 +47,25 @@ const CHANNEL_SIZE: usize = 5_000_000;
 /// Interval for flushing per-node event counts to the database.
 /// Replaces the per-row trigger which is catastrophic at 3M events/s.
 const NODE_STATS_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Aggregate flush stats across all writer workers (lock-free).
+struct SharedFlushStats {
+    total_events: AtomicU64,
+    total_flushes: AtomicU32,
+    total_flush_us: AtomicU64,
+    max_flush_us: AtomicU64,
+}
+
+impl SharedFlushStats {
+    fn new() -> Self {
+        Self {
+            total_events: AtomicU64::new(0),
+            total_flushes: AtomicU32::new(0),
+            total_flush_us: AtomicU64::new(0),
+            max_flush_us: AtomicU64::new(0),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct BatchWriter {
@@ -111,13 +131,43 @@ impl BatchWriter {
             });
         }
 
+        // Shared flush stats across all writers + single aggregator log task.
+        let shared_flush_stats = Arc::new(SharedFlushStats::new());
+        {
+            let stats = shared_flush_stats.clone();
+            tokio::spawn(async move {
+                let mut tick = interval(Duration::from_secs(10));
+                tick.tick().await; // skip first immediate tick
+                loop {
+                    tick.tick().await;
+                    let events = stats.total_events.swap(0, Ordering::Relaxed);
+                    let flushes = stats.total_flushes.swap(0, Ordering::Relaxed);
+                    let total_us = stats.total_flush_us.swap(0, Ordering::Relaxed);
+                    let max_us = stats.max_flush_us.swap(0, Ordering::Relaxed);
+                    if flushes == 0 {
+                        continue;
+                    }
+                    let avg = Duration::from_micros(total_us / flushes as u64);
+                    let max = Duration::from_micros(max_us);
+                    debug!(
+                        "batch_writer: {:.0} events/s, flushes={}, avg_flush={:?}, max_flush={:?}",
+                        events as f64 / 10.0,
+                        flushes,
+                        avg,
+                        max,
+                    );
+                }
+            });
+        }
+
         for id in 0..NUM_WRITERS {
             let rx = shared_rx.clone();
             let store = store.clone();
             let node_counts = shared_node_counts.clone();
+            let flush_stats = shared_flush_stats.clone();
             tokio::spawn(async move {
                 info!("Writer worker {} started", id);
-                match writer_worker(id, rx, store, node_counts).await {
+                match writer_worker(id, rx, store, node_counts, flush_stats).await {
                     Ok(_) => {
                         info!("Writer worker {} completed normally", id);
                     }
@@ -244,6 +294,7 @@ async fn writer_worker(
     receiver: Arc<Mutex<Receiver<WriterCommand>>>,
     store: Option<Arc<EventStore>>,
     shared_node_counts: Arc<Mutex<HashMap<NodeId, u64>>>,
+    flush_stats: Arc<SharedFlushStats>,
 ) -> Result<()> {
     let mut event_batch: Vec<EventRecord> = Vec::with_capacity(MAX_BATCH_SIZE);
     let mut node_connects: Vec<(NodeId, NodeInformation, String)> = Vec::new();
@@ -252,13 +303,6 @@ async fn writer_worker(
 
     let mut stats_interval = interval(NODE_STATS_INTERVAL);
     stats_interval.tick().await;
-
-    // Periodic flush stats (logged at DEBUG every 5s)
-    let mut flush_stats_last = std::time::Instant::now();
-    let mut flush_stats_events: u64 = 0;
-    let mut flush_stats_count: u32 = 0;
-    let mut flush_stats_total_us: u64 = 0;
-    let mut flush_stats_max_us: u64 = 0;
 
     loop {
         // Phase 1: Acquire lock and drain available events into local batch.
@@ -282,35 +326,16 @@ async fn writer_worker(
                 let t0 = std::time::Instant::now();
                 let result = flush_events(store, &mut event_batch).await;
                 let elapsed_us = t0.elapsed().as_micros() as u64;
-                flush_stats_events += batch_len;
-                flush_stats_count += 1;
-                flush_stats_total_us += elapsed_us;
-                flush_stats_max_us = flush_stats_max_us.max(elapsed_us);
+                flush_stats.total_events.fetch_add(batch_len, Ordering::Relaxed);
+                flush_stats.total_flushes.fetch_add(1, Ordering::Relaxed);
+                flush_stats.total_flush_us.fetch_add(elapsed_us, Ordering::Relaxed);
+                flush_stats.max_flush_us.fetch_max(elapsed_us, Ordering::Relaxed);
                 if let Err(e) = result {
                     error!("Writer {} event flush error: {}", id, e);
                 }
             } else {
                 event_batch.clear();
             }
-        }
-
-        // Periodic flush stats (every 5 seconds)
-        let stats_elapsed = flush_stats_last.elapsed();
-        if stats_elapsed.as_secs() >= 5 && flush_stats_count > 0 {
-            let avg_us = flush_stats_total_us / flush_stats_count as u64;
-            debug!(
-                "Writer {}: {:.0} events/s, flushes={}, avg_flush={}us, max_flush={}us",
-                id,
-                flush_stats_events as f64 / stats_elapsed.as_secs_f64(),
-                flush_stats_count,
-                avg_us,
-                flush_stats_max_us,
-            );
-            flush_stats_events = 0;
-            flush_stats_count = 0;
-            flush_stats_total_us = 0;
-            flush_stats_max_us = 0;
-            flush_stats_last = std::time::Instant::now();
         }
 
         // Phase 3: Flush node connect/disconnect immediately
