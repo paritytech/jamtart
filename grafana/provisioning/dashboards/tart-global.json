@@ -101,7 +101,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/stats",
+          "url": "http://localhost:8080/api/grafana/stats",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -173,7 +173,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/stats",
+          "url": "http://localhost:8080/api/grafana/stats",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -245,7 +245,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/stats",
+          "url": "http://localhost:8080/api/grafana/stats",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -326,7 +326,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/stats",
+          "url": "http://localhost:8080/api/grafana/stats",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -399,7 +399,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/stats",
+          "url": "http://localhost:8080/api/grafana/stats",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1477,7 +1477,7 @@
         {
           "columns": [
             {
-              "selector": "timestamp",
+              "selector": "ts",
               "text": "Time",
               "type": "timestamp"
             },
@@ -1498,10 +1498,10 @@
           },
           "format": "table",
           "parser": "backend",
-          "root_selector": "data",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?group_by=event_type&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/timeseries?group_by=event_type&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1609,7 +1609,7 @@
         {
           "columns": [
             {
-              "selector": "timestamp",
+              "selector": "ts",
               "text": "Time",
               "type": "timestamp"
             },
@@ -1630,10 +1630,10 @@
           },
           "format": "table",
           "parser": "backend",
-          "root_selector": "data",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?group_by=node_id&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/timeseries?group_by=node_id&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1734,7 +1734,7 @@
           "root_selector": "by_category",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?group_by=event_type&event_types=41,44,46,92,107,111,113,122,127,130&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/timeseries?group_by=event_type&event_types=41,44,46,92,107,111,113,122,127,130&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1840,7 +1840,7 @@
         {
           "columns": [
             {
-              "selector": "timestamp",
+              "selector": "ts",
               "text": "Time",
               "type": "timestamp"
             },
@@ -1856,10 +1856,10 @@
           },
           "format": "timeseries",
           "parser": "backend",
-          "root_selector": "data",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/timeseries?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1953,7 +1953,7 @@
         {
           "columns": [
             {
-              "selector": "timestamp",
+              "selector": "ts",
               "text": "Time",
               "type": "timestamp"
             },
@@ -1974,10 +1974,10 @@
           },
           "format": "timeseries",
           "parser": "backend",
-          "root_selector": "data",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/timeseries?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2070,7 +2070,7 @@
         {
           "columns": [
             {
-              "selector": "timestamp",
+              "selector": "ts",
               "text": "Time",
               "type": "timestamp"
             },
@@ -2096,10 +2096,10 @@
           },
           "format": "timeseries",
           "parser": "backend",
-          "root_selector": "data",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/timeseries?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2205,7 +2205,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/stats",
+          "url": "http://localhost:8080/api/grafana/stats",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2299,7 +2299,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/stats",
+          "url": "http://localhost:8080/api/grafana/stats",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2388,7 +2388,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/stats",
+          "url": "http://localhost:8080/api/grafana/stats",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2520,7 +2520,7 @@
           "root_selector": "nodes",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/nodes",
+          "url": "http://localhost:8080/api/grafana/nodes",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2625,7 +2625,7 @@
           "root_selector": "by_node",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/node-stats",
+          "url": "http://localhost:8080/api/grafana/node-stats",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2749,7 +2749,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/node-stats-aggregate",
+          "url": "http://localhost:8080/api/grafana/node-stats-aggregate",
           "url_options": {
             "method": "GET",
             "data": "",

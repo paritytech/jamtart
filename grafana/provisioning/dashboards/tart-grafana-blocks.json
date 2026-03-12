@@ -105,7 +105,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/stats?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/stats?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -195,12 +195,12 @@
         {
           "columns": [
             {
-              "selector": "timestamp",
+              "selector": "ts",
               "text": "",
               "type": "timestamp"
             },
             {
-              "selector": "value",
+              "selector": "count",
               "text": "Blocks",
               "type": "number"
             }
@@ -214,10 +214,10 @@
           "global_query_id": "",
           "parser": "backend",
           "refId": "A",
-          "root_selector": "data",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?event_types=42&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/timeseries?event_types=42&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -356,10 +356,10 @@
           "global_query_id": "",
           "parser": "backend",
           "refId": "A",
-          "root_selector": "data",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/blocks/contents?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/blocks/contents?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -384,280 +384,181 @@
       "type": "row"
     },
     {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "jamtart-api"
-      },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
       "fieldConfig": {
         "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
+          "color": { "mode": "palette-classic" },
           "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "Latency (ms)",
-            "axisPlacement": "auto",
-            "fillOpacity": 60,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineWidth": 1,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "ms", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "auto", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
           },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
+          "mappings": [], "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
         },
         "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "p99 (ms)"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "red",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "p50 (ms)"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "green",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
+          { "matcher": { "id": "byName", "options": "p99 (ms)" }, "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "p50 (ms)" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }] }
         ]
       },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 19
-      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 19 },
       "id": 7,
       "options": {
-        "barRadius": 0,
-        "barWidth": 0.8,
-        "fullHighlight": false,
-        "groupWidth": 0.7,
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "orientation": "vertical",
-        "showValue": "auto",
-        "stacking": "none",
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
-        },
-        "xTickLabelRotation": 0
+        "legend": { "calcs": ["mean", "max"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
       },
-      "targets": [
-        {
-          "columns": [
-            {
-              "selector": "slot",
-              "text": "Slot",
-              "type": "string"
-            },
-            {
-              "selector": "p50_ms",
-              "text": "p50 (ms)",
-              "type": "number"
-            },
-            {
-              "selector": "p99_ms",
-              "text": "p99 (ms)",
-              "type": "number"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "jamtart-api"
-          },
-          "filters": [],
-          "format": "table",
-          "global_query_id": "",
-          "parser": "backend",
-          "refId": "A",
-          "root_selector": "data",
-          "source": "url",
-          "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/blocks/convergence?start=${__from:date:iso}&end=${__to:date:iso}",
-          "url_options": {
-            "method": "GET",
-            "data": "",
-            "headers": [],
-            "params": []
-          }
-        }
-      ],
-      "title": "Validator Convergence",
-      "type": "barchart"
+      "targets": [{
+        "columns": [
+          { "selector": "authored_at", "text": "", "type": "timestamp" },
+          { "selector": "p50_ms", "text": "p50 (ms)", "type": "number" },
+          { "selector": "p99_ms", "text": "p99 (ms)", "type": "number" }
+        ],
+        "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+        "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
+        "refId": "A", "root_selector": "", "source": "url", "type": "json",
+        "url": "http://localhost:8080/api/grafana/blocks/convergence?event_type=11&start=${__from:date:iso}&end=${__to:date:iso}",
+        "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
+      }],
+      "title": "Best Block Propagation",
+      "type": "timeseries"
     },
     {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "jamtart-api"
-      },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
       "fieldConfig": {
         "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
+          "color": { "mode": "palette-classic" },
           "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "ms", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "auto", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
           },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
+          "mappings": [], "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "p99 (ms)" }, "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "p50 (ms)" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }] }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 19 },
+      "id": 10,
+      "options": {
+        "legend": { "calcs": ["mean", "max"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [{
+        "columns": [
+          { "selector": "authored_at", "text": "", "type": "timestamp" },
+          { "selector": "p50_ms", "text": "p50 (ms)", "type": "number" },
+          { "selector": "p99_ms", "text": "p99 (ms)", "type": "number" }
+        ],
+        "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+        "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
+        "refId": "A", "root_selector": "", "source": "url", "type": "json",
+        "url": "http://localhost:8080/api/grafana/blocks/convergence?event_type=43&start=${__from:date:iso}&end=${__to:date:iso}",
+        "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
+      }],
+      "title": "Importing Convergence",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "ms", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "auto", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [], "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "p99 (ms)" }, "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "p50 (ms)" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }] }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 19 },
+      "id": 11,
+      "options": {
+        "legend": { "calcs": ["mean", "max"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [{
+        "columns": [
+          { "selector": "authored_at", "text": "", "type": "timestamp" },
+          { "selector": "p50_ms", "text": "p50 (ms)", "type": "number" },
+          { "selector": "p99_ms", "text": "p99 (ms)", "type": "number" }
+        ],
+        "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+        "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
+        "refId": "A", "root_selector": "", "source": "url", "type": "json",
+        "url": "http://localhost:8080/api/grafana/blocks/convergence?event_type=12&start=${__from:date:iso}&end=${__to:date:iso}",
+        "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
+      }],
+      "title": "Finalization Convergence",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "auto", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [], "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
         },
         "overrides": []
       },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 19
-      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 27 },
       "id": 8,
       "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
-        }
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
       },
-      "targets": [
-        {
-          "columns": [
-            {
-              "selector": "timestamp",
-              "text": "",
-              "type": "timestamp"
-            },
-            {
-              "selector": "event_type",
-              "text": "Event Type",
-              "type": "string"
-            },
-            {
-              "selector": "value",
-              "text": "Count",
-              "type": "number"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "jamtart-api"
-          },
-          "filters": [],
-          "format": "table",
-          "global_query_id": "",
-          "parser": "backend",
-          "refId": "A",
-          "root_selector": "data",
-          "source": "url",
-          "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?group_by=event_type&event_types=42,43,47,62,68&start=${__from:date:iso}&end=${__to:date:iso}",
-          "url_options": {
-            "method": "GET",
-            "data": "",
-            "headers": [],
-            "params": []
-          }
-        }
-      ],
+      "targets": [{
+        "columns": [
+          { "selector": "ts", "text": "", "type": "timestamp" },
+          { "selector": "event_type", "text": "Event Type", "type": "string" },
+          { "selector": "count", "text": "Count", "type": "number" }
+        ],
+        "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+        "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
+        "refId": "A", "root_selector": "", "source": "url", "type": "json",
+        "url": "http://localhost:8080/api/grafana/timeseries?group_by=event_type&event_types=42,43,47,62,68&start=${__from:date:iso}&end=${__to:date:iso}",
+        "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
+      }],
       "title": "Block Pipeline",
       "type": "timeseries",
-      "transformations": [
-        {
-          "id": "partitionByValues",
-          "options": {
-            "fields": [
-              "Event Type"
-            ],
-            "keepFields": false,
-            "naming": {
-              "asLabels": true
-            }
-          }
-        }
-      ]
+      "transformations": [{
+        "id": "partitionByValues",
+        "options": { "fields": ["Event Type"], "keepFields": false, "naming": { "asLabels": true } }
+      }]
     }
   ],
   "schemaVersion": 39,

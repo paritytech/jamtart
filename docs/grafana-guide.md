@@ -509,6 +509,101 @@ curl 'http://localhost:3000/api/grafana/bottlenecks?start=2025-01-15T00:00:00Z&e
 
 ---
 
+### 1.12 GET /api/grafana/wp-funnel
+
+Work package pipeline funnel — counts how many WPs reached each stage within the time range.
+
+**Query Parameters**
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `start` | ISO 8601 datetime | yes | Start of time range |
+| `end` | ISO 8601 datetime | yes | End of time range |
+
+**Response Schema**
+
+```json
+{
+  "received": 500,
+  "authorized": 480,
+  "refined": 470,
+  "report_built": 465,
+  "guarantee_built": 460,
+  "distributed": 455,
+  "failed": 15
+}
+```
+
+Each field is the count of work packages that reached at least that pipeline stage. `failed` counts WPs that hit a failure at any stage.
+
+**Example**
+
+```bash
+curl 'http://localhost:3000/api/grafana/wp-funnel?start=2025-01-15T00:00:00Z&end=2025-01-15T01:00:00Z'
+```
+
+---
+
+### 1.13 GET /api/grafana/event-types
+
+Static metadata for all 99 telemetry event types. No parameters required, no database query — instantly cacheable.
+
+**Response Schema**
+
+```json
+[
+  { "id": 0, "name": "Dropped", "group": "system" },
+  { "id": 10, "name": "Status", "group": "status" },
+  { "id": 42, "name": "Authored", "group": "blocks" },
+  { "id": 92, "name": "WorkPackageFailed", "group": "wp_pipeline" },
+  ...
+]
+```
+
+**Event Type Groups**
+
+| Group | Event IDs | Description |
+|-------|-----------|-------------|
+| `system` | 0 | Dropped |
+| `status` | 10–13 | Status, BestBlock, Finalized, SyncStatus |
+| `connections` | 20–28 | Connection lifecycle + PeerMisbehaved |
+| `blocks` | 40–47 | Authoring, importing, verification, execution |
+| `block_distribution` | 60–68 | Announcements, requests, transfers |
+| `tickets` | 80–84 | Ticket generation and transfer |
+| `wp_pipeline` | 90–109 | WP submission through guarantee distribution |
+| `guarantee_receiving` | 110–113 | Incoming guarantees + discards |
+| `shards` | 120–125 | Shard requests for availability |
+| `assurances` | 126–131 | Assurance distribution |
+| `bundles` | 140–153 | Bundle shard/full requests for auditing |
+| `segments` | 160–178 | Segment shard requests, reconstruction, verification |
+| `preimages` | 190–199 | Preimage announcements, requests, transfers |
+| `failures` | (virtual) | Union of all Failed/Discarded/Duplicate events (27 types) |
+
+**Using group names in `event_types` parameter**
+
+The `/api/grafana/timeseries` endpoint's `event_types` parameter accepts a mix of numeric IDs and group names:
+
+```
+# All failure events
+event_types=failures
+
+# Specific IDs plus a group
+event_types=42,failures,10
+
+# Multiple groups
+event_types=blocks,wp_pipeline
+```
+
+Group names are expanded server-side into their constituent event type IDs, deduplicated and sorted.
+
+**Example**
+
+```bash
+curl 'http://localhost:3000/api/grafana/event-types'
+```
+
+---
+
 ## 2. Dashboard Recipes
 
 All recipes assume the **Infinity** data source (type: JSON, method: GET). Set the base URL to your JamTart instance (e.g., `http://jamtart:3000`).

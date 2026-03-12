@@ -110,7 +110,7 @@
           "root_selector": "summary",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/cores?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/cores?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -200,7 +200,7 @@
         {
           "columns": [
             {
-              "selector": "timestamp",
+              "selector": "ts",
               "text": "",
               "type": "timestamp"
             },
@@ -224,10 +224,10 @@
           "global_query_id": "",
           "parser": "backend",
           "refId": "A",
-          "root_selector": "data",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?group_by=core&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/timeseries?group_by=core&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -331,17 +331,17 @@
         {
           "columns": [
             {
-              "selector": "timestamp",
+              "selector": "ts",
               "text": "",
               "type": "timestamp"
             },
             {
-              "selector": "category",
-              "text": "",
-              "type": "string"
+              "selector": "event_type",
+              "text": "Event Type",
+              "type": "number"
             },
             {
-              "selector": "failures",
+              "selector": "count",
               "text": "",
               "type": "number"
             }
@@ -355,10 +355,10 @@
           "global_query_id": "",
           "parser": "backend",
           "refId": "A",
-          "root_selector": "data",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?group_by=category&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/timeseries?group_by=event_type&event_types=failures&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -367,14 +367,14 @@
           }
         }
       ],
-      "title": "Failures by Category",
+      "title": "Failures by Type",
       "type": "timeseries",
       "transformations": [
         {
           "id": "partitionByValues",
           "options": {
             "fields": [
-              "category"
+              "Event Type"
             ],
             "keepFields": false,
             "naming": {
@@ -557,7 +557,7 @@
           "root_selector": "cores",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/cores?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/cores?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -682,7 +682,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/cores?core=${core_index}&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/cores?core=${core_index}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -830,7 +830,7 @@
           "root_selector": "validators",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/cores?core=${core_index}&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/cores?core=${core_index}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -927,7 +927,7 @@
           "root_selector": "work_packages",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/cores?core=${core_index}&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/cores?core=${core_index}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1020,7 +1020,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/cores?core=${core_index}&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/cores?core=${core_index}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1097,23 +1097,18 @@
         {
           "columns": [
             {
-              "selector": "category",
-              "text": "Category",
-              "type": "string"
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
             },
             {
-              "selector": "attempts",
-              "text": "Attempts",
+              "selector": "event_type",
+              "text": "Event Type",
               "type": "number"
             },
             {
-              "selector": "failures",
-              "text": "Failures",
-              "type": "number"
-            },
-            {
-              "selector": "rate",
-              "text": "Rate",
+              "selector": "count",
+              "text": "Count",
               "type": "number"
             }
           ],
@@ -1126,10 +1121,10 @@
           "global_query_id": "",
           "parser": "backend",
           "refId": "A",
-          "root_selector": "by_category",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?group_by=event_type&event_types=41,44,46,92,107,111,113&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/timeseries?group_by=event_type&event_types=failures&interval=1h&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1138,8 +1133,147 @@
           }
         }
       ],
-      "title": "Failure Rates by Category",
+      "title": "Failure Events",
       "type": "table"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 37
+      },
+      "id": 14,
+      "title": "Work Package Pipeline",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
+      "description": "Work package pipeline funnel — shows how many WPs reach each stage.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Failed"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 38
+      },
+      "id": 15,
+      "options": {
+        "displayMode": "gradient",
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "namePlacement": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "showUnfilled": true,
+        "sizing": "auto",
+        "valueMode": "color"
+      },
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "received",
+              "text": "Received",
+              "type": "number"
+            },
+            {
+              "selector": "authorized",
+              "text": "Authorized",
+              "type": "number"
+            },
+            {
+              "selector": "refined",
+              "text": "Refined",
+              "type": "number"
+            },
+            {
+              "selector": "report_built",
+              "text": "Report Built",
+              "type": "number"
+            },
+            {
+              "selector": "guarantee_built",
+              "text": "Guarantee Built",
+              "type": "number"
+            },
+            {
+              "selector": "distributed",
+              "text": "Distributed",
+              "type": "number"
+            },
+            {
+              "selector": "failed",
+              "text": "Failed",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "filters": [],
+          "format": "table",
+          "global_query_id": "",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://localhost:8080/api/grafana/wp-funnel?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          }
+        }
+      ],
+      "title": "WP Pipeline Funnel",
+      "type": "bargauge"
     }
   ],
   "schemaVersion": 39,
@@ -1165,7 +1299,7 @@
             "type": "json",
             "source": "url",
             "parser": "backend",
-            "url": "http://tart-backend:8080/api/grafana/cores?start=${__from:date:iso}&end=${__to:date:iso}",
+            "url": "http://localhost:8080/api/grafana/cores?start=${__from:date:iso}&end=${__to:date:iso}",
             "url_options": {
               "method": "GET",
               "data": "",

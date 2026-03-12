@@ -6,7 +6,7 @@
         "type": "yesoreyeram-infinity-datasource",
         "uid": "jamtart-api"
       },
-      "description": "Fetches /api/metrics/live \u2014 confirms basic API connectivity and JSON field extraction.",
+      "description": "Fetches /api/grafana/stats — confirms basic API connectivity and JSON field extraction.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -46,7 +46,7 @@
         {
           "columns": [
             {
-              "selector": "active_nodes",
+              "selector": "connected_nodes",
               "text": "Active Nodes",
               "type": "number"
             }
@@ -61,7 +61,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/metrics/live",
+          "url": "http://localhost:8080/api/grafana/stats?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "data": "",
             "headers": [],
@@ -78,7 +78,7 @@
         "type": "yesoreyeram-infinity-datasource",
         "uid": "jamtart-api"
       },
-      "description": "Fetches /api/nodes with root_selector \u2014 confirms nested JSON array extraction.",
+      "description": "Fetches /api/grafana/nodes — confirms JSON array extraction.",
       "fieldConfig": {
         "defaults": {},
         "overrides": []
@@ -107,7 +107,7 @@
               "type": "string"
             },
             {
-              "selector": "event_count",
+              "selector": "total_event_count",
               "text": "Events",
               "type": "number"
             },
@@ -124,10 +124,10 @@
           "format": "table",
           "parser": "backend",
           "refId": "A",
-          "root_selector": "nodes",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/nodes",
+          "url": "http://localhost:8080/api/grafana/nodes",
           "url_options": {
             "data": "",
             "headers": [],
@@ -144,28 +144,18 @@
         "type": "yesoreyeram-infinity-datasource",
         "uid": "jamtart-api"
       },
-      "description": "Fetches /api/analytics/network-health \u2014 confirms top-level field extraction from a different endpoint.",
+      "description": "Dashboard summary stats — connected nodes, work packages, guarantees, failures.",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "thresholds"
           },
-          "max": 100,
-          "min": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 40
-              },
-              {
                 "color": "green",
-                "value": 70
+                "value": null
               }
             ]
           }
@@ -187,15 +177,30 @@
             "lastNotNull"
           ],
           "fields": "",
-          "values": false
+          "values": true
         }
       },
       "targets": [
         {
           "columns": [
             {
-              "selector": "health_score",
-              "text": "Health Score",
+              "selector": "connected_nodes",
+              "text": "Nodes",
+              "type": "number"
+            },
+            {
+              "selector": "wp_events",
+              "text": "Work Packages",
+              "type": "number"
+            },
+            {
+              "selector": "guarantees",
+              "text": "Guarantees",
+              "type": "number"
+            },
+            {
+              "selector": "failures",
+              "text": "Failures",
               "type": "number"
             }
           ],
@@ -209,7 +214,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/analytics/network-health",
+          "url": "http://localhost:8080/api/grafana/stats?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "data": "",
             "headers": [],
@@ -218,8 +223,215 @@
           }
         }
       ],
-      "title": "Health Score",
+      "title": "Stats Summary",
       "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
+      "description": "Work package pipeline failure rate from /api/grafana/bottlenecks.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "max": 1,
+          "min": 0,
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.05
+              },
+              {
+                "color": "red",
+                "value": 0.2
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 8
+      },
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        }
+      },
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "failure_rate",
+              "text": "Failure Rate",
+              "type": "number"
+            },
+            {
+              "selector": "total_wps",
+              "text": "Total WPs",
+              "type": "number"
+            },
+            {
+              "selector": "failed_wps",
+              "text": "Failed WPs",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "format": "table",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://localhost:8080/api/grafana/bottlenecks?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url_options": {
+            "data": "",
+            "headers": [],
+            "method": "GET",
+            "params": []
+          }
+        }
+      ],
+      "title": "Failure Rate",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
+      "description": "Dropped events (event_type=0) over time — spikes indicate the telemetry server is discarding incoming events.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "area"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 12
+      },
+      "id": 5,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "ts",
+              "text": "",
+              "type": "timestamp"
+            },
+            {
+              "selector": "count",
+              "text": "Dropped",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "format": "table",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://localhost:8080/api/grafana/timeseries?event_types=0&group_by=event_type&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url_options": {
+            "data": "",
+            "headers": [],
+            "method": "GET",
+            "params": []
+          }
+        }
+      ],
+      "title": "Dropped Events",
+      "type": "timeseries"
     }
   ],
   "schemaVersion": 39,

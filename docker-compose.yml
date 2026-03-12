@@ -109,8 +109,7 @@ services:
   grafana:
     image: grafana/grafana:12.3.3
     container_name: tart-grafana
-    ports:
-      - "3000:3000"
+    network_mode: host
     environment:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=admin
