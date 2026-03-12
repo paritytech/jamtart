@@ -1,3 +1,6 @@
+//! Core type definitions shared across the crate: JCE epoch constants, timestamp
+//! types, hash types, and work-package / work-item summary structures.
+
 use crate::encoding::{variable_length_size, Encode, EncodingError};
 use bytes::BytesMut;
 use serde::{Deserialize, Serialize};

@@ -1,3 +1,7 @@
+//! Batched event writer. Receives event records via an mpsc channel, aggregates
+//! them in memory, and flushes to Postgres on a configurable interval. Also feeds
+//! the work-package tracker, slot tracker, and live counters.
+
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};

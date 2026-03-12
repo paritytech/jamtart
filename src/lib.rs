@@ -1,3 +1,5 @@
+//! JamTart v3 — telemetry ingestion, storage, and visualization for JAM networks.
+
 pub mod api;
 pub mod batch_writer;
 pub mod cache;

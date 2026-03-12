@@ -1,3 +1,6 @@
+//! Telemetry event type definitions and protocol version constants. Each variant
+//! of `Event` corresponds to a distinct telemetry message emitted by JAM nodes.
+
 use crate::encoding::{Encode, EncodingError};
 use crate::types::*;
 use bytes::BytesMut;

@@ -1,3 +1,6 @@
+//! TTL-based in-memory cache with `RwLock` for lock-free concurrent reads and
+//! background refresh. Used to cache expensive API query results.
+
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;

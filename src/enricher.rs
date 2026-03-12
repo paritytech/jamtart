@@ -1,3 +1,7 @@
+//! Cross-event correlation engine. Propagates context (core, wp_hash, service_ids)
+//! from root events like `WorkPackageReceived` to downstream events that only carry
+//! opaque IDs (submission_id, built_id, sending_id, etc.).
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

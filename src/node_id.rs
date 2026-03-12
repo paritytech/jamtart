@@ -1,3 +1,6 @@
+//! Type-safe node identifier. Wraps an `Arc<str>` for cheap cloning and provides
+//! hex-encoded peer ID display.
+
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::Arc;

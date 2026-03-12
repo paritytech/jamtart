@@ -1,3 +1,7 @@
+//! Per-slot convergence metrics. Collects event timestamps from multiple nodes for
+//! each block slot and computes latency percentiles (p50/p99/p100) relative to
+//! block authoring time. Periodically flushes results to Postgres.
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

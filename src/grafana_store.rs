@@ -1,3 +1,7 @@
+//! Grafana-specific query builder. Constructs dynamic SQL for time-series
+//! endpoints with whitelisted intervals, group-by columns, and safe parameter
+//! binding.
+
 use chrono::{DateTime, Utc};
 use sqlx::Row;
 

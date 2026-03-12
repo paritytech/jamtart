@@ -1,3 +1,7 @@
+//! Token-bucket rate limiter with per-node event caps and burst allowance for
+//! block-production spikes. Prevents any single node from overwhelming the
+//! ingestion pipeline.
+
 use dashmap::DashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};

@@ -1,3 +1,6 @@
+//! Broadcast channel for fan-out of decoded telemetry events to WebSocket
+//! subscribers and other real-time consumers.
+
 use crate::events::Event;
 use crate::metrics_tracker::MetricsEvent;
 use parking_lot::Mutex;

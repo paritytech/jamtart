@@ -1,3 +1,6 @@
+//! Grafana integration endpoints. Exposes time-series and aggregate query routes
+//! consumed by Grafana dashboards for network-wide telemetry visualization.
+
 use axum::{
     extract::{Query, State},
     http::StatusCode,

@@ -1,3 +1,6 @@
+//! HTTP and WebSocket API layer. Defines route handlers, shared application state,
+//! and extraction middleware for the telemetry dashboard and Grafana integration.
+
 use crate::cache::TtlCache;
 use crate::event_broadcaster::EventBroadcaster;
 use crate::health::HealthMonitor;

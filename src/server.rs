@@ -1,3 +1,7 @@
+//! TCP telemetry server that accepts binary-framed connections from JAM nodes,
+//! decodes event streams, enriches them with cross-event context, and forwards
+//! records to the batch writer for persistence.
+
 use crate::batch_writer::{BatchWriter, EventRecord};
 use crate::decoder::{decode_message_frame, Decode, DecodingError};
 use crate::enricher::EnricherMap;

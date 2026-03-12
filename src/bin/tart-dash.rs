@@ -1,3 +1,6 @@
+//! Terminal dashboard UI (ratatui + crossterm) for live telemetry monitoring.
+//! Connects to the JamTart API and displays real-time node and network metrics.
+
 use anyhow::Result;
 use chrono::{DateTime, Local};
 use clap::Parser;

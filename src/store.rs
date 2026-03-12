@@ -1,3 +1,6 @@
+//! TimescaleDB-backed event store. Handles schema migrations, bulk inserts of
+//! telemetry event records, and time-range queries for the API and Grafana layers.
+
 use crate::batch_writer::EventRecord;
 use crate::types::JCE_EPOCH_UNIX_MICROS;
 use chrono::{DateTime, Utc};

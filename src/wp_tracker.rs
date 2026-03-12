@@ -1,3 +1,7 @@
+//! In-memory work-package pipeline tracker. Tracks each work-package through its
+//! processing stages (received → authorized → refined → report_built →
+//! guarantee_built → distributed) and periodically flushes state to Postgres.
+
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

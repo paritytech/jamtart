@@ -1,3 +1,6 @@
+//! Retry policy with exponential backoff and jitter for fault-tolerant async
+//! operations.
+
 use rand::Rng;
 use std::future::Future;
 use std::time::Duration;

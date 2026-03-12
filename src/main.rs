@@ -1,3 +1,7 @@
+//! Application entrypoint. Parses CLI arguments, initializes the database,
+//! telemetry server, API server, and background flush tasks, then runs until
+//! shutdown.
+
 #[cfg(feature = "profiling")]
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
