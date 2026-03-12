@@ -137,6 +137,10 @@ async fn test_grafana_all_endpoints_empty_200() {
         "/api/grafana/db-stats".to_string(),
         format!("/api/grafana/bottlenecks?{}", time_range_params()),
         format!("/api/grafana/wp-funnel?{}", time_range_params()),
+        format!(
+            "/api/grafana/events?{}&event_types=92",
+            time_range_params()
+        ),
     ];
 
     for path in &paths {
@@ -1370,4 +1374,114 @@ async fn test_grafana_timeseries_core_filter() {
     let arr = json.as_array().expect("should return array");
     let total_count: i64 = arr.iter().filter_map(|e| e["count"].as_i64()).sum();
     assert!(total_count >= 3, "unfiltered should have at least 3 failure events, got {total_count}");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Generic raw events endpoint
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_grafana_events_raw() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    // Send 3 WorkPackageFailed events with different reasons
+    let events = vec![
+        common::wp_received_event(ts, 5000, 0),
+        common::wp_failed_event_with_reason(ts + 1000, 5000, "out of gas"),
+        common::wp_received_event(ts + 2000, 5001, 0),
+        common::wp_failed_event_with_reason(ts + 3000, 5001, "out of gas"),
+        common::wp_received_event(ts + 4000, 5002, 0),
+        common::wp_failed_event_with_reason(ts + 5000, 5002, "invalid code"),
+    ];
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+
+    // Query raw events for event_type=92 (WorkPackageFailed)
+    let path = format!(
+        "/api/grafana/events?{}&event_types=92",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+    assert!(arr.len() >= 3, "expected at least 3 events, got {}", arr.len());
+
+    // Each entry should have ts, node_id, event_type, data
+    for entry in arr {
+        assert!(entry["ts"].is_string(), "ts should be present");
+        assert!(entry["node_id"].is_string(), "node_id should be present");
+        assert_eq!(entry["event_type"].as_i64().unwrap(), 92);
+        assert!(entry["data"].is_object(), "data should be a JSON object");
+
+        // The data should contain WorkPackageFailed with a reason field
+        let wp_data = &entry["data"]["WorkPackageFailed"];
+        assert!(
+            wp_data["reason"].is_string(),
+            "data.WorkPackageFailed.reason should be a string"
+        );
+    }
+
+    // Verify reasons match
+    let reasons: Vec<&str> = arr
+        .iter()
+        .filter_map(|e| e["data"]["WorkPackageFailed"]["reason"].as_str())
+        .collect();
+    assert_eq!(
+        reasons.iter().filter(|&&r| r == "out of gas").count(),
+        2,
+        "should have 2 'out of gas' reasons"
+    );
+    assert_eq!(
+        reasons.iter().filter(|&&r| r == "invalid code").count(),
+        1,
+        "should have 1 'invalid code' reason"
+    );
+}
+
+#[tokio::test]
+async fn test_grafana_events_missing_event_types() {
+    let (server, _telemetry, _port, _store) = setup_test_api().await;
+
+    // Missing event_types should fail (400 from query parsing, since it's required)
+    let path = format!("/api/grafana/events?{}", time_range_params());
+    let response = server.get(&path).await;
+    assert_ne!(
+        response.status_code(),
+        StatusCode::OK,
+        "should fail without event_types"
+    );
+}
+
+#[tokio::test]
+async fn test_grafana_events_with_limit() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    // Send 5 failed events
+    let mut events = Vec::new();
+    for i in 0..5 {
+        events.push(common::wp_received_event(ts + i * 2000, 6000 + i, 0));
+        events.push(common::wp_failed_event(ts + i * 2000 + 1000, 6000 + i));
+    }
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+
+    // Query with limit=2
+    let path = format!(
+        "/api/grafana/events?{}&event_types=92&limit=2",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+    assert_eq!(arr.len(), 2, "should respect limit=2");
 }

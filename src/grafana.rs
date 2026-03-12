@@ -29,6 +29,7 @@ pub fn router() -> Router<ApiState> {
         .route("/bottlenecks", get(bottlenecks))
         .route("/wp-funnel", get(wp_funnel))
         .route("/event-types", get(event_types))
+        .route("/events", get(events))
 }
 
 /// Map sqlx errors to appropriate HTTP status codes.
@@ -301,6 +302,29 @@ async fn wp_funnel(
 #[derive(Deserialize)]
 struct EventTypesParams {
     group: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct EventsQuery {
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    event_types: String,
+    limit: Option<i64>,
+}
+
+async fn events(
+    Query(q): Query<EventsQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let event_types = crate::event_type_meta::expand_event_types(&q.event_types);
+    let limit = q.limit.unwrap_or(500);
+
+    state
+        .store
+        .grafana_events(q.start, q.end, &event_types, limit)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/events", e))
 }
 
 async fn event_types(Query(params): Query<EventTypesParams>) -> impl IntoResponse {

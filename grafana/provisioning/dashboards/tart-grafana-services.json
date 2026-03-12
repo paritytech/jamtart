@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Service-level analytics — work packages, gas usage, and activity per service",
+  "description": "Service-level analytics \u2014 work packages, gas usage, and activity per service",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -604,7 +604,9 @@
       "id": 8,
       "options": {
         "legend": {
-          "calcs": ["sum"],
+          "calcs": [
+            "sum"
+          ],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
@@ -655,7 +657,9 @@
         {
           "id": "partitionByValues",
           "options": {
-            "fields": ["Service"],
+            "fields": [
+              "Service"
+            ],
             "keepFields": false,
             "naming": {
               "asLabels": true
@@ -763,7 +767,9 @@
       "id": 9,
       "options": {
         "legend": {
-          "calcs": ["sum"],
+          "calcs": [
+            "sum"
+          ],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
@@ -824,11 +830,225 @@
         {
           "id": "partitionByValues",
           "options": {
-            "fields": ["Service"],
+            "fields": [
+              "Service"
+            ],
             "keepFields": false,
             "naming": {
               "asLabels": true
             }
+          }
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "Failure Analysis",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 29
+      },
+      "panels": []
+    },
+    {
+      "id": 11,
+      "type": "table",
+      "title": "Work Package Failure Reasons",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 30
+      },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "infinity"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "filterable": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ]
+        },
+        "sortBy": [
+          {
+            "displayName": "count",
+            "desc": true
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "type": "json",
+          "source": "url",
+          "format": "table",
+          "url": "/api/grafana/events?start=${__from:date:iso}&end=${__to:date:iso}&event_types=92,99&limit=500",
+          "url_options": {
+            "method": "GET"
+          },
+          "root_selector": "",
+          "columns": [
+            {
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "node_id",
+              "text": "Node",
+              "type": "string"
+            },
+            {
+              "selector": "event_type",
+              "text": "Event Type",
+              "type": "number"
+            },
+            {
+              "selector": "data.WorkPackageFailed.reason",
+              "text": "WP Failed Reason",
+              "type": "string"
+            },
+            {
+              "selector": "data.WorkPackageSharingFailed.reason",
+              "text": "WP Sharing Failed Reason",
+              "type": "string"
+            }
+          ]
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {},
+            "indexByName": {},
+            "renameByName": {}
+          }
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "barchart",
+      "title": "Failure Reason Distribution",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 38
+      },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "infinity"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "showValue": "always",
+        "stacking": "none",
+        "xTickLabelRotation": 0,
+        "legend": {
+          "displayMode": "hidden"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "type": "json",
+          "source": "url",
+          "format": "table",
+          "url": "/api/grafana/events?start=${__from:date:iso}&end=${__to:date:iso}&event_types=92,99&limit=2000",
+          "url_options": {
+            "method": "GET"
+          },
+          "root_selector": "",
+          "columns": [
+            {
+              "selector": "data.WorkPackageFailed.reason",
+              "text": "reason",
+              "type": "string"
+            },
+            {
+              "selector": "data.WorkPackageSharingFailed.reason",
+              "text": "sharing_reason",
+              "type": "string"
+            }
+          ]
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "sharing_reason": true
+            },
+            "renameByName": {
+              "reason": "Reason"
+            }
+          }
+        },
+        {
+          "id": "groupBy",
+          "options": {
+            "fields": {
+              "Reason": {
+                "aggregations": [
+                  "count"
+                ],
+                "operation": "groupby"
+              }
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "Reason (count)",
+                "desc": true
+              }
+            ]
           }
         }
       ]

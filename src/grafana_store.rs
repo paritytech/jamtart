@@ -1110,7 +1110,59 @@ impl EventStore {
         }]))
     }
 
-    // ── 12. grafana_wp_funnel ──────────────────────────────────────────
+    // ── 12. grafana_events ────────────────────────────────────────────
+
+    /// Generic raw event query from the events hypertable.
+    /// Returns individual events as-is with their JSONB data.
+    /// NOTE: This queries the raw events table (not a continuous aggregate),
+    /// so it can be slow for large time ranges or high-volume event types.
+    pub async fn grafana_events(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        event_types: &[i16],
+        limit: i64,
+    ) -> Result<serde_json::Value, sqlx::Error> {
+        if event_types.is_empty() {
+            return Err(sqlx::Error::Protocol(
+                "event_types parameter is required".into(),
+            ));
+        }
+        let limit = limit.min(2000);
+
+        let rows = sqlx::query(
+            r#"
+            SELECT timestamp, node_id, event_type, data
+            FROM events
+            WHERE timestamp >= $1 AND timestamp < $2
+              AND event_type = ANY($3)
+            ORDER BY timestamp DESC
+            LIMIT $4
+            "#,
+        )
+        .bind(start)
+        .bind(end)
+        .bind(event_types)
+        .bind(limit)
+        .fetch_all(self.pool())
+        .await?;
+
+        let results: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|row| {
+                serde_json::json!({
+                    "ts": row.get::<DateTime<Utc>, _>("timestamp"),
+                    "node_id": row.get::<String, _>("node_id"),
+                    "event_type": row.get::<i16, _>("event_type"),
+                    "data": row.get::<serde_json::Value, _>("data"),
+                })
+            })
+            .collect();
+
+        Ok(serde_json::Value::Array(results))
+    }
+
+    // ── 13. grafana_wp_funnel ──────────────────────────────────────────
 
     /// Work package pipeline funnel: counts at each stage.
     pub async fn grafana_wp_funnel(

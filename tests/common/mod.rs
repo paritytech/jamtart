@@ -381,6 +381,16 @@ pub fn wp_failed_event(ts: u64, submission_id: u64) -> Event {
     }
 }
 
+/// Construct a WorkPackageFailed event (event_type=92) with a custom reason.
+#[allow(dead_code)]
+pub fn wp_failed_event_with_reason(ts: u64, submission_id: u64, reason: &str) -> Event {
+    Event::WorkPackageFailed {
+        timestamp: ts,
+        submission_or_share_id: submission_id,
+        reason: BoundedString::new(reason).unwrap(),
+    }
+}
+
 /// Returns the hex-encoded node_id for a test node created with `connect_test_node(port, id, server)`.
 #[allow(dead_code)]
 pub fn node_id_hex(node_id: u8) -> String {
