@@ -85,7 +85,7 @@
             {
               "selector": "service_id",
               "text": "Service ID",
-              "type": "number"
+              "type": "string"
             },
             {
               "selector": "work_packages",
@@ -211,7 +211,7 @@
             {
               "selector": "service_id",
               "text": "Service ID",
-              "type": "number"
+              "type": "string"
             },
             {
               "selector": "work_packages",

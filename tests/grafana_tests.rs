@@ -679,9 +679,9 @@ async fn test_grafana_services_pipeline() {
         assert!(entry.get("work_packages").is_some(), "entry missing work_packages");
     }
 
-    // Check that services 10 and 20 appear
-    let svc10 = arr.iter().find(|e| e["service_id"].as_i64() == Some(10));
-    let svc20 = arr.iter().find(|e| e["service_id"].as_i64() == Some(20));
+    // Check that services 10 (0xa) and 20 (0x14) appear as hex strings
+    let svc10 = arr.iter().find(|e| e["service_id"].as_str() == Some("0xa"));
+    let svc20 = arr.iter().find(|e| e["service_id"].as_str() == Some("0x14"));
 
     assert!(svc10.is_some(), "expected entry for service 10");
     assert!(svc20.is_some(), "expected entry for service 20");
