@@ -168,17 +168,33 @@ struct ServiceQuery {
     service: Option<String>,
 }
 
+/// Strip Grafana multi-select curly-brace wrapper: `{a,b}` → `a,b`.
+fn strip_grafana_braces(s: &str) -> &str {
+    s.strip_prefix('{').and_then(|s| s.strip_suffix('}')).unwrap_or(s)
+}
+
 /// Parse comma-separated service IDs (supports both decimal and 0x hex).
+/// Hex values are parsed as u32 then cast to i32 to match the DB representation
+/// (service IDs are u32 in JAM but stored as PostgreSQL INT which is signed).
 fn parse_service_ids(s: &str) -> Vec<i32> {
-    s.split(',')
+    strip_grafana_braces(s)
+        .split(',')
         .filter_map(|v| {
             let v = v.trim();
             if let Some(hex) = v.strip_prefix("0x") {
-                i32::from_str_radix(hex, 16).ok()
+                u32::from_str_radix(hex, 16).ok().map(|n| n as i32)
             } else {
                 v.parse().ok()
             }
         })
+        .collect()
+}
+
+/// Parse comma-separated node names, stripping Grafana curly-brace wrapper.
+fn parse_node_list(s: &str) -> Vec<String> {
+    strip_grafana_braces(s)
+        .split(',')
+        .map(|s| s.trim().to_string())
         .collect()
 }
 
@@ -238,9 +254,7 @@ async fn node_stats(
     Query(q): Query<TimeRangeQuery>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let nodes: Option<Vec<String>> = q.node.map(|n| {
-        n.split(',').map(|s| s.trim().to_string()).collect()
-    });
+    let nodes: Option<Vec<String>> = q.node.map(|n| parse_node_list(&n));
     state
         .store
         .grafana_node_stats(q.start, q.end, nodes.as_deref())
@@ -253,9 +267,7 @@ async fn node_stats_aggregate(
     Query(q): Query<TimeRangeQuery>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let nodes: Option<Vec<String>> = q.node.map(|n| {
-        n.split(',').map(|s| s.trim().to_string()).collect()
-    });
+    let nodes: Option<Vec<String>> = q.node.map(|n| parse_node_list(&n));
     state
         .store
         .grafana_node_stats_aggregate(q.start, q.end, nodes.as_deref())
@@ -335,5 +347,47 @@ async fn event_types(Query(params): Query<EventTypesParams>) -> impl IntoRespons
         Json(filtered)
     } else {
         Json(all.to_vec())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_service_ids_basic() {
+        assert_eq!(parse_service_ids("10,20"), vec![10, 20]);
+    }
+
+    #[test]
+    fn test_parse_service_ids_hex() {
+        assert_eq!(parse_service_ids("0xa,0x14"), vec![10, 20]);
+    }
+
+    #[test]
+    fn test_parse_service_ids_hex_overflow() {
+        // 0xea9f727c = 3936318076 as u32, wraps to -358649220 as i32
+        let result = parse_service_ids("0xea9f727c");
+        assert_eq!(result, vec![0xea9f727c_u32 as i32]);
+    }
+
+    #[test]
+    fn test_parse_service_ids_curly_braces() {
+        assert_eq!(parse_service_ids("{0xa,0x14}"), vec![10, 20]);
+    }
+
+    #[test]
+    fn test_parse_service_ids_mixed() {
+        assert_eq!(parse_service_ids("10,0x14"), vec![10, 20]);
+    }
+
+    #[test]
+    fn test_parse_node_list_basic() {
+        assert_eq!(parse_node_list("node1,node2"), vec!["node1", "node2"]);
+    }
+
+    #[test]
+    fn test_parse_node_list_curly_braces() {
+        assert_eq!(parse_node_list("{node1,node2}"), vec!["node1", "node2"]);
     }
 }

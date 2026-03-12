@@ -537,7 +537,7 @@ impl EventStore {
             .iter()
             .map(|row| {
                 serde_json::json!({
-                    "service_id": format!("0x{:x}", row.get::<i32, _>("service_id")),
+                    "service_id": format!("0x{:x}", row.get::<i32, _>("service_id") as u32),
                     "work_packages": row.get::<Option<i64>, _>("work_packages").unwrap_or(0),
                     "refinements": row.get::<Option<i64>, _>("refinements").unwrap_or(0),
                     "refinement_gas": row.get::<Option<i64>, _>("refinement_gas").unwrap_or(0),
@@ -604,7 +604,7 @@ impl EventStore {
             .map(|row| {
                 serde_json::json!({
                     "ts": row.get::<DateTime<Utc>, _>("ts"),
-                    "service_id": format!("0x{:x}", row.get::<i32, _>("service_id")),
+                    "service_id": format!("0x{:x}", row.get::<i32, _>("service_id") as u32),
                     "work_packages": row.get::<Option<i64>, _>("work_packages").unwrap_or(0),
                     "authorization_gas": row.get::<Option<i64>, _>("authorization_gas").unwrap_or(0),
                     "refinement_gas": row.get::<Option<i64>, _>("refinement_gas").unwrap_or(0),
