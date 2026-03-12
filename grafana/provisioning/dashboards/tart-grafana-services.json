@@ -866,7 +866,7 @@
       },
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "infinity"
+        "uid": "jamtart-api"
       },
       "fieldConfig": {
         "defaults": {
@@ -900,12 +900,12 @@
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "infinity"
+            "uid": "jamtart-api"
           },
           "type": "json",
           "source": "url",
           "format": "table",
-          "url": "/api/grafana/events?start=${__from:date:iso}&end=${__to:date:iso}&event_types=92,99&limit=500",
+          "url": "http://localhost:8080/api/grafana/events?start=${__from:date:iso}&end=${__to:date:iso}&event_types=92,99&limit=500",
           "url_options": {
             "method": "GET"
           },
@@ -952,7 +952,7 @@
     },
     {
       "id": 12,
-      "type": "barchart",
+      "type": "bargauge",
       "title": "Failure Reason Distribution",
       "gridPos": {
         "h": 8,
@@ -962,90 +962,61 @@
       },
       "datasource": {
         "type": "yesoreyeram-infinity-datasource",
-        "uid": "infinity"
+        "uid": "jamtart-api"
       },
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null }
+            ]
           }
         },
         "overrides": []
       },
       "options": {
         "orientation": "horizontal",
-        "showValue": "always",
-        "stacking": "none",
-        "xTickLabelRotation": 0,
-        "legend": {
-          "displayMode": "hidden"
-        }
+        "displayMode": "gradient",
+        "showUnfilled": true,
+        "valueMode": "color",
+        "reduceOptions": {
+          "values": true,
+          "calcs": [],
+          "fields": "/^Count$/"
+        },
+        "text": {},
+        "namePlacement": "auto"
       },
       "targets": [
         {
           "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
-            "uid": "infinity"
+            "uid": "jamtart-api"
           },
           "type": "json",
           "source": "url",
           "format": "table",
-          "url": "/api/grafana/events?start=${__from:date:iso}&end=${__to:date:iso}&event_types=92,99&limit=2000",
+          "parser": "uql",
+          "uql": "parse-json\n| jsonata \"$[].{'Reason': data.WorkPackageFailed.reason ? data.WorkPackageFailed.reason : data.WorkPackageSharingFailed.reason}\"\n| summarize \"Count\"=count() by \"Reason\"",
+          "url": "http://localhost:8080/api/grafana/events?start=${__from:date:iso}&end=${__to:date:iso}&event_types=92,99&limit=2000",
           "url_options": {
             "method": "GET"
-          },
-          "root_selector": "",
-          "columns": [
-            {
-              "selector": "data.WorkPackageFailed.reason",
-              "text": "reason",
-              "type": "string"
-            },
-            {
-              "selector": "data.WorkPackageSharingFailed.reason",
-              "text": "sharing_reason",
-              "type": "string"
-            }
-          ]
+          }
         }
       ],
       "transformations": [
-        {
-          "id": "merge",
-          "options": {}
-        },
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "sharing_reason": true
-            },
-            "renameByName": {
-              "reason": "Reason"
-            }
-          }
-        },
-        {
-          "id": "groupBy",
-          "options": {
-            "fields": {
-              "Reason": {
-                "aggregations": [
-                  "count"
-                ],
-                "operation": "groupby"
-              }
-            }
-          }
-        },
         {
           "id": "sortBy",
           "options": {
             "fields": {},
             "sort": [
               {
-                "field": "Reason (count)",
+                "field": "Count",
                 "desc": true
               }
             ]
