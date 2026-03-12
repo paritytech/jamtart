@@ -105,7 +105,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/services?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/services?start=${__from:date:iso}&end=${__to:date:iso}&service=${service}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -261,7 +261,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/services?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/services?start=${__from:date:iso}&end=${__to:date:iso}&service=${service}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -382,7 +382,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/services?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/services?start=${__from:date:iso}&end=${__to:date:iso}&service=${service}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -527,7 +527,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/services?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/services?start=${__from:date:iso}&end=${__to:date:iso}&service=${service}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -538,6 +538,300 @@
       ],
       "title": "Gas Usage by Service",
       "type": "barchart"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 20
+      },
+      "id": 7,
+      "title": "Gas & Activity over Time",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Work Packages",
+            "axisPlacement": "auto",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 2,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 21
+      },
+      "id": 8,
+      "options": {
+        "legend": {
+          "calcs": ["sum"],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "all",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "service_id",
+              "text": "Service",
+              "type": "string"
+            },
+            {
+              "selector": "work_packages",
+              "text": "Work Packages",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "format": "table",
+          "parser": "backend",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://localhost:8080/api/grafana/services/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=1m&service=${service}",
+          "url_options": {
+            "method": "GET"
+          },
+          "refId": "A"
+        }
+      ],
+      "title": "Work Packages over Time",
+      "type": "timeseries",
+      "transformations": [
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": ["Service"],
+            "keepFields": false,
+            "naming": {
+              "asLabels": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Gas",
+            "axisPlacement": "auto",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 2,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/.*Authorization Gas.*/"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/.*Refinement Gas.*/"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/.*Execution Gas.*/"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "blue",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 21
+      },
+      "id": 9,
+      "options": {
+        "legend": {
+          "calcs": ["sum"],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "all",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "service_id",
+              "text": "Service",
+              "type": "string"
+            },
+            {
+              "selector": "authorization_gas",
+              "text": "Authorization Gas",
+              "type": "number"
+            },
+            {
+              "selector": "refinement_gas",
+              "text": "Refinement Gas",
+              "type": "number"
+            },
+            {
+              "selector": "execution_gas",
+              "text": "Execution Gas",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "format": "table",
+          "parser": "backend",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://localhost:8080/api/grafana/services/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=1m&service=${service}",
+          "url_options": {
+            "method": "GET"
+          },
+          "refId": "A"
+        }
+      ],
+      "title": "Gas Usage over Time",
+      "type": "timeseries",
+      "transformations": [
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": ["Service"],
+            "keepFields": false,
+            "naming": {
+              "asLabels": true
+            }
+          }
+        }
+      ]
     }
   ],
   "schemaVersion": 39,
@@ -546,7 +840,45 @@
     "services"
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "current": {},
+        "name": "service",
+        "label": "Service",
+        "type": "query",
+        "datasource": {
+          "type": "yesoreyeram-infinity-datasource",
+          "uid": "jamtart-api"
+        },
+        "query": {
+          "queryType": "infinity",
+          "infinityQuery": {
+            "refId": "variable",
+            "type": "json",
+            "source": "url",
+            "parser": "backend",
+            "url": "http://localhost:8080/api/grafana/services?start=${__from:date:iso}&end=${__to:date:iso}&service=${service}",
+            "url_options": {
+              "method": "GET"
+            },
+            "root_selector": "",
+            "columns": [
+              {
+                "selector": "service_id",
+                "text": "service_id",
+                "type": "string"
+              }
+            ],
+            "format": "table"
+          }
+        },
+        "refresh": 2,
+        "options": [],
+        "includeAll": true,
+        "multi": true,
+        "description": "Filter by service ID"
+      }
+    ]
   },
   "time": {
     "from": "now-1h",

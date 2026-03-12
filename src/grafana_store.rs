@@ -503,8 +503,14 @@ impl EventStore {
         &self,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
+        services: Option<&[i32]>,
     ) -> Result<serde_json::Value, sqlx::Error> {
-        let rows = sqlx::query(
+        let service_filter = if services.is_some() {
+            "AND service_id = ANY($3)"
+        } else {
+            ""
+        };
+        let sql = format!(
             r#"
             SELECT
                 service_id,
@@ -516,15 +522,16 @@ impl EventStore {
                 SUM(event_count) FILTER (WHERE event_type = 47)::BIGINT  AS executions,
                 SUM(total_gas) FILTER (WHERE event_type = 47)::BIGINT    AS execution_gas
             FROM service_stats_1m
-            WHERE bucket >= $1 AND bucket < $2
+            WHERE bucket >= $1 AND bucket < $2 {service_filter}
             GROUP BY service_id
             ORDER BY service_id ASC
-            "#,
-        )
-        .bind(start)
-        .bind(end)
-        .fetch_all(self.pool())
-        .await?;
+            "#
+        );
+        let mut query = sqlx::query(&sql).bind(start).bind(end);
+        if let Some(svc) = services {
+            query = query.bind(svc);
+        }
+        let rows = query.fetch_all(self.pool()).await?;
 
         let results: Vec<serde_json::Value> = rows
             .iter()
@@ -548,13 +555,14 @@ impl EventStore {
     // ── 6b. grafana_services_timeseries ────────────────────────────────
 
     /// Per-service time-series from the service_stats_1m continuous aggregate.
+    /// Returns split gas columns: authorization_gas (95), refinement_gas (101),
+    /// execution_gas (47), plus work_packages (94) count.
     pub async fn grafana_services_timeseries(
         &self,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
         interval: &str,
         services: Option<&[i32]>,
-        event_types: Option<&[i16]>,
     ) -> Result<serde_json::Value, sqlx::Error> {
         if !VALID_INTERVALS.contains(&interval) {
             return Err(sqlx::Error::Protocol(format!(
@@ -564,14 +572,9 @@ impl EventStore {
         let pg_interval = interval_to_pg(interval);
 
         let mut wheres = vec!["bucket >= $1".to_string(), "bucket < $2".to_string()];
-        let mut bind_idx = 3u32;
 
         if services.is_some() {
-            wheres.push(format!("service_id = ANY(${bind_idx})"));
-            bind_idx += 1;
-        }
-        if event_types.is_some() {
-            wheres.push(format!("event_type = ANY(${bind_idx})"));
+            wheres.push("service_id = ANY($3)".to_string());
         }
 
         let where_clause = wheres.join(" AND ");
@@ -579,8 +582,10 @@ impl EventStore {
             r#"SELECT
                 time_bucket('{pg_interval}'::interval, bucket) AS ts,
                 service_id,
-                SUM(event_count)::BIGINT AS count,
-                SUM(total_gas)::BIGINT AS gas
+                SUM(event_count) FILTER (WHERE event_type = 94)::BIGINT  AS work_packages,
+                SUM(total_gas) FILTER (WHERE event_type = 95)::BIGINT    AS authorization_gas,
+                SUM(total_gas) FILTER (WHERE event_type = 101)::BIGINT   AS refinement_gas,
+                SUM(total_gas) FILTER (WHERE event_type = 47)::BIGINT    AS execution_gas
             FROM service_stats_1m
             WHERE {where_clause}
             GROUP BY ts, service_id
@@ -591,9 +596,6 @@ impl EventStore {
         if let Some(svc) = services {
             query = query.bind(svc);
         }
-        if let Some(et) = event_types {
-            query = query.bind(et);
-        }
 
         let rows = query.fetch_all(self.pool()).await?;
 
@@ -603,8 +605,10 @@ impl EventStore {
                 serde_json::json!({
                     "ts": row.get::<DateTime<Utc>, _>("ts"),
                     "service_id": format!("0x{:x}", row.get::<i32, _>("service_id")),
-                    "count": row.get::<Option<i64>, _>("count").unwrap_or(0),
-                    "gas": row.get::<Option<i64>, _>("gas").unwrap_or(0),
+                    "work_packages": row.get::<Option<i64>, _>("work_packages").unwrap_or(0),
+                    "authorization_gas": row.get::<Option<i64>, _>("authorization_gas").unwrap_or(0),
+                    "refinement_gas": row.get::<Option<i64>, _>("refinement_gas").unwrap_or(0),
+                    "execution_gas": row.get::<Option<i64>, _>("execution_gas").unwrap_or(0),
                 })
             })
             .collect();

@@ -160,13 +160,35 @@ async fn blocks_contents(
         .map_err(|e| map_sqlx_error("grafana/blocks/contents", e))
 }
 
+#[derive(Deserialize)]
+struct ServiceQuery {
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    service: Option<String>,
+}
+
+/// Parse comma-separated service IDs (supports both decimal and 0x hex).
+fn parse_service_ids(s: &str) -> Vec<i32> {
+    s.split(',')
+        .filter_map(|v| {
+            let v = v.trim();
+            if let Some(hex) = v.strip_prefix("0x") {
+                i32::from_str_radix(hex, 16).ok()
+            } else {
+                v.parse().ok()
+            }
+        })
+        .collect()
+}
+
 async fn services(
-    Query(q): Query<TimeRangeQuery>,
+    Query(q): Query<ServiceQuery>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
+    let services: Option<Vec<i32>> = q.service.map(|s| parse_service_ids(&s));
     state
         .store
-        .grafana_services(q.start, q.end)
+        .grafana_services(q.start, q.end, services.as_deref())
         .await
         .map(Json)
         .map_err(|e| map_sqlx_error("grafana/services", e))
@@ -178,7 +200,6 @@ struct ServiceTimeseriesQuery {
     end: DateTime<Utc>,
     interval: Option<String>,
     service: Option<String>,
-    event_types: Option<String>,
 }
 
 async fn services_timeseries(
@@ -186,15 +207,7 @@ async fn services_timeseries(
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let interval = q.interval.as_deref().unwrap_or("1m");
-    let services: Option<Vec<i32>> = q.service.map(|s| {
-        s.split(',')
-            .filter_map(|v| v.trim().parse().ok())
-            .collect()
-    });
-    let event_types: Option<Vec<i16>> = q
-        .event_types
-        .map(|s| crate::event_type_meta::expand_event_types(&s))
-        .filter(|v| !v.is_empty());
+    let services: Option<Vec<i32>> = q.service.map(|s| parse_service_ids(&s));
 
     state
         .store
@@ -203,7 +216,6 @@ async fn services_timeseries(
             q.end,
             interval,
             services.as_deref(),
-            event_types.as_deref(),
         )
         .await
         .map(Json)

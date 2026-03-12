@@ -1224,12 +1224,14 @@ async fn test_grafana_services_timeseries_with_data() {
     let json: Value = response.json();
     let arr = json.as_array().expect("should return array");
 
-    // Verify structure
+    // Verify structure — split gas columns
     for entry in arr {
         assert!(entry.get("ts").is_some(), "entry missing ts");
         assert!(entry.get("service_id").is_some(), "entry missing service_id");
-        assert!(entry.get("count").is_some(), "entry missing count");
-        assert!(entry.get("gas").is_some(), "entry missing gas");
+        assert!(entry.get("work_packages").is_some(), "entry missing work_packages");
+        assert!(entry.get("authorization_gas").is_some(), "entry missing authorization_gas");
+        assert!(entry.get("refinement_gas").is_some(), "entry missing refinement_gas");
+        assert!(entry.get("execution_gas").is_some(), "entry missing execution_gas");
     }
 }
 
@@ -1268,32 +1270,38 @@ async fn test_grafana_services_timeseries_service_filter() {
 }
 
 #[tokio::test]
-async fn test_grafana_services_timeseries_event_type_filter() {
+async fn test_grafana_services_timeseries_gas_split() {
     let (server, telemetry, port, store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
 
+    // BlockExecuted carries per-service gas (event_type=47 → execution_gas)
     let events = vec![
-        common::wp_received_event(ts, 9600, 3),
-        common::authorized_event(ts + 100_000, 9600),
-        common::refined_event(ts + 200_000, 9600),
-        common::block_executed_event(ts + 300_000, 42, &[(10, 50_000)]),
+        common::block_executed_event(ts, 42, &[(10, 50_000)]),
     ];
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
     common::refresh_aggregates(store.pool()).await;
 
-    // Filter by event_types using group name
     let path = format!(
-        "/api/grafana/services/timeseries?{}&interval=1m&event_types=wp_pipeline",
+        "/api/grafana/services/timeseries?{}&interval=1m&service=10",
         time_range_params()
     );
     let response = server.get(&path).await;
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
-    assert!(json.is_array(), "should return array");
+    let arr = json.as_array().expect("should return array");
+
+    // Should have execution_gas > 0 for service 10
+    if !arr.is_empty() {
+        let entry = &arr[0];
+        assert!(
+            entry["execution_gas"].as_i64().unwrap_or(0) > 0,
+            "execution_gas should be > 0 for BlockExecuted event"
+        );
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
