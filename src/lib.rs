@@ -6,6 +6,7 @@ pub mod decoder;
 pub mod encoding;
 pub mod enricher;
 pub mod event_broadcaster;
+pub mod event_type_meta;
 pub mod events;
 pub mod grafana;
 pub mod grafana_store;
