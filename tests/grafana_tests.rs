@@ -1128,3 +1128,46 @@ async fn test_grafana_timeseries_node_and_event_type_filters() {
         );
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Event types endpoint with group filter
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_grafana_event_types_unfiltered() {
+    let (server, _telemetry, _port, _store) = setup_test_api().await;
+
+    let response = server.get("/api/grafana/event-types").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+    assert_eq!(arr.len(), 115, "unfiltered should return all 115 event types");
+}
+
+#[tokio::test]
+async fn test_grafana_event_types_filtered_by_group() {
+    let (server, _telemetry, _port, _store) = setup_test_api().await;
+
+    let response = server.get("/api/grafana/event-types?group=blocks").await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+
+    // All returned events should belong to the blocks group
+    let names: Vec<&str> = arr.iter().filter_map(|e| e["name"].as_str()).collect();
+    assert!(names.contains(&"Authored"), "blocks group should contain Authored");
+    assert!(names.contains(&"BlockExecuted"), "blocks group should contain BlockExecuted");
+    assert!(!names.iter().any(|n| *n == "WorkPackageFailed"), "blocks group should not contain WorkPackageFailed");
+    assert!(!names.iter().any(|n| *n == "Dropped"), "blocks group should not contain Dropped");
+
+    // All entries should have group=blocks
+    for entry in arr {
+        assert_eq!(
+            entry["group"].as_str(),
+            Some("blocks"),
+            "all filtered entries should be in blocks group"
+        );
+    }
+}

@@ -10,6 +10,10 @@ pub struct EventTypeMeta {
 }
 
 /// O(1) lookup from event type ID to human-readable name.
+static NAME_TO_ID: LazyLock<HashMap<&'static str, i16>> = LazyLock::new(|| {
+    event_type_metadata().iter().map(|m| (m.name, m.id)).collect()
+});
+
 static ID_TO_NAME: LazyLock<HashMap<i16, &'static str>> = LazyLock::new(|| {
     event_type_metadata().iter().map(|m| (m.id, m.name)).collect()
 });
@@ -191,6 +195,8 @@ pub fn expand_event_types(input: &str) -> Vec<i16> {
             result.push(id);
         } else if let Some(ids) = event_type_group(token) {
             result.extend_from_slice(ids);
+        } else if let Some(&id) = NAME_TO_ID.get(token) {
+            result.push(id);
         }
     }
     result.sort();
@@ -236,6 +242,20 @@ mod tests {
         sorted.sort();
         sorted.dedup();
         assert_eq!(result.len(), sorted.len());
+    }
+
+    #[test]
+    fn expand_event_names() {
+        let result = expand_event_types("Authored,BlockExecuted");
+        assert_eq!(result, vec![42, 47]);
+    }
+
+    #[test]
+    fn expand_mixed_ids_groups_and_names() {
+        let result = expand_event_types("10,blocks,WorkPackageFailed");
+        assert!(result.contains(&10));  // numeric ID
+        assert!(result.contains(&42));  // from blocks group
+        assert!(result.contains(&92));  // event name
     }
 
     #[test]

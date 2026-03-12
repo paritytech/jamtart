@@ -242,6 +242,18 @@ async fn wp_funnel(
         .map_err(|e| map_sqlx_error("grafana/wp-funnel", e))
 }
 
-async fn event_types() -> impl IntoResponse {
-    Json(crate::event_type_meta::event_type_metadata())
+#[derive(Deserialize)]
+struct EventTypesParams {
+    group: Option<String>,
+}
+
+async fn event_types(Query(params): Query<EventTypesParams>) -> impl IntoResponse {
+    let all = crate::event_type_meta::event_type_metadata();
+    if let Some(ref group) = params.group {
+        let ids = crate::event_type_meta::expand_event_types(group);
+        let filtered: Vec<_> = all.iter().filter(|m| ids.contains(&m.id)).cloned().collect();
+        Json(filtered)
+    } else {
+        Json(all.to_vec())
+    }
 }
