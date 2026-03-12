@@ -362,6 +362,10 @@ impl EventStore {
             if let Some(entry) = cores.first_mut() {
                 entry["recent_work_packages"] = serde_json::Value::Array(wp_list);
             }
+
+            // Return single object (not array) so Infinity plugin can navigate
+            // into "recent_work_packages" via root_selector
+            return Ok(cores.into_iter().next().unwrap_or(serde_json::json!({})));
         }
 
         Ok(serde_json::Value::Array(cores))
@@ -1011,13 +1015,13 @@ impl EventStore {
             0.0
         };
 
-        Ok(serde_json::json!({
+        Ok(serde_json::json!([{
             "stage_timing": stage_timing,
             "failure_rate": failure_rate,
             "total_wps": total,
             "failed_wps": failed,
             "avg_pipeline_ms": summary.get::<Option<f64>, _>("avg_pipeline_ms"),
-        }))
+        }]))
     }
 
     // ── 12. grafana_wp_funnel ──────────────────────────────────────────
