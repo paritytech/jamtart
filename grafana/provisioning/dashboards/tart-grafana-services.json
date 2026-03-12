@@ -1077,7 +1077,7 @@
             "type": "json",
             "source": "url",
             "parser": "backend",
-            "url": "http://localhost:8080/api/grafana/services?start=${__from:date:iso}&end=${__to:date:iso}&service=${service}",
+            "url": "http://localhost:8080/api/grafana/services?start=${__from:date:iso}&end=${__to:date:iso}",
             "url_options": {
               "method": "GET"
             },
