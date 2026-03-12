@@ -1841,8 +1841,13 @@
             },
             {
               "selector": "count",
-              "text": "Total Events",
+              "text": "Events",
               "type": "number"
+            },
+            {
+              "selector": "event_type_name",
+              "text": "Event Type",
+              "type": "string"
             }
           ],
           "datasource": {
@@ -1854,7 +1859,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/timeseries?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=1m&group_by=event_type",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2065,17 +2070,7 @@
               "type": "timestamp"
             },
             {
-              "selector": "work_package_events",
-              "text": "Work Packages",
-              "type": "number"
-            },
-            {
-              "selector": "guarantee_events",
-              "text": "Guarantees",
-              "type": "number"
-            },
-            {
-              "selector": "authored_blocks",
+              "selector": "count",
               "text": "Authored Blocks",
               "type": "number"
             }
@@ -2089,7 +2084,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/timeseries?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=1m&event_types=42",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2097,6 +2092,68 @@
             "params": []
           },
           "refId": "A"
+        },
+        {
+          "columns": [
+            {
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "count",
+              "text": "Guarantees",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "format": "timeseries",
+          "parser": "backend",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://localhost:8080/api/grafana/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=1m&event_types=wp_pipeline",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          },
+          "refId": "B"
+        },
+        {
+          "columns": [
+            {
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "count",
+              "text": "Work Packages",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "format": "timeseries",
+          "parser": "backend",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://localhost:8080/api/grafana/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=1m&event_types=guarantee_receiving",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          },
+          "refId": "C"
         }
       ],
       "title": "Pipeline Activity",
@@ -2111,7 +2168,7 @@
         "y": 23
       },
       "id": 16,
-      "title": "Block & Consensus",
+      "title": "Blocks & Pipeline",
       "type": "row"
     },
     {
@@ -2124,65 +2181,88 @@
           "color": {
             "mode": "palette-classic"
           },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
+          "custom": {
+            "fillOpacity": 80,
+            "stacking": {
+              "mode": "normal"
+            },
+            "barAlignment": 0,
+            "drawStyle": "bars",
+            "lineWidth": 0,
+            "pointSize": 5,
+            "showPoints": "never"
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Guarantees" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Assurances" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Preimages" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Tickets" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "purple", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Disputes" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
+        "w": 12,
         "x": 0,
         "y": 24
       },
       "id": 17,
       "options": {
-        "colorMode": "background_solid",
-        "graphMode": "none",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
         },
-        "textMode": "auto",
-        "wideLayout": true
+        "tooltip": {
+          "mode": "multi"
+        }
       },
       "targets": [
         {
           "columns": [
             {
-              "selector": "totals.authored",
-              "text": "Authored",
+              "selector": "timestamp",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "num_guarantees",
+              "text": "Guarantees",
               "type": "number"
             },
             {
-              "selector": "totals.verified",
-              "text": "Verified",
+              "selector": "num_assurances",
+              "text": "Assurances",
               "type": "number"
             },
             {
-              "selector": "totals.executed",
-              "text": "Executed",
+              "selector": "num_preimages",
+              "text": "Preimages",
               "type": "number"
             },
             {
-              "selector": "chain.best_slot",
-              "text": "Best Slot",
+              "selector": "num_tickets",
+              "text": "Tickets",
               "type": "number"
             },
             {
-              "selector": "chain.finalized_slot",
-              "text": "Finalized",
+              "selector": "num_disputes",
+              "text": "Disputes",
               "type": "number"
             }
           ],
@@ -2190,12 +2270,12 @@
             "type": "yesoreyeram-infinity-datasource",
             "uid": "jamtart-api"
           },
-          "format": "table",
+          "format": "timeseries",
           "parser": "backend",
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/stats?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/blocks/contents?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2205,8 +2285,8 @@
           "refId": "A"
         }
       ],
-      "title": "Block Stats",
-      "type": "stat"
+      "title": "Block Composition",
+      "type": "timeseries"
     },
     {
       "datasource": {
@@ -2229,12 +2309,28 @@
             ]
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Failed"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 8,
+        "w": 6,
+        "x": 12,
         "y": 24
       },
       "id": 18,
@@ -2255,28 +2351,33 @@
         {
           "columns": [
             {
-              "selector": "totals.built",
-              "text": "Built",
-              "type": "number"
-            },
-            {
-              "selector": "totals.sent",
-              "text": "Sent",
-              "type": "number"
-            },
-            {
-              "selector": "totals.received",
+              "selector": "received",
               "text": "Received",
               "type": "number"
             },
             {
-              "selector": "totals.discarded",
-              "text": "Discarded",
+              "selector": "authorized",
+              "text": "Authorized",
               "type": "number"
             },
             {
-              "selector": "totals.distributed",
+              "selector": "refined",
+              "text": "Refined",
+              "type": "number"
+            },
+            {
+              "selector": "guarantee_built",
+              "text": "Guaranteed",
+              "type": "number"
+            },
+            {
+              "selector": "distributed",
               "text": "Distributed",
+              "type": "number"
+            },
+            {
+              "selector": "failed",
+              "text": "Failed",
               "type": "number"
             }
           ],
@@ -2289,7 +2390,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/stats?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/wp-funnel?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2299,7 +2400,7 @@
           "refId": "A"
         }
       ],
-      "title": "Guarantee Pipeline",
+      "title": "WP Funnel",
       "type": "stat"
     },
     {
@@ -2323,12 +2424,52 @@
             ]
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Failed WPs"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Avg Pipeline"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Failure Rate"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 16,
+        "w": 6,
+        "x": 18,
         "y": 24
       },
       "id": 19,
@@ -2349,23 +2490,23 @@
         {
           "columns": [
             {
-              "selector": "totals.submissions",
-              "text": "Submissions",
+              "selector": "total_wps",
+              "text": "Total WPs",
               "type": "number"
             },
             {
-              "selector": "totals.refined",
-              "text": "Refined",
+              "selector": "failed_wps",
+              "text": "Failed WPs",
               "type": "number"
             },
             {
-              "selector": "totals.guarantees_built",
-              "text": "Guarantees Built",
+              "selector": "failure_rate",
+              "text": "Failure Rate",
               "type": "number"
             },
             {
-              "selector": "totals.work_reports_built",
-              "text": "Work Reports",
+              "selector": "avg_pipeline_ms",
+              "text": "Avg Pipeline",
               "type": "number"
             }
           ],
@@ -2378,7 +2519,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/stats?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://localhost:8080/api/grafana/bottlenecks?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2388,7 +2529,7 @@
           "refId": "A"
         }
       ],
-      "title": "Work Package Pipeline",
+      "title": "Pipeline Bottlenecks",
       "type": "stat"
     },
     {
