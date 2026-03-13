@@ -64,6 +64,7 @@
         "y": 1
       },
       "id": 2,
+      "description": "Number of distinct services that had work package activity in the selected time range. (From service_stats_1m)",
       "options": {
         "colorMode": "value",
         "graphMode": "none",
@@ -187,6 +188,7 @@
         "y": 1
       },
       "id": 3,
+      "description": "Per-service breakdown: work packages, refinements, authorizations, executions, and gas usage for each stage \u2014 one row per service. (From service_stats_1m)",
       "options": {
         "cellHeight": "sm",
         "footer": {
@@ -336,6 +338,7 @@
         "y": 12
       },
       "id": 5,
+      "description": "Total work packages per service as a bar chart \u2014 shows relative activity across services in the time range.",
       "options": {
         "barRadius": 0,
         "barWidth": 0.8,
@@ -476,6 +479,7 @@
         "y": 12
       },
       "id": 6,
+      "description": "Total gas consumed per service split by stage: refinement, authorization, and execution gas. Compare computational cost across services.",
       "options": {
         "barRadius": 0,
         "barWidth": 0.8,
@@ -602,6 +606,7 @@
         "y": 21
       },
       "id": 8,
+      "description": "Work package counts per service over time \u2014 each line is one service's WP throughput per interval. Use to spot activity spikes or dropoffs. (1-minute buckets from service_stats_1m)",
       "options": {
         "legend": {
           "calcs": [
@@ -765,6 +770,7 @@
         "y": 21
       },
       "id": 9,
+      "description": "Gas consumption per service over time \u2014 shows how computational load varies across services. Each line is one service's total gas per interval. (1-minute buckets from service_stats_1m)",
       "options": {
         "legend": {
           "calcs": [
@@ -856,6 +862,7 @@
     },
     {
       "id": 11,
+      "description": "Raw WorkPackageFailed (92) and WorkPackageSharingFailed (99) events \u2014 most recent 500. Shows timestamp, node, core, and failure details for debugging.",
       "type": "table",
       "title": "Work Package Failure Reasons",
       "gridPos": {
@@ -952,6 +959,7 @@
     },
     {
       "id": 12,
+      "description": "Distribution of failure reasons across WorkPackageFailed and WorkPackageSharingFailed events \u2014 identifies the most common failure modes.",
       "type": "bargauge",
       "title": "Failure Reason Distribution",
       "gridPos": {
