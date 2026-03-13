@@ -10,5 +10,5 @@ datasources:
     jsonData:
       global_queries: []
       allowedHosts:
-        - http://localhost:8080
-        - http://localhost:8080
+        - http://tart-backend:8080
+        - http://tart-backend:8080

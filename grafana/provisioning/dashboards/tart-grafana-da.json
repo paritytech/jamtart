@@ -101,7 +101,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/node-stats-aggregate?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/node-stats-aggregate?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -226,7 +226,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/node-stats?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/node-stats?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -369,7 +369,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/node-stats?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/node-stats?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -551,7 +551,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/node-stats-aggregate?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/node-stats-aggregate?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -688,7 +688,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/node-stats?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/node-stats?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",

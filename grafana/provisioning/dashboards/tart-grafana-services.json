@@ -106,7 +106,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/services?start=${__from:date:iso}&end=${__to:date:iso}&service=${service}",
+          "url": "http://tart-backend:8080/api/grafana/services?start=${__from:date:iso}&end=${__to:date:iso}&service=${service}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -263,7 +263,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/services?start=${__from:date:iso}&end=${__to:date:iso}&service=${service}",
+          "url": "http://tart-backend:8080/api/grafana/services?start=${__from:date:iso}&end=${__to:date:iso}&service=${service}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -385,7 +385,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/services?start=${__from:date:iso}&end=${__to:date:iso}&service=${service}",
+          "url": "http://tart-backend:8080/api/grafana/services?start=${__from:date:iso}&end=${__to:date:iso}&service=${service}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -531,7 +531,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/services?start=${__from:date:iso}&end=${__to:date:iso}&service=${service}",
+          "url": "http://tart-backend:8080/api/grafana/services?start=${__from:date:iso}&end=${__to:date:iso}&service=${service}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -649,7 +649,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/services/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=1m&service=${service}",
+          "url": "http://tart-backend:8080/api/grafana/services/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=1m&service=${service}",
           "url_options": {
             "method": "GET"
           },
@@ -823,7 +823,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/services/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=1m&service=${service}",
+          "url": "http://tart-backend:8080/api/grafana/services/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=1m&service=${service}",
           "url_options": {
             "method": "GET"
           },
@@ -912,7 +912,7 @@
           "type": "json",
           "source": "url",
           "format": "table",
-          "url": "http://localhost:8080/api/grafana/events?start=${__from:date:iso}&end=${__to:date:iso}&event_types=92,99&limit=500",
+          "url": "http://tart-backend:8080/api/grafana/events?start=${__from:date:iso}&end=${__to:date:iso}&event_types=92,99&limit=500",
           "url_options": {
             "method": "GET"
           },
@@ -1011,7 +1011,7 @@
           "format": "table",
           "parser": "uql",
           "uql": "parse-json\n| jsonata \"$[].{'Reason': data.WorkPackageFailed.reason ? data.WorkPackageFailed.reason : data.WorkPackageSharingFailed.reason}\"\n| summarize \"Count\"=count() by \"Reason\"",
-          "url": "http://localhost:8080/api/grafana/events?start=${__from:date:iso}&end=${__to:date:iso}&event_types=92,99&limit=2000",
+          "url": "http://tart-backend:8080/api/grafana/events?start=${__from:date:iso}&end=${__to:date:iso}&event_types=92,99&limit=2000",
           "url_options": {
             "method": "GET"
           }
@@ -1056,7 +1056,7 @@
             "type": "json",
             "source": "url",
             "parser": "backend",
-            "url": "http://localhost:8080/api/grafana/services?start=${__from:date:iso}&end=${__to:date:iso}",
+            "url": "http://tart-backend:8080/api/grafana/services?start=${__from:date:iso}&end=${__to:date:iso}",
             "url_options": {
               "method": "GET"
             },

@@ -61,7 +61,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/stats?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/stats?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "data": "",
             "headers": [],
@@ -127,7 +127,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/nodes",
+          "url": "http://tart-backend:8080/api/grafana/nodes",
           "url_options": {
             "data": "",
             "headers": [],
@@ -214,7 +214,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/stats?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/stats?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "data": "",
             "headers": [],
@@ -307,7 +307,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/bottlenecks?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/bottlenecks?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "data": "",
             "headers": [],
@@ -421,7 +421,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/timeseries?event_types=system&group_by=event_type&interval=1m&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?event_types=system&group_by=event_type&interval=1m&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "data": "",
             "headers": [],

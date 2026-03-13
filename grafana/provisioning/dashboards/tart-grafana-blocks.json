@@ -105,7 +105,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/stats?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/stats?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -217,7 +217,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/timeseries?event_types=42&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?event_types=42&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -376,7 +376,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://localhost:8080/api/grafana/blocks/contents?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/blocks/contents?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -438,7 +438,7 @@
         "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
         "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
         "refId": "A", "root_selector": "", "source": "url", "type": "json",
-        "url": "http://localhost:8080/api/grafana/blocks/convergence?event_type=11&start=${__from:date:iso}&end=${__to:date:iso}",
+        "url": "http://tart-backend:8080/api/grafana/blocks/convergence?event_type=11&start=${__from:date:iso}&end=${__to:date:iso}",
         "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
       }],
       "title": "Best Block Propagation",
@@ -482,7 +482,7 @@
         "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
         "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
         "refId": "A", "root_selector": "", "source": "url", "type": "json",
-        "url": "http://localhost:8080/api/grafana/blocks/convergence?event_type=43&start=${__from:date:iso}&end=${__to:date:iso}",
+        "url": "http://tart-backend:8080/api/grafana/blocks/convergence?event_type=43&start=${__from:date:iso}&end=${__to:date:iso}",
         "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
       }],
       "title": "Importing Convergence",
@@ -526,7 +526,7 @@
         "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
         "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
         "refId": "A", "root_selector": "", "source": "url", "type": "json",
-        "url": "http://localhost:8080/api/grafana/blocks/convergence?event_type=12&start=${__from:date:iso}&end=${__to:date:iso}",
+        "url": "http://tart-backend:8080/api/grafana/blocks/convergence?event_type=12&start=${__from:date:iso}&end=${__to:date:iso}",
         "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
       }],
       "title": "Finalization Convergence",
@@ -567,7 +567,7 @@
         "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
         "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
         "refId": "A", "root_selector": "", "source": "url", "type": "json",
-        "url": "http://localhost:8080/api/grafana/timeseries?group_by=event_type&event_types=blocks&start=${__from:date:iso}&end=${__to:date:iso}",
+        "url": "http://tart-backend:8080/api/grafana/timeseries?group_by=event_type&event_types=blocks&start=${__from:date:iso}&end=${__to:date:iso}",
         "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
       }],
       "title": "Block Pipeline",
