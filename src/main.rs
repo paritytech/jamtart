@@ -368,10 +368,12 @@ async fn main() -> anyhow::Result<()> {
                             "guarantees_by_guarantor",
                             get_guarantees_by_guarantor("1 hour", "24 hours")
                         ),
-                        spawn_warm!(
-                            "da_stats_enhanced",
-                            get_da_stats_enhanced("1 hour", "24 hours")
-                        ),
+                        // DISABLED: da_stats_enhanced kills DB CPU (~20k slow queries/day)
+                        // See docs/issue-00--get_da_stats_enhanced.txt
+                        // spawn_warm!(
+                        //     "da_stats_enhanced",
+                        //     get_da_stats_enhanced("1 hour", "24 hours")
+                        // ),
                         spawn_warm!("execution_metrics", get_execution_metrics("1 hour")),
                         spawn_warm!(
                             "timeseries_throughput_5_1",
