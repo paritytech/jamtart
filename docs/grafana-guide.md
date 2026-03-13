@@ -91,7 +91,7 @@ curl 'http://localhost:8080/api/grafana/stats?start=2025-01-15T00:00:00Z&end=202
 
 ### 1.3 GET /api/grafana/cores
 
-Per-core work package, guarantee, and failure counts. When filtering by a single core, includes the 100 most recent work packages from `wp_tracking`.
+Per-core work package, guarantee, and failure counts (summary).
 
 **Query:** `TimeRangeQuery`
 
@@ -100,19 +100,38 @@ Per-core work package, guarantee, and failure counts. When filtering by a single
 | `start` | ISO 8601 datetime | yes | Start of time range |
 | `end` | ISO 8601 datetime | yes | End of time range |
 | `node` | string | no | Filter to a single node_id |
-| `core` | i16 | no | Filter to a single core index (enables detail mode) |
+| `core` | i16 | no | Filter to a single core |
 | `event_type` | i16 | no | Filter to a single event type |
 
-**Response (summary mode, no core filter):**
+**Response:**
 
 ```json
 [{ "core": 0, "work_packages": 120, "guarantees": 115, "failures": 2 }]
 ```
 
-**Response (detail mode, with core filter):**
+```bash
+curl 'http://localhost:8080/api/grafana/cores?start=2025-01-15T00:00:00Z&end=2025-01-15T01:00:00Z'
+```
+
+---
+
+### 1.3b GET /api/grafana/cores/:core_id
+
+Single-core detail — summary stats plus the 100 most recent work packages from `wp_tracking`.
+
+**Path params:** `core_id` (i16) — core index
+
+**Query:** `TimeRangeQuery`
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `start` | ISO 8601 datetime | yes | Start of time range |
+| `end` | ISO 8601 datetime | yes | End of time range |
+
+**Response:**
 
 ```json
-[{
+{
   "core": 5,
   "work_packages": 120,
   "guarantees": 115,
@@ -133,15 +152,11 @@ Per-core work package, guarantee, and failure counts. When filtering by a single
     "distributed_at": "2025-01-15T12:00:05Z",
     "failed_at": null
   }]
-}]
+}
 ```
 
 ```bash
-# All cores summary
-curl 'http://localhost:8080/api/grafana/cores?start=2025-01-15T00:00:00Z&end=2025-01-15T01:00:00Z'
-
-# Single core detail
-curl 'http://localhost:8080/api/grafana/cores?start=2025-01-15T00:00:00Z&end=2025-01-15T01:00:00Z&core=5'
+curl 'http://localhost:8080/api/grafana/cores/5?start=2025-01-15T00:00:00Z&end=2025-01-15T01:00:00Z'
 ```
 
 ---
@@ -563,7 +578,7 @@ struct TimeseriesQuery {
 ```
 
 ### TimeRangeQuery
-Used by: `/stats`, `/cores`, `/blocks/convergence`, `/blocks/contents`, `/node-stats`, `/node-stats-aggregate`, `/bottlenecks`, `/wp-funnel`
+Used by: `/stats`, `/cores`, `/cores/:core_id`, `/blocks/convergence`, `/blocks/contents`, `/node-stats`, `/node-stats-aggregate`, `/bottlenecks`, `/wp-funnel`
 
 ```rust
 struct TimeRangeQuery {
@@ -684,7 +699,7 @@ All dashboards use the **Infinity** data source plugin (uid: `jamtart-api`, JSON
 | Failures by Type | timeseries | `/api/grafana/timeseries` | group_by=event_type, event_types=failures |
 | Core Status Grid | table | `/api/grafana/cores` | — |
 | Pipeline Stats | stat | `/api/grafana/bottlenecks` | core=${core_index} |
-| Core Work Packages | table | `/api/grafana/cores` | core=${core_index}, root_selector=recent_work_packages |
+| Core Work Packages | table | `/api/grafana/cores/${core_index}` | root_selector=recent_work_packages |
 | Stage Timing (ms) | stat | `/api/grafana/bottlenecks` | core=${core_index} |
 | Core Failures by Type | timeseries | `/api/grafana/timeseries` | group_by=event_type, event_types=failures, core=${core_index} |
 | Core Events by Type | timeseries | `/api/grafana/timeseries` | group_by=event_type, core=${core_index} |
@@ -894,29 +909,19 @@ Use `/api/grafana/db-stats` to inspect current table sizes, row counts, and comp
 
 ---
 
-## 7. Docs-in-Code
+## 7. Docs-in-Code (OpenAPI)
 
-Currently there is **no OpenAPI/utoipa integration** — endpoint documentation lives only in this file and Rust doc comments. Routes are defined imperatively via `Router::route()` in `src/grafana.rs`.
+All Grafana endpoints are annotated with [`utoipa`](https://github.com/juhaku/utoipa) — the OpenAPI spec is auto-generated from code and served at:
 
-**Recommended next step:** Add [`utoipa`](https://github.com/juhaku/utoipa) annotations to the handler functions. This would:
-- Keep docs attached to the code (single source of truth)
-- Auto-generate OpenAPI 3.0 spec at a `/api/docs/openapi.json` endpoint
-- Enable Swagger UI at `/api/docs` for interactive exploration
-- Eliminate drift between code and this guide
-
-The pattern would look like:
-
-```rust
-/// Dashboard summary counters for the given time range.
-#[utoipa::path(
-    get,
-    path = "/api/grafana/stats",
-    params(TimeRangeQuery),
-    responses(
-        (status = 200, description = "Stats summary", body = StatsResponse)
-    )
-)]
-async fn stats(Query(q): Query<TimeRangeQuery>, State(state): State<ApiState>) -> ... {
+```
+GET /api/docs/openapi.json
 ```
 
-Until then, this document should be kept in sync manually — the source of truth for route signatures is `src/grafana.rs`.
+This spec includes all 16 handler paths, typed request parameters (`IntoParams`), and typed response schemas (`ToSchema`). Response structs live in `src/grafana_types.rs`; each struct documents its data source pipeline (which aggregate tables, hypertables, or enricher-populated tables provide the data).
+
+**Using the spec:**
+- Paste the JSON URL into [Swagger Editor](https://editor.swagger.io) or [Redocly](https://redocly.github.io/redoc/) for interactive docs
+- Import into Postman, Insomnia, or other API clients
+- Use `curl http://localhost:8080/api/docs/openapi.json | jq` to inspect locally
+
+This guide remains a human-friendly companion, but the OpenAPI spec is the authoritative source for endpoint signatures and response schemas.

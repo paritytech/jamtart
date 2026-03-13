@@ -16,6 +16,7 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use utoipa::OpenApi;
 use std::sync::Arc;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
@@ -306,6 +307,8 @@ pub fn create_api_router(state: ApiState) -> Router {
         .route("/api/ws", get(websocket_handler))
         // Grafana-optimized API endpoints
         .nest("/api/grafana", crate::grafana::router())
+        // OpenAPI spec (auto-generated from utoipa annotations)
+        .route("/api/docs/openapi.json", get(openapi_spec))
         // Middleware layers wrap bottom-up: last .layer() is outermost.
         // Order (outermost first): CORS → Compression → Headers → Body limit → Timeout
         .layer(TimeoutLayer::new(std::time::Duration::from_secs(30))) // Innermost: timeout on handler
@@ -316,6 +319,10 @@ pub fn create_api_router(state: ApiState) -> Router {
             .on_response(tower_http::trace::DefaultOnResponse::new().level(tracing::Level::DEBUG)))
         .layer(CorsLayer::permissive()) // Outermost: cheap CORS preflight
         .with_state(state)
+}
+
+async fn openapi_spec() -> impl IntoResponse {
+    Json(crate::grafana::GrafanaApiDoc::openapi())
 }
 
 async fn health_check() -> impl IntoResponse {

@@ -1007,14 +1007,13 @@ async fn test_grafana_cores_detail_mode() {
     common::flush_all(&telemetry).await;
     common::refresh_aggregates(store.pool()).await;
 
-    let path = format!("/api/grafana/cores?{}&core=3", time_range_params());
+    let path = format!("/api/grafana/cores/3?{}", time_range_params());
     let response = server.get(&path).await;
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
-    // Single-core query returns an object (not array) so Infinity plugin
-    // can navigate into nested fields like "recent_work_packages"
-    assert!(json.is_object(), "single-core query should return an object");
+    // Core detail endpoint returns an object with recent_work_packages
+    assert!(json.is_object(), "core detail should return an object");
     assert!(json.get("core").is_some(), "entry missing core");
     assert!(
         json.get("recent_work_packages").is_some(),

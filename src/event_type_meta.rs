@@ -1,11 +1,16 @@
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::LazyLock;
+use utoipa::ToSchema;
 
-#[derive(Debug, Clone, Serialize)]
+/// Metadata for a single telemetry event type.
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct EventTypeMeta {
+    /// Numeric event type ID
     pub id: i16,
+    /// Human-readable event name (e.g. "Authored", "WorkPackageFailed")
     pub name: &'static str,
+    /// Event group (e.g. "blocks", "wp_pipeline", "failures")
     pub group: &'static str,
 }
 

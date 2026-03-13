@@ -5,6 +5,7 @@
 use chrono::{DateTime, Utc};
 use sqlx::Row;
 
+use crate::grafana_types::*;
 use crate::store::EventStore;
 
 /// Whitelisted time_bucket intervals for dynamic SQL.
@@ -80,7 +81,7 @@ impl EventStore {
         node: Option<&str>,
         event_types: Option<&[i16]>,
         core: Option<i16>,
-    ) -> Result<serde_json::Value, sqlx::Error> {
+    ) -> Result<Vec<TimeseriesRow>, sqlx::Error> {
         // Validate interval
         if !VALID_INTERVALS.contains(&interval) {
             return Err(sqlx::Error::Protocol(format!(
@@ -195,34 +196,36 @@ impl EventStore {
 
         let rows = query.fetch_all(self.pool()).await?;
 
-        let results: Vec<serde_json::Value> = rows
+        let results: Vec<TimeseriesRow> = rows
             .iter()
             .map(|row| {
                 let ts: DateTime<Utc> = row.get("ts");
                 let count: i64 = row.get("count");
-                let mut obj = serde_json::json!({
-                    "ts": ts,
-                    "count": count,
-                });
-                // Add the group column
+
+                let mut r = TimeseriesRow {
+                    ts,
+                    count,
+                    event_type: None,
+                    event_type_name: None,
+                    core: None,
+                    node_id: None,
+                };
+
                 if group_col == "core" {
-                    let core: Option<i16> = row.try_get("core").ok();
-                    obj["core"] = serde_json::json!(core);
+                    r.core = row.try_get("core").ok();
                 } else if group_col == "event_type" {
                     let et: i16 = row.get("event_type");
-                    obj["event_type"] = serde_json::json!(et);
-                    obj["event_type_name"] = serde_json::json!(
-                        crate::event_type_meta::event_type_name(et)
-                    );
+                    r.event_type = Some(et);
+                    r.event_type_name = Some(crate::event_type_meta::event_type_name(et));
                 } else if group_col == "node_id" {
-                    let nid: String = row.get("node_id");
-                    obj["node_id"] = serde_json::json!(nid);
+                    r.node_id = Some(row.get("node_id"));
                 }
-                obj
+
+                r
             })
             .collect();
 
-        Ok(serde_json::Value::Array(results))
+        Ok(results)
     }
 
     // ── 2. grafana_stats ───────────────────────────────────────────────
@@ -232,7 +235,7 @@ impl EventStore {
         &self,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
-    ) -> Result<serde_json::Value, sqlx::Error> {
+    ) -> Result<StatsResponse, sqlx::Error> {
         let row = sqlx::query(
             r#"
             SELECT
@@ -268,32 +271,37 @@ impl EventStore {
         .fetch_one(self.pool())
         .await?;
 
-        Ok(serde_json::json!({
-            "connected_nodes": row.get::<i32, _>("connected_nodes"),
-            "slot_events": row.get::<i64, _>("slot_events"),
-            "guarantees": row.get::<i64, _>("guarantees"),
-            "failures": row.get::<i64, _>("failures"),
-            "wp_events": row.get::<i64, _>("wp_events"),
-        }))
+        Ok(StatsResponse {
+            connected_nodes: row.get("connected_nodes"),
+            slot_events: row.get("slot_events"),
+            guarantees: row.get("guarantees"),
+            failures: row.get("failures"),
+            wp_events: row.get("wp_events"),
+            // Real-time fields are overlaid by the handler
+            events_per_sec_10s: None,
+            blocks_per_sec_10s: None,
+            best_slot: None,
+            finalized_slot: None,
+            active_nodes: None,
+        })
     }
 
-    // ── 3. grafana_cores ───────────────────────────────────────────────
+    // ── 3. grafana_cores_summary ────────────────────────────────────────
 
-    /// Per-core activity summary or detail (with WP tracking for a single core).
-    pub async fn grafana_cores(
+    /// Per-core activity summary from core_stats_1m.
+    pub async fn grafana_cores_summary(
         &self,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
         core_filter: Option<i16>,
-    ) -> Result<serde_json::Value, sqlx::Error> {
-        // Summary: aggregate per core
+    ) -> Result<Vec<CoreSummary>, sqlx::Error> {
         let rows = sqlx::query(
             r#"
             SELECT
                 core,
-                SUM(event_count) FILTER (WHERE event_type = 94)::BIGINT  AS work_packages,
-                SUM(event_count) FILTER (WHERE event_type = 105)::BIGINT AS guarantees,
-                SUM(event_count) FILTER (WHERE event_type = 92)::BIGINT  AS failures
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 94), 0)::BIGINT  AS work_packages,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 105), 0)::BIGINT AS guarantees,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 92), 0)::BIGINT  AS failures
             FROM core_stats_1m
             WHERE bucket >= $1 AND bucket < $2
               AND ($3::SMALLINT IS NULL OR core = $3)
@@ -307,83 +315,95 @@ impl EventStore {
         .fetch_all(self.pool())
         .await?;
 
-        let mut cores: Vec<serde_json::Value> = rows
+        let results = rows
             .iter()
-            .map(|row| {
-                serde_json::json!({
-                    "core": row.get::<i16, _>("core"),
-                    "work_packages": row.get::<Option<i64>, _>("work_packages").unwrap_or(0),
-                    "guarantees": row.get::<Option<i64>, _>("guarantees").unwrap_or(0),
-                    "failures": row.get::<Option<i64>, _>("failures").unwrap_or(0),
-                })
+            .map(|row| CoreSummary {
+                core: row.get("core"),
+                work_packages: row.get("work_packages"),
+                guarantees: row.get("guarantees"),
+                failures: row.get("failures"),
             })
             .collect();
 
-        // Detail mode: attach recent WP tracking data for the filtered core
-        if let Some(core) = core_filter {
-            let wps = sqlx::query(
-                r#"
-                SELECT
-                    encode(wp_hash, 'hex') AS wp_hash,
-                    first_seen,
-                    last_updated,
-                    stage,
-                    received_by,
-                    guaranteed_by,
-                    service_ids,
-                    received_at,
-                    authorized_at,
-                    refined_at,
-                    report_built_at,
-                    guarantee_built_at,
-                    distributed_at,
-                    failed_at
-                FROM wp_tracking
-                WHERE core = $1
-                  AND first_seen >= $2 AND first_seen < $3
-                ORDER BY first_seen DESC
-                LIMIT 100
-                "#,
-            )
-            .bind(core)
-            .bind(start)
-            .bind(end)
-            .fetch_all(self.pool())
-            .await?;
+        Ok(results)
+    }
 
-            let wp_list: Vec<serde_json::Value> = wps
-                .iter()
-                .map(|row| {
-                    serde_json::json!({
-                        "wp_hash": row.get::<String, _>("wp_hash"),
-                        "first_seen": row.get::<DateTime<Utc>, _>("first_seen"),
-                        "last_updated": row.get::<DateTime<Utc>, _>("last_updated"),
-                        "stage": row.get::<i16, _>("stage"),
-                        "received_by": row.get::<i16, _>("received_by"),
-                        "guaranteed_by": row.get::<i16, _>("guaranteed_by"),
-                        "service_ids": row.get::<Vec<i32>, _>("service_ids"),
-                        "received_at": row.get::<Option<DateTime<Utc>>, _>("received_at"),
-                        "authorized_at": row.get::<Option<DateTime<Utc>>, _>("authorized_at"),
-                        "refined_at": row.get::<Option<DateTime<Utc>>, _>("refined_at"),
-                        "report_built_at": row.get::<Option<DateTime<Utc>>, _>("report_built_at"),
-                        "guarantee_built_at": row.get::<Option<DateTime<Utc>>, _>("guarantee_built_at"),
-                        "distributed_at": row.get::<Option<DateTime<Utc>>, _>("distributed_at"),
-                        "failed_at": row.get::<Option<DateTime<Utc>>, _>("failed_at"),
-                    })
-                })
-                .collect();
+    // ── 3b. grafana_core_detail ─────────────────────────────────────────
 
-            // Attach WP list to the single core entry
-            if let Some(entry) = cores.first_mut() {
-                entry["recent_work_packages"] = serde_json::Value::Array(wp_list);
-            }
+    /// Single core detail with recent work packages from wp_tracking.
+    pub async fn grafana_core_detail(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        core: i16,
+    ) -> Result<CoreDetail, sqlx::Error> {
+        // Get summary for this core
+        let summaries = self.grafana_cores_summary(start, end, Some(core)).await?;
+        let summary = summaries.into_iter().next().unwrap_or(CoreSummary {
+            core,
+            work_packages: 0,
+            guarantees: 0,
+            failures: 0,
+        });
 
-            // Return single object (not array) so Infinity plugin can navigate
-            // into "recent_work_packages" via root_selector
-            return Ok(cores.into_iter().next().unwrap_or(serde_json::json!({})));
-        }
+        // Recent work packages
+        let wps = sqlx::query(
+            r#"
+            SELECT
+                encode(wp_hash, 'hex') AS wp_hash,
+                first_seen,
+                last_updated,
+                stage,
+                received_by,
+                guaranteed_by,
+                service_ids,
+                received_at,
+                authorized_at,
+                refined_at,
+                report_built_at,
+                guarantee_built_at,
+                distributed_at,
+                failed_at
+            FROM wp_tracking
+            WHERE core = $1
+              AND first_seen >= $2 AND first_seen < $3
+            ORDER BY first_seen DESC
+            LIMIT 100
+            "#,
+        )
+        .bind(core)
+        .bind(start)
+        .bind(end)
+        .fetch_all(self.pool())
+        .await?;
 
-        Ok(serde_json::Value::Array(cores))
+        let wp_list: Vec<WpTrackingRow> = wps
+            .iter()
+            .map(|row| WpTrackingRow {
+                wp_hash: row.get("wp_hash"),
+                first_seen: row.get("first_seen"),
+                last_updated: row.get("last_updated"),
+                stage: row.get("stage"),
+                received_by: row.get("received_by"),
+                guaranteed_by: row.get("guaranteed_by"),
+                service_ids: row.get("service_ids"),
+                received_at: row.get("received_at"),
+                authorized_at: row.get("authorized_at"),
+                refined_at: row.get("refined_at"),
+                report_built_at: row.get("report_built_at"),
+                guarantee_built_at: row.get("guarantee_built_at"),
+                distributed_at: row.get("distributed_at"),
+                failed_at: row.get("failed_at"),
+            })
+            .collect();
+
+        Ok(CoreDetail {
+            core: summary.core,
+            work_packages: summary.work_packages,
+            guarantees: summary.guarantees,
+            failures: summary.failures,
+            recent_work_packages: wp_list,
+        })
     }
 
     // ── 4. grafana_blocks_convergence ──────────────────────────────────
@@ -394,7 +414,7 @@ impl EventStore {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
         event_type: Option<i16>,
-    ) -> Result<serde_json::Value, sqlx::Error> {
+    ) -> Result<Vec<BlockConvergenceRow>, sqlx::Error> {
         let rows = if let Some(et) = event_type {
             sqlx::query(
                 r#"
@@ -424,24 +444,24 @@ impl EventStore {
             .await?
         };
 
-        let results: Vec<serde_json::Value> = rows
+        let results = rows
             .iter()
             .map(|row| {
                 let et: i16 = row.get("event_type");
-                serde_json::json!({
-                    "slot": row.get::<i32, _>("slot"),
-                    "event_type": et,
-                    "event_type_name": crate::event_type_meta::event_type_name(et),
-                    "node_count": row.get::<i16, _>("node_count"),
-                    "p50_ms": row.get::<i32, _>("p50_ms"),
-                    "p99_ms": row.get::<i32, _>("p99_ms"),
-                    "p100_ms": row.get::<i32, _>("p100_ms"),
-                    "authored_at": row.get::<DateTime<Utc>, _>("authored_at"),
-                })
+                BlockConvergenceRow {
+                    slot: row.get("slot"),
+                    event_type: et,
+                    event_type_name: crate::event_type_meta::event_type_name(et),
+                    node_count: row.get("node_count"),
+                    p50_ms: row.get("p50_ms"),
+                    p99_ms: row.get("p99_ms"),
+                    p100_ms: row.get("p100_ms"),
+                    authored_at: row.get("authored_at"),
+                }
             })
             .collect();
 
-        Ok(serde_json::Value::Array(results))
+        Ok(results)
     }
 
     // ── 5. grafana_blocks_contents ─────────────────────────────────────
@@ -451,8 +471,8 @@ impl EventStore {
         &self,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
-    ) -> Result<serde_json::Value, sqlx::Error> {
-        let rows = sqlx::query(
+    ) -> Result<Vec<BlockContentsRow>, sqlx::Error> {
+        sqlx::query_as::<_, BlockContentsRow>(
             r#"
             SELECT
                 slot,
@@ -474,26 +494,7 @@ impl EventStore {
         .bind(start)
         .bind(end)
         .fetch_all(self.pool())
-        .await?;
-
-        let results: Vec<serde_json::Value> = rows
-            .iter()
-            .map(|row| {
-                serde_json::json!({
-                    "slot": row.get::<i32, _>("slot"),
-                    "timestamp": row.get::<DateTime<Utc>, _>("timestamp"),
-                    "node_id": row.get::<String, _>("node_id"),
-                    "num_guarantees": row.get::<Option<i32>, _>("num_guarantees"),
-                    "num_assurances": row.get::<Option<i32>, _>("num_assurances"),
-                    "num_preimages": row.get::<Option<i32>, _>("num_preimages"),
-                    "num_tickets": row.get::<Option<i32>, _>("num_tickets"),
-                    "num_disputes": row.get::<Option<i32>, _>("num_disputes"),
-                    "extrinsic_size": row.get::<Option<i32>, _>("extrinsic_size"),
-                })
-            })
-            .collect();
-
-        Ok(serde_json::Value::Array(results))
+        .await
     }
 
     // ── 6. grafana_services ────────────────────────────────────────────
@@ -504,7 +505,7 @@ impl EventStore {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
         services: Option<&[i32]>,
-    ) -> Result<serde_json::Value, sqlx::Error> {
+    ) -> Result<Vec<ServiceRow>, sqlx::Error> {
         let service_filter = if services.is_some() {
             "AND service_id = ANY($3)"
         } else {
@@ -533,37 +534,33 @@ impl EventStore {
         }
         let rows = query.fetch_all(self.pool()).await?;
 
-        let results: Vec<serde_json::Value> = rows
+        let results = rows
             .iter()
-            .map(|row| {
-                serde_json::json!({
-                    "service_id": format!("0x{:x}", row.get::<i32, _>("service_id") as u32),
-                    "work_packages": row.get::<Option<i64>, _>("work_packages").unwrap_or(0),
-                    "refinements": row.get::<Option<i64>, _>("refinements").unwrap_or(0),
-                    "refinement_gas": row.get::<Option<i64>, _>("refinement_gas").unwrap_or(0),
-                    "authorizations": row.get::<Option<i64>, _>("authorizations").unwrap_or(0),
-                    "authorization_gas": row.get::<Option<i64>, _>("authorization_gas").unwrap_or(0),
-                    "executions": row.get::<Option<i64>, _>("executions").unwrap_or(0),
-                    "execution_gas": row.get::<Option<i64>, _>("execution_gas").unwrap_or(0),
-                })
+            .map(|row| ServiceRow {
+                service_id: format!("0x{:x}", row.get::<i32, _>("service_id") as u32),
+                work_packages: row.get::<Option<i64>, _>("work_packages").unwrap_or(0),
+                refinements: row.get::<Option<i64>, _>("refinements").unwrap_or(0),
+                refinement_gas: row.get::<Option<i64>, _>("refinement_gas").unwrap_or(0),
+                authorizations: row.get::<Option<i64>, _>("authorizations").unwrap_or(0),
+                authorization_gas: row.get::<Option<i64>, _>("authorization_gas").unwrap_or(0),
+                executions: row.get::<Option<i64>, _>("executions").unwrap_or(0),
+                execution_gas: row.get::<Option<i64>, _>("execution_gas").unwrap_or(0),
             })
             .collect();
 
-        Ok(serde_json::Value::Array(results))
+        Ok(results)
     }
 
     // ── 6b. grafana_services_timeseries ────────────────────────────────
 
     /// Per-service time-series from the service_stats_1m continuous aggregate.
-    /// Returns split gas columns: authorization_gas (95), refinement_gas (101),
-    /// execution_gas (47), plus work_packages (94) count.
     pub async fn grafana_services_timeseries(
         &self,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
         interval: &str,
         services: Option<&[i32]>,
-    ) -> Result<serde_json::Value, sqlx::Error> {
+    ) -> Result<Vec<ServiceTimeseriesRow>, sqlx::Error> {
         if !VALID_INTERVALS.contains(&interval) {
             return Err(sqlx::Error::Protocol(format!(
                 "invalid interval: {interval}"
@@ -599,27 +596,25 @@ impl EventStore {
 
         let rows = query.fetch_all(self.pool()).await?;
 
-        let results: Vec<serde_json::Value> = rows
+        let results = rows
             .iter()
-            .map(|row| {
-                serde_json::json!({
-                    "ts": row.get::<DateTime<Utc>, _>("ts"),
-                    "service_id": format!("0x{:x}", row.get::<i32, _>("service_id") as u32),
-                    "work_packages": row.get::<Option<i64>, _>("work_packages").unwrap_or(0),
-                    "authorization_gas": row.get::<Option<i64>, _>("authorization_gas").unwrap_or(0),
-                    "refinement_gas": row.get::<Option<i64>, _>("refinement_gas").unwrap_or(0),
-                    "execution_gas": row.get::<Option<i64>, _>("execution_gas").unwrap_or(0),
-                })
+            .map(|row| ServiceTimeseriesRow {
+                ts: row.get("ts"),
+                service_id: format!("0x{:x}", row.get::<i32, _>("service_id") as u32),
+                work_packages: row.get::<Option<i64>, _>("work_packages").unwrap_or(0),
+                authorization_gas: row.get::<Option<i64>, _>("authorization_gas").unwrap_or(0),
+                refinement_gas: row.get::<Option<i64>, _>("refinement_gas").unwrap_or(0),
+                execution_gas: row.get::<Option<i64>, _>("execution_gas").unwrap_or(0),
             })
             .collect();
 
-        Ok(serde_json::Value::Array(results))
+        Ok(results)
     }
 
     // ── 7. grafana_nodes ───────────────────────────────────────────────
 
     /// All nodes from the nodes table.
-    pub async fn grafana_nodes(&self) -> Result<serde_json::Value, sqlx::Error> {
+    pub async fn grafana_nodes(&self) -> Result<Vec<NodeRow>, sqlx::Error> {
         let rows = sqlx::query(
             r#"
             SELECT
@@ -641,26 +636,24 @@ impl EventStore {
         .fetch_all(self.pool())
         .await?;
 
-        let results: Vec<serde_json::Value> = rows
+        let results = rows
             .iter()
-            .map(|row| {
-                serde_json::json!({
-                    "node_id": row.get::<String, _>("node_id"),
-                    "peer_id": row.get::<String, _>("peer_id"),
-                    "implementation_name": row.get::<String, _>("implementation_name"),
-                    "implementation_version": row.get::<String, _>("implementation_version"),
-                    "node_info": row.get::<serde_json::Value, _>("node_info"),
-                    "connected_at": row.get::<DateTime<Utc>, _>("connected_at"),
-                    "disconnected_at": row.get::<Option<DateTime<Utc>>, _>("disconnected_at"),
-                    "last_seen_at": row.get::<DateTime<Utc>, _>("last_seen_at"),
-                    "is_connected": row.get::<bool, _>("is_connected"),
-                    "total_event_count": row.get::<i64, _>("total_event_count"),
-                    "address": row.get::<Option<String>, _>("address"),
-                })
+            .map(|row| NodeRow {
+                node_id: row.get("node_id"),
+                peer_id: row.get("peer_id"),
+                implementation_name: row.get("implementation_name"),
+                implementation_version: row.get("implementation_version"),
+                node_info: row.get("node_info"),
+                connected_at: row.get("connected_at"),
+                disconnected_at: row.get("disconnected_at"),
+                last_seen_at: row.get("last_seen_at"),
+                is_connected: row.get("is_connected"),
+                total_event_count: row.get("total_event_count"),
+                address: row.get("address"),
             })
             .collect();
 
-        Ok(serde_json::Value::Array(results))
+        Ok(results)
     }
 
     // ── 8. grafana_node_stats ──────────────────────────────────────────
@@ -671,7 +664,7 @@ impl EventStore {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
         nodes: Option<&[String]>,
-    ) -> Result<serde_json::Value, sqlx::Error> {
+    ) -> Result<Vec<NodeStatsRow>, sqlx::Error> {
         let sql = if nodes.is_some() {
             r#"
             SELECT
@@ -700,42 +693,21 @@ impl EventStore {
         };
 
         let rows = if let Some(node_list) = nodes {
-            sqlx::query(sql)
+            sqlx::query_as::<_, NodeStatsRow>(sql)
                 .bind(start)
                 .bind(end)
                 .bind(node_list)
                 .fetch_all(self.pool())
                 .await?
         } else {
-            sqlx::query(sql)
+            sqlx::query_as::<_, NodeStatsRow>(sql)
                 .bind(start)
                 .bind(end)
                 .fetch_all(self.pool())
                 .await?
         };
 
-        let results: Vec<serde_json::Value> = rows
-            .iter()
-            .map(|row| {
-                serde_json::json!({
-                    "timestamp": row.get::<DateTime<Utc>, _>("timestamp"),
-                    "node_id": row.get::<String, _>("node_id"),
-                    "num_peers": row.get::<i32, _>("num_peers"),
-                    "num_val_peers": row.get::<i32, _>("num_val_peers"),
-                    "num_sync_peers": row.get::<i32, _>("num_sync_peers"),
-                    "num_shards": row.get::<i32, _>("num_shards"),
-                    "shards_size": row.get::<i64, _>("shards_size"),
-                    "num_preimages": row.get::<i32, _>("num_preimages"),
-                    "preimages_size": row.get::<i32, _>("preimages_size"),
-                    "min_guarantees": row.get::<i16, _>("min_guarantees"),
-                    "max_guarantees": row.get::<i16, _>("max_guarantees"),
-                    "avg_guarantees": row.get::<f32, _>("avg_guarantees"),
-                    "zero_guarantee_cores": row.get::<i16, _>("zero_guarantee_cores"),
-                })
-            })
-            .collect();
-
-        Ok(serde_json::Value::Array(results))
+        Ok(rows)
     }
 
     // ── 9. grafana_node_stats_aggregate ────────────────────────────────
@@ -746,10 +718,10 @@ impl EventStore {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
         nodes: Option<&[String]>,
-    ) -> Result<serde_json::Value, sqlx::Error> {
-        // Network-wide: aggregate across all nodes per bucket
-        let (sql, has_node_filter) = if let Some(ref _n) = nodes {
-            (
+    ) -> Result<Vec<NodeStatsAggregateRow>, sqlx::Error> {
+        if let Some(node_list) = nodes {
+            // Per-node mode: return raw aggregate rows with node_id
+            sqlx::query_as::<_, NodeStatsAggregateRow>(
                 r#"
                 SELECT
                     bucket,
@@ -761,7 +733,7 @@ impl EventStore {
                     avg_shards_size, max_shards_size,
                     avg_preimages, max_preimages,
                     avg_preimages_size, max_preimages_size,
-                    avg_guarantees, min_guarantees, max_guarantees,
+                    avg_guarantees::DOUBLE PRECISION, min_guarantees, max_guarantees,
                     max_zero_guarantee_cores,
                     status_count
                 FROM node_stats_1m
@@ -769,13 +741,19 @@ impl EventStore {
                   AND node_id = ANY($3)
                 ORDER BY bucket ASC, node_id ASC
                 "#,
-                true,
             )
+            .bind(start)
+            .bind(end)
+            .bind(node_list)
+            .fetch_all(self.pool())
+            .await
         } else {
-            (
+            // Network-wide mode: aggregate across all nodes per bucket
+            sqlx::query_as::<_, NodeStatsAggregateRow>(
                 r#"
                 SELECT
                     bucket,
+                    NULL::TEXT AS node_id,
                     AVG(avg_peers)::INT         AS avg_peers,
                     MIN(min_peers)              AS min_peers,
                     MAX(max_peers)              AS max_peers,
@@ -794,7 +772,7 @@ impl EventStore {
                     MAX(max_preimages)          AS max_preimages,
                     AVG(avg_preimages_size)::INT AS avg_preimages_size,
                     MAX(max_preimages_size)     AS max_preimages_size,
-                    AVG(avg_guarantees)         AS avg_guarantees,
+                    AVG(avg_guarantees)::DOUBLE PRECISION AS avg_guarantees,
                     MIN(min_guarantees)         AS min_guarantees,
                     MAX(max_guarantees)         AS max_guarantees,
                     MAX(max_zero_guarantee_cores) AS max_zero_guarantee_cores,
@@ -804,72 +782,19 @@ impl EventStore {
                 GROUP BY bucket
                 ORDER BY bucket ASC
                 "#,
-                false,
             )
-        };
-
-        let rows = if has_node_filter {
-            sqlx::query(sql)
-                .bind(start)
-                .bind(end)
-                .bind(nodes.unwrap())
-                .fetch_all(self.pool())
-                .await?
-        } else {
-            sqlx::query(sql)
-                .bind(start)
-                .bind(end)
-                .fetch_all(self.pool())
-                .await?
-        };
-
-        let results: Vec<serde_json::Value> = rows
-            .iter()
-            .map(|row| {
-                let mut obj = serde_json::json!({
-                    "bucket": row.get::<DateTime<Utc>, _>("bucket"),
-                    "avg_peers": row.get::<i32, _>("avg_peers"),
-                    "min_peers": row.get::<i32, _>("min_peers"),
-                    "max_peers": row.get::<i32, _>("max_peers"),
-                    "avg_val_peers": row.get::<i32, _>("avg_val_peers"),
-                    "min_val_peers": row.get::<i32, _>("min_val_peers"),
-                    "max_val_peers": row.get::<i32, _>("max_val_peers"),
-                    "avg_sync_peers": row.get::<i32, _>("avg_sync_peers"),
-                    "min_sync_peers": row.get::<i32, _>("min_sync_peers"),
-                    "max_sync_peers": row.get::<i32, _>("max_sync_peers"),
-                    "avg_shards": row.get::<i32, _>("avg_shards"),
-                    "min_shards": row.get::<i32, _>("min_shards"),
-                    "max_shards": row.get::<i32, _>("max_shards"),
-                    "avg_shards_size": row.get::<i64, _>("avg_shards_size"),
-                    "max_shards_size": row.get::<i64, _>("max_shards_size"),
-                    "avg_preimages": row.get::<i32, _>("avg_preimages"),
-                    "max_preimages": row.get::<i32, _>("max_preimages"),
-                    "avg_preimages_size": row.get::<i32, _>("avg_preimages_size"),
-                    "max_preimages_size": row.get::<i32, _>("max_preimages_size"),
-                    "avg_guarantees": row.get::<f64, _>("avg_guarantees"),
-                    "min_guarantees": row.get::<i16, _>("min_guarantees"),
-                    "max_guarantees": row.get::<i16, _>("max_guarantees"),
-                    "max_zero_guarantee_cores": row.get::<i16, _>("max_zero_guarantee_cores"),
-                    "status_count": row.get::<i64, _>("status_count"),
-                });
-                if has_node_filter {
-                    obj["node_id"] = serde_json::json!(row.get::<String, _>("node_id"));
-                }
-                obj
-            })
-            .collect();
-
-        Ok(serde_json::Value::Array(results))
+            .bind(start)
+            .bind(end)
+            .fetch_all(self.pool())
+            .await
+        }
     }
 
     // ── 10. grafana_db_stats ───────────────────────────────────────────
 
     /// TimescaleDB metadata: table sizes, row counts, compression stats.
-    pub async fn grafana_db_stats(&self) -> Result<serde_json::Value, sqlx::Error> {
-        // Hypertable sizes
-        // hypertable_detailed_size returns (table_bytes, index_bytes, toast_bytes, total_bytes, node_name)
-        // — no hypertable_name column, so we supply it as a literal.
-        let table_rows = sqlx::query(
+    pub async fn grafana_db_stats(&self) -> Result<DbStatsResponse, sqlx::Error> {
+        let table_rows = sqlx::query_as::<_, TableSize>(
             r#"
             SELECT
                 'events'::TEXT AS table_name,
@@ -899,21 +824,7 @@ impl EventStore {
         .fetch_all(self.pool())
         .await?;
 
-        let tables: Vec<serde_json::Value> = table_rows
-            .iter()
-            .map(|row| {
-                serde_json::json!({
-                    "table_name": row.get::<String, _>("table_name"),
-                    "total_bytes": row.get::<i64, _>("total_bytes"),
-                    "table_bytes": row.get::<i64, _>("table_bytes"),
-                    "index_bytes": row.get::<i64, _>("index_bytes"),
-                    "toast_bytes": row.get::<i64, _>("toast_bytes"),
-                })
-            })
-            .collect();
-
-        // Approximate row counts
-        let count_rows = sqlx::query(
+        let row_counts = sqlx::query_as::<_, RowCount>(
             r#"
             SELECT
                 'events'::TEXT AS table_name,
@@ -933,19 +844,7 @@ impl EventStore {
         .fetch_all(self.pool())
         .await?;
 
-        let row_counts: Vec<serde_json::Value> = count_rows
-            .iter()
-            .map(|row| {
-                serde_json::json!({
-                    "table_name": row.get::<String, _>("table_name"),
-                    "row_count": row.get::<i64, _>("row_count"),
-                })
-            })
-            .collect();
-
-        // Compression stats — chunk_compression_stats returns per-chunk rows,
-        // so we aggregate to get per-hypertable totals.
-        let compression_rows = sqlx::query(
+        let compression = sqlx::query_as::<_, CompressionInfo>(
             r#"
             SELECT
                 'events'::TEXT AS table_name,
@@ -965,23 +864,11 @@ impl EventStore {
         .fetch_all(self.pool())
         .await?;
 
-        let compression: Vec<serde_json::Value> = compression_rows
-            .iter()
-            .map(|row| {
-                serde_json::json!({
-                    "table_name": row.get::<String, _>("table_name"),
-                    "compressed_chunks": row.get::<i64, _>("compressed_chunks"),
-                    "before_compression_bytes": row.get::<i64, _>("before_compression_bytes"),
-                    "after_compression_bytes": row.get::<i64, _>("after_compression_bytes"),
-                })
-            })
-            .collect();
-
-        Ok(serde_json::json!({
-            "tables": tables,
-            "row_counts": row_counts,
-            "compression": compression,
-        }))
+        Ok(DbStatsResponse {
+            tables: table_rows,
+            row_counts,
+            compression,
+        })
     }
 
     // ── 11. grafana_bottlenecks ────────────────────────────────────────
@@ -992,8 +879,7 @@ impl EventStore {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
         core_filter: Option<i16>,
-    ) -> Result<serde_json::Value, sqlx::Error> {
-        // Stage timing percentiles
+    ) -> Result<Vec<BottlenecksResponse>, sqlx::Error> {
         let timing_rows = sqlx::query(
             r#"
             SELECT
@@ -1045,34 +931,33 @@ impl EventStore {
         .fetch_one(self.pool())
         .await?;
 
-        let stage_timing = serde_json::json!({
-            "authorize": {
-                "p50_ms": timing_rows.get::<Option<f64>, _>("p50_authorize_ms"),
-                "p95_ms": timing_rows.get::<Option<f64>, _>("p95_authorize_ms"),
+        let stage_timing = StageTiming {
+            authorize: Percentiles {
+                p50_ms: timing_rows.get("p50_authorize_ms"),
+                p95_ms: timing_rows.get("p95_authorize_ms"),
             },
-            "refine": {
-                "p50_ms": timing_rows.get::<Option<f64>, _>("p50_refine_ms"),
-                "p95_ms": timing_rows.get::<Option<f64>, _>("p95_refine_ms"),
+            refine: Percentiles {
+                p50_ms: timing_rows.get("p50_refine_ms"),
+                p95_ms: timing_rows.get("p95_refine_ms"),
             },
-            "report": {
-                "p50_ms": timing_rows.get::<Option<f64>, _>("p50_report_ms"),
-                "p95_ms": timing_rows.get::<Option<f64>, _>("p95_report_ms"),
+            report: Percentiles {
+                p50_ms: timing_rows.get("p50_report_ms"),
+                p95_ms: timing_rows.get("p95_report_ms"),
             },
-            "guarantee": {
-                "p50_ms": timing_rows.get::<Option<f64>, _>("p50_guarantee_ms"),
-                "p95_ms": timing_rows.get::<Option<f64>, _>("p95_guarantee_ms"),
+            guarantee: Percentiles {
+                p50_ms: timing_rows.get("p50_guarantee_ms"),
+                p95_ms: timing_rows.get("p95_guarantee_ms"),
             },
-            "distribute": {
-                "p50_ms": timing_rows.get::<Option<f64>, _>("p50_distribute_ms"),
-                "p95_ms": timing_rows.get::<Option<f64>, _>("p95_distribute_ms"),
+            distribute: Percentiles {
+                p50_ms: timing_rows.get("p50_distribute_ms"),
+                p95_ms: timing_rows.get("p95_distribute_ms"),
             },
-            "pipeline_total": {
-                "p50_ms": timing_rows.get::<Option<f64>, _>("p50_pipeline_ms"),
-                "p95_ms": timing_rows.get::<Option<f64>, _>("p95_pipeline_ms"),
+            pipeline_total: Percentiles {
+                p50_ms: timing_rows.get("p50_pipeline_ms"),
+                p95_ms: timing_rows.get("p95_pipeline_ms"),
             },
-        });
+        };
 
-        // Failure rate + average pipeline
         let summary = sqlx::query(
             r#"
             SELECT
@@ -1101,13 +986,13 @@ impl EventStore {
             0.0
         };
 
-        Ok(serde_json::json!([{
-            "stage_timing": stage_timing,
-            "failure_rate": failure_rate,
-            "total_wps": total,
-            "failed_wps": failed,
-            "avg_pipeline_ms": summary.get::<Option<f64>, _>("avg_pipeline_ms"),
-        }]))
+        Ok(vec![BottlenecksResponse {
+            stage_timing,
+            failure_rate,
+            total_wps: total,
+            failed_wps: failed,
+            avg_pipeline_ms: summary.get("avg_pipeline_ms"),
+        }])
     }
 
     // ── 12. grafana_events ────────────────────────────────────────────
@@ -1122,7 +1007,7 @@ impl EventStore {
         end: DateTime<Utc>,
         event_types: &[i16],
         limit: i64,
-    ) -> Result<serde_json::Value, sqlx::Error> {
+    ) -> Result<Vec<EventRow>, sqlx::Error> {
         if event_types.is_empty() {
             return Err(sqlx::Error::Protocol(
                 "event_types parameter is required".into(),
@@ -1147,19 +1032,17 @@ impl EventStore {
         .fetch_all(self.pool())
         .await?;
 
-        let results: Vec<serde_json::Value> = rows
+        let results = rows
             .iter()
-            .map(|row| {
-                serde_json::json!({
-                    "ts": row.get::<DateTime<Utc>, _>("timestamp"),
-                    "node_id": row.get::<String, _>("node_id"),
-                    "event_type": row.get::<i16, _>("event_type"),
-                    "data": row.get::<serde_json::Value, _>("data"),
-                })
+            .map(|row| EventRow {
+                ts: row.get("timestamp"),
+                node_id: row.get("node_id"),
+                event_type: row.get("event_type"),
+                data: row.get("data"),
             })
             .collect();
 
-        Ok(serde_json::Value::Array(results))
+        Ok(results)
     }
 
     // ── 13. grafana_wp_funnel ──────────────────────────────────────────
@@ -1169,8 +1052,8 @@ impl EventStore {
         &self,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
-    ) -> Result<serde_json::Value, sqlx::Error> {
-        let row = sqlx::query(
+    ) -> Result<WpFunnelResponse, sqlx::Error> {
+        sqlx::query_as::<_, WpFunnelResponse>(
             r#"
             SELECT
                 COUNT(*)::BIGINT AS total,
@@ -1188,17 +1071,6 @@ impl EventStore {
         .bind(start)
         .bind(end)
         .fetch_one(self.pool())
-        .await?;
-
-        Ok(serde_json::json!({
-            "total": row.get::<i64, _>("total"),
-            "received": row.get::<i64, _>("received"),
-            "authorized": row.get::<i64, _>("authorized"),
-            "refined": row.get::<i64, _>("refined"),
-            "report_built": row.get::<i64, _>("report_built"),
-            "guarantee_built": row.get::<i64, _>("guarantee_built"),
-            "distributed": row.get::<i64, _>("distributed"),
-            "failed": row.get::<i64, _>("failed"),
-        }))
+        .await
     }
 }

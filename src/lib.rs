@@ -12,6 +12,7 @@ pub mod event_type_meta;
 pub mod events;
 pub mod grafana;
 pub mod grafana_store;
+pub mod grafana_types;
 pub mod health;
 pub mod jam_rpc;
 pub mod live_counters;
