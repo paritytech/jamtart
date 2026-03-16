@@ -1775,7 +1775,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?event_types=${event_group}&group_by=event_type&interval=1m&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?event_types=${event_group}&group_by=event_type&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "data": "",
             "headers": [],
@@ -1913,7 +1913,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?event_types=${event_type}&group_by=event_type&interval=1m&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?event_types=${event_type}&group_by=event_type&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "data": "",
             "headers": [],
@@ -2242,7 +2242,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=1m&event_types=42",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&event_types=42",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2273,7 +2273,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=1m&event_types=wp_pipeline",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&event_types=wp_pipeline",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2304,7 +2304,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=1m&event_types=guarantee_receiving",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&event_types=guarantee_receiving",
           "url_options": {
             "method": "GET",
             "data": "",

@@ -8,10 +8,10 @@ use sqlx::Row;
 use crate::grafana_types::*;
 use crate::store::EventStore;
 
-/// Whitelisted time_bucket intervals for dynamic SQL.
+/// Whitelisted time_bucket intervals for dynamic SQL (6s-aligned sub-minute).
 const VALID_INTERVALS: &[&str] = &[
-    "10s", "15s", "30s", "1m", "2m", "5m", "10m", "15m", "30m", "1h", "2h", "4h", "6h", "12h",
-    "1d",
+    "6s", "12s", "18s", "24s", "30s", "1m", "2m", "5m", "10m", "15m", "30m", "1h", "2h", "4h",
+    "6h", "12h", "1d",
 ];
 
 /// Whitelisted group_by columns for dynamic SQL.
@@ -62,6 +62,29 @@ fn interval_to_pg(interval: &str) -> String {
     s.to_string()
 }
 
+/// Snap an arbitrary interval to the nearest valid (>= input) whitelisted value.
+/// Accepts any parseable interval (e.g. Grafana's `$__interval` producing `20s`, `3m`).
+fn snap_interval(input: &str) -> &'static str {
+    // Fast path: already valid
+    if let Some(&valid) = VALID_INTERVALS.iter().find(|&&v| v == input) {
+        return valid;
+    }
+    let input_secs = match interval_to_seconds(input) {
+        Some(s) if s > 0 => s,
+        _ => return "1m", // unparseable → safe default
+    };
+    // Find smallest valid interval >= input
+    for &candidate in VALID_INTERVALS {
+        if let Some(candidate_secs) = interval_to_seconds(candidate) {
+            if candidate_secs >= input_secs {
+                return candidate;
+            }
+        }
+    }
+    // Exceeds largest → cap
+    "1d"
+}
+
 impl EventStore {
     // ── 1. grafana_timeseries ──────────────────────────────────────────
 
@@ -82,12 +105,7 @@ impl EventStore {
         event_types: Option<&[i16]>,
         core: Option<i16>,
     ) -> Result<Vec<TimeseriesRow>, sqlx::Error> {
-        // Validate interval
-        if !VALID_INTERVALS.contains(&interval) {
-            return Err(sqlx::Error::Protocol(format!(
-                "invalid interval: {interval}"
-            )));
-        }
+        let interval = snap_interval(interval);
         // Validate group_by
         if let Some(gb) = group_by {
             if !VALID_GROUP_BY.contains(&gb) {
@@ -562,11 +580,7 @@ impl EventStore {
         interval: &str,
         services: Option<&[DbServiceId]>,
     ) -> Result<Vec<ServiceTimeseriesRow>, sqlx::Error> {
-        if !VALID_INTERVALS.contains(&interval) {
-            return Err(sqlx::Error::Protocol(format!(
-                "invalid interval: {interval}"
-            )));
-        }
+        let interval = snap_interval(interval);
         let pg_interval = interval_to_pg(interval);
 
         let mut wheres = vec!["bucket >= $1".to_string(), "bucket < $2".to_string()];
@@ -1074,5 +1088,56 @@ impl EventStore {
         .bind(end)
         .fetch_one(self.pool())
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snap_exact_match() {
+        assert_eq!(snap_interval("6s"), "6s");
+        assert_eq!(snap_interval("1m"), "1m");
+        assert_eq!(snap_interval("1d"), "1d");
+    }
+
+    #[test]
+    fn snap_rounds_up() {
+        assert_eq!(snap_interval("8s"), "12s");
+        assert_eq!(snap_interval("20s"), "24s");
+        assert_eq!(snap_interval("25s"), "30s");
+        assert_eq!(snap_interval("45s"), "1m");
+        assert_eq!(snap_interval("3m"), "5m");
+        assert_eq!(snap_interval("7m"), "10m");
+    }
+
+    #[test]
+    fn snap_below_minimum() {
+        assert_eq!(snap_interval("1s"), "6s");
+        assert_eq!(snap_interval("5s"), "6s");
+    }
+
+    #[test]
+    fn snap_above_maximum() {
+        assert_eq!(snap_interval("2d"), "1d");
+        assert_eq!(snap_interval("7d"), "1d");
+    }
+
+    #[test]
+    fn snap_unparseable() {
+        assert_eq!(snap_interval("garbage"), "1m");
+        assert_eq!(snap_interval(""), "1m");
+    }
+
+    #[test]
+    fn snap_grafana_intervals() {
+        // Typical $__interval values from Grafana
+        assert_eq!(snap_interval("10s"), "12s");
+        assert_eq!(snap_interval("15s"), "18s");
+        assert_eq!(snap_interval("20s"), "24s");
+        assert_eq!(snap_interval("1m"), "1m");
+        assert_eq!(snap_interval("2m"), "2m");
+        assert_eq!(snap_interval("5m"), "5m");
     }
 }

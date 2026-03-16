@@ -118,7 +118,7 @@
           "refId": "A",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/onchain/validators/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${interval}",
+          "url": "http://tart-backend:8080/api/grafana/onchain/validators/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}",
           "url_options": { "method": "GET" }
         }
       ],
@@ -166,7 +166,7 @@
           "refId": "A",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/onchain/validators/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${interval}",
+          "url": "http://tart-backend:8080/api/grafana/onchain/validators/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}",
           "url_options": { "method": "GET" }
         }
       ],
@@ -214,7 +214,7 @@
           "refId": "A",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/onchain/validators/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${interval}",
+          "url": "http://tart-backend:8080/api/grafana/onchain/validators/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}",
           "url_options": { "method": "GET" }
         }
       ],
@@ -262,7 +262,7 @@
           "refId": "A",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/onchain/validators/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${interval}",
+          "url": "http://tart-backend:8080/api/grafana/onchain/validators/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}",
           "url_options": { "method": "GET" }
         }
       ],
@@ -357,17 +357,6 @@
         "includeAll": false,
         "multi": false,
         "description": "Select a validator for detail view"
-      },
-      {
-        "current": { "selected": true, "text": "1m", "value": "1m" },
-        "name": "interval",
-        "label": "Interval",
-        "type": "custom",
-        "query": "10s,30s,1m,5m,10m,30m,1h",
-        "refresh": 0,
-        "options": [],
-        "includeAll": false,
-        "multi": false
       }
     ]
   },

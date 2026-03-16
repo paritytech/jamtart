@@ -549,7 +549,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/services/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=1m&service=${service}",
+          "url": "http://tart-backend:8080/api/grafana/services/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&service=${service}",
           "url_options": {
             "method": "GET"
           },
@@ -723,7 +723,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/services/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=1m&service=${service}",
+          "url": "http://tart-backend:8080/api/grafana/services/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&service=${service}",
           "url_options": {
             "method": "GET"
           },

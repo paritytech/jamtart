@@ -10,10 +10,10 @@ use crate::grafana_types::DbServiceId;
 use crate::onchain_types::*;
 use crate::store::EventStore;
 
-/// Whitelisted time_bucket intervals for dynamic SQL.
+/// Whitelisted time_bucket intervals for dynamic SQL (6s-aligned sub-minute).
 const VALID_INTERVALS: &[&str] = &[
-    "10s", "15s", "30s", "1m", "2m", "5m", "10m", "15m", "30m", "1h", "2h", "4h", "6h", "12h",
-    "1d",
+    "6s", "12s", "18s", "24s", "30s", "1m", "2m", "5m", "10m", "15m", "30m", "1h", "2h", "4h",
+    "6h", "12h", "1d",
 ];
 
 /// Convert interval shorthand (e.g. "5m") to PostgreSQL interval literal (e.g. "5 minutes").
@@ -34,13 +34,45 @@ fn interval_to_pg(interval: &str) -> String {
     format!("{s} seconds")
 }
 
-fn validate_interval(interval: &str) -> Result<String, sqlx::Error> {
-    if !VALID_INTERVALS.contains(&interval) {
-        return Err(sqlx::Error::Protocol(format!(
-            "invalid interval: {interval}"
-        )));
+/// Convert a human-friendly interval string to seconds.
+fn interval_to_seconds(interval: &str) -> Option<i64> {
+    let s = interval.trim();
+    if let Some(n) = s.strip_suffix('s') {
+        return n.parse::<i64>().ok();
     }
-    Ok(interval_to_pg(interval))
+    if let Some(n) = s.strip_suffix('m') {
+        return n.parse::<i64>().ok().map(|v| v * 60);
+    }
+    if let Some(n) = s.strip_suffix('h') {
+        return n.parse::<i64>().ok().map(|v| v * 3600);
+    }
+    if let Some(n) = s.strip_suffix('d') {
+        return n.parse::<i64>().ok().map(|v| v * 86400);
+    }
+    None
+}
+
+/// Snap an arbitrary interval to the nearest valid (>= input) whitelisted value.
+fn snap_interval(input: &str) -> &'static str {
+    if let Some(&valid) = VALID_INTERVALS.iter().find(|&&v| v == input) {
+        return valid;
+    }
+    let input_secs = match interval_to_seconds(input) {
+        Some(s) if s > 0 => s,
+        _ => return "1m",
+    };
+    for &candidate in VALID_INTERVALS {
+        if let Some(candidate_secs) = interval_to_seconds(candidate) {
+            if candidate_secs >= input_secs {
+                return candidate;
+            }
+        }
+    }
+    "1d"
+}
+
+fn validate_interval(interval: &str) -> Result<String, sqlx::Error> {
+    Ok(interval_to_pg(snap_interval(interval)))
 }
 
 impl EventStore {

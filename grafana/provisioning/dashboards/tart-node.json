@@ -195,7 +195,7 @@
           ],
           "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
           "format": "timeseries", "parser": "backend", "root_selector": "", "source": "url", "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&event_types=blocks&interval=1m&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&event_types=blocks&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": { "method": "GET", "data": "", "headers": [], "params": [] },
           "refId": "A"
         },
@@ -206,7 +206,7 @@
           ],
           "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
           "format": "timeseries", "parser": "backend", "root_selector": "", "source": "url", "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&event_types=wp_pipeline&interval=1m&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&event_types=wp_pipeline&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": { "method": "GET", "data": "", "headers": [], "params": [] },
           "refId": "B"
         },
@@ -217,7 +217,7 @@
           ],
           "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
           "format": "timeseries", "parser": "backend", "root_selector": "", "source": "url", "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&event_types=guarantee_receiving&interval=1m&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&event_types=guarantee_receiving&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": { "method": "GET", "data": "", "headers": [], "params": [] },
           "refId": "C"
         },
@@ -228,7 +228,7 @@
           ],
           "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
           "format": "timeseries", "parser": "backend", "root_selector": "", "source": "url", "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&event_types=block_distribution&interval=1m&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&event_types=block_distribution&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": { "method": "GET", "data": "", "headers": [], "params": [] },
           "refId": "D"
         },
@@ -239,7 +239,7 @@
           ],
           "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
           "format": "timeseries", "parser": "backend", "root_selector": "", "source": "url", "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&event_types=connections&interval=1m&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&event_types=connections&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": { "method": "GET", "data": "", "headers": [], "params": [] },
           "refId": "E"
         },
@@ -250,7 +250,7 @@
           ],
           "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
           "format": "timeseries", "parser": "backend", "root_selector": "", "source": "url", "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&event_types=tickets&interval=1m&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&event_types=tickets&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": { "method": "GET", "data": "", "headers": [], "params": [] },
           "refId": "F"
         },
@@ -261,7 +261,7 @@
           ],
           "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
           "format": "timeseries", "parser": "backend", "root_selector": "", "source": "url", "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&event_types=shards&interval=1m&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&event_types=shards&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": { "method": "GET", "data": "", "headers": [], "params": [] },
           "refId": "G"
         },
@@ -272,7 +272,7 @@
           ],
           "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
           "format": "timeseries", "parser": "backend", "root_selector": "", "source": "url", "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&event_types=failures&interval=1m&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&event_types=failures&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": { "method": "GET", "data": "", "headers": [], "params": [] },
           "refId": "H"
         }
@@ -1370,7 +1370,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?group_by=event_type&interval=1m&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?group_by=event_type&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1503,7 +1503,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?group_by=node_id&interval=1m&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?group_by=node_id&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1748,7 +1748,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&group_by=event_type&event_types=tickets&interval=1m&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&group_by=event_type&event_types=tickets&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1877,7 +1877,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&group_by=event_type&interval=1m&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&group_by=event_type&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2009,7 +2009,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&group_by=event_type&interval=1m&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&group_by=event_type&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",

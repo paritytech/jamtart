@@ -143,7 +143,7 @@ pub struct TimeseriesQuery {
     pub start: DateTime<Utc>,
     /// End of time range (ISO 8601)
     pub end: DateTime<Utc>,
-    /// Bucket width. Allowed: 10s, 15s, 30s, 1m, 2m, 5m, 10m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d
+    /// Bucket width. Supported: 6s, 12s, 18s, 24s, 30s, 1m, 2m, 5m, 10m, 15m, 30m, 1h–1d. Unsupported values are snapped to nearest valid.
     pub interval: Option<String>,
     /// Grouping column. Allowed: node_id, event_type, core
     pub group_by: Option<String>,
@@ -765,7 +765,7 @@ pub struct OnchainTimeseriesQuery {
     pub start: DateTime<Utc>,
     /// End of time range (ISO 8601)
     pub end: DateTime<Utc>,
-    /// Bucket width. Allowed: 10s, 15s, 30s, 1m, 2m, 5m, 10m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d
+    /// Bucket width. Supported: 6s, 12s, 18s, 24s, 30s, 1m, 2m, 5m, 10m, 15m, 30m, 1h–1d. Unsupported values are snapped to nearest valid.
     pub interval: Option<String>,
 }
 
@@ -787,7 +787,7 @@ pub struct OnchainServiceTimeseriesQuery {
     pub start: DateTime<Utc>,
     /// End of time range (ISO 8601)
     pub end: DateTime<Utc>,
-    /// Bucket width. Allowed: 10s, 15s, 30s, 1m, 2m, 5m, 10m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d
+    /// Bucket width. Supported: 6s, 12s, 18s, 24s, 30s, 1m, 2m, 5m, 10m, 15m, 30m, 1h–1d. Unsupported values are snapped to nearest valid.
     pub interval: Option<String>,
     /// Comma-separated service IDs (decimal or 0x hex). Supports Grafana {a,b} syntax.
     pub service: Option<String>,

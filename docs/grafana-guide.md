@@ -32,7 +32,7 @@ Time-series event counts with automatic aggregate table selection.
 |-------|------|----------|---------|-------------|
 | `start` | ISO 8601 datetime | yes | - | Start of time range |
 | `end` | ISO 8601 datetime | yes | - | End of time range |
-| `interval` | string | no | `1m` | Bucket width. Allowed: `10s`, `15s`, `30s`, `1m`, `2m`, `5m`, `10m`, `15m`, `30m`, `1h`, `2h`, `4h`, `6h`, `12h`, `1d` |
+| `interval` | string | no | `1m` | Bucket width. Supported: `6s`, `12s`, `18s`, `24s`, `30s`, `1m`, `2m`, `5m`, `10m`, `15m`, `30m`, `1h`, `2h`, `4h`, `6h`, `12h`, `1d`. Unsupported values (e.g. Grafana `$__interval`) are snapped up to the nearest valid interval. |
 | `group_by` | string | no | `event_type` | Grouping column. Allowed: `node_id`, `event_type`, `core` |
 | `node` | string | no | - | Filter to a single node_id |
 | `event_types` | string | no | - | Comma-separated list: numeric IDs, group names, or event names. Supports Grafana `{a,b}` braces. |
@@ -870,7 +870,7 @@ The `/timeseries` endpoint auto-selects the underlying aggregate table:
 
 | Your interval | Aggregate table queried |
 |---------------|------------------------|
-| `10s`, `15s`, `30s` | `event_stats_30s` |
+| `6s` through `30s` | `event_stats_30s` |
 | `1m` through `30m` | `event_stats_1m` |
 | `1h` through `1d` | `event_stats_1h` |
 | Any (with `group_by=core`) | `core_stats_1m` |
