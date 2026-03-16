@@ -72,6 +72,12 @@ pub struct NodeEventEnricher {
     importing_ids: HashMap<u64, SlotEntry>,
     last_activity: Instant,
     call_count: u64,
+    // --- Diagnostics counters (cheap u64 increments) ---
+    events_processed: u64,
+    lookups_attempted: u64,
+    lookups_missed: u64,
+    chain_lookups_missed: u64,
+    evictions_triggered: u64,
 }
 
 impl Default for NodeEventEnricher {
@@ -86,6 +92,11 @@ impl Default for NodeEventEnricher {
             importing_ids: HashMap::new(),
             last_activity: Instant::now(),
             call_count: 0,
+            events_processed: 0,
+            lookups_attempted: 0,
+            lookups_missed: 0,
+            chain_lookups_missed: 0,
+            evictions_triggered: 0,
         }
     }
 }
@@ -120,6 +131,7 @@ impl NodeEventEnricher {
     pub fn process(&mut self, event: &Event, event_id: u64) -> EnrichedFields {
         self.last_activity = Instant::now();
         self.call_count += 1;
+        self.events_processed += 1;
 
         if self.call_count % EVICTION_INTERVAL == 0 {
             self.evict_stale();
@@ -275,6 +287,7 @@ impl NodeEventEnricher {
         // --- 5. Look up submissions map for events that have a submission key but lack fields ---
         if fields.core.is_none() || fields.service_ids.is_none() || fields.wp_hash.is_none() {
             if let Some(sid) = submission_key {
+                self.lookups_attempted += 1;
                 if let Some(ctx) = self.submissions.get(&sid) {
                     if fields.core.is_none() {
                         fields.core = Some(ctx.core);
@@ -285,6 +298,8 @@ impl NodeEventEnricher {
                     if fields.wp_hash.is_none() {
                         fields.wp_hash = ctx.work_package_hash;
                     }
+                } else {
+                    self.lookups_missed += 1;
                 }
             }
         }
@@ -313,6 +328,8 @@ impl NodeEventEnricher {
                 if fields.service_ids.is_none() {
                     fields.service_ids = entry.service_ids.clone();
                 }
+            } else {
+                self.chain_lookups_missed += 1;
             }
             if let Some(core) = fields.core {
                 cap_map(&mut self.sending_ids, MAX_MAP_ENTRIES, |v| v.inserted_at);
@@ -336,6 +353,8 @@ impl NodeEventEnricher {
                     if fields.service_ids.is_none() {
                         fields.service_ids = entry.service_ids.clone();
                     }
+                } else {
+                    self.chain_lookups_missed += 1;
                 }
             }
             _ => {}
@@ -375,6 +394,8 @@ impl NodeEventEnricher {
                     if fields.service_ids.is_none() {
                         fields.service_ids = entry.service_ids.clone();
                     }
+                } else {
+                    self.chain_lookups_missed += 1;
                 }
             }
             _ => {}
@@ -408,6 +429,8 @@ impl NodeEventEnricher {
                     if fields.service_ids.is_none() {
                         fields.service_ids = entry.service_ids.clone();
                     }
+                } else {
+                    self.chain_lookups_missed += 1;
                 }
             }
             _ => {}
@@ -416,8 +439,29 @@ impl NodeEventEnricher {
         fields
     }
 
+    /// Total entries across all 7 internal maps.
+    pub fn total_map_entries(&self) -> usize {
+        self.submissions.len()
+            + self.built_ids.len()
+            + self.sending_ids.len()
+            + self.request_ids.len()
+            + self.reconstructing_ids.len()
+            + self.authoring_ids.len()
+            + self.importing_ids.len()
+    }
+
+    /// Reset diagnostics counters (called by periodic sweep after snapshotting).
+    pub fn reset_counters(&mut self) {
+        self.events_processed = 0;
+        self.lookups_attempted = 0;
+        self.lookups_missed = 0;
+        self.chain_lookups_missed = 0;
+        self.evictions_triggered = 0;
+    }
+
     /// Evict entries older than [`STALE_TTL`] from all internal maps.
     fn evict_stale(&mut self) {
+        self.evictions_triggered += 1;
         let cutoff = STALE_TTL;
         self.submissions
             .retain(|_, ctx| ctx.inserted_at.elapsed() <= cutoff);
@@ -433,6 +477,92 @@ impl NodeEventEnricher {
             .retain(|_, e| e.inserted_at.elapsed() <= cutoff);
         self.importing_ids
             .retain(|_, e| e.inserted_at.elapsed() <= cutoff);
+    }
+}
+
+/// Periodic diagnostics sweep over all per-node enrichers.
+///
+/// Three phases to minimise lock contention with the hot path:
+///   1. `.iter()` — read guards, snapshot counters + map sizes (ns per node)
+///   2. compute aggregates + percentiles (no locks held)
+///   3. `.iter_mut()` — write guards, zero counters (ns per node)
+pub fn log_enricher_diagnostics(map: &EnricherMap, interval_secs: f64) {
+    // Phase 1 — snapshot
+    struct Snap {
+        node_id: crate::batch_writer::NodeId,
+        events: u64,
+        lookups: u64,
+        missed: u64,
+        chain_missed: u64,
+        evictions: u64,
+        map_entries: usize,
+    }
+    let mut snaps: Vec<Snap> = Vec::with_capacity(map.len());
+    for entry in map.iter() {
+        let e = entry.value();
+        snaps.push(Snap {
+            node_id: entry.key().clone(),
+            events: e.events_processed,
+            lookups: e.lookups_attempted,
+            missed: e.lookups_missed,
+            chain_missed: e.chain_lookups_missed,
+            evictions: e.evictions_triggered,
+            map_entries: e.total_map_entries(),
+        });
+    }
+
+    if snaps.is_empty() {
+        return;
+    }
+
+    // Phase 2 — compute (no locks)
+    let total_events: u64 = snaps.iter().map(|s| s.events).sum();
+    let total_lookups: u64 = snaps.iter().map(|s| s.lookups).sum();
+    let total_missed: u64 = snaps.iter().map(|s| s.missed).sum();
+    let total_chain_missed: u64 = snaps.iter().map(|s| s.chain_missed).sum();
+    let total_evictions: u64 = snaps.iter().map(|s| s.evictions).sum();
+
+    let max_per_node = 7 * MAX_MAP_ENTRIES;
+    let mut fill_pcts: Vec<f64> = snaps
+        .iter()
+        .map(|s| s.map_entries as f64 / max_per_node as f64 * 100.0)
+        .collect();
+    fill_pcts.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+
+    let p50 = fill_pcts[fill_pcts.len() / 2];
+    let p95_idx = ((fill_pcts.len() as f64 * 0.95) as usize).min(fill_pcts.len() - 1);
+    let p95 = fill_pcts[p95_idx];
+
+    // Find the node with highest fill
+    let max_snap = snaps.iter().max_by_key(|s| s.map_entries).unwrap();
+    let max_fill = max_snap.map_entries as f64 / max_per_node as f64 * 100.0;
+
+    let miss_pct = if total_lookups > 0 {
+        total_missed as f64 / total_lookups as f64 * 100.0
+    } else {
+        0.0
+    };
+
+    let events_per_sec = total_events as f64 / interval_secs;
+
+    debug!(
+        nodes = snaps.len(),
+        "enricher: {:.0} events/s, lookups={} (missed={:.1}%), chain_missed={}, evictions={}, \
+         map_fill: p50={:.1}% p95={:.1}% max={:.1}% (node={})",
+        events_per_sec,
+        total_lookups,
+        miss_pct,
+        total_chain_missed,
+        total_evictions,
+        p50,
+        p95,
+        max_fill,
+        max_snap.node_id,
+    );
+
+    // Phase 3 — reset counters
+    for mut entry in map.iter_mut() {
+        entry.value_mut().reset_counters();
     }
 }
 

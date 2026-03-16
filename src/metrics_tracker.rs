@@ -133,6 +133,10 @@ pub(crate) struct TrackerState {
     // Timers
     last_cleanup: Instant,
     last_snapshot: Instant,
+
+    // Diagnostics
+    events_processed: u64,
+    last_stats_log: Instant,
 }
 
 impl TrackerState {
@@ -146,6 +150,8 @@ impl TrackerState {
             core_stats: HashMap::new(),
             last_cleanup: Instant::now(),
             last_snapshot: Instant::now(),
+            events_processed: 0,
+            last_stats_log: Instant::now(),
         }
     }
 
@@ -444,6 +450,23 @@ impl TrackerState {
         *self.shared.core_processing.write() = snapshots;
     }
 
+    fn maybe_log_stats(&mut self) {
+        let elapsed = self.last_stats_log.elapsed();
+        if elapsed.as_secs() < 10 {
+            return;
+        }
+        let secs = elapsed.as_secs_f64();
+        debug!(
+            "metrics_tracker: {:.0} events/s, wp_entries={}, prop_samples={}, core_stats={}",
+            self.events_processed as f64 / secs,
+            self.wp_entries.len(),
+            self.propagation_samples.len(),
+            self.core_stats.len(),
+        );
+        self.events_processed = 0;
+        self.last_stats_log = Instant::now();
+    }
+
     fn maybe_cleanup(&mut self) {
         if self.last_cleanup.elapsed().as_secs() < 30 {
             return;
@@ -538,6 +561,7 @@ pub async fn run(shared: Arc<MetricsTracker>, mut rx: mpsc::Receiver<MetricsEven
                 // Update LiveCounters for every event (cheap atomics)
                 live_counters.record(now_secs(), event.event_type, extract_slot(&event.event));
                 // Process filtered events for block propagation / WP pipeline
+                state.events_processed += 1;
                 state.process_event(event);
 
                 // Drain remaining buffered events
@@ -547,9 +571,11 @@ pub async fn run(shared: Arc<MetricsTracker>, mut rx: mpsc::Receiver<MetricsEven
                         event.event_type,
                         extract_slot(&event.event),
                     );
+                    state.events_processed += 1;
                     state.process_event(event);
                 }
                 state.maybe_rebuild_snapshots();
+                state.maybe_log_stats();
                 state.maybe_cleanup();
             }
             None => {

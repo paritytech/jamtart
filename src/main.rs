@@ -255,8 +255,12 @@ async fn main() -> anyhow::Result<()> {
                     std::time::Duration::from_secs(60),
                 ).await;
                 tart_backend::wp_tracker::flush_wp_tracker(&wp_tracker, &pool).await;
-                // Sweep stale enrichers every 30 ticks (~2.5 min)
                 tick_count += 1;
+                // Log enricher diagnostics every 2 ticks (10s)
+                if tick_count % 2 == 0 {
+                    tart_backend::enricher::log_enricher_diagnostics(&enricher_map, 10.0);
+                }
+                // Sweep stale enrichers every 30 ticks (~2.5 min)
                 if tick_count % 30 == 0 {
                     enricher_map.retain(|_, e| !e.is_stale());
                 }
@@ -286,21 +290,45 @@ async fn main() -> anyhow::Result<()> {
         info!("Health monitoring system initialized with 5 critical component checks");
 
         // Initialize JAM RPC client if configured
+        // JAM_RPC_URL supports comma-separated URLs for redundancy
         let jam_rpc = match std::env::var("JAM_RPC_URL") {
-            Ok(rpc_url) => {
-                info!("Connecting to JAM node RPC at {}", rpc_url);
-                let mut client = JamRpcClient::new(&rpc_url);
-                match client.connect().await {
-                    Ok(()) => {
-                        let client = Arc::new(client);
-                        let _subscription_handle = client.clone().start_stats_subscription();
-                        info!("JAM RPC client connected and subscribed to statistics");
-                        Some(client)
-                    }
-                    Err(e) => {
-                        error!("Failed to connect to JAM RPC at {}: {}", rpc_url, e);
-                        info!("JAM RPC endpoints will be unavailable");
-                        None
+            Ok(rpc_url_str) => {
+                let urls: Vec<String> = rpc_url_str
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+
+                if urls.is_empty() {
+                    info!("JAM_RPC_URL is empty - JAM RPC endpoints will be unavailable");
+                    None
+                } else {
+                    // Always spawn on-chain stats ingestion — it has its own reconnect loop
+                    let _onchain_handles = tart_backend::onchain_stats::spawn_onchain_ingestion(
+                        urls.clone(),
+                        store.pool().clone(),
+                        6, // default slot period, will be validated on connect
+                    );
+                    info!(
+                        "On-chain stats ingestion spawned for {} URL(s)",
+                        urls.len()
+                    );
+
+                    // Connect first URL for the existing JamRpcClient (used by /api/jam endpoints)
+                    info!("Connecting to JAM node RPC at {} ({} URL(s))", urls[0], urls.len());
+                    let mut client = JamRpcClient::new(&urls[0]);
+                    match client.connect().await {
+                        Ok(()) => {
+                            let client = Arc::new(client);
+                            let _subscription_handle = client.clone().start_stats_subscription();
+                            info!("JAM RPC client connected and subscribed to statistics");
+                            Some(client)
+                        }
+                        Err(e) => {
+                            error!("Failed to connect to JAM RPC at {}: {}", urls[0], e);
+                            info!("JAM RPC endpoints will be unavailable (on-chain ingestion will keep retrying)");
+                            None
+                        }
                     }
                 }
             }
