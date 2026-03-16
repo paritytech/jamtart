@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "[JIP-3] Service-level analytics \u2014 work packages, gas usage, and activity per service",
+  "description": "[JIP-3] Service-level analytics — work packages, gas usage, and activity per service",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -71,7 +71,7 @@
         "y": 1
       },
       "id": 3,
-      "description": "[JIP-3] Per-service breakdown: work packages, refinements, authorizations, executions, and gas usage for each stage \u2014 one row per service. (From service_stats_1m)",
+      "description": "[JIP-3] Per-service breakdown: work packages, refinements, authorizations, executions, and gas usage for each stage — one row per service. (From service_stats_1m)",
       "options": {
         "cellHeight": "sm",
         "footer": {
@@ -203,7 +203,8 @@
             "axisColorMode": "text",
             "axisLabel": "Work Packages",
             "axisPlacement": "auto",
-            "drawStyle": "bars", "fillOpacity": 80,
+            "drawStyle": "bars",
+            "fillOpacity": 80,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
@@ -238,7 +239,7 @@
         "y": 12
       },
       "id": 5,
-      "description": "[JIP-3] Total work packages per service as a bar chart \u2014 shows relative activity across services in the time range.",
+      "description": "[JIP-3] Total work packages per service as a bar chart — shows relative activity across services in the time range.",
       "options": {
         "barRadius": 0,
         "barWidth": 0.8,
@@ -313,7 +314,8 @@
             "axisColorMode": "text",
             "axisLabel": "Gas",
             "axisPlacement": "auto",
-            "drawStyle": "bars", "fillOpacity": 80,
+            "drawStyle": "bars",
+            "fillOpacity": 80,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
@@ -471,7 +473,8 @@
             "axisColorMode": "text",
             "axisLabel": "Work Packages",
             "axisPlacement": "auto",
-            "drawStyle": "bars", "fillOpacity": 80,
+            "drawStyle": "bars",
+            "fillOpacity": 80,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
@@ -506,7 +509,7 @@
         "y": 21
       },
       "id": 8,
-      "description": "[JIP-3] Work package counts per service over time \u2014 each line is one service's WP throughput per interval. Use to spot activity spikes or dropoffs. (1-minute buckets from service_stats_1m)",
+      "description": "[JIP-3] Work package counts per service over time — each line is one service's WP throughput per interval. Use to spot activity spikes or dropoffs. (1-minute buckets from service_stats_1m)",
       "options": {
         "legend": {
           "calcs": [
@@ -571,7 +574,8 @@
             }
           }
         }
-      ]
+      ],
+      "maxDataPoints": 300
     },
     {
       "datasource": {
@@ -589,7 +593,8 @@
             "axisColorMode": "text",
             "axisLabel": "Gas",
             "axisPlacement": "auto",
-            "drawStyle": "bars", "fillOpacity": 80,
+            "drawStyle": "bars",
+            "fillOpacity": 80,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
@@ -670,7 +675,7 @@
         "y": 21
       },
       "id": 9,
-      "description": "[JIP-3] Gas consumption per service over time \u2014 shows how computational load varies across services. Each line is one service's total gas per interval. (1-minute buckets from service_stats_1m)",
+      "description": "[JIP-3] Gas consumption per service over time — shows how computational load varies across services. Each line is one service's total gas per interval. (1-minute buckets from service_stats_1m)",
       "options": {
         "legend": {
           "calcs": [
@@ -745,7 +750,8 @@
             }
           }
         }
-      ]
+      ],
+      "maxDataPoints": 300
     },
     {
       "id": 10,
@@ -762,7 +768,7 @@
     },
     {
       "id": 11,
-      "description": "[JIP-3] Raw WorkPackageFailed (92) and WorkPackageSharingFailed (99) events \u2014 most recent 500. Shows timestamp, node, core, and failure details for debugging.",
+      "description": "[JIP-3] Raw WorkPackageFailed (92) and WorkPackageSharingFailed (99) events — most recent 500. Shows timestamp, node, core, and failure details for debugging.",
       "type": "table",
       "title": "Work Package Failure Reasons",
       "gridPos": {
@@ -859,7 +865,7 @@
     },
     {
       "id": 12,
-      "description": "[JIP-3] Distribution of failure reasons across WorkPackageFailed and WorkPackageSharingFailed events \u2014 identifies the most common failure modes.",
+      "description": "[JIP-3] Distribution of failure reasons across WorkPackageFailed and WorkPackageSharingFailed events — identifies the most common failure modes.",
       "type": "bargauge",
       "title": "Failure Reason Distribution",
       "gridPos": {
@@ -880,7 +886,10 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null }
+              {
+                "color": "red",
+                "value": null
+              }
             ]
           }
         },

@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "[JIP-3] Per-node deep dive \u2014 status, events, timeline, and health",
+  "description": "[JIP-3] Per-node deep dive — status, events, timeline, and health",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -180,7 +180,9 @@
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true,
-          "calcs": ["sum"]
+          "calcs": [
+            "sum"
+          ]
         },
         "tooltip": {
           "mode": "multi",
@@ -190,96 +192,257 @@
       "targets": [
         {
           "columns": [
-            { "selector": "ts", "text": "Time", "type": "timestamp" },
-            { "selector": "count", "text": "Blocks", "type": "number" }
+            {
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "count",
+              "text": "Blocks",
+              "type": "number"
+            }
           ],
-          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-          "format": "timeseries", "parser": "backend", "root_selector": "", "source": "url", "type": "json",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "format": "timeseries",
+          "parser": "backend",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
           "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&event_types=blocks&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
-          "url_options": { "method": "GET", "data": "", "headers": [], "params": [] },
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          },
           "refId": "A"
         },
         {
           "columns": [
-            { "selector": "ts", "text": "Time", "type": "timestamp" },
-            { "selector": "count", "text": "WP Pipeline", "type": "number" }
+            {
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "count",
+              "text": "WP Pipeline",
+              "type": "number"
+            }
           ],
-          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-          "format": "timeseries", "parser": "backend", "root_selector": "", "source": "url", "type": "json",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "format": "timeseries",
+          "parser": "backend",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
           "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&event_types=wp_pipeline&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
-          "url_options": { "method": "GET", "data": "", "headers": [], "params": [] },
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          },
           "refId": "B"
         },
         {
           "columns": [
-            { "selector": "ts", "text": "Time", "type": "timestamp" },
-            { "selector": "count", "text": "Guarantees", "type": "number" }
+            {
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "count",
+              "text": "Guarantees",
+              "type": "number"
+            }
           ],
-          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-          "format": "timeseries", "parser": "backend", "root_selector": "", "source": "url", "type": "json",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "format": "timeseries",
+          "parser": "backend",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
           "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&event_types=guarantee_receiving&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
-          "url_options": { "method": "GET", "data": "", "headers": [], "params": [] },
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          },
           "refId": "C"
         },
         {
           "columns": [
-            { "selector": "ts", "text": "Time", "type": "timestamp" },
-            { "selector": "count", "text": "Block Distribution", "type": "number" }
+            {
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "count",
+              "text": "Block Distribution",
+              "type": "number"
+            }
           ],
-          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-          "format": "timeseries", "parser": "backend", "root_selector": "", "source": "url", "type": "json",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "format": "timeseries",
+          "parser": "backend",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
           "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&event_types=block_distribution&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
-          "url_options": { "method": "GET", "data": "", "headers": [], "params": [] },
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          },
           "refId": "D"
         },
         {
           "columns": [
-            { "selector": "ts", "text": "Time", "type": "timestamp" },
-            { "selector": "count", "text": "Connections", "type": "number" }
+            {
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "count",
+              "text": "Connections",
+              "type": "number"
+            }
           ],
-          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-          "format": "timeseries", "parser": "backend", "root_selector": "", "source": "url", "type": "json",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "format": "timeseries",
+          "parser": "backend",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
           "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&event_types=connections&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
-          "url_options": { "method": "GET", "data": "", "headers": [], "params": [] },
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          },
           "refId": "E"
         },
         {
           "columns": [
-            { "selector": "ts", "text": "Time", "type": "timestamp" },
-            { "selector": "count", "text": "Tickets", "type": "number" }
+            {
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "count",
+              "text": "Tickets",
+              "type": "number"
+            }
           ],
-          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-          "format": "timeseries", "parser": "backend", "root_selector": "", "source": "url", "type": "json",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "format": "timeseries",
+          "parser": "backend",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
           "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&event_types=tickets&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
-          "url_options": { "method": "GET", "data": "", "headers": [], "params": [] },
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          },
           "refId": "F"
         },
         {
           "columns": [
-            { "selector": "ts", "text": "Time", "type": "timestamp" },
-            { "selector": "count", "text": "Shards", "type": "number" }
+            {
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "count",
+              "text": "Shards",
+              "type": "number"
+            }
           ],
-          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-          "format": "timeseries", "parser": "backend", "root_selector": "", "source": "url", "type": "json",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "format": "timeseries",
+          "parser": "backend",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
           "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&event_types=shards&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
-          "url_options": { "method": "GET", "data": "", "headers": [], "params": [] },
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          },
           "refId": "G"
         },
         {
           "columns": [
-            { "selector": "ts", "text": "Time", "type": "timestamp" },
-            { "selector": "count", "text": "Failures", "type": "number" }
+            {
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "count",
+              "text": "Failures",
+              "type": "number"
+            }
           ],
-          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-          "format": "timeseries", "parser": "backend", "root_selector": "", "source": "url", "type": "json",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "format": "timeseries",
+          "parser": "backend",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
           "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&event_types=failures&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
-          "url_options": { "method": "GET", "data": "", "headers": [], "params": [] },
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          },
           "refId": "H"
         }
       ],
       "title": "Events by Category",
       "description": "Event throughput for this node broken down by category: blocks, WP pipeline, guarantees, block distribution, connections, tickets, shards, failures. Each series sums all event types within that category. Stacked to show total volume. (1-minute buckets from event_stats_1m)",
-      "type": "timeseries"
+      "type": "timeseries",
+      "maxDataPoints": 300
     },
     {
       "collapsed": false,
@@ -1381,7 +1544,7 @@
         }
       ],
       "title": "Events by Type",
-      "description": "Network-wide event counts per event type \u2014 not filtered to this node. Each line is a distinct telemetry event type. Useful for comparing this node's activity against the network baseline. (1-minute buckets)",
+      "description": "Network-wide event counts per event type — not filtered to this node. Each line is a distinct telemetry event type. Useful for comparing this node's activity against the network baseline. (1-minute buckets)",
       "type": "timeseries",
       "transformations": [
         {
@@ -1396,7 +1559,8 @@
             }
           }
         }
-      ]
+      ],
+      "maxDataPoints": 300
     },
     {
       "datasource": {
@@ -1529,7 +1693,8 @@
             }
           }
         }
-      ]
+      ],
+      "maxDataPoints": 300
     },
     {
       "collapsed": false,
@@ -1758,8 +1923,9 @@
         }
       ],
       "title": "Ticket Activity",
-      "description": "Ticket lifecycle events for this node: GeneratingTickets, TicketGenerationFailed, TicketsGenerated, TicketTransferFailed, TicketTransferred. (Event IDs 80\u201384, 1-minute buckets)",
-      "type": "timeseries"
+      "description": "Ticket lifecycle events for this node: GeneratingTickets, TicketGenerationFailed, TicketsGenerated, TicketTransferFailed, TicketTransferred. (Event IDs 80–84, 1-minute buckets)",
+      "type": "timeseries",
+      "maxDataPoints": 300
     },
     {
       "collapsed": false,
@@ -1903,7 +2069,8 @@
           }
         }
       ],
-      "type": "timeseries"
+      "type": "timeseries",
+      "maxDataPoints": 300
     },
     {
       "datasource": {
@@ -2035,7 +2202,8 @@
           }
         }
       ],
-      "type": "timeseries"
+      "type": "timeseries",
+      "maxDataPoints": 300
     }
   ],
   "schemaVersion": 39,
@@ -2083,7 +2251,7 @@
         "options": [],
         "includeAll": false,
         "multi": false,
-        "description": "Select a node ID \u2014 dynamically loaded from the API."
+        "description": "Select a node ID — dynamically loaded from the API."
       }
     ]
   },

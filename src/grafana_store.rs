@@ -28,6 +28,11 @@ const VALID_TABLES: &[&str] = &[
 /// Convert a human-friendly interval string to seconds for table selection.
 fn interval_to_seconds(interval: &str) -> Option<i64> {
     let s = interval.trim();
+    // Must check "ms" before "s" since "s" is a suffix of "ms"
+    if let Some(n) = s.strip_suffix("ms") {
+        let ms = n.parse::<i64>().ok()?;
+        return Some(if ms < 1000 { 1 } else { ms / 1000 });
+    }
     if let Some(n) = s.strip_suffix('s') {
         return n.parse::<i64>().ok();
     }
@@ -1139,5 +1144,14 @@ mod tests {
         assert_eq!(snap_interval("1m"), "1m");
         assert_eq!(snap_interval("2m"), "2m");
         assert_eq!(snap_interval("5m"), "5m");
+    }
+
+    #[test]
+    fn snap_milliseconds() {
+        assert_eq!(snap_interval("100ms"), "6s");
+        assert_eq!(snap_interval("500ms"), "6s");
+        assert_eq!(snap_interval("1000ms"), "6s");
+        assert_eq!(snap_interval("5000ms"), "6s");
+        assert_eq!(snap_interval("10000ms"), "12s");
     }
 }

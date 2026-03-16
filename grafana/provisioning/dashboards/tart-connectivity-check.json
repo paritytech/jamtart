@@ -431,7 +431,8 @@
         }
       ],
       "title": "Dropped Events",
-      "type": "timeseries"
+      "type": "timeseries",
+      "maxDataPoints": 300
     }
   ],
   "schemaVersion": 39,

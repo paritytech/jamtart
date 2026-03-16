@@ -3,7 +3,10 @@
     "list": [
       {
         "builtIn": 1,
-        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
         "enable": true,
         "hide": true,
         "iconColor": "rgba(0, 211, 255, 1)",
@@ -21,45 +24,125 @@
   "panels": [
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
       "id": 1,
       "title": "Service Overview",
       "type": "row"
     },
     {
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
       "description": "[On-Chain] Per-service on-chain activity — refinement/accumulation counts and gas, preimages, imports/exports. Service IDs in 0x hex format.",
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "fixed" },
-          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "inspect": false },
+          "color": {
+            "mode": "fixed"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": []
       },
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 1 },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
       "id": 3,
       "options": {
         "cellHeight": "sm",
-        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
         "showHeader": true,
-        "sortBy": [{ "desc": true, "displayName": "Refinement Gas" }]
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Refinement Gas"
+          }
+        ]
       },
       "targets": [
         {
           "columns": [
-            { "selector": "service_id", "text": "Service ID", "type": "string" },
-            { "selector": "refinement_gas", "text": "Refinement Gas", "type": "number" },
-            { "selector": "refinement_count", "text": "Refinements", "type": "number" },
-            { "selector": "accumulate_gas", "text": "Accumulation Gas", "type": "number" },
-            { "selector": "accumulate_count", "text": "Accumulations", "type": "number" },
-            { "selector": "provided_count", "text": "Preimages", "type": "number" },
-            { "selector": "imports", "text": "Imports", "type": "number" },
-            { "selector": "exports", "text": "Exports", "type": "number" },
-            { "selector": "extrinsic_count", "text": "Extrinsics", "type": "number" }
+            {
+              "selector": "service_id",
+              "text": "Service ID",
+              "type": "string"
+            },
+            {
+              "selector": "refinement_gas",
+              "text": "Refinement Gas",
+              "type": "number"
+            },
+            {
+              "selector": "refinement_count",
+              "text": "Refinements",
+              "type": "number"
+            },
+            {
+              "selector": "accumulate_gas",
+              "text": "Accumulation Gas",
+              "type": "number"
+            },
+            {
+              "selector": "accumulate_count",
+              "text": "Accumulations",
+              "type": "number"
+            },
+            {
+              "selector": "provided_count",
+              "text": "Preimages",
+              "type": "number"
+            },
+            {
+              "selector": "imports",
+              "text": "Imports",
+              "type": "number"
+            },
+            {
+              "selector": "exports",
+              "text": "Exports",
+              "type": "number"
+            },
+            {
+              "selector": "extrinsic_count",
+              "text": "Extrinsics",
+              "type": "number"
+            }
           ],
-          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
           "filters": [],
           "format": "table",
           "global_query_id": "",
@@ -69,7 +152,12 @@
           "source": "url",
           "type": "json",
           "url": "http://tart-backend:8080/api/grafana/onchain/services?start=${__from:date:iso}&end=${__to:date:iso}",
-          "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          }
         }
       ],
       "title": "Service Activity List",
@@ -94,55 +182,131 @@
       ]
     },
     {
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
       "description": "[On-Chain] Total gas consumed per service split by stage: refinement and accumulation gas. Compare computational cost across services over the selected time range.",
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
-            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
-            "axisLabel": "Gas", "axisPlacement": "auto",
-            "fillOpacity": 80, "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "lineWidth": 1, "scaleDistribution": { "type": "linear" },
-            "thresholdsStyle": { "mode": "off" }
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Gas",
+            "axisPlacement": "auto",
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 1,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "Refinement Gas" },
-            "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }]
+            "matcher": {
+              "id": "byName",
+              "options": "Refinement Gas"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              }
+            ]
           },
           {
-            "matcher": { "id": "byName", "options": "Accumulation Gas" },
-            "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
+            "matcher": {
+              "id": "byName",
+              "options": "Accumulation Gas"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
           }
         ]
       },
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 11 },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 11
+      },
       "id": 15,
       "options": {
         "barRadius": 0,
         "barWidth": 0.8,
         "fullHighlight": false,
         "groupWidth": 0.7,
-        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
         "orientation": "horizontal",
         "showValue": "auto",
         "stacking": "normal",
-        "tooltip": { "mode": "single", "sort": "none" },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        },
         "xTickLabelRotation": 0
       },
       "targets": [
         {
           "columns": [
-            { "selector": "service_id", "text": "Service ID", "type": "string" },
-            { "selector": "refinement_gas", "text": "Refinement Gas", "type": "number" },
-            { "selector": "accumulate_gas", "text": "Accumulation Gas", "type": "number" }
+            {
+              "selector": "service_id",
+              "text": "Service ID",
+              "type": "string"
+            },
+            {
+              "selector": "refinement_gas",
+              "text": "Refinement Gas",
+              "type": "number"
+            },
+            {
+              "selector": "accumulate_gas",
+              "text": "Accumulation Gas",
+              "type": "number"
+            }
           ],
-          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
           "filters": [],
           "format": "table",
           "parser": "backend",
@@ -150,7 +314,9 @@
           "source": "url",
           "type": "json",
           "url": "http://tart-backend:8080/api/grafana/onchain/services?start=${__from:date:iso}&end=${__to:date:iso}",
-          "url_options": { "method": "GET" }
+          "url_options": {
+            "method": "GET"
+          }
         }
       ],
       "title": "Gas Usage by Service",
@@ -158,357 +324,892 @@
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 21 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 21
+      },
       "id": 12,
       "title": "Total Gas (All Services)",
       "type": "row"
     },
     {
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
       "description": "[On-Chain] Total refinement gas across all services over time — stacked by service. Independent of service variable selection.",
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
-            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
-            "axisLabel": "Gas", "axisPlacement": "auto",
-            "drawStyle": "bars", "fillOpacity": 80, "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "lineWidth": 1, "scaleDistribution": { "type": "linear" },
-            "stacking": { "group": "A", "mode": "normal" },
-            "thresholdsStyle": { "mode": "off" }
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Gas",
+            "axisPlacement": "auto",
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 1,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 22
+      },
       "id": 13,
       "options": {
-        "legend": { "calcs": ["sum"], "displayMode": "list", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "all", "sort": "desc" }
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "all",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
           "columns": [
-            { "selector": "ts", "text": "Time", "type": "timestamp" },
-            { "selector": "service_id", "text": "Service", "type": "string" },
-            { "selector": "refinement_gas", "text": "Refinement Gas", "type": "number" }
+            {
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "service_id",
+              "text": "Service",
+              "type": "string"
+            },
+            {
+              "selector": "refinement_gas",
+              "text": "Refinement Gas",
+              "type": "number"
+            }
           ],
-          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
           "format": "table",
           "parser": "backend",
           "refId": "A",
           "source": "url",
           "type": "json",
           "url": "http://tart-backend:8080/api/grafana/onchain/services/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}",
-          "url_options": { "method": "GET" }
+          "url_options": {
+            "method": "GET"
+          }
         }
       ],
       "title": "Total Refinement Gas (All Services)",
       "type": "timeseries",
       "transformations": [
-        { "id": "partitionByValues", "options": { "fields": ["Service"], "keepFields": false, "naming": { "asLabels": true } } }
-      ]
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "Service"
+            ],
+            "keepFields": false,
+            "naming": {
+              "asLabels": true
+            }
+          }
+        }
+      ],
+      "maxDataPoints": 300
     },
     {
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
       "description": "[On-Chain] Total accumulation gas across all services over time — stacked by service. Independent of service variable selection.",
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
-            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
-            "axisLabel": "Gas", "axisPlacement": "auto",
-            "drawStyle": "bars", "fillOpacity": 80, "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "lineWidth": 1, "scaleDistribution": { "type": "linear" },
-            "stacking": { "group": "A", "mode": "normal" },
-            "thresholdsStyle": { "mode": "off" }
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Gas",
+            "axisPlacement": "auto",
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 1,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 22 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 22
+      },
       "id": 14,
       "options": {
-        "legend": { "calcs": ["sum"], "displayMode": "list", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "all", "sort": "desc" }
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "all",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
           "columns": [
-            { "selector": "ts", "text": "Time", "type": "timestamp" },
-            { "selector": "service_id", "text": "Service", "type": "string" },
-            { "selector": "accumulate_gas", "text": "Accumulation Gas", "type": "number" }
+            {
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "service_id",
+              "text": "Service",
+              "type": "string"
+            },
+            {
+              "selector": "accumulate_gas",
+              "text": "Accumulation Gas",
+              "type": "number"
+            }
           ],
-          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
           "format": "table",
           "parser": "backend",
           "refId": "A",
           "source": "url",
           "type": "json",
           "url": "http://tart-backend:8080/api/grafana/onchain/services/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}",
-          "url_options": { "method": "GET" }
+          "url_options": {
+            "method": "GET"
+          }
         }
       ],
       "title": "Total Accumulation Gas (All Services)",
       "type": "timeseries",
       "transformations": [
-        { "id": "partitionByValues", "options": { "fields": ["Service"], "keepFields": false, "naming": { "asLabels": true } } }
-      ]
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "Service"
+            ],
+            "keepFields": false,
+            "naming": {
+              "asLabels": true
+            }
+          }
+        }
+      ],
+      "maxDataPoints": 300
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 30
+      },
       "id": 4,
       "title": "Gas over Time — Service ${service}",
       "type": "row"
     },
     {
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
       "description": "[On-Chain] Refinement gas consumed per service over time — shows which services use the most refinement gas.",
       "fieldConfig": {
         "defaults": {
-          "color": { "fixedColor": "orange", "mode": "fixed" },
+          "color": {
+            "fixedColor": "orange",
+            "mode": "fixed"
+          },
           "custom": {
-            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
-            "axisLabel": "Gas", "axisPlacement": "auto",
-            "drawStyle": "bars", "fillOpacity": 80, "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "lineWidth": 2, "scaleDistribution": { "type": "linear" },
-            "thresholdsStyle": { "mode": "off" }
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Gas",
+            "axisPlacement": "auto",
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 2,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 31 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 31
+      },
       "id": 5,
       "options": {
-        "legend": { "calcs": ["sum"], "displayMode": "list", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "all", "sort": "desc" }
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "all",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
           "columns": [
-            { "selector": "ts", "text": "Time", "type": "timestamp" },
-            { "selector": "service_id", "text": "Service", "type": "string" },
-            { "selector": "refinement_gas", "text": "Refinement Gas", "type": "number" }
+            {
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "service_id",
+              "text": "Service",
+              "type": "string"
+            },
+            {
+              "selector": "refinement_gas",
+              "text": "Refinement Gas",
+              "type": "number"
+            }
           ],
-          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
           "format": "table",
           "parser": "backend",
           "refId": "A",
           "source": "url",
           "type": "json",
           "url": "http://tart-backend:8080/api/grafana/onchain/services/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&service=${service}",
-          "url_options": { "method": "GET" }
+          "url_options": {
+            "method": "GET"
+          }
         }
       ],
       "title": "Refinement Gas over Time",
       "type": "timeseries",
       "transformations": [
-        { "id": "partitionByValues", "options": { "fields": ["Service"], "keepFields": false, "naming": { "asLabels": true } } }
-      ]
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "Service"
+            ],
+            "keepFields": false,
+            "naming": {
+              "asLabels": true
+            }
+          }
+        }
+      ],
+      "maxDataPoints": 300
     },
     {
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
       "description": "[On-Chain] Accumulation gas consumed per service over time.",
       "fieldConfig": {
         "defaults": {
-          "color": { "fixedColor": "green", "mode": "fixed" },
+          "color": {
+            "fixedColor": "green",
+            "mode": "fixed"
+          },
           "custom": {
-            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
-            "axisLabel": "Gas", "axisPlacement": "auto",
-            "drawStyle": "bars", "fillOpacity": 80, "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "lineWidth": 2, "scaleDistribution": { "type": "linear" },
-            "thresholdsStyle": { "mode": "off" }
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Gas",
+            "axisPlacement": "auto",
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 2,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 31 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 31
+      },
       "id": 6,
       "options": {
-        "legend": { "calcs": ["sum"], "displayMode": "list", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "all", "sort": "desc" }
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "all",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
           "columns": [
-            { "selector": "ts", "text": "Time", "type": "timestamp" },
-            { "selector": "service_id", "text": "Service", "type": "string" },
-            { "selector": "accumulate_gas", "text": "Accumulation Gas", "type": "number" }
+            {
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "service_id",
+              "text": "Service",
+              "type": "string"
+            },
+            {
+              "selector": "accumulate_gas",
+              "text": "Accumulation Gas",
+              "type": "number"
+            }
           ],
-          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
           "format": "table",
           "parser": "backend",
           "refId": "A",
           "source": "url",
           "type": "json",
           "url": "http://tart-backend:8080/api/grafana/onchain/services/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&service=${service}",
-          "url_options": { "method": "GET" }
+          "url_options": {
+            "method": "GET"
+          }
         }
       ],
       "title": "Accumulation Gas over Time",
       "type": "timeseries",
       "transformations": [
-        { "id": "partitionByValues", "options": { "fields": ["Service"], "keepFields": false, "naming": { "asLabels": true } } }
-      ]
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "Service"
+            ],
+            "keepFields": false,
+            "naming": {
+              "asLabels": true
+            }
+          }
+        }
+      ],
+      "maxDataPoints": 300
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 39 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 39
+      },
       "id": 7,
       "title": "Activity over Time — Service ${service}",
       "type": "row"
     },
     {
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
       "description": "[On-Chain] Refinement count per service over time — shows work-item processing throughput.",
       "fieldConfig": {
         "defaults": {
-          "color": { "fixedColor": "orange", "mode": "fixed" },
+          "color": {
+            "fixedColor": "orange",
+            "mode": "fixed"
+          },
           "custom": {
-            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
-            "axisLabel": "Count", "axisPlacement": "auto",
-            "drawStyle": "bars", "fillOpacity": 80, "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "lineWidth": 2, "scaleDistribution": { "type": "linear" },
-            "thresholdsStyle": { "mode": "off" }
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Count",
+            "axisPlacement": "auto",
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 2,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 40 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 40
+      },
       "id": 8,
       "options": {
-        "legend": { "calcs": ["sum"], "displayMode": "list", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "all", "sort": "desc" }
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "all",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
           "columns": [
-            { "selector": "ts", "text": "Time", "type": "timestamp" },
-            { "selector": "service_id", "text": "Service", "type": "string" },
-            { "selector": "refinement_count", "text": "Refinements", "type": "number" }
+            {
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "service_id",
+              "text": "Service",
+              "type": "string"
+            },
+            {
+              "selector": "refinement_count",
+              "text": "Refinements",
+              "type": "number"
+            }
           ],
-          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
           "format": "table",
           "parser": "backend",
           "refId": "A",
           "source": "url",
           "type": "json",
           "url": "http://tart-backend:8080/api/grafana/onchain/services/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&service=${service}",
-          "url_options": { "method": "GET" }
+          "url_options": {
+            "method": "GET"
+          }
         }
       ],
       "title": "Refinements over Time",
       "type": "timeseries",
       "transformations": [
-        { "id": "partitionByValues", "options": { "fields": ["Service"], "keepFields": false, "naming": { "asLabels": true } } }
-      ]
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "Service"
+            ],
+            "keepFields": false,
+            "naming": {
+              "asLabels": true
+            }
+          }
+        }
+      ],
+      "maxDataPoints": 300
     },
     {
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
       "description": "[On-Chain] Accumulation count per service over time.",
       "fieldConfig": {
         "defaults": {
-          "color": { "fixedColor": "green", "mode": "fixed" },
+          "color": {
+            "fixedColor": "green",
+            "mode": "fixed"
+          },
           "custom": {
-            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
-            "axisLabel": "Count", "axisPlacement": "auto",
-            "drawStyle": "bars", "fillOpacity": 80, "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "lineWidth": 2, "scaleDistribution": { "type": "linear" },
-            "thresholdsStyle": { "mode": "off" }
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Count",
+            "axisPlacement": "auto",
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 2,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 40 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 40
+      },
       "id": 9,
       "options": {
-        "legend": { "calcs": ["sum"], "displayMode": "list", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "all", "sort": "desc" }
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "all",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
           "columns": [
-            { "selector": "ts", "text": "Time", "type": "timestamp" },
-            { "selector": "service_id", "text": "Service", "type": "string" },
-            { "selector": "accumulate_count", "text": "Accumulations", "type": "number" }
+            {
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "service_id",
+              "text": "Service",
+              "type": "string"
+            },
+            {
+              "selector": "accumulate_count",
+              "text": "Accumulations",
+              "type": "number"
+            }
           ],
-          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
           "format": "table",
           "parser": "backend",
           "refId": "A",
           "source": "url",
           "type": "json",
           "url": "http://tart-backend:8080/api/grafana/onchain/services/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&service=${service}",
-          "url_options": { "method": "GET" }
+          "url_options": {
+            "method": "GET"
+          }
         }
       ],
       "title": "Accumulations over Time",
       "type": "timeseries",
       "transformations": [
-        { "id": "partitionByValues", "options": { "fields": ["Service"], "keepFields": false, "naming": { "asLabels": true } } }
-      ]
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "Service"
+            ],
+            "keepFields": false,
+            "naming": {
+              "asLabels": true
+            }
+          }
+        }
+      ],
+      "maxDataPoints": 300
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 48 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 48
+      },
       "id": 10,
       "title": "Service ${service} Detail",
       "type": "row"
     },
     {
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
       "description": "[On-Chain] Raw per-block on-chain stats for the selected service — no aggregation, most recent 1000 blocks.",
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "fixed" },
-          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "inspect": false },
+          "color": {
+            "mode": "fixed"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 49 },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 49
+      },
       "id": 11,
       "options": {
         "cellHeight": "sm",
-        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
         "showHeader": true,
-        "sortBy": [{ "desc": true, "displayName": "Time" }]
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Time"
+          }
+        ]
       },
       "targets": [
         {
           "columns": [
-            { "selector": "service_id", "text": "Service ID", "type": "string" },
-            { "selector": "slot", "text": "Slot", "type": "number" },
-            { "selector": "timestamp", "text": "Time", "type": "timestamp" },
-            { "selector": "refinement_count", "text": "Refinements", "type": "number" },
-            { "selector": "refinement_gas", "text": "Refinement Gas", "type": "number" },
-            { "selector": "accumulate_count", "text": "Accumulations", "type": "number" },
-            { "selector": "accumulate_gas", "text": "Accumulation Gas", "type": "number" },
-            { "selector": "provided_count", "text": "Preimages", "type": "number" },
-            { "selector": "imports", "text": "Imports", "type": "number" },
-            { "selector": "exports", "text": "Exports", "type": "number" }
+            {
+              "selector": "service_id",
+              "text": "Service ID",
+              "type": "string"
+            },
+            {
+              "selector": "slot",
+              "text": "Slot",
+              "type": "number"
+            },
+            {
+              "selector": "timestamp",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "refinement_count",
+              "text": "Refinements",
+              "type": "number"
+            },
+            {
+              "selector": "refinement_gas",
+              "text": "Refinement Gas",
+              "type": "number"
+            },
+            {
+              "selector": "accumulate_count",
+              "text": "Accumulations",
+              "type": "number"
+            },
+            {
+              "selector": "accumulate_gas",
+              "text": "Accumulation Gas",
+              "type": "number"
+            },
+            {
+              "selector": "provided_count",
+              "text": "Preimages",
+              "type": "number"
+            },
+            {
+              "selector": "imports",
+              "text": "Imports",
+              "type": "number"
+            },
+            {
+              "selector": "exports",
+              "text": "Exports",
+              "type": "number"
+            }
           ],
-          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
           "filters": [],
           "format": "table",
           "global_query_id": "",
@@ -518,7 +1219,12 @@
           "source": "url",
           "type": "json",
           "url": "http://tart-backend:8080/api/grafana/onchain/services/${service}?start=${__from:date:iso}&end=${__to:date:iso}",
-          "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          }
         }
       ],
       "title": "Service ${service} Block-by-Block",
@@ -545,7 +1251,11 @@
     }
   ],
   "schemaVersion": 39,
-  "tags": ["api", "onchain", "services"],
+  "tags": [
+    "api",
+    "onchain",
+    "services"
+  ],
   "templating": {
     "list": [
       {
@@ -553,7 +1263,10 @@
         "name": "service",
         "label": "Service",
         "type": "query",
-        "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+        "datasource": {
+          "type": "yesoreyeram-infinity-datasource",
+          "uid": "jamtart-api"
+        },
         "query": {
           "queryType": "infinity",
           "infinityQuery": {
@@ -562,9 +1275,17 @@
             "source": "url",
             "parser": "backend",
             "url": "http://tart-backend:8080/api/grafana/onchain/services?start=${__from:date:iso}&end=${__to:date:iso}",
-            "url_options": { "method": "GET" },
+            "url_options": {
+              "method": "GET"
+            },
             "root_selector": "",
-            "columns": [{ "selector": "service_id", "text": "service_id", "type": "string" }],
+            "columns": [
+              {
+                "selector": "service_id",
+                "text": "service_id",
+                "type": "string"
+              }
+            ],
             "format": "table"
           }
         },
@@ -576,7 +1297,10 @@
       }
     ]
   },
-  "time": { "from": "now-1h", "to": "now" },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
   "timepicker": {},
   "timezone": "utc",
   "title": "TART On-Chain Services",

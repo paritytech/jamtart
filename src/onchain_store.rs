@@ -37,6 +37,11 @@ fn interval_to_pg(interval: &str) -> String {
 /// Convert a human-friendly interval string to seconds.
 fn interval_to_seconds(interval: &str) -> Option<i64> {
     let s = interval.trim();
+    // Must check "ms" before "s" since "s" is a suffix of "ms"
+    if let Some(n) = s.strip_suffix("ms") {
+        let ms = n.parse::<i64>().ok()?;
+        return Some(if ms < 1000 { 1 } else { ms / 1000 });
+    }
     if let Some(n) = s.strip_suffix('s') {
         return n.parse::<i64>().ok();
     }

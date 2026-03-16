@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "[JIP-3] Core analysis \u2014 status, utilization, validators, and bottlenecks",
+  "description": "[JIP-3] Core analysis — status, utilization, validators, and bottlenecks",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -96,7 +96,7 @@
         "y": 1
       },
       "id": 3,
-      "description": "[JIP-3] Guarantee event counts per core over time \u2014 shows which cores are actively producing guarantees and relative load distribution. Each line is one core's count per interval. (From core_stats_1m)",
+      "description": "[JIP-3] Guarantee event counts per core over time — shows which cores are actively producing guarantees and relative load distribution. Each line is one core's count per interval. (From core_stats_1m)",
       "options": {
         "legend": {
           "calcs": [],
@@ -164,7 +164,8 @@
             }
           }
         }
-      ]
+      ],
+      "maxDataPoints": 300
     },
     {
       "datasource": {
@@ -296,7 +297,8 @@
             }
           }
         }
-      ]
+      ],
+      "maxDataPoints": 300
     },
     {
       "datasource": {
@@ -356,7 +358,7 @@
         "y": 7
       },
       "id": 5,
-      "description": "[JIP-3] Per-core summary: work packages received, guarantees produced, and failures \u2014 one row per core. Use to spot underperforming or overloaded cores at a glance.",
+      "description": "[JIP-3] Per-core summary: work packages received, guarantees produced, and failures — one row per core. Use to spot underperforming or overloaded cores at a glance.",
       "options": {
         "cellHeight": "sm",
         "footer": {
@@ -876,7 +878,8 @@
             }
           }
         }
-      ]
+      ],
+      "maxDataPoints": 300
     },
     {
       "datasource": {
@@ -939,7 +942,7 @@
         "y": 22
       },
       "id": 17,
-      "description": "[JIP-3] All event types on this core shown as stacked bars \u2014 total event volume composition over time. Each color band is one event type. (1-minute buckets)",
+      "description": "[JIP-3] All event types on this core shown as stacked bars — total event volume composition over time. Each color band is one event type. (1-minute buckets)",
       "options": {
         "legend": {
           "calcs": [],
@@ -1007,7 +1010,8 @@
             }
           }
         }
-      ]
+      ],
+      "maxDataPoints": 300
     },
     {
       "collapsed": false,
