@@ -221,23 +221,6 @@ fn strip_grafana_braces(s: &str) -> &str {
     s.strip_prefix('{').and_then(|s| s.strip_suffix('}')).unwrap_or(s)
 }
 
-/// Parse comma-separated service IDs (supports both decimal and 0x hex).
-/// Hex values are parsed as u32 then cast to i32 to match the DB representation
-/// (service IDs are u32 in JAM but stored as PostgreSQL INT which is signed).
-fn parse_service_ids(s: &str) -> Vec<i32> {
-    strip_grafana_braces(s)
-        .split(',')
-        .filter_map(|v| {
-            let v = v.trim();
-            if let Some(hex) = v.strip_prefix("0x") {
-                u32::from_str_radix(hex, 16).ok().map(|n| n as i32)
-            } else {
-                v.parse().ok()
-            }
-        })
-        .collect()
-}
-
 /// Parse comma-separated node names, stripping Grafana curly-brace wrapper.
 fn parse_node_list(s: &str) -> Vec<String> {
     strip_grafana_braces(s)
@@ -482,7 +465,7 @@ async fn services(
     Query(q): Query<ServiceQuery>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let services: Option<Vec<i32>> = q.service.map(|s| parse_service_ids(&s));
+    let services: Option<Vec<DbServiceId>> = q.service.map(|s| DbServiceId::parse_list(&s));
     state
         .store
         .grafana_services(q.start, q.end, services.as_deref())
@@ -514,7 +497,7 @@ async fn services_timeseries(
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let interval = q.interval.as_deref().unwrap_or("1m");
-    let services: Option<Vec<i32>> = q.service.map(|s| parse_service_ids(&s));
+    let services: Option<Vec<DbServiceId>> = q.service.map(|s| DbServiceId::parse_list(&s));
 
     state
         .store
@@ -786,6 +769,30 @@ pub struct OnchainTimeseriesQuery {
     pub interval: Option<String>,
 }
 
+/// Parameters for on-chain service queries (with optional service filter).
+#[derive(Deserialize, IntoParams)]
+pub struct OnchainServiceQuery {
+    /// Start of time range (ISO 8601)
+    pub start: DateTime<Utc>,
+    /// End of time range (ISO 8601)
+    pub end: DateTime<Utc>,
+    /// Comma-separated service IDs (decimal or 0x hex). Supports Grafana {a,b} syntax.
+    pub service: Option<String>,
+}
+
+/// Parameters for on-chain service timeseries queries (with optional service filter).
+#[derive(Deserialize, IntoParams)]
+pub struct OnchainServiceTimeseriesQuery {
+    /// Start of time range (ISO 8601)
+    pub start: DateTime<Utc>,
+    /// End of time range (ISO 8601)
+    pub end: DateTime<Utc>,
+    /// Bucket width. Allowed: 10s, 15s, 30s, 1m, 2m, 5m, 10m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d
+    pub interval: Option<String>,
+    /// Comma-separated service IDs (decimal or 0x hex). Supports Grafana {a,b} syntax.
+    pub service: Option<String>,
+}
+
 // ── On-chain cores ──────────────────────────────────────────────────────
 
 /// Per-core on-chain activity summary (all 341 cores).
@@ -888,7 +895,7 @@ async fn onchain_core_detail(
 #[utoipa::path(
     get,
     path = "/api/grafana/onchain/services",
-    params(OnchainTimeRangeQuery),
+    params(OnchainServiceQuery),
     responses(
         (status = 200, description = "Per-service on-chain activity summary. \
             Only services with non-zero activity are returned. \
@@ -899,12 +906,13 @@ async fn onchain_core_detail(
     tag = "onchain"
 )]
 async fn onchain_services_summary(
-    Query(q): Query<OnchainTimeRangeQuery>,
+    Query(q): Query<OnchainServiceQuery>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
+    let services: Option<Vec<DbServiceId>> = q.service.map(|s| DbServiceId::parse_list(&s));
     state
         .store
-        .onchain_services_summary(q.start, q.end)
+        .onchain_services_summary(q.start, q.end, services.as_deref())
         .await
         .map(Json)
         .map_err(|e| map_sqlx_error("onchain/services", e))
@@ -916,7 +924,7 @@ async fn onchain_services_summary(
 #[utoipa::path(
     get,
     path = "/api/grafana/onchain/services/timeseries",
-    params(OnchainTimeseriesQuery),
+    params(OnchainServiceTimeseriesQuery),
     responses(
         (status = 200, description = "Time-bucketed per-service on-chain stats.",
             body = [OnchainServiceTimeseries]),
@@ -926,13 +934,14 @@ async fn onchain_services_summary(
     tag = "onchain"
 )]
 async fn onchain_services_timeseries(
-    Query(q): Query<OnchainTimeseriesQuery>,
+    Query(q): Query<OnchainServiceTimeseriesQuery>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let interval = q.interval.as_deref().unwrap_or("1m");
+    let services: Option<Vec<DbServiceId>> = q.service.map(|s| DbServiceId::parse_list(&s));
     state
         .store
-        .onchain_services_timeseries(q.start, q.end, interval)
+        .onchain_services_timeseries(q.start, q.end, interval, services.as_deref())
         .await
         .map(Json)
         .map_err(|e| map_sqlx_error("onchain/services/timeseries", e))
@@ -963,7 +972,7 @@ async fn onchain_service_detail(
     Query(q): Query<OnchainTimeRangeQuery>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let ids = parse_service_ids(&service_id);
+    let ids = DbServiceId::parse_list(&service_id);
     let id = ids.first().copied().ok_or(StatusCode::BAD_REQUEST)?;
     state
         .store
@@ -1073,29 +1082,54 @@ mod tests {
 
     #[test]
     fn test_parse_service_ids_basic() {
-        assert_eq!(parse_service_ids("10,20"), vec![10, 20]);
+        assert_eq!(
+            DbServiceId::parse_list("10,20"),
+            vec![DbServiceId(10), DbServiceId(20)]
+        );
     }
 
     #[test]
     fn test_parse_service_ids_hex() {
-        assert_eq!(parse_service_ids("0xa,0x14"), vec![10, 20]);
+        assert_eq!(
+            DbServiceId::parse_list("0xa,0x14"),
+            vec![DbServiceId(10), DbServiceId(20)]
+        );
     }
 
     #[test]
     fn test_parse_service_ids_hex_overflow() {
         // 0xea9f727c = 3936318076 as u32, wraps to -358649220 as i32
-        let result = parse_service_ids("0xea9f727c");
-        assert_eq!(result, vec![0xea9f727c_u32 as i32]);
+        let result = DbServiceId::parse_list("0xea9f727c");
+        assert_eq!(result, vec![DbServiceId(0xea9f727c_u32 as i32)]);
     }
 
     #[test]
     fn test_parse_service_ids_curly_braces() {
-        assert_eq!(parse_service_ids("{0xa,0x14}"), vec![10, 20]);
+        assert_eq!(
+            DbServiceId::parse_list("{0xa,0x14}"),
+            vec![DbServiceId(10), DbServiceId(20)]
+        );
     }
 
     #[test]
     fn test_parse_service_ids_mixed() {
-        assert_eq!(parse_service_ids("10,0x14"), vec![10, 20]);
+        assert_eq!(
+            DbServiceId::parse_list("10,0x14"),
+            vec![DbServiceId(10), DbServiceId(20)]
+        );
+    }
+
+    #[test]
+    fn test_db_service_id_display() {
+        assert_eq!(DbServiceId(10).to_string(), "0x0000000a");
+        assert_eq!(DbServiceId(0xea9f727c_u32 as i32).to_string(), "0xea9f727c");
+    }
+
+    #[test]
+    fn test_db_service_id_serialize() {
+        let id = DbServiceId(255);
+        let json = serde_json::to_string(&id).unwrap();
+        assert_eq!(json, "\"0x000000ff\"");
     }
 
     #[test]

@@ -14,6 +14,8 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use utoipa::ToSchema;
 
+use crate::grafana_types::DbServiceId;
+
 // ── /api/grafana/onchain/cores ──────────────────────────────────────────
 
 /// Per-core on-chain activity summary over a time range.
@@ -109,8 +111,8 @@ pub struct OnchainCoreDetail {
 /// Gray Paper's `ServiceActivityRecord`. All values are SUMs.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct OnchainServiceSummary {
-    /// Service ID (hex-formatted, e.g. "0xea9f727c")
-    pub service_id: String,
+    /// Service ID (hex-formatted, e.g. "0x0000000a")
+    pub service_id: DbServiceId,
     /// Number of preimages provided to this service
     pub provided_count: i64,
     /// Total preimage bytes provided
@@ -141,8 +143,8 @@ pub struct OnchainServiceSummary {
 pub struct OnchainServiceTimeseries {
     /// Bucket start timestamp
     pub ts: DateTime<Utc>,
-    /// Service ID (hex-formatted, e.g. "0xea9f727c")
-    pub service_id: String,
+    /// Service ID (hex-formatted, e.g. "0x0000000a")
+    pub service_id: DbServiceId,
     /// Preimages provided in this bucket
     pub provided_count: i64,
     /// Preimage bytes provided in this bucket
@@ -175,8 +177,8 @@ pub struct OnchainServiceDetail {
     pub timestamp: DateTime<Utc>,
     /// Slot number
     pub slot: i32,
-    /// Service ID (hex-formatted, e.g. "0xea9f727c")
-    pub service_id: String,
+    /// Service ID (hex-formatted, e.g. "0x0000000a")
+    pub service_id: DbServiceId,
     /// Preimages provided
     pub provided_count: i16,
     /// Preimage bytes provided

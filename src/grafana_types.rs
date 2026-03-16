@@ -6,8 +6,92 @@
 //! SQL result maps directly to the struct fields.
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Serialize, Serializer};
+use std::fmt;
 use utoipa::ToSchema;
+
+// ── DbServiceId ─────────────────────────────────────────────────────────
+
+/// Service ID as stored in PostgreSQL (signed i32, bitwise equivalent to JAM's u32).
+///
+/// JAM uses u32 service IDs but PostgreSQL `INT` is signed, so we store them as i32.
+/// This type centralises the i32↔hex conversion:
+///   - Serializes to JSON as zero-padded hex: `"0x0000000a"`.
+///   - Parses from decimal (`"10"`) or hex (`"0xa"`) input.
+///   - Handles Grafana multi-select `{a,b}` wrapper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, sqlx::Type)]
+#[sqlx(transparent)]
+pub struct DbServiceId(pub i32);
+
+impl DbServiceId {
+    /// Parse a single service ID from decimal or `0x` hex.
+    pub fn parse(s: &str) -> Option<Self> {
+        let s = s.trim();
+        if let Some(hex) = s.strip_prefix("0x") {
+            u32::from_str_radix(hex, 16).ok().map(|n| Self(n as i32))
+        } else {
+            s.parse::<i32>().ok().map(Self)
+        }
+    }
+
+    /// Parse comma-separated service IDs (decimal or `0x` hex).
+    /// Strips Grafana's `{a,b}` wrapper if present.
+    pub fn parse_list(s: &str) -> Vec<Self> {
+        let s = s
+            .strip_prefix('{')
+            .and_then(|s| s.strip_suffix('}'))
+            .unwrap_or(s);
+        s.split(',').filter_map(Self::parse).collect()
+    }
+
+    /// Convert a slice of `DbServiceId` to `Vec<i32>` for sqlx `= ANY($N)` binds.
+    pub fn as_i32_vec(ids: &[Self]) -> Vec<i32> {
+        ids.iter().map(|id| id.0).collect()
+    }
+}
+
+impl fmt::Display for DbServiceId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "0x{:08x}", self.0 as u32)
+    }
+}
+
+impl Serialize for DbServiceId {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl utoipa::ToSchema for DbServiceId {
+    fn name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("DbServiceId")
+    }
+}
+
+impl utoipa::PartialSchema for DbServiceId {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        utoipa::openapi::schema::ObjectBuilder::new()
+            .schema_type(utoipa::openapi::schema::SchemaType::new(
+                utoipa::openapi::schema::Type::String,
+            ))
+            .description(Some(
+                "Service ID in zero-padded hex, e.g. \"0x0000000a\"",
+            ))
+            .into()
+    }
+}
+
+impl From<i32> for DbServiceId {
+    fn from(v: i32) -> Self {
+        Self(v)
+    }
+}
+
+impl From<u32> for DbServiceId {
+    fn from(v: u32) -> Self {
+        Self(v as i32)
+    }
+}
 
 // ── /api/grafana/stats ──────────────────────────────────────────────────
 
@@ -146,8 +230,8 @@ pub struct WpTrackingRow {
     pub received_by: i16,
     /// Node that built the guarantee
     pub guaranteed_by: i16,
-    /// Service IDs involved in this WP
-    pub service_ids: Vec<i32>,
+    /// Service IDs involved in this WP (hex-formatted)
+    pub service_ids: Vec<DbServiceId>,
     /// Timestamp when received
     pub received_at: Option<DateTime<Utc>>,
     /// Timestamp when authorization completed
@@ -233,8 +317,8 @@ pub struct BlockContentsRow {
 /// 47 (BlockExecuted) for execution gas.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ServiceRow {
-    /// Service ID, hex-encoded (e.g. "0xff"). JAM uses u32 service IDs; stored as i32 in PostgreSQL.
-    pub service_id: String,
+    /// Service ID (hex-formatted, e.g. "0x000000ff")
+    pub service_id: DbServiceId,
     /// Total WorkPackageReceived events
     pub work_packages: i64,
     /// Total Refined events
@@ -261,8 +345,8 @@ pub struct ServiceRow {
 pub struct ServiceTimeseriesRow {
     /// Bucket start timestamp
     pub ts: DateTime<Utc>,
-    /// Service ID, hex-encoded (same encoding as ServiceRow)
-    pub service_id: String,
+    /// Service ID (hex-formatted, same encoding as ServiceRow)
+    pub service_id: DbServiceId,
     /// WorkPackageReceived count in bucket
     pub work_packages: i64,
     /// Authorization gas in bucket

@@ -6,6 +6,7 @@
 use chrono::{DateTime, Utc};
 use sqlx::Row;
 
+use crate::grafana_types::DbServiceId;
 use crate::onchain_types::*;
 use crate::store::EventStore;
 
@@ -146,8 +147,14 @@ impl EventStore {
         &self,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
+        services: Option<&[DbServiceId]>,
     ) -> Result<Vec<OnchainServiceSummary>, sqlx::Error> {
-        let rows = sqlx::query(
+        let service_filter = if services.is_some() {
+            "AND service_id = ANY($3)"
+        } else {
+            ""
+        };
+        let sql = format!(
             r#"
             SELECT
                 service_id,
@@ -164,19 +171,22 @@ impl EventStore {
             FROM onchain_service_stats
             WHERE timestamp >= $1 AND timestamp < $2
               AND on_best_chain = true
+              {service_filter}
             GROUP BY service_id
             ORDER BY service_id
-            "#,
-        )
-        .bind(start)
-        .bind(end)
-        .fetch_all(self.pool())
-        .await?;
+            "#
+        );
+        let svc_i32 = services.map(DbServiceId::as_i32_vec);
+        let mut query = sqlx::query(&sql).bind(start).bind(end);
+        if let Some(ref svc) = svc_i32 {
+            query = query.bind(svc);
+        }
+        let rows = query.fetch_all(self.pool()).await?;
 
         Ok(rows
             .iter()
             .map(|row| OnchainServiceSummary {
-                service_id: format!("0x{:x}", row.get::<i32, _>("service_id") as u32),
+                service_id: DbServiceId(row.get("service_id")),
                 provided_count: row.get("provided_count"),
                 provided_size: row.get("provided_size"),
                 refinement_count: row.get("refinement_count"),
@@ -197,9 +207,15 @@ impl EventStore {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
         interval: &str,
+        services: Option<&[DbServiceId]>,
     ) -> Result<Vec<OnchainServiceTimeseries>, sqlx::Error> {
         let pg_interval = validate_interval(interval)?;
 
+        let service_filter = if services.is_some() {
+            "AND service_id = ANY($3)"
+        } else {
+            ""
+        };
         let sql = format!(
             r#"
             SELECT
@@ -218,22 +234,24 @@ impl EventStore {
             FROM onchain_service_stats
             WHERE timestamp >= $1 AND timestamp < $2
               AND on_best_chain = true
+              {service_filter}
             GROUP BY ts, service_id
             ORDER BY ts, service_id
             "#
         );
 
-        let rows = sqlx::query(&sql)
-            .bind(start)
-            .bind(end)
-            .fetch_all(self.pool())
-            .await?;
+        let svc_i32 = services.map(DbServiceId::as_i32_vec);
+        let mut query = sqlx::query(&sql).bind(start).bind(end);
+        if let Some(ref svc) = svc_i32 {
+            query = query.bind(svc);
+        }
+        let rows = query.fetch_all(self.pool()).await?;
 
         Ok(rows
             .iter()
             .map(|row| OnchainServiceTimeseries {
                 ts: row.get("ts"),
-                service_id: format!("0x{:x}", row.get::<i32, _>("service_id") as u32),
+                service_id: DbServiceId(row.get("service_id")),
                 provided_count: row.get("provided_count"),
                 provided_size: row.get("provided_size"),
                 refinement_count: row.get("refinement_count"),
@@ -251,7 +269,7 @@ impl EventStore {
     /// Raw per-block on-chain stats for a single service.
     pub async fn onchain_service_detail(
         &self,
-        service_id: i32,
+        service_id: DbServiceId,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Result<Vec<OnchainServiceDetail>, sqlx::Error> {
@@ -268,7 +286,7 @@ impl EventStore {
             LIMIT 1000
             "#,
         )
-        .bind(service_id)
+        .bind(service_id.0)
         .bind(start)
         .bind(end)
         .fetch_all(self.pool())
@@ -279,7 +297,7 @@ impl EventStore {
             .map(|row| OnchainServiceDetail {
                 timestamp: row.get("timestamp"),
                 slot: row.get("slot"),
-                service_id: format!("0x{:x}", row.get::<i32, _>("service_id") as u32),
+                service_id: DbServiceId(row.get("service_id")),
                 provided_count: row.get("provided_count"),
                 provided_size: row.get("provided_size"),
                 refinement_count: row.get("refinement_count"),

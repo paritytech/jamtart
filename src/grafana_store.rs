@@ -386,7 +386,7 @@ impl EventStore {
                 stage: row.get("stage"),
                 received_by: row.get("received_by"),
                 guaranteed_by: row.get("guaranteed_by"),
-                service_ids: row.get("service_ids"),
+                service_ids: row.get::<Vec<i32>, _>("service_ids").into_iter().map(DbServiceId).collect(),
                 received_at: row.get("received_at"),
                 authorized_at: row.get("authorized_at"),
                 refined_at: row.get("refined_at"),
@@ -504,7 +504,7 @@ impl EventStore {
         &self,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
-        services: Option<&[i32]>,
+        services: Option<&[DbServiceId]>,
     ) -> Result<Vec<ServiceRow>, sqlx::Error> {
         let service_filter = if services.is_some() {
             "AND service_id = ANY($3)"
@@ -528,8 +528,9 @@ impl EventStore {
             ORDER BY service_id ASC
             "#
         );
+        let svc_i32 = services.map(DbServiceId::as_i32_vec);
         let mut query = sqlx::query(&sql).bind(start).bind(end);
-        if let Some(svc) = services {
+        if let Some(ref svc) = svc_i32 {
             query = query.bind(svc);
         }
         let rows = query.fetch_all(self.pool()).await?;
@@ -537,7 +538,7 @@ impl EventStore {
         let results = rows
             .iter()
             .map(|row| ServiceRow {
-                service_id: format!("0x{:x}", row.get::<i32, _>("service_id") as u32),
+                service_id: DbServiceId(row.get("service_id")),
                 work_packages: row.get::<Option<i64>, _>("work_packages").unwrap_or(0),
                 refinements: row.get::<Option<i64>, _>("refinements").unwrap_or(0),
                 refinement_gas: row.get::<Option<i64>, _>("refinement_gas").unwrap_or(0),
@@ -559,7 +560,7 @@ impl EventStore {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
         interval: &str,
-        services: Option<&[i32]>,
+        services: Option<&[DbServiceId]>,
     ) -> Result<Vec<ServiceTimeseriesRow>, sqlx::Error> {
         if !VALID_INTERVALS.contains(&interval) {
             return Err(sqlx::Error::Protocol(format!(
@@ -589,8 +590,9 @@ impl EventStore {
             ORDER BY ts, service_id"#
         );
 
+        let svc_i32 = services.map(DbServiceId::as_i32_vec);
         let mut query = sqlx::query(&sql).bind(start).bind(end);
-        if let Some(svc) = services {
+        if let Some(ref svc) = svc_i32 {
             query = query.bind(svc);
         }
 
@@ -600,7 +602,7 @@ impl EventStore {
             .iter()
             .map(|row| ServiceTimeseriesRow {
                 ts: row.get("ts"),
-                service_id: format!("0x{:x}", row.get::<i32, _>("service_id") as u32),
+                service_id: DbServiceId(row.get("service_id")),
                 work_packages: row.get::<Option<i64>, _>("work_packages").unwrap_or(0),
                 authorization_gas: row.get::<Option<i64>, _>("authorization_gas").unwrap_or(0),
                 refinement_gas: row.get::<Option<i64>, _>("refinement_gas").unwrap_or(0),
