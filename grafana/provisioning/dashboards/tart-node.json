@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Per-node deep dive \u2014 status, events, timeline, and health",
+  "description": "[JIP-3] Per-node deep dive \u2014 status, events, timeline, and health",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -2093,7 +2093,7 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "TART Node (Grafana API)",
+  "title": "TART Node (JIP-3)",
   "uid": "tart-grafana-node",
   "version": 1
 }

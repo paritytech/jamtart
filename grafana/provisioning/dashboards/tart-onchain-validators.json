@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "On-chain validator statistics from JAM RPC — blocks produced, tickets, guarantees, assurances per validator (epoch-cumulative)",
+  "description": "[On-Chain] Validator statistics from JAM RPC — blocks produced, tickets, guarantees, assurances per validator",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -28,7 +28,7 @@
     },
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-      "description": "Per-validator on-chain stats — epoch-cumulative MAX values for blocks produced, tickets, guarantees, assurances, preimages.",
+      "description": "[On-Chain] Per-validator on-chain stats — epoch-cumulative MAX values for blocks produced, tickets, guarantees, assurances, preimages.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "fixed" },
@@ -82,7 +82,7 @@
     },
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-      "description": "Blocks produced per validator over time (epoch-cumulative MAX per bucket).",
+      "description": "[On-Chain] Blocks produced per validator over time (epoch-cumulative MAX per bucket).",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -130,7 +130,7 @@
     },
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-      "description": "Guarantees made per validator over time (epoch-cumulative MAX per bucket).",
+      "description": "[On-Chain] Guarantees made per validator over time (epoch-cumulative MAX per bucket).",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -178,7 +178,7 @@
     },
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-      "description": "Assurances made per validator over time (epoch-cumulative MAX per bucket).",
+      "description": "[On-Chain] Assurances made per validator over time (epoch-cumulative MAX per bucket).",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -226,7 +226,7 @@
     },
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-      "description": "Tickets introduced per validator over time (epoch-cumulative MAX per bucket).",
+      "description": "[On-Chain] Tickets introduced per validator over time (epoch-cumulative MAX per bucket).",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -281,7 +281,7 @@
     },
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-      "description": "Raw per-block on-chain stats for the selected validator — epoch-cumulative values growing block by block. Most recent 1000 blocks.",
+      "description": "[On-Chain] Raw per-block on-chain stats for the selected validator — epoch-cumulative values growing block by block. Most recent 1000 blocks.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "fixed" },

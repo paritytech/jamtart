@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "On-chain core statistics from JAM RPC — gas, DA load, popularity, imports/exports per core",
+  "description": "[On-Chain] Core statistics from JAM RPC — gas, DA load, popularity, imports/exports per core",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -28,7 +28,7 @@
     },
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-      "description": "Per-core on-chain activity summary — one row per core with gas, DA load, popularity, imports/exports aggregated over the time range.",
+      "description": "[On-Chain] Per-core on-chain activity summary — one row per core with gas, DA load, popularity, imports/exports aggregated over the time range.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "fixed" },
@@ -83,7 +83,7 @@
     },
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-      "description": "Gas consumed per core over time — stacked bars showing total gas distribution across cores.",
+      "description": "[On-Chain] Gas consumed per core over time — stacked bars showing total gas distribution across cores.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -134,7 +134,7 @@
     },
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-      "description": "DA load (bytes placed into data availability) per core over time.",
+      "description": "[On-Chain] DA load (bytes placed into data availability) per core over time.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -185,7 +185,7 @@
     },
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-      "description": "Average validator supermajority size (popularity) per core over time — higher means more validators are assuring this core.",
+      "description": "[On-Chain] Average validator supermajority size (popularity) per core over time — higher means more validators are assuring this core.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -233,7 +233,7 @@
     },
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-      "description": "Imports and exports per core over time — stacked bars showing DA segment movement.",
+      "description": "[On-Chain] Imports and exports per core over time — stacked bars showing DA segment movement.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -291,7 +291,7 @@
     },
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-      "description": "Raw per-block on-chain stats for the selected core — no aggregation, most recent 1000 blocks.",
+      "description": "[On-Chain] Raw per-block on-chain stats for the selected core — no aggregation, most recent 1000 blocks.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "fixed" },

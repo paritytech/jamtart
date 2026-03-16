@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Core analysis \u2014 status, utilization, validators, and bottlenecks",
+  "description": "[JIP-3] Core analysis \u2014 status, utilization, validators, and bottlenecks",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -96,7 +96,7 @@
         "y": 1
       },
       "id": 3,
-      "description": "Guarantee event counts per core over time \u2014 shows which cores are actively producing guarantees and relative load distribution. Each line is one core's count per interval. (From core_stats_1m)",
+      "description": "[JIP-3] Guarantee event counts per core over time \u2014 shows which cores are actively producing guarantees and relative load distribution. Each line is one core's count per interval. (From core_stats_1m)",
       "options": {
         "legend": {
           "calcs": [],
@@ -228,7 +228,7 @@
         "y": 1
       },
       "id": 4,
-      "description": "Network-wide failure events broken down by type: WorkPackageFailed, WorkPackageSharingFailed, and other failure/discard events. Stacked to show total failure volume. (1-minute buckets from event_stats_1m)",
+      "description": "[JIP-3] Network-wide failure events broken down by type: WorkPackageFailed, WorkPackageSharingFailed, and other failure/discard events. Stacked to show total failure volume. (1-minute buckets from event_stats_1m)",
       "options": {
         "legend": {
           "calcs": [],
@@ -356,7 +356,7 @@
         "y": 7
       },
       "id": 5,
-      "description": "Per-core summary: work packages received, guarantees produced, and failures \u2014 one row per core. Use to spot underperforming or overloaded cores at a glance.",
+      "description": "[JIP-3] Per-core summary: work packages received, guarantees produced, and failures \u2014 one row per core. Use to spot underperforming or overloaded cores at a glance.",
       "options": {
         "cellHeight": "sm",
         "footer": {
@@ -465,7 +465,7 @@
         "y": 16
       },
       "id": 7,
-      "description": "Key pipeline metrics for this core: total work packages, failure rate, and average end-to-end pipeline latency in ms. (From wp_tracking)",
+      "description": "[JIP-3] Key pipeline metrics for this core: total work packages, failure rate, and average end-to-end pipeline latency in ms. (From wp_tracking)",
       "options": {
         "colorMode": "background_solid",
         "graphMode": "none",
@@ -566,7 +566,7 @@
         "y": 28
       },
       "id": 9,
-      "description": "100 most recent work packages on this core with full pipeline timestamps: received, authorized, refined, report built, guarantee built, distributed, and failure time. Use for timeline analysis of individual WPs.",
+      "description": "[JIP-3] 100 most recent work packages on this core with full pipeline timestamps: received, authorized, refined, report built, guarantee built, distributed, and failure time. Use for timeline analysis of individual WPs.",
       "options": {
         "cellHeight": "sm",
         "footer": {
@@ -662,7 +662,7 @@
         "y": 16
       },
       "id": 10,
-      "description": "P50 and P95 latency for each pipeline stage on this core: authorize, refine, report, guarantee, distribute. Identifies which stage is the bottleneck. (From wp_tracking)",
+      "description": "[JIP-3] P50 and P95 latency for each pipeline stage on this core: authorize, refine, report, guarantee, distribute. Identifies which stage is the bottleneck. (From wp_tracking)",
       "options": {
         "colorMode": "value",
         "graphMode": "none",
@@ -808,7 +808,7 @@
         "y": 22
       },
       "id": 16,
-      "description": "Failure events on this core broken down by type. Each series is a distinct failure event type. Use to identify recurring failure patterns on this core. (1-minute buckets)",
+      "description": "[JIP-3] Failure events on this core broken down by type. Each series is a distinct failure event type. Use to identify recurring failure patterns on this core. (1-minute buckets)",
       "options": {
         "legend": {
           "calcs": [],
@@ -939,7 +939,7 @@
         "y": 22
       },
       "id": 17,
-      "description": "All event types on this core shown as stacked bars \u2014 total event volume composition over time. Each color band is one event type. (1-minute buckets)",
+      "description": "[JIP-3] All event types on this core shown as stacked bars \u2014 total event volume composition over time. Each color band is one event type. (1-minute buckets)",
       "options": {
         "legend": {
           "calcs": [],
@@ -1026,7 +1026,7 @@
         "type": "yesoreyeram-infinity-datasource",
         "uid": "jamtart-api"
       },
-      "description": "Work package pipeline funnel — shows how many WPs reach each stage.",
+      "description": "[JIP-3] Work package pipeline funnel — shows how many WPs reach each stage.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1203,7 +1203,7 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "TART Cores (Grafana API)",
+  "title": "TART Cores (JIP-3)",
   "uid": "tart-grafana-cores",
   "version": 1,
   "weekStart": ""

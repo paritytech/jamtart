@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Network-wide overview \u2014 live stats, events, blocks, health, and aggregates",
+  "description": "[JIP-3] Network-wide overview \u2014 live stats, events, blocks, health, and aggregates",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -3164,7 +3164,7 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "TART Global (Grafana API)",
+  "title": "TART Global (JIP-3)",
   "uid": "tart-grafana-global",
   "version": 1,
   "weekStart": ""

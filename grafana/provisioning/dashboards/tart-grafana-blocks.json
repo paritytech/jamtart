@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Block production analytics — contents, convergence, rate, and pipeline",
+  "description": "[JIP-3] Block production analytics — contents, convergence, rate, and pipeline",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -592,7 +592,7 @@
   },
   "timepicker": {},
   "timezone": "utc",
-  "title": "TART Blocks",
+  "title": "TART Blocks (JIP-3)",
   "uid": "tart-grafana-blocks",
   "refresh": "30s",
   "version": 1,

@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Data availability layer — storage, peer health, and preimage statistics per node",
+  "description": "[JIP-3] Data availability layer — storage, peer health, and preimage statistics per node",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -729,7 +729,7 @@
   },
   "timepicker": {},
   "timezone": "utc",
-  "title": "TART Data Availability",
+  "title": "TART Data Availability (JIP-3)",
   "uid": "tart-grafana-da",
   "refresh": "30s",
   "version": 1,

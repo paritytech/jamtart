@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "On-chain service statistics from JAM RPC — refinement/accumulation gas, imports/exports, preimages per service",
+  "description": "[On-Chain] Service statistics from JAM RPC — refinement/accumulation gas, imports/exports, preimages per service",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -28,7 +28,7 @@
     },
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-      "description": "Per-service on-chain activity — refinement/accumulation counts and gas, preimages, imports/exports. Service IDs in 0x hex format.",
+      "description": "[On-Chain] Per-service on-chain activity — refinement/accumulation counts and gas, preimages, imports/exports. Service IDs in 0x hex format.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "fixed" },
@@ -95,7 +95,7 @@
     },
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-      "description": "Total gas consumed per service split by stage: refinement and accumulation gas. Compare computational cost across services over the selected time range.",
+      "description": "[On-Chain] Total gas consumed per service split by stage: refinement and accumulation gas. Compare computational cost across services over the selected time range.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -165,7 +165,7 @@
     },
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-      "description": "Total refinement gas across all services over time — stacked by service. Independent of service variable selection.",
+      "description": "[On-Chain] Total refinement gas across all services over time — stacked by service. Independent of service variable selection.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -214,7 +214,7 @@
     },
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-      "description": "Total accumulation gas across all services over time — stacked by service. Independent of service variable selection.",
+      "description": "[On-Chain] Total accumulation gas across all services over time — stacked by service. Independent of service variable selection.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -270,7 +270,7 @@
     },
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-      "description": "Refinement gas consumed per service over time — shows which services use the most refinement gas.",
+      "description": "[On-Chain] Refinement gas consumed per service over time — shows which services use the most refinement gas.",
       "fieldConfig": {
         "defaults": {
           "color": { "fixedColor": "orange", "mode": "fixed" },
@@ -318,7 +318,7 @@
     },
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-      "description": "Accumulation gas consumed per service over time.",
+      "description": "[On-Chain] Accumulation gas consumed per service over time.",
       "fieldConfig": {
         "defaults": {
           "color": { "fixedColor": "green", "mode": "fixed" },
@@ -373,7 +373,7 @@
     },
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-      "description": "Refinement count per service over time — shows work-item processing throughput.",
+      "description": "[On-Chain] Refinement count per service over time — shows work-item processing throughput.",
       "fieldConfig": {
         "defaults": {
           "color": { "fixedColor": "orange", "mode": "fixed" },
@@ -421,7 +421,7 @@
     },
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-      "description": "Accumulation count per service over time.",
+      "description": "[On-Chain] Accumulation count per service over time.",
       "fieldConfig": {
         "defaults": {
           "color": { "fixedColor": "green", "mode": "fixed" },
@@ -476,7 +476,7 @@
     },
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-      "description": "Raw per-block on-chain stats for the selected service — no aggregation, most recent 1000 blocks.",
+      "description": "[On-Chain] Raw per-block on-chain stats for the selected service — no aggregation, most recent 1000 blocks.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "fixed" },

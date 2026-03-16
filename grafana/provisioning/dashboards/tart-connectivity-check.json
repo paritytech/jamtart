@@ -6,7 +6,7 @@
         "type": "yesoreyeram-infinity-datasource",
         "uid": "jamtart-api"
       },
-      "description": "Fetches /api/grafana/stats — confirms basic API connectivity and JSON field extraction.",
+      "description": "[JIP-3] Fetches /api/grafana/stats — confirms basic API connectivity and JSON field extraction.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -78,7 +78,7 @@
         "type": "yesoreyeram-infinity-datasource",
         "uid": "jamtart-api"
       },
-      "description": "Fetches /api/grafana/nodes — confirms JSON array extraction.",
+      "description": "[JIP-3] Fetches /api/grafana/nodes — confirms JSON array extraction.",
       "fieldConfig": {
         "defaults": {},
         "overrides": []
@@ -144,7 +144,7 @@
         "type": "yesoreyeram-infinity-datasource",
         "uid": "jamtart-api"
       },
-      "description": "Dashboard summary stats — connected nodes, work packages, guarantees, failures.",
+      "description": "[JIP-3] Dashboard summary stats — connected nodes, work packages, guarantees, failures.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -231,7 +231,7 @@
         "type": "yesoreyeram-infinity-datasource",
         "uid": "jamtart-api"
       },
-      "description": "Work package pipeline failure rate from /api/grafana/bottlenecks.",
+      "description": "[JIP-3] Work package pipeline failure rate from /api/grafana/bottlenecks.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -324,7 +324,7 @@
         "type": "yesoreyeram-infinity-datasource",
         "uid": "jamtart-api"
       },
-      "description": "Dropped events (event_type=0) over time — spikes indicate the telemetry server is discarding incoming events.",
+      "description": "[JIP-3] Dropped events (event_type=0) over time — spikes indicate the telemetry server is discarding incoming events.",
       "fieldConfig": {
         "defaults": {
           "color": {
