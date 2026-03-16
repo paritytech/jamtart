@@ -1,0 +1,394 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "On-chain core statistics from JAM RPC — gas, DA load, popularity, imports/exports per core",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "title": "Core Overview",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "Per-core on-chain activity summary — one row per core with gas, DA load, popularity, imports/exports aggregated over the time range.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed" },
+          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "inspect": false },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 1 },
+      "id": 2,
+      "options": {
+        "cellHeight": "sm",
+        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+        "showHeader": true,
+        "sortBy": [{ "desc": true, "displayName": "Gas Used" }]
+      },
+      "targets": [
+        {
+          "columns": [
+            { "selector": "core", "text": "Core", "type": "number" },
+            { "selector": "gas_used", "text": "Gas Used", "type": "number" },
+            { "selector": "da_load", "text": "DA Load", "type": "number" },
+            { "selector": "popularity_avg", "text": "Popularity", "type": "number" },
+            { "selector": "imports", "text": "Imports", "type": "number" },
+            { "selector": "exports", "text": "Exports", "type": "number" },
+            { "selector": "extrinsic_count", "text": "Extrinsics", "type": "number" },
+            { "selector": "bundle_size", "text": "Bundle Size", "type": "number" }
+          ],
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+          "filters": [],
+          "format": "table",
+          "global_query_id": "",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/onchain/cores?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
+        }
+      ],
+      "title": "Core Activity Grid",
+      "type": "table"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 11 },
+      "id": 3,
+      "title": "Gas & DA over Time",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "Gas consumed per core over time — stacked bars showing total gas distribution across cores.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "Gas", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "bars", "fillOpacity": 60, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "auto", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "normal" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "id": 4,
+      "options": {
+        "legend": { "calcs": ["sum"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "all", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "columns": [
+            { "selector": "ts", "text": "Time", "type": "timestamp" },
+            { "selector": "core", "text": "Core", "type": "string" },
+            { "selector": "gas_used", "text": "Gas Used", "type": "number" }
+          ],
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+          "format": "table",
+          "parser": "backend",
+          "refId": "A",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/onchain/cores/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${interval}",
+          "url_options": { "method": "GET" }
+        }
+      ],
+      "title": "Gas by Core",
+      "type": "timeseries",
+      "transformations": [
+        { "id": "partitionByValues", "options": { "fields": ["Core"], "keepFields": false, "naming": { "asLabels": true } } }
+      ]
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "DA load (bytes placed into data availability) per core over time.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "DA Load (bytes)", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "bars", "fillOpacity": 60, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "auto", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "normal" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "id": 5,
+      "options": {
+        "legend": { "calcs": ["sum"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "all", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "columns": [
+            { "selector": "ts", "text": "Time", "type": "timestamp" },
+            { "selector": "core", "text": "Core", "type": "string" },
+            { "selector": "da_load", "text": "DA Load", "type": "number" }
+          ],
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+          "format": "table",
+          "parser": "backend",
+          "refId": "A",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/onchain/cores/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${interval}",
+          "url_options": { "method": "GET" }
+        }
+      ],
+      "title": "DA Load by Core",
+      "type": "timeseries",
+      "transformations": [
+        { "id": "partitionByValues", "options": { "fields": ["Core"], "keepFields": false, "naming": { "asLabels": true } } }
+      ]
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "Average validator supermajority size (popularity) per core over time — higher means more validators are assuring this core.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "Popularity", "axisPlacement": "auto",
+            "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 2, "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "id": 6,
+      "options": {
+        "legend": { "calcs": ["mean"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "all", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "columns": [
+            { "selector": "ts", "text": "Time", "type": "timestamp" },
+            { "selector": "core", "text": "Core", "type": "string" },
+            { "selector": "popularity", "text": "Popularity", "type": "number" }
+          ],
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+          "format": "table",
+          "parser": "backend",
+          "refId": "A",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/onchain/cores/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${interval}",
+          "url_options": { "method": "GET" }
+        }
+      ],
+      "title": "Popularity by Core",
+      "type": "timeseries",
+      "transformations": [
+        { "id": "partitionByValues", "options": { "fields": ["Core"], "keepFields": false, "naming": { "asLabels": true } } }
+      ]
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "Imports and exports per core over time — stacked bars showing DA segment movement.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "Segments", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "bars", "fillOpacity": 60, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineWidth": 1,
+            "scaleDistribution": { "type": "linear" },
+            "stacking": { "group": "A", "mode": "normal" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "id": 7,
+      "options": {
+        "legend": { "calcs": ["sum"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "all", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "columns": [
+            { "selector": "ts", "text": "Time", "type": "timestamp" },
+            { "selector": "core", "text": "Core", "type": "string" },
+            { "selector": "imports", "text": "Imports", "type": "number" },
+            { "selector": "exports", "text": "Exports", "type": "number" }
+          ],
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+          "format": "table",
+          "parser": "backend",
+          "refId": "A",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/onchain/cores/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${interval}",
+          "url_options": { "method": "GET" }
+        }
+      ],
+      "title": "Imports & Exports by Core",
+      "type": "timeseries",
+      "transformations": [
+        { "id": "partitionByValues", "options": { "fields": ["Core"], "keepFields": false, "naming": { "asLabels": true } } }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 28 },
+      "id": 8,
+      "title": "Core ${core} Detail",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "Raw per-block on-chain stats for the selected core — no aggregation, most recent 1000 blocks.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed" },
+          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "inspect": false },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 29 },
+      "id": 9,
+      "options": {
+        "cellHeight": "sm",
+        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+        "showHeader": true,
+        "sortBy": [{ "desc": true, "displayName": "Time" }]
+      },
+      "targets": [
+        {
+          "columns": [
+            { "selector": "timestamp", "text": "Time", "type": "timestamp" },
+            { "selector": "slot", "text": "Slot", "type": "number" },
+            { "selector": "gas_used", "text": "Gas Used", "type": "number" },
+            { "selector": "da_load", "text": "DA Load", "type": "number" },
+            { "selector": "popularity", "text": "Popularity", "type": "number" },
+            { "selector": "imports", "text": "Imports", "type": "number" },
+            { "selector": "exports", "text": "Exports", "type": "number" },
+            { "selector": "extrinsic_count", "text": "Extrinsics", "type": "number" },
+            { "selector": "extrinsic_size", "text": "Extrinsic Size", "type": "number" },
+            { "selector": "bundle_size", "text": "Bundle Size", "type": "number" }
+          ],
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+          "filters": [],
+          "format": "table",
+          "global_query_id": "",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/onchain/cores/${core}?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
+        }
+      ],
+      "title": "Core ${core} Block-by-Block",
+      "type": "table"
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["api", "onchain", "cores"],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "name": "core",
+        "label": "Core",
+        "type": "query",
+        "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+        "query": {
+          "queryType": "infinity",
+          "infinityQuery": {
+            "refId": "variable",
+            "type": "json",
+            "source": "url",
+            "parser": "backend",
+            "url": "http://tart-backend:8080/api/grafana/onchain/cores?start=${__from:date:iso}&end=${__to:date:iso}",
+            "url_options": { "method": "GET" },
+            "root_selector": "",
+            "columns": [{ "selector": "core", "text": "core", "type": "string" }],
+            "format": "table"
+          }
+        },
+        "refresh": 2,
+        "options": [],
+        "includeAll": false,
+        "multi": false,
+        "description": "Select a core for detail view"
+      },
+      {
+        "current": { "selected": true, "text": "1m", "value": "1m" },
+        "name": "interval",
+        "label": "Interval",
+        "type": "custom",
+        "query": "10s,30s,1m,5m,10m,30m,1h",
+        "refresh": 0,
+        "options": [],
+        "includeAll": false,
+        "multi": false
+      }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "utc",
+  "title": "TART On-Chain Cores",
+  "uid": "tart-onchain-cores",
+  "refresh": "30s",
+  "version": 1,
+  "weekStart": ""
+}

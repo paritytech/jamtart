@@ -17,6 +17,7 @@ use utoipa::{IntoParams, OpenApi};
 
 use crate::api::ApiState;
 use crate::grafana_types::*;
+use crate::onchain_types::*;
 
 #[derive(OpenApi)]
 #[openapi(
@@ -37,6 +38,15 @@ use crate::grafana_types::*;
         wp_funnel,
         event_types,
         events,
+        onchain_cores_summary,
+        onchain_cores_timeseries,
+        onchain_core_detail,
+        onchain_services_summary,
+        onchain_services_timeseries,
+        onchain_service_detail,
+        onchain_validators_summary,
+        onchain_validators_timeseries,
+        onchain_validator_detail,
     ),
     components(schemas(
         TimeseriesRow,
@@ -61,9 +71,19 @@ use crate::grafana_types::*;
         WpFunnelResponse,
         EventRow,
         crate::event_type_meta::EventTypeMeta,
+        OnchainCoreSummary,
+        OnchainCoreTimeseries,
+        OnchainCoreDetail,
+        OnchainServiceSummary,
+        OnchainServiceTimeseries,
+        OnchainServiceDetail,
+        OnchainValidatorSummary,
+        OnchainValidatorTimeseries,
+        OnchainValidatorDetail,
     )),
     tags(
-        (name = "grafana", description = "Grafana dashboard API — time-series, aggregates, and metadata")
+        (name = "grafana", description = "Grafana dashboard API — time-series, aggregates, and metadata"),
+        (name = "onchain", description = "On-chain statistics API — per-block data from JAM RPC statistics()")
     )
 )]
 pub struct GrafanaApiDoc;
@@ -86,6 +106,20 @@ pub fn router() -> Router<ApiState> {
         .route("/wp-funnel", get(wp_funnel))
         .route("/event-types", get(event_types))
         .route("/events", get(events))
+        .nest("/onchain", onchain_router())
+}
+
+fn onchain_router() -> Router<ApiState> {
+    Router::new()
+        .route("/cores", get(onchain_cores_summary))
+        .route("/cores/timeseries", get(onchain_cores_timeseries))
+        .route("/cores/:core_id", get(onchain_core_detail))
+        .route("/services", get(onchain_services_summary))
+        .route("/services/timeseries", get(onchain_services_timeseries))
+        .route("/services/:service_id", get(onchain_service_detail))
+        .route("/validators", get(onchain_validators_summary))
+        .route("/validators/timeseries", get(onchain_validators_timeseries))
+        .route("/validators/:validator_idx", get(onchain_validator_detail))
 }
 
 /// Map sqlx errors to appropriate HTTP status codes.
@@ -728,6 +762,309 @@ async fn events(
         .await
         .map(Json)
         .map_err(|e| map_sqlx_error("grafana/events", e))
+}
+
+// ── On-chain statistics query params ─────────────────────────────────────
+
+/// Parameters for on-chain time range queries.
+#[derive(Deserialize, IntoParams)]
+pub struct OnchainTimeRangeQuery {
+    /// Start of time range (ISO 8601)
+    pub start: DateTime<Utc>,
+    /// End of time range (ISO 8601)
+    pub end: DateTime<Utc>,
+}
+
+/// Parameters for on-chain timeseries queries.
+#[derive(Deserialize, IntoParams)]
+pub struct OnchainTimeseriesQuery {
+    /// Start of time range (ISO 8601)
+    pub start: DateTime<Utc>,
+    /// End of time range (ISO 8601)
+    pub end: DateTime<Utc>,
+    /// Bucket width. Allowed: 10s, 15s, 30s, 1m, 2m, 5m, 10m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d
+    pub interval: Option<String>,
+}
+
+// ── On-chain cores ──────────────────────────────────────────────────────
+
+/// Per-core on-chain activity summary (all 341 cores).
+///
+/// Fields from Gray Paper `CoreActivityRecord`, SUMmed over range except
+/// popularity (AVG). Data source: `onchain_core_stats` hypertable.
+#[utoipa::path(
+    get,
+    path = "/api/grafana/onchain/cores",
+    params(OnchainTimeRangeQuery),
+    responses(
+        (status = 200, description = "Per-core on-chain activity summary (all 341 cores). \
+            Fields from Gray Paper CoreActivityRecord, SUMmed over range except popularity (AVG).",
+            body = [OnchainCoreSummary]),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "onchain"
+)]
+async fn onchain_cores_summary(
+    Query(q): Query<OnchainTimeRangeQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    state
+        .store
+        .onchain_cores_summary(q.start, q.end)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("onchain/cores", e))
+}
+
+/// Time-bucketed per-core on-chain stats.
+///
+/// Each row = one (bucket, core) pair with SUMmed fields.
+/// Data source: `onchain_core_stats` with `time_bucket()` aggregation.
+#[utoipa::path(
+    get,
+    path = "/api/grafana/onchain/cores/timeseries",
+    params(OnchainTimeseriesQuery),
+    responses(
+        (status = 200, description = "Time-bucketed per-core on-chain stats. \
+            Each row = one (bucket, core) pair with SUMmed fields.",
+            body = [OnchainCoreTimeseries]),
+        (status = 400, description = "Invalid interval"),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "onchain"
+)]
+async fn onchain_cores_timeseries(
+    Query(q): Query<OnchainTimeseriesQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let interval = q.interval.as_deref().unwrap_or("1m");
+    state
+        .store
+        .onchain_cores_timeseries(q.start, q.end, interval)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("onchain/cores/timeseries", e))
+}
+
+/// Raw per-block on-chain stats for a single core.
+///
+/// No aggregation — each row is one block. Max 1000 rows, newest first.
+/// Data source: `onchain_core_stats` filtered by core.
+#[utoipa::path(
+    get,
+    path = "/api/grafana/onchain/cores/{core_id}",
+    params(
+        ("core_id" = i16, Path, description = "Core index (0–340)"),
+        OnchainTimeRangeQuery,
+    ),
+    responses(
+        (status = 200, description = "Raw per-block on-chain stats for a single core. \
+            No aggregation — each row is one block. Max 1000 rows, newest first.",
+            body = [OnchainCoreDetail]),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "onchain"
+)]
+async fn onchain_core_detail(
+    Path(core_id): Path<i16>,
+    Query(q): Query<OnchainTimeRangeQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    state
+        .store
+        .onchain_core_detail(core_id, q.start, q.end)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("onchain/cores/{id}", e))
+}
+
+// ── On-chain services ───────────────────────────────────────────────────
+
+/// Per-service on-chain activity summary.
+///
+/// Only services with non-zero activity are returned.
+/// Fields from Gray Paper `ServiceActivityRecord`, all SUMmed.
+/// Data source: `onchain_service_stats` hypertable.
+#[utoipa::path(
+    get,
+    path = "/api/grafana/onchain/services",
+    params(OnchainTimeRangeQuery),
+    responses(
+        (status = 200, description = "Per-service on-chain activity summary. \
+            Only services with non-zero activity are returned. \
+            Fields from Gray Paper ServiceActivityRecord, all SUMmed.",
+            body = [OnchainServiceSummary]),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "onchain"
+)]
+async fn onchain_services_summary(
+    Query(q): Query<OnchainTimeRangeQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    state
+        .store
+        .onchain_services_summary(q.start, q.end)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("onchain/services", e))
+}
+
+/// Time-bucketed per-service on-chain stats.
+///
+/// Data source: `onchain_service_stats` with `time_bucket()` aggregation.
+#[utoipa::path(
+    get,
+    path = "/api/grafana/onchain/services/timeseries",
+    params(OnchainTimeseriesQuery),
+    responses(
+        (status = 200, description = "Time-bucketed per-service on-chain stats.",
+            body = [OnchainServiceTimeseries]),
+        (status = 400, description = "Invalid interval"),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "onchain"
+)]
+async fn onchain_services_timeseries(
+    Query(q): Query<OnchainTimeseriesQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let interval = q.interval.as_deref().unwrap_or("1m");
+    state
+        .store
+        .onchain_services_timeseries(q.start, q.end, interval)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("onchain/services/timeseries", e))
+}
+
+/// Raw per-block on-chain stats for a single service.
+///
+/// Max 1000 rows, newest first.
+/// Data source: `onchain_service_stats` filtered by service_id.
+#[utoipa::path(
+    get,
+    path = "/api/grafana/onchain/services/{service_id}",
+    params(
+        ("service_id" = String, Path, description = "Service ID (decimal or 0x hex)"),
+        OnchainTimeRangeQuery,
+    ),
+    responses(
+        (status = 200, description = "Raw per-block on-chain stats for a single service. \
+            Max 1000 rows, newest first.",
+            body = [OnchainServiceDetail]),
+        (status = 400, description = "Invalid service ID"),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "onchain"
+)]
+async fn onchain_service_detail(
+    Path(service_id): Path<String>,
+    Query(q): Query<OnchainTimeRangeQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let ids = parse_service_ids(&service_id);
+    let id = ids.first().copied().ok_or(StatusCode::BAD_REQUEST)?;
+    state
+        .store
+        .onchain_service_detail(id, q.start, q.end)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("onchain/services/{id}", e))
+}
+
+// ── On-chain validators ─────────────────────────────────────────────────
+
+/// Per-validator on-chain stats (all 1024 validators).
+///
+/// Fields from Gray Paper `ValActivityRecord`. Values are epoch-cumulative —
+/// MAX is used to get peak value in the requested range.
+/// Data source: `onchain_validator_stats` hypertable.
+#[utoipa::path(
+    get,
+    path = "/api/grafana/onchain/validators",
+    params(OnchainTimeRangeQuery),
+    responses(
+        (status = 200, description = "Per-validator on-chain stats (all 1024 validators). \
+            Fields from Gray Paper ValActivityRecord. Values are epoch-cumulative — \
+            MAX is used to get peak value in the requested range.",
+            body = [OnchainValidatorSummary]),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "onchain"
+)]
+async fn onchain_validators_summary(
+    Query(q): Query<OnchainTimeRangeQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    state
+        .store
+        .onchain_validators_summary(q.start, q.end)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("onchain/validators", e))
+}
+
+/// Time-bucketed per-validator on-chain stats.
+///
+/// MAX aggregation (epoch-cumulative values).
+/// Data source: `onchain_validator_stats` with `time_bucket()` aggregation.
+#[utoipa::path(
+    get,
+    path = "/api/grafana/onchain/validators/timeseries",
+    params(OnchainTimeseriesQuery),
+    responses(
+        (status = 200, description = "Time-bucketed per-validator on-chain stats. \
+            MAX aggregation (epoch-cumulative values).",
+            body = [OnchainValidatorTimeseries]),
+        (status = 400, description = "Invalid interval"),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "onchain"
+)]
+async fn onchain_validators_timeseries(
+    Query(q): Query<OnchainTimeseriesQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let interval = q.interval.as_deref().unwrap_or("1m");
+    state
+        .store
+        .onchain_validators_timeseries(q.start, q.end, interval)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("onchain/validators/timeseries", e))
+}
+
+/// Raw per-block on-chain stats for a single validator.
+///
+/// Shows epoch-cumulative values growing block by block. Max 1000 rows.
+/// Data source: `onchain_validator_stats` filtered by validator_index.
+#[utoipa::path(
+    get,
+    path = "/api/grafana/onchain/validators/{validator_idx}",
+    params(
+        ("validator_idx" = i16, Path, description = "Validator index (0–1023)"),
+        OnchainTimeRangeQuery,
+    ),
+    responses(
+        (status = 200, description = "Raw per-block on-chain stats for a single validator. \
+            Shows epoch-cumulative values growing block by block. Max 1000 rows.",
+            body = [OnchainValidatorDetail]),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "onchain"
+)]
+async fn onchain_validator_detail(
+    Path(validator_idx): Path<i16>,
+    Query(q): Query<OnchainTimeRangeQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    state
+        .store
+        .onchain_validator_detail(validator_idx, q.start, q.end)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("onchain/validators/{idx}", e))
 }
 
 #[cfg(test)]

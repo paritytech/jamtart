@@ -1,0 +1,382 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "On-chain validator statistics from JAM RPC — blocks produced, tickets, guarantees, assurances per validator (epoch-cumulative)",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "title": "Validator Overview",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "Per-validator on-chain stats — epoch-cumulative MAX values for blocks produced, tickets, guarantees, assurances, preimages.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed" },
+          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "inspect": false },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 1 },
+      "id": 2,
+      "options": {
+        "cellHeight": "sm",
+        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+        "showHeader": true,
+        "sortBy": [{ "desc": true, "displayName": "Guarantees" }]
+      },
+      "targets": [
+        {
+          "columns": [
+            { "selector": "validator_index", "text": "Validator", "type": "number" },
+            { "selector": "blocks_produced", "text": "Blocks Produced", "type": "number" },
+            { "selector": "tickets", "text": "Tickets", "type": "number" },
+            { "selector": "guarantees", "text": "Guarantees", "type": "number" },
+            { "selector": "assurances", "text": "Assurances", "type": "number" },
+            { "selector": "preimages", "text": "Preimages", "type": "number" },
+            { "selector": "preimages_size", "text": "Preimage Bytes", "type": "number" }
+          ],
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+          "filters": [],
+          "format": "table",
+          "global_query_id": "",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/onchain/validators?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
+        }
+      ],
+      "title": "Validator Activity Grid",
+      "type": "table"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 13 },
+      "id": 3,
+      "title": "Activity over Time",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "Blocks produced per validator over time (epoch-cumulative MAX per bucket).",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "Blocks", "axisPlacement": "auto",
+            "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 2, "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "id": 4,
+      "options": {
+        "legend": { "calcs": ["max"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "all", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "columns": [
+            { "selector": "ts", "text": "Time", "type": "timestamp" },
+            { "selector": "validator_index", "text": "Validator", "type": "string" },
+            { "selector": "blocks_produced", "text": "Blocks Produced", "type": "number" }
+          ],
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+          "format": "table",
+          "parser": "backend",
+          "refId": "A",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/onchain/validators/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${interval}",
+          "url_options": { "method": "GET" }
+        }
+      ],
+      "title": "Blocks Produced over Time",
+      "type": "timeseries",
+      "transformations": [
+        { "id": "partitionByValues", "options": { "fields": ["Validator"], "keepFields": false, "naming": { "asLabels": true } } }
+      ]
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "Guarantees made per validator over time (epoch-cumulative MAX per bucket).",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "Guarantees", "axisPlacement": "auto",
+            "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 2, "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "id": 5,
+      "options": {
+        "legend": { "calcs": ["max"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "all", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "columns": [
+            { "selector": "ts", "text": "Time", "type": "timestamp" },
+            { "selector": "validator_index", "text": "Validator", "type": "string" },
+            { "selector": "guarantees", "text": "Guarantees", "type": "number" }
+          ],
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+          "format": "table",
+          "parser": "backend",
+          "refId": "A",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/onchain/validators/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${interval}",
+          "url_options": { "method": "GET" }
+        }
+      ],
+      "title": "Guarantees over Time",
+      "type": "timeseries",
+      "transformations": [
+        { "id": "partitionByValues", "options": { "fields": ["Validator"], "keepFields": false, "naming": { "asLabels": true } } }
+      ]
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "Assurances made per validator over time (epoch-cumulative MAX per bucket).",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "Assurances", "axisPlacement": "auto",
+            "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 2, "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
+      "id": 6,
+      "options": {
+        "legend": { "calcs": ["max"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "all", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "columns": [
+            { "selector": "ts", "text": "Time", "type": "timestamp" },
+            { "selector": "validator_index", "text": "Validator", "type": "string" },
+            { "selector": "assurances", "text": "Assurances", "type": "number" }
+          ],
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+          "format": "table",
+          "parser": "backend",
+          "refId": "A",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/onchain/validators/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${interval}",
+          "url_options": { "method": "GET" }
+        }
+      ],
+      "title": "Assurances over Time",
+      "type": "timeseries",
+      "transformations": [
+        { "id": "partitionByValues", "options": { "fields": ["Validator"], "keepFields": false, "naming": { "asLabels": true } } }
+      ]
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "Tickets introduced per validator over time (epoch-cumulative MAX per bucket).",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "Tickets", "axisPlacement": "auto",
+            "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 2, "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 22 },
+      "id": 7,
+      "options": {
+        "legend": { "calcs": ["max"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "all", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "columns": [
+            { "selector": "ts", "text": "Time", "type": "timestamp" },
+            { "selector": "validator_index", "text": "Validator", "type": "string" },
+            { "selector": "tickets", "text": "Tickets", "type": "number" }
+          ],
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+          "format": "table",
+          "parser": "backend",
+          "refId": "A",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/onchain/validators/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${interval}",
+          "url_options": { "method": "GET" }
+        }
+      ],
+      "title": "Tickets over Time",
+      "type": "timeseries",
+      "transformations": [
+        { "id": "partitionByValues", "options": { "fields": ["Validator"], "keepFields": false, "naming": { "asLabels": true } } }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 },
+      "id": 8,
+      "title": "Validator ${validator} Detail",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "Raw per-block on-chain stats for the selected validator — epoch-cumulative values growing block by block. Most recent 1000 blocks.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed" },
+          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "inspect": false },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 31 },
+      "id": 9,
+      "options": {
+        "cellHeight": "sm",
+        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+        "showHeader": true,
+        "sortBy": [{ "desc": true, "displayName": "Time" }]
+      },
+      "targets": [
+        {
+          "columns": [
+            { "selector": "timestamp", "text": "Time", "type": "timestamp" },
+            { "selector": "slot", "text": "Slot", "type": "number" },
+            { "selector": "blocks_produced", "text": "Blocks Produced", "type": "number" },
+            { "selector": "tickets", "text": "Tickets", "type": "number" },
+            { "selector": "guarantees", "text": "Guarantees", "type": "number" },
+            { "selector": "assurances", "text": "Assurances", "type": "number" },
+            { "selector": "preimages", "text": "Preimages", "type": "number" },
+            { "selector": "preimages_size", "text": "Preimage Bytes", "type": "number" }
+          ],
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+          "filters": [],
+          "format": "table",
+          "global_query_id": "",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/onchain/validators/${validator}?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
+        }
+      ],
+      "title": "Validator ${validator} Block-by-Block",
+      "type": "table"
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["api", "onchain", "validators"],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "name": "validator",
+        "label": "Validator",
+        "type": "query",
+        "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+        "query": {
+          "queryType": "infinity",
+          "infinityQuery": {
+            "refId": "variable",
+            "type": "json",
+            "source": "url",
+            "parser": "backend",
+            "url": "http://tart-backend:8080/api/grafana/onchain/validators?start=${__from:date:iso}&end=${__to:date:iso}",
+            "url_options": { "method": "GET" },
+            "root_selector": "",
+            "columns": [{ "selector": "validator_index", "text": "validator_index", "type": "string" }],
+            "format": "table"
+          }
+        },
+        "refresh": 2,
+        "options": [],
+        "includeAll": false,
+        "multi": false,
+        "description": "Select a validator for detail view"
+      },
+      {
+        "current": { "selected": true, "text": "1m", "value": "1m" },
+        "name": "interval",
+        "label": "Interval",
+        "type": "custom",
+        "query": "10s,30s,1m,5m,10m,30m,1h",
+        "refresh": 0,
+        "options": [],
+        "includeAll": false,
+        "multi": false
+      }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "utc",
+  "title": "TART On-Chain Validators",
+  "uid": "tart-onchain-validators",
+  "refresh": "30s",
+  "version": 1,
+  "weekStart": ""
+}
