@@ -44,123 +44,6 @@
           "color": {
             "mode": "fixed"
           },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 0,
-        "y": 1
-      },
-      "id": 2,
-      "description": "Number of distinct services that had work package activity in the selected time range. (From service_stats_1m)",
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "count"
-          ],
-          "fields": "/.*work_packages.*/",
-          "values": true
-        },
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "targets": [
-        {
-          "columns": [
-            {
-              "selector": "service_id",
-              "text": "Service ID",
-              "type": "string"
-            },
-            {
-              "selector": "work_packages",
-              "text": "work_packages",
-              "type": "number"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "jamtart-api"
-          },
-          "filters": [],
-          "format": "table",
-          "global_query_id": "",
-          "parser": "backend",
-          "refId": "A",
-          "root_selector": "",
-          "source": "url",
-          "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/services?start=${__from:date:iso}&end=${__to:date:iso}&service=${service}",
-          "url_options": {
-            "method": "GET",
-            "data": "",
-            "headers": [],
-            "params": []
-          }
-        }
-      ],
-      "title": "Active Services",
-      "type": "stat",
-      "transformations": [
-        {
-          "id": "filterByValue",
-          "options": {
-            "filters": [
-              {
-                "config": {
-                  "id": "greater",
-                  "options": {
-                    "value": 0
-                  }
-                },
-                "fieldName": "work_packages"
-              }
-            ],
-            "match": "any",
-            "type": "include"
-          }
-        },
-        {
-          "id": "calculateField",
-          "options": {
-            "mode": "reduceRow",
-            "reduce": {
-              "include": [
-                "Service ID"
-              ],
-              "reducer": "count"
-            },
-            "alias": "Active Services"
-          }
-        }
-      ]
-    },
-    {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "jamtart-api"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "fixed"
-          },
           "custom": {
             "align": "auto",
             "cellOptions": {
@@ -183,8 +66,8 @@
       },
       "gridPos": {
         "h": 10,
-        "w": 18,
-        "x": 6,
+        "w": 24,
+        "x": 0,
         "y": 1
       },
       "id": 3,
@@ -273,7 +156,24 @@
         }
       ],
       "title": "Service List",
-      "type": "table"
+      "type": "table",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "indexByName": {
+              "Service ID": 0,
+              "Work Packages": 1,
+              "Refinements": 2,
+              "Refinement Gas": 3,
+              "Authorizations": 4,
+              "Authorization Gas": 5,
+              "Executions": 6,
+              "Execution Gas": 7
+            }
+          }
+        }
+      ]
     },
     {
       "collapsed": false,
@@ -303,7 +203,7 @@
             "axisColorMode": "text",
             "axisLabel": "Work Packages",
             "axisPlacement": "auto",
-            "fillOpacity": 80,
+            "drawStyle": "bars", "fillOpacity": 80,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
@@ -413,7 +313,7 @@
             "axisColorMode": "text",
             "axisLabel": "Gas",
             "axisPlacement": "auto",
-            "fillOpacity": 80,
+            "drawStyle": "bars", "fillOpacity": 80,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
@@ -552,7 +452,7 @@
         "y": 20
       },
       "id": 7,
-      "title": "Gas & Activity over Time",
+      "title": "Gas & Activity over Time — Service ${service}",
       "type": "row"
     },
     {
@@ -571,14 +471,14 @@
             "axisColorMode": "text",
             "axisLabel": "Work Packages",
             "axisPlacement": "auto",
-            "fillOpacity": 10,
+            "drawStyle": "bars", "fillOpacity": 80,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
               "tooltip": false,
               "viz": false
             },
-            "lineWidth": 2,
+            "lineWidth": 1,
             "scaleDistribution": {
               "type": "linear"
             },
@@ -689,14 +589,14 @@
             "axisColorMode": "text",
             "axisLabel": "Gas",
             "axisPlacement": "auto",
-            "fillOpacity": 10,
+            "drawStyle": "bars", "fillOpacity": 80,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
               "tooltip": false,
               "viz": false
             },
-            "lineWidth": 2,
+            "lineWidth": 1,
             "scaleDistribution": {
               "type": "linear"
             },
