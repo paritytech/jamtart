@@ -215,12 +215,23 @@ fn parse_node_list(s: &str) -> Vec<String> {
 // ── Handlers ───────────────────────────────────────────────────────────
 
 /// Time-series event counts with automatic aggregate table selection.
+///
+/// Queries TimescaleDB continuous aggregates, auto-selecting by interval:
+/// `event_stats_30s` (< 60 s), `event_stats_1m` (< 1 h), `event_stats_1h` (>= 1 h),
+/// or `core_stats_1m` when `group_by=core`. Aggregation uses
+/// `time_bucket(interval, bucket)` with `SUM(event_count)`.
+///
+/// Exactly one grouping column is populated per row — `event_type`, `core`, or
+/// `node_id` — depending on the `group_by` parameter (default: `event_type`).
+/// Event type IDs follow the JIP-3 telemetry specification; the `event_types`
+/// parameter accepts numeric codes, group names (e.g. `wp_pipeline`), or event
+/// names, and supports Grafana `{a,b}` multi-select syntax.
 #[utoipa::path(
     get,
     path = "/api/grafana/timeseries",
     params(TimeseriesQuery),
     responses(
-        (status = 200, description = "Time-bucketed event counts", body = Vec<TimeseriesRow>),
+        (status = 200, description = "Time-bucketed event counts", body = [TimeseriesRow]),
         (status = 400, description = "Invalid interval or group_by"),
         (status = 500, description = "Database error"),
     ),
@@ -252,6 +263,15 @@ async fn timeseries(
 }
 
 /// Dashboard summary counters for the given time range.
+///
+/// Database counters from `event_stats_1m`: slot events (BlockAuthored, type 42),
+/// guarantees (GuaranteeBuilt, 105), failures (WorkPackageFailed, 92), WP events
+/// (WorkPackageReceived, 94). Connected nodes from the `nodes` table.
+/// Event type IDs as defined in JIP-3.
+///
+/// Real-time fields are overlaid from in-memory `LiveCounters`: events/blocks per
+/// second (10 s rolling average), best and finalized slot numbers, and active TCP
+/// connection count. These fields are absent when the metrics tracker is disabled.
 #[utoipa::path(
     get,
     path = "/api/grafana/stats",
@@ -288,12 +308,16 @@ async fn stats(
 }
 
 /// Per-core activity summary: work packages, guarantees, and failures.
+///
+/// Queries `core_stats_1m` continuous aggregate using `SUM(event_count) FILTER`
+/// for three event types as defined in JIP-3: WorkPackageReceived (94),
+/// GuaranteeBuilt (105), WorkPackageFailed (92). Grouped by core index.
 #[utoipa::path(
     get,
     path = "/api/grafana/cores",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Per-core summary", body = Vec<CoreSummary>),
+        (status = 200, description = "Per-core summary", body = [CoreSummary]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -311,11 +335,17 @@ async fn cores_summary(
 }
 
 /// Single core detail with recent work packages from the enricher pipeline.
+///
+/// Returns the same summary counters as `/cores` (from `core_stats_1m`) plus
+/// the 100 most recent work packages from `wp_tracking` for this core. The
+/// `wp_tracking` table is populated by the enricher, which correlates WP
+/// pipeline events (types 90–109 as defined in JIP-3) across nodes, tracking
+/// each work package from submission through distribution or failure.
 #[utoipa::path(
     get,
     path = "/api/grafana/cores/{core_id}",
     params(
-        ("core_id" = i16, Path, description = "Core index"),
+        ("core_id" = i16, Path, description = "Core index (0-based)"),
         TimeRangeQuery,
     ),
     responses(
@@ -338,12 +368,19 @@ async fn core_detail(
 }
 
 /// Block propagation convergence percentiles per slot.
+///
+/// Reads the `slot_convergence` table, populated by the enricher which measures
+/// the time between block authoring on the author node and reception across all
+/// other nodes. Returns pre-computed p50, p99, and p100 propagation delays in
+/// milliseconds, along with the node count that reported each event type.
+/// Use the `event_type` filter to select BestBlock (11), Finalized (12), or
+/// Importing (43) convergence — event types as defined in JIP-3.
 #[utoipa::path(
     get,
     path = "/api/grafana/blocks/convergence",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Convergence percentiles", body = Vec<BlockConvergenceRow>),
+        (status = 200, description = "Convergence percentiles per slot", body = [BlockConvergenceRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -361,12 +398,17 @@ async fn blocks_convergence(
 }
 
 /// Block contents extracted from BlockAuthored events.
+///
+/// Queries the raw `events` hypertable for BlockAuthored events (type 42 as
+/// defined in JIP-3), extracting extrinsic breakdown from the JSONB `data`
+/// column via `data->'Authored'->'outline'` — counts of guarantees, assurances,
+/// preimages, tickets, dispute verdicts, and total extrinsic size in bytes.
 #[utoipa::path(
     get,
     path = "/api/grafana/blocks/contents",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Block contents", body = Vec<BlockContentsRow>),
+        (status = 200, description = "Block contents per slot", body = [BlockContentsRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -384,12 +426,20 @@ async fn blocks_contents(
 }
 
 /// Per-service activity and gas usage totals.
+///
+/// Queries `service_stats_1m` continuous aggregate (rollup of `event_services`
+/// join table). Counts and gas are computed via `SUM FILTER` for event types
+/// as defined in JIP-3: WorkPackageReceived (94), Authorized (95),
+/// Refined (101), BlockExecuted (47). Service IDs are hex-encoded in the
+/// response (JAM uses u32 service IDs, stored as signed i32 in PostgreSQL).
+/// The `service` parameter accepts decimal or `0x` hex IDs with Grafana
+/// `{a,b}` multi-select syntax.
 #[utoipa::path(
     get,
     path = "/api/grafana/services",
     params(ServiceQuery),
     responses(
-        (status = 200, description = "Service totals", body = Vec<ServiceRow>),
+        (status = 200, description = "Per-service totals", body = [ServiceRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -408,12 +458,18 @@ async fn services(
 }
 
 /// Time-bucketed per-service metrics (WP counts and gas usage).
+///
+/// Same `service_stats_1m` aggregate as `/services`, re-bucketed via
+/// `time_bucket()` to the requested interval (default 1 m). Returns per-bucket
+/// work package counts and gas consumed split by type: authorization (95),
+/// refinement (101), execution (47) — event types as defined in JIP-3.
+/// Service IDs are hex-encoded. Supports Grafana `{a,b}` multi-select.
 #[utoipa::path(
     get,
     path = "/api/grafana/services/timeseries",
     params(ServiceTimeseriesQuery),
     responses(
-        (status = 200, description = "Service time-series", body = Vec<ServiceTimeseriesRow>),
+        (status = 200, description = "Service time-series", body = [ServiceTimeseriesRow]),
         (status = 400, description = "Invalid interval"),
         (status = 500, description = "Database error"),
     ),
@@ -440,11 +496,17 @@ async fn services_timeseries(
 }
 
 /// All known nodes with metadata.
+///
+/// Returns every node that has ever connected, from the `nodes` table (updated
+/// on TCP connect/disconnect and status events). Sorted by `is_connected DESC,
+/// last_seen_at DESC` (connected nodes first). `total_event_count` is the sum
+/// of the current-session counter and the historical total across reconnects.
+/// No time range required.
 #[utoipa::path(
     get,
     path = "/api/grafana/nodes",
     responses(
-        (status = 200, description = "Node list", body = Vec<NodeRow>),
+        (status = 200, description = "All known nodes", body = [NodeRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -460,13 +522,19 @@ async fn nodes(
         .map_err(|e| map_sqlx_error("grafana/nodes", e))
 }
 
-/// Raw node status rows at ~2s granularity.
+/// Raw node status rows at ~2 s granularity.
+///
+/// Reads the `node_stats` hypertable directly (not an aggregate). Each row is
+/// inserted from a Status event (type 10, as defined in JIP-3) that nodes send
+/// periodically. Contains peer counts, DA shard/preimage storage metrics, and
+/// guarantee distribution across cores. The `node` parameter accepts a
+/// comma-separated list with Grafana `{a,b}` multi-select syntax.
 #[utoipa::path(
     get,
     path = "/api/grafana/node-stats",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Node stats", body = Vec<NodeStatsRow>),
+        (status = 200, description = "Raw node status snapshots", body = [NodeStatsRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -484,13 +552,19 @@ async fn node_stats(
         .map_err(|e| map_sqlx_error("grafana/node-stats", e))
 }
 
-/// 1-minute aggregated node stats. Network-wide without node filter, per-node with.
+/// 1-minute aggregated node stats from `node_stats_1m`.
+///
+/// Without a node filter, returns **network-wide** aggregates per 1-minute
+/// bucket: AVG/MIN/MAX across all nodes for each metric (peers, shards,
+/// preimages, guarantees). With a node filter, returns per-node aggregate
+/// rows. The `node` parameter accepts comma-separated IDs with Grafana
+/// `{a,b}` multi-select syntax.
 #[utoipa::path(
     get,
     path = "/api/grafana/node-stats-aggregate",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Aggregated node stats", body = Vec<NodeStatsAggregateRow>),
+        (status = 200, description = "Aggregated node stats (network-wide or per-node)", body = [NodeStatsAggregateRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -509,11 +583,17 @@ async fn node_stats_aggregate(
 }
 
 /// TimescaleDB internal metadata: table sizes, row counts, compression.
+///
+/// Queries three TimescaleDB internal functions: `hypertable_detailed_size()`
+/// for table/index/toast byte breakdown, `approximate_row_count()` for fast
+/// row estimates on hypertables (exact `COUNT(*)` for smaller tables like
+/// `wp_tracking`, `slot_convergence`, `nodes`), and `chunk_compression_stats()`
+/// for compression ratios. No parameters required.
 #[utoipa::path(
     get,
     path = "/api/grafana/db-stats",
     responses(
-        (status = 200, description = "Database stats", body = DbStatsResponse),
+        (status = 200, description = "TimescaleDB metadata", body = DbStatsResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -530,12 +610,20 @@ async fn db_stats(
 }
 
 /// Work package pipeline bottleneck analysis with percentile timings.
+///
+/// Queries `wp_tracking` table using `percentile_cont(0.5)` and
+/// `percentile_cont(0.95)` on the inter-stage timestamp deltas for each
+/// pipeline stage: authorize (received→authorized), refine (authorized→refined),
+/// report (refined→report_built), guarantee (report_built→guarantee_built),
+/// distribute (guarantee_built→distributed), and pipeline_total
+/// (received→distributed or last_updated). Failure rate is the ratio of WPs
+/// with `failed_at IS NOT NULL`. Optional `core` filter narrows to a single core.
 #[utoipa::path(
     get,
     path = "/api/grafana/bottlenecks",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Pipeline bottlenecks", body = Vec<BottlenecksResponse>),
+        (status = 200, description = "Pipeline bottleneck analysis", body = [BottlenecksResponse]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -553,12 +641,18 @@ async fn bottlenecks(
 }
 
 /// Work package pipeline funnel — counts how many WPs reached each stage.
+///
+/// Queries `wp_tracking` with `COUNT(*) FILTER (WHERE stage_timestamp IS NOT NULL)`
+/// for each pipeline stage: received, authorized, refined, report_built,
+/// guarantee_built, distributed, and failed. A WP counted as "distributed" has
+/// successfully completed the entire pipeline. "failed" counts WPs with
+/// `failed_at` set at any stage.
 #[utoipa::path(
     get,
     path = "/api/grafana/wp-funnel",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Pipeline funnel", body = WpFunnelResponse),
+        (status = 200, description = "Pipeline funnel counts", body = WpFunnelResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -575,13 +669,19 @@ async fn wp_funnel(
         .map_err(|e| map_sqlx_error("grafana/wp-funnel", e))
 }
 
-/// Static metadata for all telemetry event types, optionally filtered by group.
+/// Static metadata for all telemetry event types (as defined in JIP-3).
+///
+/// Returns in-memory metadata for all 115 event types — no database query.
+/// Each entry includes the numeric ID, human-readable name, and group. Use
+/// the `group` parameter to filter by group name (e.g. `blocks`, `wp_pipeline`,
+/// `failures`). The `failures` group is a virtual group spanning all
+/// Failed/Discarded/Duplicate events across categories.
 #[utoipa::path(
     get,
     path = "/api/grafana/event-types",
     params(EventTypesParams),
     responses(
-        (status = 200, description = "Event type metadata", body = Vec<crate::event_type_meta::EventTypeMeta>),
+        (status = 200, description = "Event type metadata", body = [crate::event_type_meta::EventTypeMeta]),
     ),
     tag = "grafana"
 )]
@@ -596,13 +696,20 @@ async fn event_types(Query(params): Query<EventTypesParams>) -> impl IntoRespons
     }
 }
 
-/// Raw events from the events hypertable, filtered by event type.
+/// Raw events from the `events` hypertable, filtered by event type.
+///
+/// Returns the most recent events matching the given event types, ordered by
+/// timestamp DESC. The `event_types` parameter is required and accepts numeric
+/// IDs (as defined in JIP-3), group names (e.g. `wp_pipeline`, `failures`),
+/// or event names (e.g. `Authored`), expanded server-side via
+/// `expand_event_types()`. Default limit is 500, capped at 2000. The `data`
+/// field contains the full event-specific JSONB payload which varies by type.
 #[utoipa::path(
     get,
     path = "/api/grafana/events",
     params(EventsQuery),
     responses(
-        (status = 200, description = "Raw events", body = Vec<EventRow>),
+        (status = 200, description = "Raw event records", body = [EventRow]),
         (status = 400, description = "Missing event_types parameter"),
         (status = 500, description = "Database error"),
     ),

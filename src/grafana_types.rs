@@ -69,16 +69,16 @@ pub struct TimeseriesRow {
     pub ts: DateTime<Utc>,
     /// Aggregated event count for this bucket + group
     pub count: i64,
-    /// Event type code (present when group_by=event_type)
+    /// Numeric event type code as defined in JIP-3 (present only when group_by=event_type)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event_type: Option<i16>,
-    /// Human-readable event type name (present when group_by=event_type)
+    /// Human-readable event type name, resolved from event_type_meta (present only when group_by=event_type)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event_type_name: Option<&'static str>,
-    /// Core index (present when group_by=core)
+    /// Core index (present only when group_by=core)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub core: Option<i16>,
-    /// Node identifier (present when group_by=node_id)
+    /// Node identifier (present only when group_by=node_id)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node_id: Option<String>,
 }
@@ -94,11 +94,11 @@ pub struct TimeseriesRow {
 pub struct CoreSummary {
     /// Core index
     pub core: i16,
-    /// WorkPackageReceived events (type 94)
+    /// WorkPackageReceived events (type 94 as defined in JIP-3)
     pub work_packages: i64,
-    /// GuaranteeBuilt events (type 105)
+    /// GuaranteeBuilt events (type 105 as defined in JIP-3)
     pub guarantees: i64,
-    /// WorkPackageFailed events (type 92)
+    /// WorkPackageFailed events (type 92 as defined in JIP-3)
     pub failures: i64,
 }
 
@@ -106,29 +106,32 @@ pub struct CoreSummary {
 ///
 /// **Data source:** Same as `CoreSummary` for counters. The `recent_work_packages`
 /// come from the `wp_tracking` table, which is populated by the enricher
-/// (`src/enricher.rs`) correlating WP pipeline events across nodes — tracking
-/// each work package from submission through authorization, refinement,
-/// report building, guarantee building, distribution, or failure.
+/// (`src/enricher.rs`) correlating WP pipeline events (types 90–109 as defined
+/// in JIP-3) across nodes — tracking each work package from submission through
+/// authorization, refinement, report building, guarantee building, distribution,
+/// or failure.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct CoreDetail {
     /// Core index
     pub core: i16,
-    /// WorkPackageReceived events (type 94)
+    /// WorkPackageReceived events (type 94 as defined in JIP-3)
     pub work_packages: i64,
-    /// GuaranteeBuilt events (type 105)
+    /// GuaranteeBuilt events (type 105 as defined in JIP-3)
     pub guarantees: i64,
-    /// WorkPackageFailed events (type 92)
+    /// WorkPackageFailed events (type 92 as defined in JIP-3)
     pub failures: i64,
     /// Up to 100 most recent work packages for this core
     pub recent_work_packages: Vec<WpTrackingRow>,
 }
 
-/// A work package lifecycle record from the enricher's `wp_tracking` table.
+/// A work package lifecycle record from `wp_tracking`.
 ///
-/// **Data source:** `wp_tracking` hypertable, populated by the enricher which
-/// correlates WP pipeline telemetry events (types 90-109) across multiple nodes.
-/// Each row tracks one work package through its entire lifecycle with timestamps
-/// for each pipeline stage.
+/// **Data source:** `wp_tracking` hypertable, populated by the `wp_tracker`
+/// module which correlates WP pipeline events (as defined in JIP-3) across
+/// multiple nodes: 94 (WorkPackageReceived), 95 (Authorized), 101 (Refined),
+/// 102 (WorkReportBuilt), 105 (GuaranteeBuilt), 109 (GuaranteeDistributed),
+/// 92 (WorkPackageFailed). Each row tracks one work package through its entire
+/// lifecycle with timestamps for each pipeline stage.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct WpTrackingRow {
     /// Hex-encoded work package hash
@@ -230,7 +233,7 @@ pub struct BlockContentsRow {
 /// 47 (BlockExecuted) for execution gas.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ServiceRow {
-    /// Service ID (hex-encoded, e.g. "0xff")
+    /// Service ID, hex-encoded (e.g. "0xff"). JAM uses u32 service IDs; stored as i32 in PostgreSQL.
     pub service_id: String,
     /// Total WorkPackageReceived events
     pub work_packages: i64,
@@ -258,7 +261,7 @@ pub struct ServiceRow {
 pub struct ServiceTimeseriesRow {
     /// Bucket start timestamp
     pub ts: DateTime<Utc>,
-    /// Service ID (hex-encoded)
+    /// Service ID, hex-encoded (same encoding as ServiceRow)
     pub service_id: String,
     /// WorkPackageReceived count in bucket
     pub work_packages: i64,
@@ -275,8 +278,9 @@ pub struct ServiceTimeseriesRow {
 /// Node metadata record.
 ///
 /// **Data source:** `nodes` table, updated on TCP connect/disconnect and
-/// status events. `total_event_count` is `event_count` (current session)
-/// plus `total_events` (historical, accumulated across reconnects).
+/// Status events (type 10 as defined in JIP-3). `total_event_count` is computed
+/// as `event_count` (current session) + `total_events` (historical, accumulated
+/// across reconnects).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct NodeRow {
     /// Unique node identifier (64-char hex)
@@ -297,7 +301,7 @@ pub struct NodeRow {
     pub last_seen_at: DateTime<Utc>,
     /// Whether the node is currently connected
     pub is_connected: bool,
-    /// Total events received across all sessions
+    /// Total events received across all sessions (event_count + total_events)
     pub total_event_count: i64,
     /// TCP address
     pub address: Option<String>,
@@ -345,9 +349,10 @@ pub struct NodeStatsRow {
 /// 1-minute aggregated node stats.
 ///
 /// **Data source:** `node_stats_1m` continuous aggregate (1-minute rollup of
-/// `node_stats`). In network-wide mode (no node filter), returns AVG/MIN/MAX
-/// across all nodes per bucket. In per-node mode, returns the raw aggregate
-/// rows for the requested nodes.
+/// `node_stats`). In **network-wide** mode (no node filter), values are
+/// aggregated across all nodes: `avg_*` = AVG of per-node averages,
+/// `min_*` = global MIN, `max_*` = global MAX per bucket. In **per-node**
+/// mode, returns the raw per-node aggregate rows with `node_id` populated.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct NodeStatsAggregateRow {
     /// Bucket start timestamp
@@ -451,11 +456,13 @@ pub struct CompressionInfo {
 
 /// Work package pipeline bottleneck analysis.
 ///
-/// **Data source:** `wp_tracking` table. Stage timings are computed via
-/// `percentile_cont(0.5/0.95)` on the inter-stage timestamp deltas
-/// (received→authorized→refined→report_built→guarantee_built→distributed).
-/// The pipeline_total measures received_at to distributed_at (or last_updated
-/// for incomplete WPs). Failure rate is the ratio of WPs with `failed_at` set.
+/// **Data source:** `wp_tracking` table, populated by the `wp_tracker` module
+/// correlating JIP-3 events 94→95→101→102→105→109 (and 92 for failures).
+/// Stage timings are computed via `percentile_cont(0.5/0.95)` on the
+/// inter-stage timestamp deltas (received→authorized→refined→report_built→
+/// guarantee_built→distributed). The pipeline_total measures received_at to
+/// distributed_at (or last_updated for incomplete WPs). Failure rate is the
+/// ratio of WPs with `failed_at` set.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct BottlenecksResponse {
     /// Percentile timings for each pipeline stage
@@ -500,10 +507,13 @@ pub struct StageTiming {
 
 /// Work package pipeline funnel — how many WPs reached each stage.
 ///
-/// **Data source:** `wp_tracking` table. Each count represents WPs that have
-/// a non-null timestamp for that stage. A WP reaching "distributed" has
-/// successfully completed the full pipeline. "failed" counts WPs with
-/// `failed_at` set at any stage.
+/// **Data source:** `wp_tracking` table, populated by the `wp_tracker` module
+/// which correlates WP pipeline events (as defined in JIP-3) across nodes:
+/// 94 (WorkPackageReceived) → received, 95 (Authorized) → authorized,
+/// 101 (Refined) → refined, 102 (WorkReportBuilt) → report_built,
+/// 105 (GuaranteeBuilt) → guarantee_built, 109 (GuaranteeDistributed) →
+/// distributed, 92 (WorkPackageFailed) → failed. Each count represents WPs
+/// that have a non-null timestamp for that stage.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct WpFunnelResponse {
     /// Total work packages in range
@@ -538,7 +548,7 @@ pub struct EventRow {
     pub ts: DateTime<Utc>,
     /// Node that reported this event
     pub node_id: String,
-    /// Event type code
+    /// Event type code as defined in JIP-3
     pub event_type: i16,
     /// Full event payload (structure varies by event type)
     pub data: serde_json::Value,
