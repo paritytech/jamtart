@@ -26,7 +26,7 @@ async fn setup_ws_test() -> (String, Arc<TelemetryServer>, u16) {
         .expect("Failed to cleanup test data");
 
     let telemetry_server = Arc::new(
-        TelemetryServer::with_options("127.0.0.1:0", Arc::clone(&store), true)
+        TelemetryServer::with_options("127.0.0.1:0", Some(Arc::clone(&store)), true, 0)
             .await
             .unwrap(),
     );

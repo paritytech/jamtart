@@ -75,7 +75,10 @@ impl BatchWriter {
     /// Each worker locks the mutex briefly to drain events, then releases it and
     /// performs the slow DB write without holding the lock. This provides natural
     /// work-stealing: idle workers pick up events while busy workers are blocked on I/O.
-    pub fn new(store: Arc<EventStore>) -> Self {
+    ///
+    /// When `store` is `None` (--no-database mode), workers still drain the channel
+    /// to prevent backpressure/OOM but skip all DB writes.
+    pub fn new(store: Option<Arc<EventStore>>) -> Self {
         let (sender, receiver) = mpsc::channel(CHANNEL_SIZE);
         let shared_rx = Arc::new(Mutex::new(receiver));
         let shared_node_counts: Arc<Mutex<HashMap<NodeId, u64>>> =
@@ -83,7 +86,7 @@ impl BatchWriter {
 
         // Single dedicated task for flushing node stats to DB.
         // Aggregates counts from all writers, preventing deadlocks from concurrent UPDATEs.
-        {
+        if let Some(ref store) = store {
             let counts = shared_node_counts.clone();
             let store = store.clone();
             tokio::spawn(async move {
@@ -247,7 +250,7 @@ impl BatchWriter {
 async fn writer_worker(
     id: usize,
     receiver: Arc<Mutex<Receiver<WriterCommand>>>,
-    store: Arc<EventStore>,
+    store: Option<Arc<EventStore>>,
     shared_node_counts: Arc<Mutex<HashMap<NodeId, u64>>>,
 ) -> Result<()> {
     let mut event_batch: Vec<EventRecord> = Vec::with_capacity(MAX_BATCH_SIZE);
@@ -273,26 +276,36 @@ async fn writer_worker(
         .await;
 
         // Phase 2: Flush EVENT batch to DB (slow, milliseconds — NO lock held)
+        // In no-database mode, just discard the events (channel was drained to prevent OOM)
         if !event_batch.is_empty() {
-            let result = flush_events(&store, &mut event_batch).await;
-            if let Err(e) = result {
-                error!("Writer {} event flush error: {}", id, e);
+            if let Some(ref store) = store {
+                let result = flush_events(store, &mut event_batch).await;
+                if let Err(e) = result {
+                    error!("Writer {} event flush error: {}", id, e);
+                }
+            } else {
+                event_batch.clear();
             }
         }
 
         // Phase 3: Flush node connect/disconnect immediately
         // These are rare events (~1024 total) so no need to batch on a timer
-        if !node_connects.is_empty() {
-            let connects = std::mem::take(&mut node_connects);
-            if let Err(e) = store.store_nodes_connected_batch(&connects).await {
-                warn!("Writer {} failed to flush node connects: {}", id, e);
+        if let Some(ref store) = store {
+            if !node_connects.is_empty() {
+                let connects = std::mem::take(&mut node_connects);
+                if let Err(e) = store.store_nodes_connected_batch(&connects).await {
+                    warn!("Writer {} failed to flush node connects: {}", id, e);
+                }
             }
-        }
-        if !node_disconnects.is_empty() {
-            let disconnects = std::mem::take(&mut node_disconnects);
-            if let Err(e) = store.store_nodes_disconnected_batch(&disconnects).await {
-                warn!("Writer {} failed to flush node disconnects: {}", id, e);
+            if !node_disconnects.is_empty() {
+                let disconnects = std::mem::take(&mut node_disconnects);
+                if let Err(e) = store.store_nodes_disconnected_batch(&disconnects).await {
+                    warn!("Writer {} failed to flush node disconnects: {}", id, e);
+                }
             }
+        } else {
+            node_connects.clear();
+            node_disconnects.clear();
         }
 
         // Send flush response after everything is written
@@ -316,17 +329,19 @@ async fn writer_worker(
 
         if should_shutdown {
             // Final event flush
-            if let Err(e) = flush_events(&store, &mut event_batch).await {
-                error!("Writer {} shutdown event flush error: {}", id, e);
-            }
-            // Final node updates flush
-            if !node_connects.is_empty() {
-                let _ = store.store_nodes_connected_batch(&node_connects).await;
-            }
-            if !node_disconnects.is_empty() {
-                let _ = store
-                    .store_nodes_disconnected_batch(&node_disconnects)
-                    .await;
+            if let Some(ref store) = store {
+                if let Err(e) = flush_events(store, &mut event_batch).await {
+                    error!("Writer {} shutdown event flush error: {}", id, e);
+                }
+                // Final node updates flush
+                if !node_connects.is_empty() {
+                    let _ = store.store_nodes_connected_batch(&node_connects).await;
+                }
+                if !node_disconnects.is_empty() {
+                    let _ = store
+                        .store_nodes_disconnected_batch(&node_disconnects)
+                        .await;
+                }
             }
             // Merge remaining node counts into shared aggregator
             if !node_counts.is_empty() {

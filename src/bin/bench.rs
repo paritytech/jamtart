@@ -586,6 +586,11 @@ async fn run_websocket(ws_url: String, run_ends: Instant) -> WsMetrics {
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
                             match val.get("type").and_then(|t| t.as_str()) {
                                 Some("event") => metrics.events_received += 1,
+                                Some("batch") => {
+                                    if let Some(data) = val.get("data").and_then(|d| d.as_array()) {
+                                        metrics.events_received += data.len() as u64;
+                                    }
+                                }
                                 Some("stats") => metrics.stats_received += 1,
                                 Some("metrics") => metrics.metrics_received += 1,
                                 _ => {}

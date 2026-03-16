@@ -54,7 +54,11 @@ chrono = { version = "0.4", features = ["serde"] }
 dashmap = "6.0"
 futures = "0.3"
 hex = "0.4"
+tokio-stream = { version = "0.1", features = ["sync"] }
 rand = "0.8"
+
+# Networking
+socket2 = { version = "0.5", features = ["all"] }
 
 # Performance optimizations
 parking_lot = "0.12"
@@ -66,10 +70,12 @@ tikv-jemallocator = { version = "0.6", optional = true }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# CLI argument parsing
+clap = { version = "4.4", features = ["derive", "env"] }
+
 # Dashboard dependencies (feature-gated to avoid bloating main binary)
 ratatui = { version = "0.26", optional = true }
 crossterm = { version = "0.27", optional = true }
-clap = { version = "4.4", features = ["derive", "env"], optional = true }
 reqwest = { version = "0.11", features = ["json", "blocking"], optional = true }
 
 # Benchmark dependencies (feature-gated)
@@ -91,7 +97,7 @@ url = "2.5"
 [features]
 default = ["jemalloc"]
 jemalloc = ["tikv-jemallocator"]
-dashboard = ["ratatui", "crossterm", "clap", "reqwest"]
+dashboard = ["ratatui", "crossterm", "reqwest"]
 bench = ["reqwest", "hdrhistogram", "tokio-tungstenite"]
 profiling = ["dhat"]
 
@@ -108,10 +114,11 @@ codegen-units = 256
 
 [profile.release]
 opt-level = 3
-lto = "fat"
-codegen-units = 1
+# lto = "fat"
+lto = false
+codegen-units = 16
 panic = "abort"
-strip = "symbols"
+debug = true
 
 [profile.profiling]
 inherits = "release"
