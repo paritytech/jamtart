@@ -71,13 +71,29 @@
         }
       ],
       "title": "Validator Activity Grid",
-      "type": "table"
+      "type": "table",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "indexByName": {
+              "Validator": 0,
+              "Blocks Produced": 1,
+              "Tickets": 2,
+              "Guarantees": 3,
+              "Assurances": 4,
+              "Preimages": 5,
+              "Preimage Bytes": 6
+            }
+          }
+        }
+      ]
     },
     {
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 13 },
       "id": 3,
-      "title": "Activity over Time",
+      "title": "Activity over Time (All Validators)",
       "type": "row"
     },
     {
@@ -89,7 +105,7 @@
           "custom": {
             "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
             "axisLabel": "Blocks", "axisPlacement": "auto",
-            "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none",
+            "drawStyle": "bars", "fillOpacity": 80, "gradientMode": "none",
             "hideFrom": { "legend": false, "tooltip": false, "viz": false },
             "lineWidth": 2, "scaleDistribution": { "type": "linear" },
             "thresholdsStyle": { "mode": "off" }
@@ -137,7 +153,7 @@
           "custom": {
             "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
             "axisLabel": "Guarantees", "axisPlacement": "auto",
-            "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none",
+            "drawStyle": "bars", "fillOpacity": 80, "gradientMode": "none",
             "hideFrom": { "legend": false, "tooltip": false, "viz": false },
             "lineWidth": 2, "scaleDistribution": { "type": "linear" },
             "thresholdsStyle": { "mode": "off" }
@@ -185,7 +201,7 @@
           "custom": {
             "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
             "axisLabel": "Assurances", "axisPlacement": "auto",
-            "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none",
+            "drawStyle": "bars", "fillOpacity": 80, "gradientMode": "none",
             "hideFrom": { "legend": false, "tooltip": false, "viz": false },
             "lineWidth": 2, "scaleDistribution": { "type": "linear" },
             "thresholdsStyle": { "mode": "off" }
@@ -233,7 +249,7 @@
           "custom": {
             "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
             "axisLabel": "Tickets", "axisPlacement": "auto",
-            "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none",
+            "drawStyle": "bars", "fillOpacity": 80, "gradientMode": "none",
             "hideFrom": { "legend": false, "tooltip": false, "viz": false },
             "lineWidth": 2, "scaleDistribution": { "type": "linear" },
             "thresholdsStyle": { "mode": "off" }
@@ -325,7 +341,24 @@
         }
       ],
       "title": "Validator ${validator} Block-by-Block",
-      "type": "table"
+      "type": "table",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "indexByName": {
+              "Slot": 0,
+              "Time": 1,
+              "Blocks Produced": 2,
+              "Tickets": 3,
+              "Guarantees": 4,
+              "Assurances": 5,
+              "Preimages": 6,
+              "Preimage Bytes": 7
+            }
+          }
+        }
+      ]
     }
   ],
   "schemaVersion": 39,
