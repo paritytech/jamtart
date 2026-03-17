@@ -1084,6 +1084,19 @@ impl EventStore {
                 "event_types parameter is required".into(),
             ));
         }
+        let pre_agg: Vec<i16> = event_types
+            .iter()
+            .copied()
+            .filter(|&et| crate::event_counter::is_pre_aggregated(et as u16))
+            .collect();
+        if !pre_agg.is_empty() {
+            return Err(sqlx::Error::Protocol(
+                format!(
+                    "Event types {:?} are pre-aggregated. Use /timeseries instead.",
+                    pre_agg
+                ),
+            ));
+        }
         let limit = limit.min(2000);
 
         let rows = sqlx::query(

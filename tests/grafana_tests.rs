@@ -1832,16 +1832,12 @@ async fn test_events_endpoint_returns_pre_aggregated_types() {
         time_range_params()
     );
     let response = server.get(&path).await;
-    assert_eq!(response.status_code(), StatusCode::OK);
 
-    let json: Value = response.json();
-    let arr = json.as_array().expect("should return array");
-
-    // After refactoring: pre-aggregated events are no longer in raw table
+    // After refactoring: /events returns 400 for pre-aggregated types
     assert_eq!(
-        arr.len(),
-        0,
-        "pre-aggregated type 128 should not appear in raw events"
+        response.status_code(),
+        StatusCode::BAD_REQUEST,
+        "pre-aggregated type 128 should be rejected with 400"
     );
 }
 
