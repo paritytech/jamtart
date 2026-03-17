@@ -520,7 +520,7 @@ impl EventStore {
         let mut conn = self.write_pool.acquire().await?;
         let mut copy_in = conn
             .copy_in_raw(
-                "COPY events (timestamp, node_id, event_id, event_type, data, slot, core, submission_id) FROM STDIN WITH (FORMAT binary)",
+                "COPY ingested_raw_events (timestamp, node_id, event_id, event_type, data, slot, core, submission_id) FROM STDIN WITH (FORMAT binary)",
             )
             .await?;
 
@@ -562,7 +562,7 @@ impl EventStore {
 
             sqlx::query(
                 r#"
-                INSERT INTO events (timestamp, node_id, event_id, event_type, data, slot, core, submission_id)
+                INSERT INTO ingested_raw_events (timestamp, node_id, event_id, event_type, data, slot, core, submission_id)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 "#,
             )
@@ -849,7 +849,7 @@ impl EventStore {
     ///
     /// **DANGER**: Deletes ALL data. Only use in test/dev environments.
     pub async fn cleanup_test_data(&self) -> Result<(), sqlx::Error> {
-        sqlx::query("TRUNCATE TABLE events, nodes, stats_cache, node_stats, event_services, wp_tracking, slot_convergence CASCADE")
+        sqlx::query("TRUNCATE TABLE ingested_raw_events, nodes, stats_cache, node_stats, event_services, wp_tracking, slot_convergence CASCADE")
             .execute(&self.pool)
             .await?;
         Ok(())

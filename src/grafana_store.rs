@@ -507,7 +507,7 @@ impl EventStore {
                 (data->'Authored'->'outline'->>'num_tickets')::INT          AS num_tickets,
                 (data->'Authored'->'outline'->>'num_dispute_verdicts')::INT AS num_disputes,
                 (data->'Authored'->'outline'->>'size_bytes')::INT           AS extrinsic_size
-            FROM events
+            FROM ingested_raw_events
             WHERE event_type = 42
               AND slot IS NOT NULL
               AND timestamp >= $1 AND timestamp < $2
@@ -818,12 +818,12 @@ impl EventStore {
         let table_rows = sqlx::query_as::<_, TableSize>(
             r#"
             SELECT
-                'events'::TEXT AS table_name,
+                'ingested_raw_events'::TEXT AS table_name,
                 total_bytes::BIGINT,
                 table_bytes::BIGINT,
                 index_bytes::BIGINT,
                 toast_bytes::BIGINT
-            FROM hypertable_detailed_size('events')
+            FROM hypertable_detailed_size('ingested_raw_events')
             UNION ALL
             SELECT
                 'node_stats'::TEXT,
@@ -848,8 +848,8 @@ impl EventStore {
         let row_counts = sqlx::query_as::<_, RowCount>(
             r#"
             SELECT
-                'events'::TEXT AS table_name,
-                approximate_row_count('events') AS row_count
+                'ingested_raw_events'::TEXT AS table_name,
+                approximate_row_count('ingested_raw_events') AS row_count
             UNION ALL
             SELECT 'node_stats', approximate_row_count('node_stats')
             UNION ALL
@@ -868,11 +868,11 @@ impl EventStore {
         let compression = sqlx::query_as::<_, CompressionInfo>(
             r#"
             SELECT
-                'events'::TEXT AS table_name,
+                'ingested_raw_events'::TEXT AS table_name,
                 COUNT(*) FILTER (WHERE compression_status = 'Compressed')::BIGINT AS compressed_chunks,
                 COALESCE(SUM(before_compression_total_bytes), 0)::BIGINT AS before_compression_bytes,
                 COALESCE(SUM(after_compression_total_bytes), 0)::BIGINT AS after_compression_bytes
-            FROM chunk_compression_stats('events')
+            FROM chunk_compression_stats('ingested_raw_events')
             UNION ALL
             SELECT
                 'node_stats'::TEXT,
@@ -1039,7 +1039,7 @@ impl EventStore {
         let rows = sqlx::query(
             r#"
             SELECT timestamp, node_id, event_type, data
-            FROM events
+            FROM ingested_raw_events
             WHERE timestamp >= $1 AND timestamp < $2
               AND event_type = ANY($3)
             ORDER BY timestamp DESC
