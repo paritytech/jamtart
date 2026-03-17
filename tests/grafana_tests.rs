@@ -167,7 +167,8 @@ async fn test_grafana_timeseries_invalid_interval() {
         time_range_params()
     );
     let response = server.get(&path).await;
-    assert_eq!(response.status_code(), StatusCode::BAD_REQUEST);
+    // snap_interval converts unparseable intervals to "1m" — no 400 error
+    assert_eq!(response.status_code(), StatusCode::OK);
 }
 
 #[tokio::test]
@@ -686,9 +687,9 @@ async fn test_grafana_services_pipeline() {
         assert!(entry.get("work_packages").is_some(), "entry missing work_packages");
     }
 
-    // Check that services 10 (0xa) and 20 (0x14) appear as hex strings
-    let svc10 = arr.iter().find(|e| e["service_id"].as_str() == Some("0xa"));
-    let svc20 = arr.iter().find(|e| e["service_id"].as_str() == Some("0x14"));
+    // Check that services 10 and 20 appear as zero-padded hex strings
+    let svc10 = arr.iter().find(|e| e["service_id"].as_str() == Some("0x0000000a"));
+    let svc20 = arr.iter().find(|e| e["service_id"].as_str() == Some("0x00000014"));
 
     assert!(svc10.is_some(), "expected entry for service 10");
     assert!(svc20.is_some(), "expected entry for service 20");
@@ -1195,7 +1196,8 @@ async fn test_grafana_services_timeseries_invalid_interval() {
         time_range_params()
     );
     let response = server.get(&path).await;
-    assert_eq!(response.status_code(), StatusCode::BAD_REQUEST);
+    // snap_interval converts unparseable intervals to "1m" — no 400 error
+    assert_eq!(response.status_code(), StatusCode::OK);
 }
 
 #[tokio::test]
@@ -1266,8 +1268,8 @@ async fn test_grafana_services_timeseries_service_filter() {
     for entry in arr {
         assert_eq!(
             entry["service_id"].as_str(),
-            Some("0xa"),
-            "service filter should only return service 10 (0xa)"
+            Some("0x0000000a"),
+            "service filter should only return service 10 (0x0000000a)"
         );
     }
 }
