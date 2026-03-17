@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tart_backend::events::{Event, NodeInformation};
 use tart_backend::types::*;
+// GuaranteeDiscardReason, GuaranteeSummary, ConnectionSide, BoundedString — all from types::*
 use tart_backend::TelemetryServer;
 use tokio::time::sleep;
 
@@ -395,6 +396,142 @@ pub fn wp_failed_event_with_reason(ts: u64, submission_id: u64, reason: &str) ->
 #[allow(dead_code)]
 pub fn node_id_hex(node_id: u8) -> String {
     hex::encode([node_id; 32])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pre-aggregated event constructors (for storage optimization tests)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Construct a BlockAnnounced event (event_type=62).
+#[allow(dead_code)]
+pub fn block_announced_event(ts: u64, slot: u32) -> Event {
+    Event::BlockAnnounced {
+        timestamp: ts,
+        peer: [0x01; 32],
+        announcer: ConnectionSide::Remote,
+        slot,
+        hash: [0xAA; 32],
+    }
+}
+
+/// Construct an AssuranceSent event (event_type=128).
+#[allow(dead_code)]
+pub fn assurance_sent_event(ts: u64) -> Event {
+    Event::AssuranceSent {
+        timestamp: ts,
+        distributing_id: 1,
+        recipient: [0x02; 32],
+    }
+}
+
+/// Construct an AssuranceReceived event (event_type=131).
+#[allow(dead_code)]
+pub fn assurance_received_event(ts: u64) -> Event {
+    Event::AssuranceReceived {
+        timestamp: ts,
+        sender: [0x03; 32],
+        anchor: [0xBB; 32],
+    }
+}
+
+/// Construct an AssuranceSendFailed event (event_type=127).
+#[allow(dead_code)]
+pub fn assurance_send_failed_event(ts: u64, reason: &str) -> Event {
+    Event::AssuranceSendFailed {
+        timestamp: ts,
+        distributing_id: 1,
+        recipient: [0x04; 32],
+        reason: BoundedString::new(reason).unwrap(),
+    }
+}
+
+/// Construct a GuaranteeReceived event (event_type=112).
+#[allow(dead_code)]
+pub fn guarantee_received_event(ts: u64, slot: u32, report_hash: [u8; 32]) -> Event {
+    Event::GuaranteeReceived {
+        timestamp: ts,
+        receiving_id: 1,
+        outline: GuaranteeSummary {
+            work_report_hash: report_hash,
+            slot,
+            guarantors: vec![0, 1, 2],
+        },
+    }
+}
+
+/// Construct a GuaranteeDiscarded event (event_type=113).
+#[allow(dead_code)]
+pub fn guarantee_discarded_event(
+    ts: u64,
+    slot: u32,
+    report_hash: [u8; 32],
+    reason: GuaranteeDiscardReason,
+) -> Event {
+    Event::GuaranteeDiscarded {
+        timestamp: ts,
+        outline: GuaranteeSummary {
+            work_report_hash: report_hash,
+            slot,
+            guarantors: vec![0, 1, 2],
+        },
+        reason,
+    }
+}
+
+/// Construct a SendingGuarantee event (event_type=106).
+#[allow(dead_code)]
+pub fn sending_guarantee_event(ts: u64, built_id: u64) -> Event {
+    Event::SendingGuarantee {
+        timestamp: ts,
+        built_id,
+        recipient: [0x05; 32],
+    }
+}
+
+/// Construct a GuaranteeSent event (event_type=108).
+#[allow(dead_code)]
+pub fn guarantee_sent_event(ts: u64, sending_id: u64) -> Event {
+    Event::GuaranteeSent {
+        timestamp: ts,
+        sending_id,
+    }
+}
+
+/// Construct a TicketTransferred event (event_type=84).
+#[allow(dead_code)]
+pub fn ticket_transferred_event(ts: u64, from_proxy: bool, epoch: u32) -> Event {
+    Event::TicketTransferred {
+        timestamp: ts,
+        peer: [0x06; 32],
+        sender: ConnectionSide::Local,
+        from_proxy,
+        epoch,
+        attempt: 0,
+        id: [0x77; 32],
+    }
+}
+
+/// Construct a ShardRequestFailed event (event_type=122).
+#[allow(dead_code)]
+pub fn shard_request_failed_event(ts: u64, reason: &str) -> Event {
+    Event::ShardRequestFailed {
+        timestamp: ts,
+        request_id: 1,
+        reason: BoundedString::new(reason).unwrap(),
+    }
+}
+
+/// Construct a PreimageAnnounced event (event_type=191).
+#[allow(dead_code)]
+pub fn preimage_announced_event(ts: u64, service: u32) -> Event {
+    Event::PreimageAnnounced {
+        timestamp: ts,
+        peer: [0x07; 32],
+        announcer: ConnectionSide::Remote,
+        service,
+        hash: [0xCC; 32],
+        length: 1024,
+    }
 }
 
 /// Construct a BlockExecuted event (event_type=47) with service gas data.

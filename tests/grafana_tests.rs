@@ -1484,3 +1484,359 @@ async fn test_grafana_events_with_limit() {
     let arr = json.as_array().expect("should return array");
     assert_eq!(arr.len(), 2, "should respect limit=2");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Group 13: Pre-aggregated event types — baseline tests for storage optimization
+// These tests establish correctness before the refactoring. After refactoring,
+// events flow through per-group count tables + UNION views instead of raw table.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Helper: sum counts for a given event_type from a timeseries JSON array.
+fn sum_counts_for_type(arr: &[Value], event_type: i64) -> i64 {
+    arr.iter()
+        .filter(|e| e["event_type"].as_i64() == Some(event_type))
+        .map(|e| e["count"].as_i64().unwrap_or(0))
+        .sum()
+}
+
+#[tokio::test]
+async fn test_timeseries_pre_aggregated_event_types() {
+    let (server, telemetry, port, store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    let mut events = Vec::new();
+    for i in 0..3u64 {
+        events.push(common::block_announced_event(ts + i * 1000, 100));
+    }
+    for i in 0..5u64 {
+        events.push(common::assurance_sent_event(ts + i * 1000));
+    }
+    for i in 0..2u64 {
+        events.push(common::assurance_received_event(ts + i * 1000));
+    }
+
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+    common::refresh_aggregates(store.pool()).await;
+
+    let path = format!(
+        "/api/grafana/timeseries?{}&interval=1m&event_types=62,128,131",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+
+    assert_eq!(sum_counts_for_type(arr, 62), 3, "expected 3 BlockAnnounced");
+    assert_eq!(sum_counts_for_type(arr, 128), 5, "expected 5 AssuranceSent");
+    assert_eq!(
+        sum_counts_for_type(arr, 131),
+        2,
+        "expected 2 AssuranceReceived"
+    );
+}
+
+#[tokio::test]
+async fn test_timeseries_mixed_raw_and_pre_aggregated() {
+    let (server, telemetry, port, store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    let mut events = Vec::new();
+    // Raw event types (stay in ingested_raw_events)
+    for i in 0..2u64 {
+        events.push(common::wp_received_event(ts + i * 1000, 9000 + i, 3));
+    }
+    events.push(common::best_block_event(ts, 100));
+    // Pre-aggregated event type
+    for i in 0..3u64 {
+        events.push(common::block_announced_event(ts + i * 1000, 100));
+    }
+
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+    common::refresh_aggregates(store.pool()).await;
+
+    let path = format!(
+        "/api/grafana/timeseries?{}&interval=1m",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+
+    assert_eq!(
+        sum_counts_for_type(arr, 94),
+        2,
+        "expected 2 WPReceived (raw)"
+    );
+    assert_eq!(
+        sum_counts_for_type(arr, 11),
+        1,
+        "expected 1 BestBlockChanged (raw)"
+    );
+    assert_eq!(
+        sum_counts_for_type(arr, 62),
+        3,
+        "expected 3 BlockAnnounced (pre-agg)"
+    );
+}
+
+#[tokio::test]
+async fn test_timeseries_group_filter_with_pre_aggregated() {
+    let (server, telemetry, port, store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    let mut events = Vec::new();
+    for i in 0..2u64 {
+        events.push(common::assurance_sent_event(ts + i * 1000));
+    }
+    events.push(common::assurance_received_event(ts));
+    events.push(common::assurance_send_failed_event(ts, "timeout"));
+
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+    common::refresh_aggregates(store.pool()).await;
+
+    let path = format!(
+        "/api/grafana/timeseries?{}&interval=1m&event_types=assurances",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+
+    assert_eq!(
+        sum_counts_for_type(arr, 127),
+        1,
+        "expected 1 AssuranceSendFailed"
+    );
+    assert_eq!(sum_counts_for_type(arr, 128), 2, "expected 2 AssuranceSent");
+    assert_eq!(
+        sum_counts_for_type(arr, 131),
+        1,
+        "expected 1 AssuranceReceived"
+    );
+}
+
+#[tokio::test]
+async fn test_timeseries_failures_cross_storage_paths() {
+    let (server, telemetry, port, store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    let mut events = Vec::new();
+    // WPFailed (92) stays raw
+    for i in 0..2u64 {
+        events.push(common::wp_received_event(ts + i * 1000, 7000 + i, 3));
+        events.push(common::wp_failed_event(ts + i * 1000 + 500, 7000 + i));
+    }
+    // AssuranceSendFailed (127) will be pre-aggregated
+    for i in 0..3u64 {
+        events.push(common::assurance_send_failed_event(ts + i * 1000, "timeout"));
+    }
+
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+    common::refresh_aggregates(store.pool()).await;
+
+    let path = format!(
+        "/api/grafana/timeseries?{}&interval=1m&event_types=failures",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+
+    assert_eq!(
+        sum_counts_for_type(arr, 92),
+        2,
+        "expected 2 WPFailed (raw path)"
+    );
+    assert_eq!(
+        sum_counts_for_type(arr, 127),
+        3,
+        "expected 3 AssuranceSendFailed (pre-agg path)"
+    );
+}
+
+#[tokio::test]
+async fn test_guarantee_sending_enriched_core_in_timeseries() {
+    let (server, telemetry, port, store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    // Full enricher chain: WPReceived → GuaranteeBuilt → SendingGuarantee → GuaranteeSent
+    let events = vec![
+        common::wp_received_event(ts, 8000, 3),
+        common::guarantee_built_event(ts + 1000, 8000),
+        common::sending_guarantee_event(ts + 2000, 1), // built_id=1 (first event from this node)
+        common::guarantee_sent_event(ts + 3000, 1),    // sending_id=1
+    ];
+
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+    common::refresh_aggregates(store.pool()).await;
+
+    let path = format!(
+        "/api/grafana/timeseries?{}&interval=1m&event_types=106,108",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+
+    assert_eq!(
+        sum_counts_for_type(arr, 106),
+        1,
+        "expected 1 SendingGuarantee"
+    );
+    assert_eq!(
+        sum_counts_for_type(arr, 108),
+        1,
+        "expected 1 GuaranteeSent"
+    );
+}
+
+#[tokio::test]
+async fn test_guarantee_receiving_slot_and_reason() {
+    let (server, telemetry, port, store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+    let report_hash = [0xDD; 32];
+
+    let mut events = Vec::new();
+    // 2x GuaranteeReceived
+    for i in 0..2u64 {
+        events.push(common::guarantee_received_event(
+            ts + i * 1000,
+            200,
+            report_hash,
+        ));
+    }
+    // 3x GuaranteeDiscarded with Superseded + 1x with TooManyGuarantees
+    for i in 0..3u64 {
+        events.push(common::guarantee_discarded_event(
+            ts + i * 1000,
+            200,
+            report_hash,
+            GuaranteeDiscardReason::ReplacedByBetter,
+        ));
+    }
+    events.push(common::guarantee_discarded_event(
+        ts + 3000,
+        200,
+        report_hash,
+        GuaranteeDiscardReason::TooManyGuarantees,
+    ));
+
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+    common::refresh_aggregates(store.pool()).await;
+
+    let path = format!(
+        "/api/grafana/timeseries?{}&interval=1m&event_types=112,113",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+
+    assert_eq!(
+        sum_counts_for_type(arr, 112),
+        2,
+        "expected 2 GuaranteeReceived"
+    );
+    assert_eq!(
+        sum_counts_for_type(arr, 113),
+        4,
+        "expected 4 GuaranteeDiscarded"
+    );
+}
+
+#[tokio::test]
+async fn test_timeseries_multi_bucket_aggregation() {
+    let (server, telemetry, port, store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    let mut events = Vec::new();
+    // 3 events in one 30s bucket
+    for i in 0..3u64 {
+        events.push(common::assurance_sent_event(ts + i * 1000));
+    }
+    // 2 events in the next 30s bucket (35s later)
+    for i in 0..2u64 {
+        events.push(common::assurance_sent_event(ts + 35_000_000 + i * 1000));
+    }
+
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+    common::refresh_aggregates(store.pool()).await;
+
+    // At 1m resolution, both buckets should be merged
+    let path = format!(
+        "/api/grafana/timeseries?{}&interval=1m&event_types=128",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+
+    let total: i64 = sum_counts_for_type(arr, 128);
+    assert_eq!(total, 5, "expected 5 total AssuranceSent across buckets");
+}
+
+#[tokio::test]
+async fn test_events_endpoint_returns_pre_aggregated_types() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    let mut events = Vec::new();
+    for i in 0..3u64 {
+        events.push(common::assurance_sent_event(ts + i * 1000));
+    }
+
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+
+    let path = format!(
+        "/api/grafana/events?{}&event_types=128",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+
+    // BEFORE refactoring: returns 3 events (raw table has them)
+    // AFTER refactoring: change this assertion — returns 400 error
+    // (type 128 is pre-aggregated, no longer in raw table)
+    assert_eq!(arr.len(), 3, "expected 3 AssuranceSent events from raw table");
+}

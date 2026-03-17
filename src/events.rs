@@ -1598,6 +1598,125 @@ impl Encode for Event {
                 submission_or_share_id.encode(buf)?;
                 reason.encode(buf)?;
             }
+            // Guarantee sending (106-108)
+            Event::SendingGuarantee {
+                built_id,
+                recipient,
+                ..
+            } => {
+                built_id.encode(buf)?;
+                recipient.encode(buf)?;
+            }
+            Event::GuaranteeSendFailed {
+                sending_id, reason, ..
+            } => {
+                sending_id.encode(buf)?;
+                reason.encode(buf)?;
+            }
+            Event::GuaranteeSent { sending_id, .. } => {
+                sending_id.encode(buf)?;
+            }
+            // Guarantee receiving (110-113)
+            Event::ReceivingGuarantee { sender, .. } => {
+                sender.encode(buf)?;
+            }
+            Event::GuaranteeReceiveFailed {
+                receiving_id,
+                reason,
+                ..
+            } => {
+                receiving_id.encode(buf)?;
+                reason.encode(buf)?;
+            }
+            Event::GuaranteeReceived {
+                receiving_id,
+                outline,
+                ..
+            } => {
+                receiving_id.encode(buf)?;
+                outline.encode(buf)?;
+            }
+            Event::GuaranteeDiscarded {
+                outline, reason, ..
+            } => {
+                outline.encode(buf)?;
+                reason.encode(buf)?;
+            }
+            // Shards (120-125)
+            Event::SendingShardRequest {
+                guarantor,
+                erasure_root,
+                shard,
+                ..
+            } => {
+                guarantor.encode(buf)?;
+                erasure_root.encode(buf)?;
+                shard.encode(buf)?;
+            }
+            Event::ReceivingShardRequest { assurer, .. } => {
+                assurer.encode(buf)?;
+            }
+            Event::ShardRequestFailed {
+                request_id, reason, ..
+            } => {
+                request_id.encode(buf)?;
+                reason.encode(buf)?;
+            }
+            Event::ShardRequestSent { request_id, .. } => {
+                request_id.encode(buf)?;
+            }
+            Event::ShardRequestReceived {
+                request_id,
+                erasure_root,
+                shard,
+                ..
+            } => {
+                request_id.encode(buf)?;
+                erasure_root.encode(buf)?;
+                shard.encode(buf)?;
+            }
+            Event::ShardsTransferred { request_id, .. } => {
+                request_id.encode(buf)?;
+            }
+            // Assurances (126-131)
+            Event::DistributingAssurance { statement, .. } => {
+                statement.encode(buf)?;
+            }
+            Event::AssuranceSendFailed {
+                distributing_id,
+                recipient,
+                reason,
+                ..
+            } => {
+                distributing_id.encode(buf)?;
+                recipient.encode(buf)?;
+                reason.encode(buf)?;
+            }
+            Event::AssuranceSent {
+                distributing_id,
+                recipient,
+                ..
+            } => {
+                distributing_id.encode(buf)?;
+                recipient.encode(buf)?;
+            }
+            Event::AssuranceDistributed {
+                distributing_id, ..
+            } => {
+                distributing_id.encode(buf)?;
+            }
+            Event::AssuranceReceiveFailed {
+                sender, reason, ..
+            } => {
+                sender.encode(buf)?;
+                reason.encode(buf)?;
+            }
+            Event::AssuranceReceived {
+                sender, anchor, ..
+            } => {
+                sender.encode(buf)?;
+                anchor.encode(buf)?;
+            }
             _ => {
                 todo!("Event::Encode not implemented for {:?}", self.event_type())
             }
@@ -1659,6 +1778,31 @@ impl Encode for Event {
             Event::WorkReportBuilt { outline, .. } => 8 + outline.encoded_size(),
             Event::GuaranteesDistributed { .. } => 8, // submission_id only
             Event::WorkPackageFailed { reason, .. } => 8 + reason.encoded_size(),
+            // Guarantee sending (106-108)
+            Event::SendingGuarantee { .. } => 8 + 32, // built_id + recipient
+            Event::GuaranteeSendFailed { reason, .. } => 8 + reason.encoded_size(),
+            Event::GuaranteeSent { .. } => 8, // sending_id
+            // Guarantee receiving (110-113)
+            Event::ReceivingGuarantee { .. } => 32, // sender (PeerId)
+            Event::GuaranteeReceiveFailed { reason, .. } => 8 + reason.encoded_size(),
+            Event::GuaranteeReceived { outline, .. } => 8 + outline.encoded_size(),
+            Event::GuaranteeDiscarded { outline, reason, .. } => {
+                outline.encoded_size() + reason.encoded_size()
+            }
+            // Shards (120-125)
+            Event::SendingShardRequest { .. } => 32 + 32 + 2, // guarantor + erasure_root + shard
+            Event::ReceivingShardRequest { .. } => 32, // assurer
+            Event::ShardRequestFailed { reason, .. } => 8 + reason.encoded_size(),
+            Event::ShardRequestSent { .. } => 8,
+            Event::ShardRequestReceived { .. } => 8 + 32 + 2, // request_id + erasure_root + shard
+            Event::ShardsTransferred { .. } => 8,
+            // Assurances (126-131)
+            Event::DistributingAssurance { statement, .. } => statement.encoded_size(),
+            Event::AssuranceSendFailed { reason, .. } => 8 + 32 + reason.encoded_size(),
+            Event::AssuranceSent { .. } => 8 + 32, // distributing_id + recipient
+            Event::AssuranceDistributed { .. } => 8,
+            Event::AssuranceReceiveFailed { reason, .. } => 32 + reason.encoded_size(),
+            Event::AssuranceReceived { .. } => 32 + 32, // sender + anchor
             _ => todo!(
                 "Event::encoded_size not implemented for {:?}",
                 self.event_type()
