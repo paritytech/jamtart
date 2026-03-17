@@ -149,6 +149,10 @@ impl NodeEventEnricher {
             | Event::BlockTransferred { slot, .. } => {
                 fields.slot = Some(*slot);
             }
+            Event::GuaranteeReceived { outline, .. }
+            | Event::GuaranteeDiscarded { outline, .. } => {
+                fields.slot = Some(outline.slot);
+            }
             _ => {}
         }
 
@@ -939,5 +943,37 @@ mod tests {
         };
         let fields = enricher.process(&executed, 2);
         assert_eq!(fields.slot, Some(500));
+    }
+
+    #[test]
+    fn test_guarantee_received_slot_extraction() {
+        let mut enricher = NodeEventEnricher::default();
+        let event = Event::GuaranteeReceived {
+            timestamp: 1000,
+            receiving_id: 1,
+            outline: crate::types::GuaranteeSummary {
+                work_report_hash: [0xAA; 32],
+                slot: 42,
+                guarantors: vec![1, 2, 3],
+            },
+        };
+        let fields = enricher.process(&event, 1);
+        assert_eq!(fields.slot, Some(42));
+    }
+
+    #[test]
+    fn test_guarantee_discarded_slot_extraction() {
+        let mut enricher = NodeEventEnricher::default();
+        let event = Event::GuaranteeDiscarded {
+            timestamp: 1000,
+            outline: crate::types::GuaranteeSummary {
+                work_report_hash: [0xBB; 32],
+                slot: 99,
+                guarantors: vec![4, 5],
+            },
+            reason: crate::types::GuaranteeDiscardReason::ReplacedByBetter,
+        };
+        let fields = enricher.process(&event, 1);
+        assert_eq!(fields.slot, Some(99));
     }
 }
