@@ -7,6 +7,7 @@ pub mod circuit_breaker;
 pub mod decoder;
 pub mod encoding;
 pub mod enricher;
+pub mod event_counter;
 pub mod event_broadcaster;
 pub mod event_type_meta;
 pub mod events;

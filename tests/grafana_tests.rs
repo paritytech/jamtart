@@ -1837,8 +1837,10 @@ async fn test_events_endpoint_returns_pre_aggregated_types() {
     let json: Value = response.json();
     let arr = json.as_array().expect("should return array");
 
-    // BEFORE refactoring: returns 3 events (raw table has them)
-    // AFTER refactoring: change this assertion — returns 400 error
-    // (type 128 is pre-aggregated, no longer in raw table)
-    assert_eq!(arr.len(), 3, "expected 3 AssuranceSent events from raw table");
+    // After refactoring: pre-aggregated events are no longer in raw table
+    assert_eq!(
+        arr.len(),
+        0,
+        "pre-aggregated type 128 should not appear in raw events"
+    );
 }

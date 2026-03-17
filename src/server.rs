@@ -6,6 +6,7 @@ use crate::batch_writer::{BatchWriter, EventRecord};
 use crate::decoder::{decode_message_frame, Decode, DecodingError};
 use crate::enricher::EnricherMap;
 use crate::event_broadcaster::{build_ws_envelope, BroadcastRecord, EventBroadcaster};
+use crate::event_counter::{self, EventCounter};
 use crate::events::{Event, NodeInformation};
 use crate::rate_limiter::RateLimiter;
 use crate::slot_tracker::{self, SlotTracker};
@@ -137,6 +138,7 @@ pub struct TelemetryServer {
     /// When true, rate limiting is disabled (--no-rate-limit flag)
     rate_limit_disabled: bool,
     enricher_map: EnricherMap,
+    event_counter: EventCounter,
     slot_tracker: SlotTracker,
     wp_tracker: WpTracker,
     connection_watch: Arc<tokio::sync::watch::Sender<usize>>,
@@ -237,6 +239,7 @@ impl TelemetryServer {
             store,
             rate_limit_disabled: no_rate_limit,
             enricher_map: crate::enricher::new_enricher_map(),
+            event_counter: event_counter::new_event_counter(),
             slot_tracker: slot_tracker::new_slot_tracker(),
             wp_tracker: wp_tracker::new_wp_tracker(),
             connection_watch: Arc::new(connection_watch),
@@ -312,6 +315,7 @@ impl TelemetryServer {
             let broadcaster = Arc::clone(&self.broadcaster);
             let rate_limit_disabled = self.rate_limit_disabled;
             let enricher_map = Arc::clone(&self.enricher_map);
+            let event_counter = Arc::clone(&self.event_counter);
             let slot_tracker = Arc::clone(&self.slot_tracker);
             let wp_tracker = Arc::clone(&self.wp_tracker);
             let connection_watch = Arc::clone(&self.connection_watch);
@@ -364,6 +368,7 @@ impl TelemetryServer {
                                                 broadcaster: Arc::clone(&broadcaster),
                                                 rate_limit_disabled,
                                                 enricher_map: Arc::clone(&enricher_map),
+                                                event_counter: Arc::clone(&event_counter),
                                                 slot_tracker: Arc::clone(&slot_tracker),
                                                 wp_tracker: Arc::clone(&wp_tracker),
                                                 connection_watch: Arc::clone(&connection_watch),
@@ -421,6 +426,7 @@ impl TelemetryServer {
             broadcaster: Arc::clone(&self.broadcaster),
             rate_limit_disabled: self.rate_limit_disabled,
             enricher_map: Arc::clone(&self.enricher_map),
+            event_counter: Arc::clone(&self.event_counter),
             slot_tracker: Arc::clone(&self.slot_tracker),
             wp_tracker: Arc::clone(&self.wp_tracker),
             connection_watch: Arc::clone(&self.connection_watch),
@@ -482,6 +488,10 @@ impl TelemetryServer {
         Arc::clone(&self.enricher_map)
     }
 
+    pub fn get_event_counter(&self) -> EventCounter {
+        Arc::clone(&self.event_counter)
+    }
+
     pub fn get_slot_tracker(&self) -> SlotTracker {
         Arc::clone(&self.slot_tracker)
     }
@@ -490,7 +500,7 @@ impl TelemetryServer {
         Arc::clone(&self.wp_tracker)
     }
 
-    /// Flush slot_tracker and wp_tracker to database on-demand.
+    /// Flush slot_tracker, wp_tracker, and event_counter to database on-demand.
     /// For testing only — in production these flush every 5s via the periodic task.
     pub async fn flush_trackers(&self) {
         if let Some(ref store) = self.store {
@@ -502,6 +512,7 @@ impl TelemetryServer {
             )
             .await;
             crate::wp_tracker::flush_wp_tracker(&self.wp_tracker, store.pool()).await;
+            event_counter::flush_event_counter(&self.event_counter, store.pool()).await;
         }
     }
 
@@ -516,6 +527,7 @@ impl TelemetryServer {
             )
             .await;
             crate::wp_tracker::flush_wp_tracker(&self.wp_tracker, store.pool()).await;
+            event_counter::flush_event_counter(&self.event_counter, store.pool()).await;
         }
     }
 
@@ -559,6 +571,7 @@ struct ConnectionContext {
     broadcaster: Arc<EventBroadcaster>,
     rate_limit_disabled: bool,
     enricher_map: EnricherMap,
+    event_counter: EventCounter,
     slot_tracker: SlotTracker,
     wp_tracker: WpTracker,
     connection_watch: Arc<tokio::sync::watch::Sender<usize>>,
@@ -576,6 +589,7 @@ async fn handle_connection_optimized(
         broadcaster,
         rate_limit_disabled,
         enricher_map,
+        event_counter,
         slot_tracker,
         wp_tracker,
         connection_watch,
@@ -832,6 +846,21 @@ async fn handle_connection_optimized(
                                     }
                                     _ => {}
                                 }
+                            }
+
+                            // Pre-aggregate high-volume events into in-memory counters
+                            let et_val = event.event_type() as u16;
+                            if event_counter::is_pre_aggregated(et_val) {
+                                let unix_micros = crate::types::JCE_EPOCH_UNIX_MICROS
+                                    + event.timestamp() as i64;
+                                event_counter::record_event(
+                                    &event_counter,
+                                    &event,
+                                    &enriched,
+                                    unix_micros,
+                                    &node_id_str,
+                                    event.event_type(),
+                                );
                             }
 
                             // Build WS envelope in ingestion thread (parallelized across 8 runtimes)

@@ -23,6 +23,10 @@ const VALID_TABLES: &[&str] = &[
     "event_stats_1m",
     "event_stats_1h",
     "core_stats_1m",
+    "all_event_stats_30s",
+    "all_event_stats_1m",
+    "all_event_stats_1h",
+    "all_core_stats_1m",
 ];
 
 /// Convert a human-friendly interval string to seconds for table selection.
@@ -126,21 +130,21 @@ impl EventStore {
         // Select aggregate table (interval-based, then retention-aware upgrade)
         let age = Utc::now() - start;
         let table = if group_by == Some("core") || core.is_some() {
-            "core_stats_1m"
+            "all_core_stats_1m"
         } else if interval_secs < 60 {
             if age > chrono::Duration::days(3) {
-                "event_stats_1m" // 30s retention is 3 days, upgrade silently
+                "all_event_stats_1m" // 30s retention is 3 days, upgrade silently
             } else {
-                "event_stats_30s"
+                "all_event_stats_30s"
             }
         } else if interval_secs < 3600 {
             if age > chrono::Duration::days(30) {
-                "event_stats_1h" // 1m retention is 30 days, upgrade silently
+                "all_event_stats_1h" // 1m retention is 30 days, upgrade silently
             } else {
-                "event_stats_1m"
+                "all_event_stats_1m"
             }
         } else {
-            "event_stats_1h"
+            "all_event_stats_1h"
         };
 
         // Safety: table is from a hardcoded set
@@ -168,12 +172,12 @@ impl EventStore {
         ];
         let mut bind_idx = 3u32;
 
-        if node.is_some() && table != "core_stats_1m" {
+        if node.is_some() && table != "all_core_stats_1m" {
             wheres.push(format!("node_id = ${bind_idx}"));
             bind_idx += 1;
         }
 
-        if core.is_some() && table == "core_stats_1m" && group_by != Some("core") {
+        if core.is_some() && table == "all_core_stats_1m" && group_by != Some("core") {
             wheres.push(format!("core = ${bind_idx}"));
             bind_idx += 1;
         }
@@ -204,12 +208,12 @@ impl EventStore {
             .bind(end);
 
         if let Some(n) = node {
-            if table != "core_stats_1m" {
+            if table != "all_core_stats_1m" {
                 query = query.bind(n.to_string());
             }
         }
         if let Some(c) = core {
-            if table == "core_stats_1m" && group_by != Some("core") {
+            if table == "all_core_stats_1m" && group_by != Some("core") {
                 query = query.bind(c);
             }
         }

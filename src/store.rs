@@ -849,7 +849,7 @@ impl EventStore {
     ///
     /// **DANGER**: Deletes ALL data. Only use in test/dev environments.
     pub async fn cleanup_test_data(&self) -> Result<(), sqlx::Error> {
-        sqlx::query("TRUNCATE TABLE ingested_raw_events, nodes, stats_cache, node_stats, event_services, wp_tracking, slot_convergence CASCADE")
+        sqlx::query("TRUNCATE TABLE ingested_raw_events, nodes, stats_cache, node_stats, event_services, wp_tracking, slot_convergence, block_distribution_counts, ticket_counts, guarantee_sending_counts, guarantee_receiving_counts, shard_counts, assurance_counts, bundle_counts, segment_counts, preimage_counts CASCADE")
             .execute(&self.pool)
             .await?;
         Ok(())

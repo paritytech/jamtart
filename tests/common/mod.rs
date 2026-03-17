@@ -167,6 +167,16 @@ pub async fn refresh_aggregates(pool: &sqlx::PgPool) {
         "core_stats_1m",
         "service_stats_1m",
         "node_stats_1m",
+        // Count table aggregates (pre-aggregated events)
+        "block_distribution_counts_1m",
+        "ticket_counts_1m",
+        "guarantee_sending_counts_1m",
+        "guarantee_receiving_counts_1m",
+        "shard_counts_1m",
+        "assurance_counts_1m",
+        "bundle_counts_1m",
+        "segment_counts_1m",
+        "preimage_counts_1m",
     ];
     for agg in aggregates {
         let sql = format!(
@@ -302,9 +312,15 @@ pub fn authorized_event(ts: u64, submission_id: u64) -> Event {
         timestamp: ts,
         submission_or_share_id: submission_id,
         cost: IsAuthorizedCost {
-            total: ExecCost { gas_used: 100_000, elapsed_ns: 200_000 },
+            total: ExecCost {
+                gas_used: 100_000,
+                elapsed_ns: 200_000,
+            },
             load_ns: 50_000,
-            host_call: ExecCost { gas_used: 30_000, elapsed_ns: 60_000 },
+            host_call: ExecCost {
+                gas_used: 30_000,
+                elapsed_ns: 60_000,
+            },
         },
     }
 }
@@ -316,19 +332,35 @@ pub fn refined_event(ts: u64, submission_id: u64) -> Event {
     Event::Refined {
         timestamp: ts,
         submission_or_share_id: submission_id,
-        costs: vec![
-            RefineCost {
-                total: ExecCost { gas_used: 500_000, elapsed_ns: 1_000_000 },
-                load_ns: 100_000,
-                host_call: RefineHostCallCost {
-                    lookup: ExecCost { gas_used: 50_000, elapsed_ns: 100_000 },
-                    vm: ExecCost { gas_used: 200_000, elapsed_ns: 400_000 },
-                    mem: ExecCost { gas_used: 30_000, elapsed_ns: 60_000 },
-                    invoke: ExecCost { gas_used: 100_000, elapsed_ns: 200_000 },
-                    other: ExecCost { gas_used: 20_000, elapsed_ns: 40_000 },
+        costs: vec![RefineCost {
+            total: ExecCost {
+                gas_used: 500_000,
+                elapsed_ns: 1_000_000,
+            },
+            load_ns: 100_000,
+            host_call: RefineHostCallCost {
+                lookup: ExecCost {
+                    gas_used: 50_000,
+                    elapsed_ns: 100_000,
+                },
+                vm: ExecCost {
+                    gas_used: 200_000,
+                    elapsed_ns: 400_000,
+                },
+                mem: ExecCost {
+                    gas_used: 30_000,
+                    elapsed_ns: 60_000,
+                },
+                invoke: ExecCost {
+                    gas_used: 100_000,
+                    elapsed_ns: 200_000,
+                },
+                other: ExecCost {
+                    gas_used: 20_000,
+                    elapsed_ns: 40_000,
                 },
             },
-        ],
+        }],
     }
 }
 
@@ -553,13 +585,31 @@ pub fn block_executed_event(ts: u64, authoring_id: u64, services: &[(u32, u64)])
                     },
                     load_ns: 1000,
                     host_call: AccumulateHostCallCost {
-                        state: ExecCost { gas_used: 0, elapsed_ns: 0 },
-                        lookup: ExecCost { gas_used: 0, elapsed_ns: 0 },
-                        preimage: ExecCost { gas_used: 0, elapsed_ns: 0 },
-                        service: ExecCost { gas_used: 0, elapsed_ns: 0 },
-                        transfer: ExecCost { gas_used: 0, elapsed_ns: 0 },
+                        state: ExecCost {
+                            gas_used: 0,
+                            elapsed_ns: 0,
+                        },
+                        lookup: ExecCost {
+                            gas_used: 0,
+                            elapsed_ns: 0,
+                        },
+                        preimage: ExecCost {
+                            gas_used: 0,
+                            elapsed_ns: 0,
+                        },
+                        service: ExecCost {
+                            gas_used: 0,
+                            elapsed_ns: 0,
+                        },
+                        transfer: ExecCost {
+                            gas_used: 0,
+                            elapsed_ns: 0,
+                        },
                         transfer_dest_gas: 0,
-                        other: ExecCost { gas_used: 0, elapsed_ns: 0 },
+                        other: ExecCost {
+                            gas_used: 0,
+                            elapsed_ns: 0,
+                        },
                     },
                 },
             )
