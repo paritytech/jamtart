@@ -556,6 +556,25 @@ Raw event data matching criteria. Returns the most recent events first.
 curl 'http://localhost:8080/api/grafana/events?start=2025-01-15T00:00:00Z&end=2025-01-15T01:00:00Z&event_types=92,99&limit=100'
 ```
 
+### 1.16 GET /api/grafana/guarantee-discards
+
+Time-bucketed guarantee discard counts grouped by discard reason. Queries the pre-aggregated `guarantee_receiving_counts` table for GuaranteeDiscarded events (type 113).
+
+**Query:** `GuaranteeDiscardsQuery`
+
+| Param | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `start` | ISO 8601 datetime | yes | - | Start of time range |
+| `end` | ISO 8601 datetime | yes | - | End of time range |
+| `interval` | string | no | 30s | Bucket width (same values as /timeseries) |
+
+**Response:** Array of `{ ts, reason, count }` objects. Reasons are enum variants: `PackageReportedOnChain(0)`, `ReplacedByBetter(1)`, `CannotReportOnChain(2)`, `TooManyGuarantees(3)`, `Other(4)`.
+
+```bash
+# Get guarantee discards by reason over last hour
+curl 'http://localhost:8080/api/grafana/guarantee-discards?start=2025-01-15T00:00:00Z&end=2025-01-15T01:00:00Z&interval=1m'
+```
+
 ---
 
 ## 2. Shared Query Types

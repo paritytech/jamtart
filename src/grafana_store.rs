@@ -1020,6 +1020,52 @@ impl EventStore {
         }])
     }
 
+    // ── 11b. grafana_guarantee_discards ─────────────────────────────
+
+    /// Time-bucketed guarantee discard counts grouped by reason.
+    /// Queries the pre-aggregated guarantee_receiving_counts table.
+    pub async fn grafana_guarantee_discards(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        interval: &str,
+    ) -> Result<Vec<GuaranteeDiscardRow>, sqlx::Error> {
+        let interval = snap_interval(interval);
+        let pg_interval = interval_to_pg(interval);
+
+        let sql = format!(
+            r#"
+            SELECT
+                time_bucket('{pg_interval}'::interval, bucket) AS ts,
+                reason,
+                SUM(event_count)::BIGINT AS count
+            FROM guarantee_receiving_counts
+            WHERE bucket >= $1 AND bucket < $2
+              AND event_type = 113
+              AND reason IS NOT NULL
+            GROUP BY ts, reason
+            ORDER BY ts, reason
+            "#
+        );
+
+        let rows = sqlx::query(&sql)
+            .bind(start)
+            .bind(end)
+            .fetch_all(self.pool())
+            .await?;
+
+        let results = rows
+            .iter()
+            .map(|row| GuaranteeDiscardRow {
+                ts: row.get("ts"),
+                reason: row.get("reason"),
+                count: row.get("count"),
+            })
+            .collect();
+
+        Ok(results)
+    }
+
     // ── 12. grafana_events ────────────────────────────────────────────
 
     /// Generic raw event query from the events hypertable.

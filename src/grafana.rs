@@ -38,6 +38,7 @@ use crate::onchain_types::*;
         wp_funnel,
         event_types,
         events,
+        guarantee_discards,
         onchain_cores_summary,
         onchain_cores_timeseries,
         onchain_core_detail,
@@ -70,6 +71,7 @@ use crate::onchain_types::*;
         Percentiles,
         WpFunnelResponse,
         EventRow,
+        GuaranteeDiscardRow,
         crate::event_type_meta::EventTypeMeta,
         OnchainCoreSummary,
         OnchainCoreTimeseries,
@@ -106,6 +108,7 @@ pub fn router() -> Router<ApiState> {
         .route("/wp-funnel", get(wp_funnel))
         .route("/event-types", get(event_types))
         .route("/events", get(events))
+        .route("/guarantee-discards", get(guarantee_discards))
         .nest("/onchain", onchain_router())
 }
 
@@ -212,6 +215,17 @@ pub struct EventsQuery {
     pub event_types: String,
     /// Maximum number of events to return (default: 500, max: 2000)
     pub limit: Option<i64>,
+}
+
+/// Parameters for guarantee discards query.
+#[derive(Deserialize, IntoParams)]
+pub struct GuaranteeDiscardsQuery {
+    /// Start of time range (ISO 8601)
+    pub start: DateTime<Utc>,
+    /// End of time range (ISO 8601)
+    pub end: DateTime<Utc>,
+    /// Bucket width (same values as /timeseries)
+    pub interval: Option<String>,
 }
 
 // ── Helper functions ───────────────────────────────────────────────────
@@ -745,6 +759,36 @@ async fn events(
         .await
         .map(Json)
         .map_err(|e| map_sqlx_error("grafana/events", e))
+}
+
+/// Time-bucketed guarantee discard counts grouped by reason.
+///
+/// Queries the pre-aggregated `guarantee_receiving_counts` table for
+/// GuaranteeDiscarded events (type 113), grouped by discard reason.
+/// Reasons are enum variants: PackageReportedOnChain(0), ReplacedByBetter(1),
+/// CannotReportOnChain(2), TooManyGuarantees(3), Other(4).
+#[utoipa::path(
+    get,
+    path = "/api/grafana/guarantee-discards",
+    params(GuaranteeDiscardsQuery),
+    responses(
+        (status = 200, description = "Guarantee discards by reason", body = [GuaranteeDiscardRow]),
+        (status = 400, description = "Invalid interval"),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn guarantee_discards(
+    Query(q): Query<GuaranteeDiscardsQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let interval = q.interval.as_deref().unwrap_or("30s");
+    state
+        .store
+        .grafana_guarantee_discards(q.start, q.end, interval)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/guarantee-discards", e))
 }
 
 // ── On-chain statistics query params ─────────────────────────────────────

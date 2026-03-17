@@ -1844,3 +1844,175 @@ async fn test_events_endpoint_returns_pre_aggregated_types() {
         "pre-aggregated type 128 should not appear in raw events"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Group 14: Post-refactoring tests for count tables + new endpoints
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_guarantee_discards_endpoint() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+    let report_hash = [0xDD; 32];
+
+    let mut events = Vec::new();
+    // 3x GuaranteeDiscarded with ReplacedByBetter
+    for i in 0..3u64 {
+        events.push(common::guarantee_discarded_event(
+            ts + i * 1000,
+            200,
+            report_hash,
+            GuaranteeDiscardReason::ReplacedByBetter,
+        ));
+    }
+    // 2x GuaranteeDiscarded with TooManyGuarantees
+    for i in 0..2u64 {
+        events.push(common::guarantee_discarded_event(
+            ts + 3000 + i * 1000,
+            200,
+            report_hash,
+            GuaranteeDiscardReason::TooManyGuarantees,
+        ));
+    }
+
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+
+    let path = format!(
+        "/api/grafana/guarantee-discards?{}&interval=30s",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+
+    // Sum counts by reason
+    let replaced: i64 = arr
+        .iter()
+        .filter(|e| {
+            e["reason"]
+                .as_str()
+                .map_or(false, |r| r.contains("ReplacedByBetter"))
+        })
+        .map(|e| e["count"].as_i64().unwrap_or(0))
+        .sum();
+    let too_many: i64 = arr
+        .iter()
+        .filter(|e| {
+            e["reason"]
+                .as_str()
+                .map_or(false, |r| r.contains("TooManyGuarantees"))
+        })
+        .map(|e| e["count"].as_i64().unwrap_or(0))
+        .sum();
+
+    assert_eq!(replaced, 3, "expected 3 ReplacedByBetter discards");
+    assert_eq!(too_many, 2, "expected 2 TooManyGuarantees discards");
+}
+
+#[tokio::test]
+async fn test_timeseries_group_by_core_with_pre_aggregated() {
+    let (server, telemetry, port, store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    // Full enricher chain: WPReceived(core=3) → GuaranteeBuilt → SendingGuarantee → GuaranteeSent
+    let events = vec![
+        common::wp_received_event(ts, 8500, 3),
+        common::guarantee_built_event(ts + 1000, 8500),
+        common::sending_guarantee_event(ts + 2000, 1),
+        common::guarantee_sent_event(ts + 3000, 1),
+    ];
+
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+    common::refresh_aggregates(store.pool()).await;
+
+    let path = format!(
+        "/api/grafana/timeseries?{}&interval=1m&event_types=106,108&group_by=core",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+
+    // Should have results grouped by core
+    assert!(!arr.is_empty(), "expected results for group_by=core");
+    // All results should have core=3
+    for entry in arr {
+        assert_eq!(
+            entry["core"].as_i64(),
+            Some(3),
+            "expected core=3, got {:?}",
+            entry
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_event_services_dual_write_for_segments() {
+    let (_server, telemetry, port, store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    // WPReceived(core=3, service_ids=[10,20]) provides enrichment context
+    // WorkPackageHashMapped(160) is both a SERVICE_EVENT_TYPE and a pre-aggregated type
+    let events = vec![
+        common::wp_received_event(ts, 8600, 3),
+        Event::WorkPackageHashMapped {
+            timestamp: ts + 1000,
+            submission_id: 8600,
+            work_package_hash: [0xCC; 32],
+            segments_root: [0xDD; 32],
+        },
+    ];
+
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+
+    let pool = store.pool();
+
+    // Check event_services has rows for type 160 with service_ids 10 and 20
+    let es_rows: Vec<(i16, i32)> = sqlx::query_as(
+        "SELECT event_type, service_id FROM event_services WHERE event_type = 160",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("event_services query failed");
+
+    let service_ids: Vec<i32> = es_rows.iter().map(|r| r.1).collect();
+    assert!(
+        service_ids.contains(&10) && service_ids.contains(&20),
+        "expected service_ids [10, 20] in event_services, got {:?}",
+        service_ids
+    );
+
+    // Check segment_counts has row for type 160
+    let count: (i64,) = sqlx::query_as(
+        "SELECT COALESCE(SUM(event_count), 0)::BIGINT FROM segment_counts WHERE event_type = 160",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("segment_counts query failed");
+    assert!(count.0 > 0, "expected segment_counts row for type 160");
+
+    // Check ingested_raw_events has NO row for type 160 (filtered out)
+    let raw: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*)::BIGINT FROM ingested_raw_events WHERE event_type = 160",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("ingested_raw_events query failed");
+    assert_eq!(
+        raw.0, 0,
+        "type 160 should not be in ingested_raw_events"
+    );
+}

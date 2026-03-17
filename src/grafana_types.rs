@@ -618,6 +618,23 @@ pub struct WpFunnelResponse {
     pub failed: i64,
 }
 
+// ── /api/grafana/guarantee-discards ──────────────────────────────────────
+
+/// Time-bucketed guarantee discard counts grouped by reason.
+///
+/// **Data source:** `guarantee_receiving_counts` table (pre-aggregated at
+/// ingestion). Queries event_type=113 (GuaranteeDiscarded) rows where
+/// reason IS NOT NULL, grouped by (bucket, reason).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct GuaranteeDiscardRow {
+    /// Bucket start timestamp
+    pub ts: DateTime<Utc>,
+    /// Discard reason (e.g. "ReplacedByBetter(1)", "TooManyGuarantees(3)")
+    pub reason: String,
+    /// Number of discards in this bucket with this reason
+    pub count: i64,
+}
+
 // ── /api/grafana/events ─────────────────────────────────────────────────
 
 /// Raw event record from the events hypertable.
