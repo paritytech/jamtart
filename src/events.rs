@@ -1717,6 +1717,17 @@ impl Encode for Event {
                 sender.encode(buf)?;
                 anchor.encode(buf)?;
             }
+            // Work package hash mapping (160)
+            Event::WorkPackageHashMapped {
+                submission_id,
+                work_package_hash,
+                segments_root,
+                ..
+            } => {
+                submission_id.encode(buf)?;
+                work_package_hash.encode(buf)?;
+                segments_root.encode(buf)?;
+            }
             _ => {
                 todo!("Event::Encode not implemented for {:?}", self.event_type())
             }
@@ -1803,6 +1814,8 @@ impl Encode for Event {
             Event::AssuranceDistributed { .. } => 8,
             Event::AssuranceReceiveFailed { reason, .. } => 32 + reason.encoded_size(),
             Event::AssuranceReceived { .. } => 32 + 32, // sender + anchor
+            // Work package hash mapping (160)
+            Event::WorkPackageHashMapped { .. } => 8 + 32 + 32, // submission_id + wp_hash + segments_root
             _ => todo!(
                 "Event::encoded_size not implemented for {:?}",
                 self.event_type()
