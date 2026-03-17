@@ -386,9 +386,15 @@ impl EventStore {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
         interval: &str,
+        validators: Option<&[i16]>,
     ) -> Result<Vec<OnchainValidatorTimeseries>, sqlx::Error> {
         let pg_interval = validate_interval(interval)?;
 
+        let validator_filter = if validators.is_some() {
+            "AND validator_index = ANY($3)"
+        } else {
+            ""
+        };
         let sql = format!(
             r#"
             SELECT
@@ -403,16 +409,19 @@ impl EventStore {
             FROM onchain_validator_stats
             WHERE timestamp >= $1 AND timestamp < $2
               AND on_best_chain = true
+              {validator_filter}
             GROUP BY ts, validator_index
             ORDER BY ts, validator_index
             "#
         );
 
-        sqlx::query_as::<_, OnchainValidatorTimeseries>(&sql)
+        let mut query = sqlx::query_as::<_, OnchainValidatorTimeseries>(&sql)
             .bind(start)
-            .bind(end)
-            .fetch_all(self.pool())
-            .await
+            .bind(end);
+        if let Some(vals) = validators {
+            query = query.bind(vals);
+        }
+        query.fetch_all(self.pool()).await
     }
 
     /// Raw per-block on-chain stats for a single validator.

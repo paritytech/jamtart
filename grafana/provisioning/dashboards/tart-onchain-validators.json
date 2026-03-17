@@ -659,12 +659,182 @@
     },
     {
       "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 30
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 },
+      "id": 20,
+      "title": "Validator ${validator} Activity",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "[On-Chain] Blocks produced by the selected validator over time.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "fixedColor": "blue", "mode": "fixed" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "Blocks", "axisPlacement": "auto",
+            "drawStyle": "bars", "fillOpacity": 80, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 1, "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
       },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 31 },
+      "id": 21,
+      "options": {
+        "legend": { "calcs": ["max"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "all", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "columns": [
+            { "selector": "ts", "text": "Time", "type": "timestamp" },
+            { "selector": "validator_index", "text": "Validator", "type": "string" },
+            { "selector": "blocks_produced", "text": "Blocks Produced", "type": "number" }
+          ],
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+          "format": "table", "parser": "backend", "refId": "A", "source": "url", "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/onchain/validators/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&validator=${validator}",
+          "url_options": { "method": "GET" }
+        }
+      ],
+      "title": "Blocks Produced — Validator ${validator}",
+      "type": "timeseries",
+      "maxDataPoints": 300
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "[On-Chain] Guarantees made by the selected validator over time.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "fixedColor": "green", "mode": "fixed" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "Guarantees", "axisPlacement": "auto",
+            "drawStyle": "bars", "fillOpacity": 80, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 1, "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 31 },
+      "id": 22,
+      "options": {
+        "legend": { "calcs": ["max"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "all", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "columns": [
+            { "selector": "ts", "text": "Time", "type": "timestamp" },
+            { "selector": "validator_index", "text": "Validator", "type": "string" },
+            { "selector": "guarantees", "text": "Guarantees", "type": "number" }
+          ],
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+          "format": "table", "parser": "backend", "refId": "A", "source": "url", "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/onchain/validators/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&validator=${validator}",
+          "url_options": { "method": "GET" }
+        }
+      ],
+      "title": "Guarantees — Validator ${validator}",
+      "type": "timeseries",
+      "maxDataPoints": 300
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "[On-Chain] Assurances made by the selected validator over time.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "fixedColor": "orange", "mode": "fixed" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "Assurances", "axisPlacement": "auto",
+            "drawStyle": "bars", "fillOpacity": 80, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 1, "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 39 },
+      "id": 23,
+      "options": {
+        "legend": { "calcs": ["max"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "all", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "columns": [
+            { "selector": "ts", "text": "Time", "type": "timestamp" },
+            { "selector": "validator_index", "text": "Validator", "type": "string" },
+            { "selector": "assurances", "text": "Assurances", "type": "number" }
+          ],
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+          "format": "table", "parser": "backend", "refId": "A", "source": "url", "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/onchain/validators/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&validator=${validator}",
+          "url_options": { "method": "GET" }
+        }
+      ],
+      "title": "Assurances — Validator ${validator}",
+      "type": "timeseries",
+      "maxDataPoints": 300
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "[On-Chain] Tickets introduced by the selected validator over time.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "fixedColor": "purple", "mode": "fixed" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "Tickets", "axisPlacement": "auto",
+            "drawStyle": "bars", "fillOpacity": 80, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 1, "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 39 },
+      "id": 24,
+      "options": {
+        "legend": { "calcs": ["max"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "all", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "columns": [
+            { "selector": "ts", "text": "Time", "type": "timestamp" },
+            { "selector": "validator_index", "text": "Validator", "type": "string" },
+            { "selector": "tickets", "text": "Tickets", "type": "number" }
+          ],
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+          "format": "table", "parser": "backend", "refId": "A", "source": "url", "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/onchain/validators/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&validator=${validator}",
+          "url_options": { "method": "GET" }
+        }
+      ],
+      "title": "Tickets — Validator ${validator}",
+      "type": "timeseries",
+      "maxDataPoints": 300
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 47 },
       "id": 8,
       "title": "Validator ${validator} Detail",
       "type": "row"
@@ -704,7 +874,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 31
+        "y": 48
       },
       "id": 9,
       "options": {

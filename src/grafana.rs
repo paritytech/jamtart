@@ -235,6 +235,14 @@ fn strip_grafana_braces(s: &str) -> &str {
     s.strip_prefix('{').and_then(|s| s.strip_suffix('}')).unwrap_or(s)
 }
 
+/// Parse comma-separated validator indices, stripping Grafana curly-brace wrapper.
+fn parse_validator_indices(s: &str) -> Vec<i16> {
+    strip_grafana_braces(s)
+        .split(',')
+        .filter_map(|v| v.trim().parse().ok())
+        .collect()
+}
+
 /// Parse comma-separated node names, stripping Grafana curly-brace wrapper.
 fn parse_node_list(s: &str) -> Vec<String> {
     strip_grafana_braces(s)
@@ -813,6 +821,19 @@ pub struct OnchainTimeseriesQuery {
     pub interval: Option<String>,
 }
 
+/// Parameters for on-chain validator timeseries queries (with optional validator filter).
+#[derive(Deserialize, IntoParams)]
+pub struct OnchainValidatorTimeseriesQuery {
+    /// Start of time range (ISO 8601)
+    pub start: DateTime<Utc>,
+    /// End of time range (ISO 8601)
+    pub end: DateTime<Utc>,
+    /// Bucket width. Supported: 6s, 12s, 18s, 24s, 30s, 1m, 2m, 5m, 10m, 15m, 30m, 1h–1d. Unsupported values are snapped to nearest valid.
+    pub interval: Option<String>,
+    /// Comma-separated validator indices. Supports Grafana {a,b} syntax.
+    pub validator: Option<String>,
+}
+
 /// Parameters for on-chain service queries (with optional service filter).
 #[derive(Deserialize, IntoParams)]
 pub struct OnchainServiceQuery {
@@ -1065,7 +1086,7 @@ async fn onchain_validators_summary(
 #[utoipa::path(
     get,
     path = "/api/grafana/onchain/validators/timeseries",
-    params(OnchainTimeseriesQuery),
+    params(OnchainValidatorTimeseriesQuery),
     responses(
         (status = 200, description = "Time-bucketed per-validator on-chain stats. \
             MAX aggregation (epoch-cumulative values).",
@@ -1076,13 +1097,14 @@ async fn onchain_validators_summary(
     tag = "onchain"
 )]
 async fn onchain_validators_timeseries(
-    Query(q): Query<OnchainTimeseriesQuery>,
+    Query(q): Query<OnchainValidatorTimeseriesQuery>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let interval = q.interval.as_deref().unwrap_or("1m");
+    let validators: Option<Vec<i16>> = q.validator.map(|s| parse_validator_indices(&s));
     state
         .store
-        .onchain_validators_timeseries(q.start, q.end, interval)
+        .onchain_validators_timeseries(q.start, q.end, interval, validators.as_deref())
         .await
         .map(Json)
         .map_err(|e| map_sqlx_error("onchain/validators/timeseries", e))
