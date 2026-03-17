@@ -1810,6 +1810,26 @@ async fn test_timeseries_multi_bucket_aggregation() {
 
     let total: i64 = sum_counts_for_type(arr, 128);
     assert_eq!(total, 5, "expected 5 total AssuranceSent across buckets");
+
+    // At 30s resolution, should see two separate entries
+    let path_30s = format!(
+        "/api/grafana/timeseries?{}&interval=30s&event_types=128",
+        time_range_params()
+    );
+    let response_30s = server.get(&path_30s).await;
+    assert_eq!(response_30s.status_code(), StatusCode::OK);
+
+    let json_30s: Value = response_30s.json();
+    let arr_30s = json_30s.as_array().expect("should return array");
+
+    let counts: Vec<i64> = arr_30s
+        .iter()
+        .filter(|e| e["event_type"].as_i64() == Some(128))
+        .map(|e| e["count"].as_i64().unwrap_or(0))
+        .collect();
+    assert_eq!(counts.len(), 2, "expected 2 separate 30s buckets");
+    assert!(counts.contains(&3), "expected bucket with count=3");
+    assert!(counts.contains(&2), "expected bucket with count=2");
 }
 
 #[tokio::test]
