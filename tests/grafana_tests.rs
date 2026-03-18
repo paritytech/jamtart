@@ -138,6 +138,14 @@ async fn test_grafana_all_endpoints_empty_200() {
         format!("/api/grafana/bottlenecks?{}", time_range_params()),
         format!("/api/grafana/wp-funnel?{}", time_range_params()),
         format!(
+            "/api/grafana/guarantee-convergence?{}",
+            time_range_params()
+        ),
+        format!(
+            "/api/grafana/guarantee-convergence/detail?{}",
+            time_range_params()
+        ),
+        format!(
             "/api/grafana/wp-funnel-timeseries?{}&interval=1m",
             time_range_params()
         ),
@@ -2119,4 +2127,74 @@ async fn test_grafana_bottlenecks_timeseries() {
     assert!(row["total_wps"].as_i64().unwrap_or(0) >= 1, "expected total_wps >= 1");
     // authorize_p50 should be ~100ms (received→authorized delta)
     assert!(row["authorize_p50"].is_number(), "expected authorize_p50 to be a number");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Guarantee Convergence
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_grafana_guarantee_convergence() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+
+    // Node A: guarantor — sends GuaranteeBuilt(105) with work_report_hash=[0xBB; 32], slot=200
+    let mut stream_a = connect_test_node(port, 1, &telemetry).await;
+    let now = common::now_jce_micros();
+    let sid: u64 = 8000;
+
+    // First send WorkPackageReceived so enricher has context for GuaranteeBuilt
+    let events_a = vec![
+        common::wp_received_event(now, sid, 5),
+        common::guarantee_built_event(now + 100_000, sid), // built_at = now + 100ms
+    ];
+    send_events(&mut stream_a, &events_a).await;
+
+    // Nodes B, C, D: validators — send GuaranteeReceived(112)
+    let report_hash = [0xBB; 32]; // matches guarantee_built_event's hardcoded hash
+    let mut stream_b = connect_test_node(port, 2, &telemetry).await;
+    let mut stream_c = connect_test_node(port, 3, &telemetry).await;
+    let mut stream_d = connect_test_node(port, 4, &telemetry).await;
+
+    send_events(&mut stream_b, &[
+        common::guarantee_received_event(now + 200_000, 200, report_hash), // +100ms after built
+    ]).await;
+    send_events(&mut stream_c, &[
+        common::guarantee_received_event(now + 300_000, 200, report_hash), // +200ms after built
+    ]).await;
+    send_events(&mut stream_d, &[
+        common::guarantee_received_event(now + 400_000, 200, report_hash), // +300ms after built
+    ]).await;
+
+    common::flush_all(&telemetry).await;
+
+    // Test overview endpoint (per-slot summary)
+    let path = format!("/api/grafana/guarantee-convergence?{}", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+    assert!(!arr.is_empty(), "should have at least one slot");
+    let row = &arr[0];
+    assert_eq!(row["slot"].as_i64(), Some(200));
+    assert!(row["guarantee_count"].as_i64().unwrap_or(0) >= 1);
+    assert!(row["p50_ms"].is_number(), "expected p50_ms");
+
+    // Test detail endpoint (per-guarantee)
+    let path = format!(
+        "/api/grafana/guarantee-convergence/detail?{}",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+    assert!(!arr.is_empty(), "should have at least one guarantee");
+    let row = &arr[0];
+    assert_eq!(row["slot"].as_i64(), Some(200));
+    assert!(row["node_count"].as_i64().unwrap_or(0) >= 3, "expected node_count >= 3");
+    assert!(row["work_report_hash"].is_string(), "expected work_report_hash");
+    assert!(row["p50_ms"].is_number(), "expected p50_ms");
+    assert!(row["p99_ms"].is_number(), "expected p99_ms");
 }

@@ -480,7 +480,89 @@ Work package pipeline funnel — counts how many WPs reached each stage.
 
 ---
 
-### 1.14 GET /api/grafana/wp-funnel-timeseries
+### 1.14 GET /api/grafana/guarantee-convergence
+
+Guarantee propagation convergence — per-slot overview. Measures how quickly guarantees propagate across the validator network. Each data point represents one slot, aggregating all guarantees (all cores) for that slot.
+
+The anchor is GuaranteeBuilt(105) — emitted by the guarantor when the guarantee is created. The measured events are GuaranteeReceived(112) — emitted by each validator that receives the guarantee. Percentiles are computed from (received_timestamp - built_at) across all receiving validators, flattened across all guarantees in the slot.
+
+**Query:** `TimeRangeQuery`
+
+| Param | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `start` | ISO 8601 datetime | yes | — | Start of time range |
+| `end` | ISO 8601 datetime | yes | — | End of time range |
+
+**Response:** `Vec<GuaranteeConvergenceSlotRow>`
+
+```json
+[
+  {
+    "slot": 42,
+    "guarantee_count": 15,
+    "node_count": 980,
+    "p50_ms": 45,
+    "p75_ms": 85,
+    "p95_ms": 150,
+    "p99_ms": 250,
+    "p100_ms": 500,
+    "built_at": "2025-03-18T12:00:00Z"
+  }
+]
+```
+
+**curl:**
+
+```sh
+curl "http://localhost:8080/api/grafana/guarantee-convergence?start=${__from:date:iso}&end=${__to:date:iso}"
+```
+
+---
+
+### 1.15 GET /api/grafana/guarantee-convergence/detail
+
+Per-guarantee convergence detail for drill-down. Returns one row per `work_report_hash`, showing the propagation latency from GuaranteeBuilt(105) to GuaranteeReceived(112) for each individual guarantee. Use `core` or `wp_hash` filters to focus on a specific core or work package.
+
+If the guarantor node is not connected to telemetry, `core` and `wp_hash` will be NULL (the enricher on the receiving validators doesn't have the submission chain context).
+
+**Query:** `GuaranteeConvergenceDetailQuery`
+
+| Param | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `start` | ISO 8601 datetime | yes | — | Start of time range |
+| `end` | ISO 8601 datetime | yes | — | End of time range |
+| `core` | i16 | no | — | Filter to a single core |
+| `wp_hash` | string (hex) | no | — | Filter to a single work package hash |
+
+**Response:** `Vec<GuaranteeConvergenceDetailRow>`
+
+```json
+[
+  {
+    "work_report_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "slot": 42,
+    "core": 5,
+    "wp_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "node_count": 980,
+    "p50_ms": 45,
+    "p75_ms": 85,
+    "p95_ms": 150,
+    "p99_ms": 250,
+    "p100_ms": 500,
+    "built_at": "2025-03-18T12:00:00Z"
+  }
+]
+```
+
+**curl:**
+
+```sh
+curl "http://localhost:8080/api/grafana/guarantee-convergence/detail?start=${__from:date:iso}&end=${__to:date:iso}&core=5"
+```
+
+---
+
+### 1.16 GET /api/grafana/wp-funnel-timeseries
 
 Work package pipeline funnel bucketed over time. Same data as `/wp-funnel` but grouped into time buckets, showing how WP stage counts evolve over time. Each row contains the count of WPs whose `first_seen` falls in that bucket, broken down by pipeline stage.
 
@@ -521,7 +603,7 @@ curl "http://localhost:8080/api/grafana/wp-funnel-timeseries?start=${__from:date
 
 ---
 
-### 1.15 GET /api/grafana/bottlenecks-timeseries
+### 1.17 GET /api/grafana/bottlenecks-timeseries
 
 Work package pipeline bottleneck percentiles bucketed over time. Same data as `/bottlenecks` but grouped into time buckets, showing how stage-to-stage latency evolves. Per bucket: `percentile_cont(0.5)` and `percentile_cont(0.95)` on inter-stage timestamp deltas from `wp_tracking`.
 
@@ -576,7 +658,7 @@ curl "http://localhost:8080/api/grafana/bottlenecks-timeseries?start=${__from:da
 
 ---
 
-### 1.16 GET /api/grafana/event-types
+### 1.18 GET /api/grafana/event-types
 
 Static metadata for all 115 telemetry event types. No database query — instantly cacheable.
 
@@ -632,7 +714,7 @@ Group names are expanded server-side via `expand_event_types()` into their const
 
 ---
 
-### 1.17 GET /api/grafana/events
+### 1.19 GET /api/grafana/events
 
 Raw event data matching criteria. Returns the most recent events first.
 
@@ -652,7 +734,7 @@ Raw event data matching criteria. Returns the most recent events first.
 curl 'http://localhost:8080/api/grafana/events?start=2025-01-15T00:00:00Z&end=2025-01-15T01:00:00Z&event_types=92,99&limit=100'
 ```
 
-### 1.18 GET /api/grafana/guarantee-discards
+### 1.20 GET /api/grafana/guarantee-discards
 
 Time-bucketed guarantee discard counts grouped by discard reason. Queries the pre-aggregated `guarantee_receiving_counts` table for GuaranteeDiscarded events (type 113).
 
@@ -725,6 +807,18 @@ struct ServiceTimeseriesQuery {
     end: DateTime<Utc>,        // required
     interval: Option<String>,  // default "1m"
     service: Option<String>,   // comma-sep, decimal or 0x hex, Grafana braces
+}
+```
+
+### GuaranteeConvergenceDetailQuery
+Used by: `/guarantee-convergence/detail`
+
+```rust
+struct GuaranteeConvergenceDetailQuery {
+    start: DateTime<Utc>,      // required
+    end: DateTime<Utc>,        // required
+    core: Option<i16>,
+    wp_hash: Option<String>,   // hex-encoded work package hash
 }
 ```
 

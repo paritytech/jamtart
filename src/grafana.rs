@@ -36,6 +36,8 @@ use crate::onchain_types::*;
         db_stats,
         bottlenecks,
         wp_funnel,
+        guarantee_convergence,
+        guarantee_convergence_detail,
         wp_funnel_timeseries,
         bottlenecks_timeseries,
         event_types,
@@ -72,6 +74,8 @@ use crate::onchain_types::*;
         StageTiming,
         Percentiles,
         WpFunnelResponse,
+        GuaranteeConvergenceSlotRow,
+        GuaranteeConvergenceDetailRow,
         WpFunnelTimeseriesRow,
         BottlenecksTimeseriesRow,
         EventRow,
@@ -110,6 +114,8 @@ pub fn router() -> Router<ApiState> {
         .route("/db-stats", get(db_stats))
         .route("/bottlenecks", get(bottlenecks))
         .route("/wp-funnel", get(wp_funnel))
+        .route("/guarantee-convergence", get(guarantee_convergence))
+        .route("/guarantee-convergence/detail", get(guarantee_convergence_detail))
         .route("/wp-funnel-timeseries", get(wp_funnel_timeseries))
         .route("/bottlenecks-timeseries", get(bottlenecks_timeseries))
         .route("/event-types", get(event_types))
@@ -221,6 +227,19 @@ pub struct EventsQuery {
     pub event_types: String,
     /// Maximum number of events to return (default: 500, max: 2000)
     pub limit: Option<i64>,
+}
+
+/// Parameters for guarantee convergence detail query.
+#[derive(Deserialize, IntoParams)]
+pub struct GuaranteeConvergenceDetailQuery {
+    /// Start of time range (ISO 8601)
+    pub start: DateTime<Utc>,
+    /// End of time range (ISO 8601)
+    pub end: DateTime<Utc>,
+    /// Filter to a single core index
+    pub core: Option<i16>,
+    /// Filter to a single work package hash (hex-encoded)
+    pub wp_hash: Option<String>,
 }
 
 /// Parameters for WP pipeline timeseries queries (funnel + bottlenecks).
@@ -725,6 +744,66 @@ async fn wp_funnel(
         .await
         .map(Json)
         .map_err(|e| map_sqlx_error("grafana/wp-funnel", e))
+}
+
+/// Guarantee convergence overview — per-slot summary.
+///
+/// Aggregates all guarantees per slot: flattens received_timestamps across all
+/// work_report_hashes for a slot and computes true cross-core percentiles of
+/// (GuaranteeReceived - GuaranteeBuilt) propagation latency. One row per slot.
+#[utoipa::path(
+    get,
+    path = "/api/grafana/guarantee-convergence",
+    params(TimeRangeQuery),
+    responses(
+        (status = 200, description = "Per-slot guarantee convergence summary", body = [GuaranteeConvergenceSlotRow]),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn guarantee_convergence(
+    Query(q): Query<TimeRangeQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    state
+        .store
+        .grafana_guarantee_convergence(q.start, q.end)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/guarantee-convergence", e))
+}
+
+/// Guarantee convergence detail — per-guarantee rows for drill-down.
+///
+/// Returns one row per work_report_hash, filtered by optional core or wp_hash.
+/// Each row shows how quickly GuaranteeReceived(112) propagated across the
+/// validator network after GuaranteeBuilt(105).
+#[utoipa::path(
+    get,
+    path = "/api/grafana/guarantee-convergence/detail",
+    params(GuaranteeConvergenceDetailQuery),
+    responses(
+        (status = 200, description = "Per-guarantee convergence detail", body = [GuaranteeConvergenceDetailRow]),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn guarantee_convergence_detail(
+    Query(q): Query<GuaranteeConvergenceDetailQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let wp_hash_bytes = q.wp_hash.as_deref().and_then(|h| hex::decode(h).ok());
+    state
+        .store
+        .grafana_guarantee_convergence_detail(
+            q.start,
+            q.end,
+            q.core,
+            wp_hash_bytes.as_deref(),
+        )
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/guarantee-convergence/detail", e))
 }
 
 /// Work package pipeline funnel bucketed over time.

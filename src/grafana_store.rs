@@ -1157,7 +1157,80 @@ impl EventStore {
         .fetch_one(self.pool())
         .await
     }
-    // ── 14. grafana_wp_funnel_timeseries ─────────────────────────────────
+    // ── 14. grafana_guarantee_convergence (per-slot summary) ────────────
+
+    /// Guarantee convergence overview: per-slot summary.
+    pub async fn grafana_guarantee_convergence(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<Vec<GuaranteeConvergenceSlotRow>, sqlx::Error> {
+        sqlx::query_as::<_, GuaranteeConvergenceSlotRow>(
+            r#"
+            SELECT slot, guarantee_count, node_count,
+                   p50_ms, p75_ms, p95_ms, p99_ms, p100_ms, built_at
+            FROM guarantee_convergence_slots
+            WHERE built_at >= $1 AND built_at < $2
+            ORDER BY slot ASC
+            "#,
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_all(self.pool())
+        .await
+    }
+
+    // ── 15. grafana_guarantee_convergence_detail ──────────────────────────
+
+    /// Guarantee convergence detail: per-guarantee rows filtered by core/wp_hash.
+    pub async fn grafana_guarantee_convergence_detail(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        core_filter: Option<i16>,
+        wp_hash_filter: Option<&[u8]>,
+    ) -> Result<Vec<GuaranteeConvergenceDetailRow>, sqlx::Error> {
+        let rows = sqlx::query(
+            r#"
+            SELECT work_report_hash, slot, core, wp_hash, node_count,
+                   p50_ms, p75_ms, p95_ms, p99_ms, p100_ms, built_at
+            FROM guarantee_convergence
+            WHERE built_at >= $1 AND built_at < $2
+              AND ($3::SMALLINT IS NULL OR core = $3)
+              AND ($4::BYTEA IS NULL OR wp_hash = $4)
+            ORDER BY slot ASC, built_at ASC
+            "#,
+        )
+        .bind(start)
+        .bind(end)
+        .bind(core_filter)
+        .bind(wp_hash_filter)
+        .fetch_all(self.pool())
+        .await?;
+
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let wrh: Vec<u8> = row.get("work_report_hash");
+                let wp: Option<Vec<u8>> = row.get("wp_hash");
+                GuaranteeConvergenceDetailRow {
+                    work_report_hash: hex::encode(&wrh),
+                    slot: row.get("slot"),
+                    core: row.get("core"),
+                    wp_hash: wp.map(|h| hex::encode(&h)),
+                    node_count: row.get("node_count"),
+                    p50_ms: row.get("p50_ms"),
+                    p75_ms: row.get("p75_ms"),
+                    p95_ms: row.get("p95_ms"),
+                    p99_ms: row.get("p99_ms"),
+                    p100_ms: row.get("p100_ms"),
+                    built_at: row.get("built_at"),
+                }
+            })
+            .collect())
+    }
+
+    // ── 16. grafana_wp_funnel_timeseries ─────────────────────────────────
 
     /// Work package pipeline funnel bucketed over time.
     pub async fn grafana_wp_funnel_timeseries(

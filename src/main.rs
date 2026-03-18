@@ -241,6 +241,7 @@ async fn main() -> anyhow::Result<()> {
     if let Some(ref store) = store {
         let slot_tracker = telemetry_server.get_slot_tracker();
         let wp_tracker = telemetry_server.get_wp_tracker();
+        let guarantee_convergence_tracker = telemetry_server.get_guarantee_convergence_tracker();
         let event_counter = telemetry_server.get_event_counter();
         let enricher_map = telemetry_server.get_enricher_map();
         let pool = store.pool().clone();
@@ -256,6 +257,12 @@ async fn main() -> anyhow::Result<()> {
                     std::time::Duration::from_secs(60),
                 ).await;
                 tart_backend::wp_tracker::flush_wp_tracker(&wp_tracker, &pool).await;
+                tart_backend::convergence_tracker::flush_guarantee_convergence(
+                    &guarantee_convergence_tracker,
+                    &pool,
+                    std::time::Duration::from_secs(10),
+                    std::time::Duration::from_secs(60),
+                ).await;
                 tart_backend::event_counter::flush_event_counter(&event_counter, &pool).await;
                 tick_count += 1;
                 // Log enricher diagnostics every 2 ticks (10s)

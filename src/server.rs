@@ -9,6 +9,7 @@ use crate::event_broadcaster::{build_ws_envelope, BroadcastRecord, EventBroadcas
 use crate::event_counter::{self, EventCounter};
 use crate::events::{Event, NodeInformation};
 use crate::rate_limiter::RateLimiter;
+use crate::convergence_tracker::{self, GuaranteeConvergenceTracker};
 use crate::slot_tracker::{self, SlotTracker};
 use crate::store::EventStore;
 use crate::wp_tracker::{self, WpTracker};
@@ -141,6 +142,7 @@ pub struct TelemetryServer {
     event_counter: EventCounter,
     slot_tracker: SlotTracker,
     wp_tracker: WpTracker,
+    guarantee_convergence_tracker: GuaranteeConvergenceTracker,
     connection_watch: Arc<tokio::sync::watch::Sender<usize>>,
     /// Kept alive so the watch channel stays open (senders fail when all receivers drop)
     #[allow(dead_code)]
@@ -242,6 +244,7 @@ impl TelemetryServer {
             event_counter: event_counter::new_event_counter(),
             slot_tracker: slot_tracker::new_slot_tracker(),
             wp_tracker: wp_tracker::new_wp_tracker(),
+            guarantee_convergence_tracker: convergence_tracker::new_guarantee_convergence_tracker(),
             connection_watch: Arc::new(connection_watch),
             _connection_watch_rx: connection_watch_rx,
         })
@@ -318,6 +321,7 @@ impl TelemetryServer {
             let event_counter = Arc::clone(&self.event_counter);
             let slot_tracker = Arc::clone(&self.slot_tracker);
             let wp_tracker = Arc::clone(&self.wp_tracker);
+            let guarantee_convergence_tracker = Arc::clone(&self.guarantee_convergence_tracker);
             let connection_watch = Arc::clone(&self.connection_watch);
 
             let handle = std::thread::Builder::new()
@@ -371,6 +375,7 @@ impl TelemetryServer {
                                                 event_counter: Arc::clone(&event_counter),
                                                 slot_tracker: Arc::clone(&slot_tracker),
                                                 wp_tracker: Arc::clone(&wp_tracker),
+                                                guarantee_convergence_tracker: Arc::clone(&guarantee_convergence_tracker),
                                                 connection_watch: Arc::clone(&connection_watch),
                                             };
 
@@ -429,6 +434,7 @@ impl TelemetryServer {
             event_counter: Arc::clone(&self.event_counter),
             slot_tracker: Arc::clone(&self.slot_tracker),
             wp_tracker: Arc::clone(&self.wp_tracker),
+            guarantee_convergence_tracker: Arc::clone(&self.guarantee_convergence_tracker),
             connection_watch: Arc::clone(&self.connection_watch),
         };
 
@@ -500,6 +506,10 @@ impl TelemetryServer {
         Arc::clone(&self.wp_tracker)
     }
 
+    pub fn get_guarantee_convergence_tracker(&self) -> GuaranteeConvergenceTracker {
+        Arc::clone(&self.guarantee_convergence_tracker)
+    }
+
     /// Flush slot_tracker, wp_tracker, and event_counter to database on-demand.
     /// For testing only — in production these flush every 5s via the periodic task.
     pub async fn flush_trackers(&self) {
@@ -512,6 +522,13 @@ impl TelemetryServer {
             )
             .await;
             crate::wp_tracker::flush_wp_tracker(&self.wp_tracker, store.pool()).await;
+            convergence_tracker::flush_guarantee_convergence(
+                &self.guarantee_convergence_tracker,
+                store.pool(),
+                std::time::Duration::from_secs(10),
+                std::time::Duration::from_secs(60),
+            )
+            .await;
             event_counter::flush_event_counter(&self.event_counter, store.pool()).await;
         }
     }
@@ -527,6 +544,13 @@ impl TelemetryServer {
             )
             .await;
             crate::wp_tracker::flush_wp_tracker(&self.wp_tracker, store.pool()).await;
+            convergence_tracker::flush_guarantee_convergence(
+                &self.guarantee_convergence_tracker,
+                store.pool(),
+                std::time::Duration::ZERO,
+                std::time::Duration::from_secs(3600),
+            )
+            .await;
             event_counter::flush_event_counter(&self.event_counter, store.pool()).await;
         }
     }
@@ -574,6 +598,7 @@ struct ConnectionContext {
     event_counter: EventCounter,
     slot_tracker: SlotTracker,
     wp_tracker: WpTracker,
+    guarantee_convergence_tracker: GuaranteeConvergenceTracker,
     connection_watch: Arc<tokio::sync::watch::Sender<usize>>,
 }
 
@@ -592,6 +617,7 @@ async fn handle_connection_optimized(
         event_counter,
         slot_tracker,
         wp_tracker,
+        guarantee_convergence_tracker,
         connection_watch,
     } = ctx;
     // Set TCP nodelay for lower latency
@@ -842,6 +868,73 @@ async fn handle_connection_optimized(
                                             wp_tracker.entry(hash).and_modify(|s| {
                                                 s.update_stage(ordinal, evt_ts);
                                             });
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+
+                            // Update GuaranteeConvergenceTracker for guarantee propagation convergence
+                            {
+                                let et_raw = event.event_type() as u16;
+                                let evt_ts = event.timestamp();
+                                match et_raw {
+                                    105 => { // GuaranteeBuilt — anchor event
+                                        if let Event::GuaranteeBuilt { outline, .. } = &*event {
+                                            let wrh = outline.work_report_hash;
+                                            let slot = outline.slot;
+                                            guarantee_convergence_tracker.entry(wrh)
+                                                .and_modify(|s| {
+                                                    if s.built_at.is_none() {
+                                                        s.built_at = Some(evt_ts);
+                                                    }
+                                                    if s.slot.is_none() {
+                                                        s.slot = Some(slot);
+                                                    }
+                                                    if s.core.is_none() {
+                                                        s.core = enriched.core;
+                                                    }
+                                                    if s.wp_hash.is_none() {
+                                                        s.wp_hash = enriched.wp_hash;
+                                                    }
+                                                    s.dirty = true;
+                                                    s.last_event = std::time::Instant::now();
+                                                })
+                                                .or_insert_with(|| {
+                                                    crate::convergence_tracker::GuaranteeConvergenceState {
+                                                        built_at: Some(evt_ts),
+                                                        slot: Some(slot),
+                                                        core: enriched.core,
+                                                        wp_hash: enriched.wp_hash,
+                                                        received_timestamps: Vec::new(),
+                                                        last_event: std::time::Instant::now(),
+                                                        flushed: false,
+                                                        dirty: true,
+                                                    }
+                                                });
+                                        }
+                                    }
+                                    112 => { // GuaranteeReceived — measured event
+                                        if let Event::GuaranteeReceived { outline, .. } = &*event {
+                                            let wrh = outline.work_report_hash;
+                                            guarantee_convergence_tracker.entry(wrh)
+                                                .and_modify(|s| {
+                                                    s.received_timestamps.push(evt_ts);
+                                                    s.dirty = true;
+                                                    s.last_event = std::time::Instant::now();
+                                                })
+                                                .or_insert_with(|| {
+                                                    crate::convergence_tracker::GuaranteeConvergenceState {
+                                                        built_at: None,
+                                                        slot: None,
+                                                        core: None,
+                                                        wp_hash: None,
+                                                        received_timestamps: vec![evt_ts],
+                                                        last_event: std::time::Instant::now(),
+                                                        flushed: false,
+                                                        dirty: true,
+                                                    }
+                                                });
                                         }
                                     }
                                     _ => {}

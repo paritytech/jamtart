@@ -618,6 +618,69 @@ pub struct WpFunnelResponse {
     pub failed: i64,
 }
 
+// ── /api/grafana/guarantee-convergence ───────────────────────────────────
+
+/// Per-slot guarantee convergence summary (overview).
+///
+/// **Data source:** `guarantee_convergence_slots` table, populated by the
+/// convergence_tracker flush. Aggregates all guarantees in a slot: flattens
+/// received_timestamps across all work_report_hashes for that slot and computes
+/// true cross-core percentiles of (received - built_at) latency.
+#[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
+pub struct GuaranteeConvergenceSlotRow {
+    /// Slot number
+    pub slot: i32,
+    /// Number of guarantees in this slot
+    pub guarantee_count: i16,
+    /// Minimum receiver count across guarantees
+    pub node_count: i16,
+    /// p50 propagation latency (ms)
+    pub p50_ms: Option<i32>,
+    /// p75 propagation latency (ms)
+    pub p75_ms: Option<i32>,
+    /// p95 propagation latency (ms)
+    pub p95_ms: Option<i32>,
+    /// p99 propagation latency (ms)
+    pub p99_ms: Option<i32>,
+    /// p100 propagation latency (ms)
+    pub p100_ms: Option<i32>,
+    /// Earliest built_at across guarantees in slot
+    pub built_at: DateTime<Utc>,
+}
+
+// ── /api/grafana/guarantee-convergence/detail ────────────────────────────
+
+/// Per-guarantee convergence detail (drill-down by core or wp_hash).
+///
+/// **Data source:** `guarantee_convergence` table, one row per work_report_hash.
+/// Measures: GuaranteeBuilt(105) anchor → GuaranteeReceived(112) reception
+/// latency percentiles across all receiving validators.
+#[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
+pub struct GuaranteeConvergenceDetailRow {
+    /// Work report hash (hex-encoded)
+    pub work_report_hash: String,
+    /// Slot number
+    pub slot: i32,
+    /// Core index (NULL if guarantor not connected)
+    pub core: Option<i16>,
+    /// Work package hash (hex-encoded, NULL if guarantor not connected)
+    pub wp_hash: Option<String>,
+    /// Number of receiving validators
+    pub node_count: i16,
+    /// p50 propagation latency (ms)
+    pub p50_ms: i32,
+    /// p75 propagation latency (ms)
+    pub p75_ms: Option<i32>,
+    /// p95 propagation latency (ms)
+    pub p95_ms: Option<i32>,
+    /// p99 propagation latency (ms)
+    pub p99_ms: i32,
+    /// p100 propagation latency (ms)
+    pub p100_ms: i32,
+    /// When the guarantee was built
+    pub built_at: DateTime<Utc>,
+}
+
 // ── /api/grafana/wp-funnel-timeseries ────────────────────────────────────
 
 /// Work package pipeline funnel bucketed over time — how many WPs reached

@@ -6,6 +6,7 @@ pub mod cache;
 pub mod circuit_breaker;
 pub mod decoder;
 pub mod encoding;
+pub mod convergence_tracker;
 pub mod enricher;
 pub mod event_counter;
 pub mod event_broadcaster;
