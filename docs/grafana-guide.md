@@ -480,7 +480,103 @@ Work package pipeline funnel — counts how many WPs reached each stage.
 
 ---
 
-### 1.14 GET /api/grafana/event-types
+### 1.14 GET /api/grafana/wp-funnel-timeseries
+
+Work package pipeline funnel bucketed over time. Same data as `/wp-funnel` but grouped into time buckets, showing how WP stage counts evolve over time. Each row contains the count of WPs whose `first_seen` falls in that bucket, broken down by pipeline stage.
+
+Events that feed the `wp_tracking` table: WorkPackageReceived(94), Authorized(95), Refined(101), WorkReportBuilt(102), GuaranteeBuilt(105), GuaranteesDistributed(109), WorkPackageFailed(92). The `wp_tracker` module correlates these events across nodes via submission_id chains in the enricher.
+
+**Query:** `WpTimeseriesQuery`
+
+| Param | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `start` | ISO 8601 datetime | yes | — | Start of time range |
+| `end` | ISO 8601 datetime | yes | — | End of time range |
+| `interval` | string | no | `1m` | Bucket width (snapped to nearest valid: 6s–1d) |
+| `core` | i16 | no | — | Filter to a single core |
+
+**Response:** `Vec<WpFunnelTimeseriesRow>`
+
+```json
+[
+  {
+    "ts": "2025-03-18T12:00:00Z",
+    "total": 45,
+    "received": 45,
+    "authorized": 43,
+    "refined": 42,
+    "report_built": 40,
+    "guarantee_built": 38,
+    "distributed": 36,
+    "failed": 2
+  }
+]
+```
+
+**curl:**
+
+```sh
+curl "http://localhost:8080/api/grafana/wp-funnel-timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=1m"
+```
+
+---
+
+### 1.15 GET /api/grafana/bottlenecks-timeseries
+
+Work package pipeline bottleneck percentiles bucketed over time. Same data as `/bottlenecks` but grouped into time buckets, showing how stage-to-stage latency evolves. Per bucket: `percentile_cont(0.5)` and `percentile_cont(0.95)` on inter-stage timestamp deltas from `wp_tracking`.
+
+Stages measured (each as the delta between consecutive pipeline timestamps):
+- **authorize**: received_at → authorized_at (Authorized(95) - WorkPackageReceived(94))
+- **refine**: authorized_at → refined_at (Refined(101) - Authorized(95))
+- **report**: refined_at → report_built_at (WorkReportBuilt(102) - Refined(101))
+- **guarantee**: report_built_at → guarantee_built_at (GuaranteeBuilt(105) - WorkReportBuilt(102))
+- **distribute**: guarantee_built_at → distributed_at (GuaranteesDistributed(109) - GuaranteeBuilt(105))
+- **pipeline_total**: received_at → COALESCE(distributed_at, last_updated) (end-to-end)
+
+WPs where `received_at IS NULL` are excluded. Stage columns are NULL if no WPs in that bucket reached the stage.
+
+**Query:** `WpTimeseriesQuery`
+
+| Param | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `start` | ISO 8601 datetime | yes | — | Start of time range |
+| `end` | ISO 8601 datetime | yes | — | End of time range |
+| `interval` | string | no | `1m` | Bucket width (snapped to nearest valid: 6s–1d) |
+| `core` | i16 | no | — | Filter to a single core |
+
+**Response:** `Vec<BottlenecksTimeseriesRow>`
+
+```json
+[
+  {
+    "ts": "2025-03-18T12:00:00Z",
+    "authorize_p50": 12.5,
+    "authorize_p95": 45.2,
+    "refine_p50": 85.0,
+    "refine_p95": 210.0,
+    "report_p50": 5.1,
+    "report_p95": 15.3,
+    "guarantee_p50": 2.0,
+    "guarantee_p95": 8.5,
+    "distribute_p50": 18.0,
+    "distribute_p95": 55.0,
+    "pipeline_p50": 125.0,
+    "pipeline_p95": 340.0,
+    "total_wps": 45,
+    "failed_wps": 2
+  }
+]
+```
+
+**curl:**
+
+```sh
+curl "http://localhost:8080/api/grafana/bottlenecks-timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=1m&core=5"
+```
+
+---
+
+### 1.16 GET /api/grafana/event-types
 
 Static metadata for all 115 telemetry event types. No database query — instantly cacheable.
 
@@ -536,7 +632,7 @@ Group names are expanded server-side via `expand_event_types()` into their const
 
 ---
 
-### 1.15 GET /api/grafana/events
+### 1.17 GET /api/grafana/events
 
 Raw event data matching criteria. Returns the most recent events first.
 
@@ -556,7 +652,7 @@ Raw event data matching criteria. Returns the most recent events first.
 curl 'http://localhost:8080/api/grafana/events?start=2025-01-15T00:00:00Z&end=2025-01-15T01:00:00Z&event_types=92,99&limit=100'
 ```
 
-### 1.16 GET /api/grafana/guarantee-discards
+### 1.18 GET /api/grafana/guarantee-discards
 
 Time-bucketed guarantee discard counts grouped by discard reason. Queries the pre-aggregated `guarantee_receiving_counts` table for GuaranteeDiscarded events (type 113).
 
@@ -629,6 +725,18 @@ struct ServiceTimeseriesQuery {
     end: DateTime<Utc>,        // required
     interval: Option<String>,  // default "1m"
     service: Option<String>,   // comma-sep, decimal or 0x hex, Grafana braces
+}
+```
+
+### WpTimeseriesQuery
+Used by: `/wp-funnel-timeseries`, `/bottlenecks-timeseries`
+
+```rust
+struct WpTimeseriesQuery {
+    start: DateTime<Utc>,      // required
+    end: DateTime<Utc>,        // required
+    interval: Option<String>,  // default "1m"
+    core: Option<i16>,
 }
 ```
 

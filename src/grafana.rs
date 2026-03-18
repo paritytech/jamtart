@@ -36,6 +36,8 @@ use crate::onchain_types::*;
         db_stats,
         bottlenecks,
         wp_funnel,
+        wp_funnel_timeseries,
+        bottlenecks_timeseries,
         event_types,
         events,
         guarantee_discards,
@@ -70,6 +72,8 @@ use crate::onchain_types::*;
         StageTiming,
         Percentiles,
         WpFunnelResponse,
+        WpFunnelTimeseriesRow,
+        BottlenecksTimeseriesRow,
         EventRow,
         GuaranteeDiscardRow,
         crate::event_type_meta::EventTypeMeta,
@@ -106,6 +110,8 @@ pub fn router() -> Router<ApiState> {
         .route("/db-stats", get(db_stats))
         .route("/bottlenecks", get(bottlenecks))
         .route("/wp-funnel", get(wp_funnel))
+        .route("/wp-funnel-timeseries", get(wp_funnel_timeseries))
+        .route("/bottlenecks-timeseries", get(bottlenecks_timeseries))
         .route("/event-types", get(event_types))
         .route("/events", get(events))
         .route("/guarantee-discards", get(guarantee_discards))
@@ -215,6 +221,19 @@ pub struct EventsQuery {
     pub event_types: String,
     /// Maximum number of events to return (default: 500, max: 2000)
     pub limit: Option<i64>,
+}
+
+/// Parameters for WP pipeline timeseries queries (funnel + bottlenecks).
+#[derive(Deserialize, IntoParams)]
+pub struct WpTimeseriesQuery {
+    /// Start of time range (ISO 8601)
+    pub start: DateTime<Utc>,
+    /// End of time range (ISO 8601)
+    pub end: DateTime<Utc>,
+    /// Bucket width. Supported: 6s, 12s, 18s, 24s, 30s, 1m, 2m, 5m, 10m, 15m, 30m, 1h–1d. Unsupported values are snapped to nearest valid.
+    pub interval: Option<String>,
+    /// Filter to a single core index
+    pub core: Option<i16>,
 }
 
 /// Parameters for guarantee discards query.
@@ -706,6 +725,63 @@ async fn wp_funnel(
         .await
         .map(Json)
         .map_err(|e| map_sqlx_error("grafana/wp-funnel", e))
+}
+
+/// Work package pipeline funnel bucketed over time.
+///
+/// Same data as `/wp-funnel` but bucketed by `time_bucket` on `first_seen`.
+/// Each row contains per-stage counts for WPs whose `first_seen` falls in
+/// that bucket. Optional `core` filter narrows to a single core.
+#[utoipa::path(
+    get,
+    path = "/api/grafana/wp-funnel-timeseries",
+    params(WpTimeseriesQuery),
+    responses(
+        (status = 200, description = "Pipeline funnel counts per time bucket", body = [WpFunnelTimeseriesRow]),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn wp_funnel_timeseries(
+    Query(q): Query<WpTimeseriesQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let interval = q.interval.as_deref().unwrap_or("1m");
+    state
+        .store
+        .grafana_wp_funnel_timeseries(q.start, q.end, interval, q.core)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/wp-funnel-timeseries", e))
+}
+
+/// Work package pipeline bottleneck analysis bucketed over time.
+///
+/// Same data as `/bottlenecks` but bucketed by `time_bucket` on `first_seen`.
+/// Per bucket: `percentile_cont(0.5)` and `percentile_cont(0.95)` on
+/// inter-stage timestamp deltas for each pipeline stage. Optional `core`
+/// filter narrows to a single core.
+#[utoipa::path(
+    get,
+    path = "/api/grafana/bottlenecks-timeseries",
+    params(WpTimeseriesQuery),
+    responses(
+        (status = 200, description = "Pipeline bottleneck percentiles per time bucket", body = [BottlenecksTimeseriesRow]),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn bottlenecks_timeseries(
+    Query(q): Query<WpTimeseriesQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let interval = q.interval.as_deref().unwrap_or("1m");
+    state
+        .store
+        .grafana_bottlenecks_timeseries(q.start, q.end, interval, q.core)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/bottlenecks-timeseries", e))
 }
 
 /// Static metadata for all telemetry event types (as defined in JIP-3).

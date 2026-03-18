@@ -618,6 +618,91 @@ pub struct WpFunnelResponse {
     pub failed: i64,
 }
 
+// ── /api/grafana/wp-funnel-timeseries ────────────────────────────────────
+
+/// Work package pipeline funnel bucketed over time — how many WPs reached
+/// each stage per time bucket.
+///
+/// **Data source:** `wp_tracking` table, same as `/wp-funnel` but with
+/// `time_bucket` grouping. Each row represents one time bucket containing
+/// the count of WPs whose `first_seen` falls in that bucket, broken down
+/// by pipeline stage (non-null stage timestamps).
+///
+/// Events: 94 (WorkPackageReceived) → received, 95 (Authorized) → authorized,
+/// 101 (Refined) → refined, 102 (WorkReportBuilt) → report_built,
+/// 105 (GuaranteeBuilt) → guarantee_built, 109 (GuaranteeDistributed) →
+/// distributed, 92 (WorkPackageFailed) → failed.
+#[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
+pub struct WpFunnelTimeseriesRow {
+    /// Bucket start timestamp
+    pub ts: DateTime<Utc>,
+    /// Total work packages in bucket
+    pub total: i64,
+    /// WPs that were received (WorkPackageReceived)
+    pub received: i64,
+    /// WPs that passed authorization (Authorized)
+    pub authorized: i64,
+    /// WPs that completed refinement (Refined)
+    pub refined: i64,
+    /// WPs with work report built (WorkReportBuilt)
+    pub report_built: i64,
+    /// WPs with guarantee built (GuaranteeBuilt)
+    pub guarantee_built: i64,
+    /// WPs fully distributed (GuaranteesDistributed)
+    pub distributed: i64,
+    /// WPs that hit a failure at any stage (WorkPackageFailed)
+    pub failed: i64,
+}
+
+// ── /api/grafana/bottlenecks-timeseries ─────────────────────────────────
+
+/// Work package pipeline bottleneck analysis bucketed over time.
+///
+/// **Data source:** `wp_tracking` table, same as `/bottlenecks` but with
+/// `time_bucket` grouping. Per bucket: `percentile_cont(0.5)` and
+/// `percentile_cont(0.95)` on inter-stage timestamp deltas.
+///
+/// Stages: authorize (received→authorized), refine (authorized→refined),
+/// report (refined→report_built), guarantee (report_built→guarantee_built),
+/// distribute (guarantee_built→distributed), pipeline_total
+/// (received→COALESCE(distributed, last_updated)).
+///
+/// NULL stage timestamps are ignored by `percentile_cont`, so columns
+/// may be NULL if no WPs in the bucket reached that stage.
+#[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
+pub struct BottlenecksTimeseriesRow {
+    /// Bucket start timestamp
+    pub ts: DateTime<Utc>,
+    /// received → authorized p50 (ms)
+    pub authorize_p50: Option<f64>,
+    /// received → authorized p95 (ms)
+    pub authorize_p95: Option<f64>,
+    /// authorized → refined p50 (ms)
+    pub refine_p50: Option<f64>,
+    /// authorized → refined p95 (ms)
+    pub refine_p95: Option<f64>,
+    /// refined → report_built p50 (ms)
+    pub report_p50: Option<f64>,
+    /// refined → report_built p95 (ms)
+    pub report_p95: Option<f64>,
+    /// report_built → guarantee_built p50 (ms)
+    pub guarantee_p50: Option<f64>,
+    /// report_built → guarantee_built p95 (ms)
+    pub guarantee_p95: Option<f64>,
+    /// guarantee_built → distributed p50 (ms)
+    pub distribute_p50: Option<f64>,
+    /// guarantee_built → distributed p95 (ms)
+    pub distribute_p95: Option<f64>,
+    /// received → distributed (or last_updated) p50 (ms)
+    pub pipeline_p50: Option<f64>,
+    /// received → distributed (or last_updated) p95 (ms)
+    pub pipeline_p95: Option<f64>,
+    /// Total WPs in bucket (with received_at IS NOT NULL)
+    pub total_wps: i64,
+    /// Failed WPs in bucket
+    pub failed_wps: i64,
+}
+
 // ── /api/grafana/guarantee-discards ──────────────────────────────────────
 
 /// Time-bucketed guarantee discard counts grouped by reason.

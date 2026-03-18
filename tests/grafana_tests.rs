@@ -138,6 +138,14 @@ async fn test_grafana_all_endpoints_empty_200() {
         format!("/api/grafana/bottlenecks?{}", time_range_params()),
         format!("/api/grafana/wp-funnel?{}", time_range_params()),
         format!(
+            "/api/grafana/wp-funnel-timeseries?{}&interval=1m",
+            time_range_params()
+        ),
+        format!(
+            "/api/grafana/bottlenecks-timeseries?{}&interval=1m",
+            time_range_params()
+        ),
+        format!(
             "/api/grafana/events?{}&event_types=92",
             time_range_params()
         ),
@@ -2031,4 +2039,84 @@ async fn test_event_services_dual_write_for_segments() {
         raw.0, 0,
         "type 160 should not be in ingested_raw_events"
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WP Funnel Timeseries
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_grafana_wp_funnel_timeseries() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let now = common::now_jce_micros();
+    let sid: u64 = 6000;
+    let events = vec![
+        common::wp_received_event(now, sid, 3),
+        common::authorized_event(now + 100_000, sid),
+        common::refined_event(now + 200_000, sid),
+        common::work_report_built_event(now + 300_000, sid),
+        common::guarantee_built_event(now + 400_000, sid),
+        common::guarantees_distributed_event(now + 500_000, sid),
+    ];
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+
+    let path = format!(
+        "/api/grafana/wp-funnel-timeseries?{}&interval=1m",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+    assert!(!arr.is_empty(), "should have at least one bucket");
+
+    let row = &arr[0];
+    assert!(row["ts"].is_string(), "missing ts");
+    assert!(row["total"].as_i64().unwrap_or(0) >= 1, "expected total >= 1");
+    assert!(row["received"].as_i64().unwrap_or(0) >= 1, "expected received >= 1");
+    assert!(row["distributed"].as_i64().unwrap_or(0) >= 1, "expected distributed >= 1");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Bottlenecks Timeseries
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_grafana_bottlenecks_timeseries() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let now = common::now_jce_micros();
+    let sid: u64 = 7000;
+    let events = vec![
+        common::wp_received_event(now, sid, 3),
+        common::authorized_event(now + 100_000, sid),       // +100ms
+        common::refined_event(now + 200_000, sid),           // +100ms
+        common::work_report_built_event(now + 300_000, sid), // +100ms
+        common::guarantee_built_event(now + 400_000, sid),   // +100ms
+        common::guarantees_distributed_event(now + 500_000, sid), // +100ms
+    ];
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+
+    let path = format!(
+        "/api/grafana/bottlenecks-timeseries?{}&interval=1m",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+    assert!(!arr.is_empty(), "should have at least one bucket");
+
+    let row = &arr[0];
+    assert!(row["ts"].is_string(), "missing ts");
+    assert!(row["total_wps"].as_i64().unwrap_or(0) >= 1, "expected total_wps >= 1");
+    // authorize_p50 should be ~100ms (received→authorized delta)
+    assert!(row["authorize_p50"].is_number(), "expected authorize_p50 to be a number");
 }

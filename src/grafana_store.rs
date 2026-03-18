@@ -1157,6 +1157,118 @@ impl EventStore {
         .fetch_one(self.pool())
         .await
     }
+    // ── 14. grafana_wp_funnel_timeseries ─────────────────────────────────
+
+    /// Work package pipeline funnel bucketed over time.
+    pub async fn grafana_wp_funnel_timeseries(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        interval: &str,
+        core_filter: Option<i16>,
+    ) -> Result<Vec<WpFunnelTimeseriesRow>, sqlx::Error> {
+        let interval = snap_interval(interval);
+        let pg_interval = interval_to_pg(interval);
+
+        let sql = format!(
+            r#"
+            SELECT
+                time_bucket('{pg_interval}'::interval, first_seen) AS ts,
+                COUNT(*)::BIGINT AS total,
+                COUNT(*) FILTER (WHERE received_at IS NOT NULL)::BIGINT       AS received,
+                COUNT(*) FILTER (WHERE authorized_at IS NOT NULL)::BIGINT     AS authorized,
+                COUNT(*) FILTER (WHERE refined_at IS NOT NULL)::BIGINT        AS refined,
+                COUNT(*) FILTER (WHERE report_built_at IS NOT NULL)::BIGINT   AS report_built,
+                COUNT(*) FILTER (WHERE guarantee_built_at IS NOT NULL)::BIGINT AS guarantee_built,
+                COUNT(*) FILTER (WHERE distributed_at IS NOT NULL)::BIGINT    AS distributed,
+                COUNT(*) FILTER (WHERE failed_at IS NOT NULL)::BIGINT         AS failed
+            FROM wp_tracking
+            WHERE first_seen >= $1 AND first_seen < $2
+              AND ($3::SMALLINT IS NULL OR core = $3)
+            GROUP BY 1
+            ORDER BY 1
+            "#,
+        );
+
+        sqlx::query_as::<_, WpFunnelTimeseriesRow>(&sql)
+            .bind(start)
+            .bind(end)
+            .bind(core_filter)
+            .fetch_all(self.pool())
+            .await
+    }
+
+    // ── 15. grafana_bottlenecks_timeseries ────────────────────────────────
+
+    /// Work package pipeline bottleneck analysis bucketed over time.
+    pub async fn grafana_bottlenecks_timeseries(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        interval: &str,
+        core_filter: Option<i16>,
+    ) -> Result<Vec<BottlenecksTimeseriesRow>, sqlx::Error> {
+        let interval = snap_interval(interval);
+        let pg_interval = interval_to_pg(interval);
+
+        let sql = format!(
+            r#"
+            SELECT
+                time_bucket('{pg_interval}'::interval, first_seen) AS ts,
+                percentile_cont(0.5) WITHIN GROUP (
+                    ORDER BY EXTRACT(EPOCH FROM (authorized_at - received_at)) * 1000
+                )::DOUBLE PRECISION AS authorize_p50,
+                percentile_cont(0.95) WITHIN GROUP (
+                    ORDER BY EXTRACT(EPOCH FROM (authorized_at - received_at)) * 1000
+                )::DOUBLE PRECISION AS authorize_p95,
+                percentile_cont(0.5) WITHIN GROUP (
+                    ORDER BY EXTRACT(EPOCH FROM (refined_at - authorized_at)) * 1000
+                )::DOUBLE PRECISION AS refine_p50,
+                percentile_cont(0.95) WITHIN GROUP (
+                    ORDER BY EXTRACT(EPOCH FROM (refined_at - authorized_at)) * 1000
+                )::DOUBLE PRECISION AS refine_p95,
+                percentile_cont(0.5) WITHIN GROUP (
+                    ORDER BY EXTRACT(EPOCH FROM (report_built_at - refined_at)) * 1000
+                )::DOUBLE PRECISION AS report_p50,
+                percentile_cont(0.95) WITHIN GROUP (
+                    ORDER BY EXTRACT(EPOCH FROM (report_built_at - refined_at)) * 1000
+                )::DOUBLE PRECISION AS report_p95,
+                percentile_cont(0.5) WITHIN GROUP (
+                    ORDER BY EXTRACT(EPOCH FROM (guarantee_built_at - report_built_at)) * 1000
+                )::DOUBLE PRECISION AS guarantee_p50,
+                percentile_cont(0.95) WITHIN GROUP (
+                    ORDER BY EXTRACT(EPOCH FROM (guarantee_built_at - report_built_at)) * 1000
+                )::DOUBLE PRECISION AS guarantee_p95,
+                percentile_cont(0.5) WITHIN GROUP (
+                    ORDER BY EXTRACT(EPOCH FROM (distributed_at - guarantee_built_at)) * 1000
+                )::DOUBLE PRECISION AS distribute_p50,
+                percentile_cont(0.95) WITHIN GROUP (
+                    ORDER BY EXTRACT(EPOCH FROM (distributed_at - guarantee_built_at)) * 1000
+                )::DOUBLE PRECISION AS distribute_p95,
+                percentile_cont(0.5) WITHIN GROUP (
+                    ORDER BY EXTRACT(EPOCH FROM (COALESCE(distributed_at, last_updated) - received_at)) * 1000
+                )::DOUBLE PRECISION AS pipeline_p50,
+                percentile_cont(0.95) WITHIN GROUP (
+                    ORDER BY EXTRACT(EPOCH FROM (COALESCE(distributed_at, last_updated) - received_at)) * 1000
+                )::DOUBLE PRECISION AS pipeline_p95,
+                COUNT(*)::BIGINT AS total_wps,
+                COUNT(*) FILTER (WHERE failed_at IS NOT NULL)::BIGINT AS failed_wps
+            FROM wp_tracking
+            WHERE first_seen >= $1 AND first_seen < $2
+              AND ($3::SMALLINT IS NULL OR core = $3)
+              AND received_at IS NOT NULL
+            GROUP BY 1
+            ORDER BY 1
+            "#,
+        );
+
+        sqlx::query_as::<_, BottlenecksTimeseriesRow>(&sql)
+            .bind(start)
+            .bind(end)
+            .bind(core_filter)
+            .fetch_all(self.pool())
+            .await
+    }
 }
 
 #[cfg(test)]
