@@ -112,6 +112,7 @@
         }
       ],
       "title": "Active Nodes",
+      "description": "[JIP-3] Number of nodes currently connected to the telemetry server.",
       "type": "stat"
     },
     {
@@ -184,6 +185,7 @@
         }
       ],
       "title": "Best Slot",
+      "description": "[JIP-3] Highest slot number reported by any node via BestBlockChanged (11).",
       "type": "stat"
     },
     {
@@ -256,6 +258,7 @@
         }
       ],
       "title": "Finalized Slot",
+      "description": "[JIP-3] Latest finalized slot reported via FinalizedBlockChanged (12).",
       "type": "stat"
     },
     {
@@ -337,6 +340,7 @@
         }
       ],
       "title": "Events/sec (10s)",
+      "description": "[JIP-3] Total telemetry events ingested per second, averaged over the last 10 seconds. Covers all event types from all nodes.",
       "type": "stat"
     },
     {
@@ -410,6 +414,7 @@
         }
       ],
       "title": "Blocks/sec (10s)",
+      "description": "[JIP-3] Authored (42) events per second, averaged over the last 10 seconds. One count per block produced by any node.",
       "type": "stat"
     },
     {
@@ -1512,6 +1517,7 @@
         }
       ],
       "title": "Events by Type",
+      "description": "[JIP-3] Network-wide event counts grouped by event type name. All events from all nodes \u2014 each line is one event type's count per interval. (1-minute buckets from all_event_stats_1m)",
       "type": "timeseries",
       "transformations": [
         {
@@ -1644,6 +1650,7 @@
         }
       ],
       "title": "Events by Node",
+      "description": "[JIP-3] Network-wide event counts grouped by node. Each line is one node's total event volume per interval. (1-minute buckets from all_event_stats_1m)",
       "type": "timeseries",
       "transformations": [
         {
@@ -1666,149 +1673,10 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 14
-      },
-      "id": 30,
-      "title": "Filtered by Group",
-      "type": "row"
-    },
-    {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "jamtart-api"
-      },
-      "description": "Event counts filtered by selected group(s), split by event type.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "smooth",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 15
-      },
-      "id": 31,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "columns": [
-            {
-              "selector": "ts",
-              "text": "",
-              "type": "timestamp"
-            },
-            {
-              "selector": "event_type_name",
-              "text": "event_type_name",
-              "type": "string"
-            },
-            {
-              "selector": "count",
-              "text": "Count",
-              "type": "number"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "jamtart-api"
-          },
-          "format": "table",
-          "parser": "backend",
-          "refId": "A",
-          "root_selector": "",
-          "source": "url",
-          "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?event_types=${event_group}&group_by=event_type&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
-          "url_options": {
-            "data": "",
-            "headers": [],
-            "method": "GET",
-            "params": []
-          }
-        }
-      ],
-      "title": "Events by Group",
-      "type": "timeseries",
-      "transformations": [
-        {
-          "id": "partitionByValues",
-          "options": {
-            "fields": [
-              "event_type_name"
-            ],
-            "keepFields": false
-          }
-        }
-      ],
-      "maxDataPoints": 300
-    },
-    {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
         "y": 23
       },
       "id": 40,
-      "title": "Filtered by Event",
+      "title": "Selected Events",
       "type": "row"
     },
     {
@@ -2018,6 +1886,7 @@
         }
       ],
       "title": "Failure Rates",
+      "description": "[JIP-3] All failure and discard events across the network: AuthoringFailed (41), BlockVerificationFailed (44), BlockExecutionFailed (46), BlockRequestFailed (65), TicketGenerationFailed (81), TicketTransferFailed (83), WorkPackageFailed (92), DuplicateWorkPackage (93), WorkPackageSharingFailed (99), GuaranteeSendFailed (107), GuaranteeReceiveFailed (111), GuaranteeDiscarded (113), ShardRequestFailed (122), AssuranceSendFailed (127), AssuranceReceiveFailed (130), and others. Grouped by type. (1-minute buckets from all_event_stats_1m)",
       "type": "table"
     },
     {
@@ -2143,6 +2012,7 @@
         }
       ],
       "title": "Block Production",
+      "description": "[JIP-3] Authored (42) events per interval \u2014 one count per block produced by any node. (1-minute buckets from event_stats_1m)",
       "type": "timeseries"
     },
     {
@@ -2317,6 +2187,7 @@
         }
       ],
       "title": "Pipeline Activity",
+      "description": "[JIP-3] Three series showing the block production pipeline: Authored (42), WP pipeline (WorkPackageReceived through GuaranteesDistributed, types 90\u2013109), and guarantee receiving (ReceivingGuarantee through GuaranteeDiscarded, types 110\u2013113). (1-minute buckets)",
       "type": "timeseries",
       "maxDataPoints": 300
     },
@@ -2490,6 +2361,7 @@
         }
       ],
       "title": "Block Composition",
+      "description": "[JIP-3] Contents of each authored block over time: number of guarantees, assurances, preimages, and tickets included. Extracted from Authored (42) event payload. Stacked bars.",
       "type": "timeseries"
     },
     {
@@ -2605,6 +2477,7 @@
         }
       ],
       "title": "WP Funnel",
+      "description": "[JIP-3] Work package pipeline summary: how many WPs were received (WorkPackageReceived 94), authorized (Authorized 95), refined (Refined 101), built into guarantees (GuaranteeBuilt 105), distributed (GuaranteesDistributed 109), and how many failed (WorkPackageFailed 92). Snapshot over the selected time range. (from wp_tracking)",
       "type": "stat"
     },
     {
@@ -2734,6 +2607,7 @@
         }
       ],
       "title": "Pipeline Bottlenecks",
+      "description": "[JIP-3] Pipeline health metrics: total WPs processed, failure count and rate, average pipeline latency from WorkPackageReceived to GuaranteeBuilt in milliseconds. (from wp_tracking)",
       "type": "stat"
     },
     {
@@ -2866,6 +2740,7 @@
         }
       ],
       "title": "Nodes",
+      "description": "[JIP-3] All nodes that have connected to the telemetry server. Shows implementation name, version, connection status, and last seen time.",
       "type": "table"
     },
     {
@@ -2971,6 +2846,7 @@
         }
       ],
       "title": "Data Availability by Node",
+      "description": "[JIP-3] Per-node data availability storage: number of shards and preimages held, with sizes. Extracted from Status (10) events. (from node_stats)",
       "type": "table"
     },
     {
@@ -3095,6 +2971,7 @@
         }
       ],
       "title": "DA Aggregate",
+      "description": "[JIP-3] Network-wide data availability summary: max shard/preimage counts and sizes, average peer count. Extracted from Status (10) events. (from node_stats_1m)",
       "type": "stat"
     }
   ],
