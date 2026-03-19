@@ -596,6 +596,36 @@ pub fn shard_request_failed_event(ts: u64, reason: &str) -> Event {
     }
 }
 
+/// Construct a ShardRequestFailed event (event_type=122) with custom request_id.
+#[allow(dead_code)]
+pub fn shard_request_failed_event_with_id(ts: u64, request_id: u64, reason: &str) -> Event {
+    Event::ShardRequestFailed {
+        timestamp: ts,
+        request_id,
+        reason: BoundedString::new(reason).unwrap(),
+    }
+}
+
+/// Construct a GuaranteeBuilt event (event_type=105) with custom report_hash and slot.
+#[allow(dead_code)]
+pub fn guarantee_built_event_with_hash(
+    ts: u64,
+    submission_id: u64,
+    report_hash: [u8; 32],
+    slot: u32,
+) -> Event {
+    use tart_backend::types::*;
+    Event::GuaranteeBuilt {
+        timestamp: ts,
+        submission_id,
+        outline: GuaranteeSummary {
+            work_report_hash: report_hash,
+            slot,
+            guarantors: vec![0, 1, 2],
+        },
+    }
+}
+
 /// Construct a PreimageAnnounced event (event_type=191).
 #[allow(dead_code)]
 pub fn preimage_announced_event(ts: u64, service: u32) -> Event {

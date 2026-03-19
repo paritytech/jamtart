@@ -1151,6 +1151,123 @@
       ],
       "title": "WP Pipeline Funnel",
       "type": "bargauge"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 49 },
+      "id": 18,
+      "panels": [],
+      "title": "WP Funnel Timeseries",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "line", "fillOpacity": 30, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "auto", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "normal" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 50 },
+      "id": 19,
+      "maxDataPoints": 300,
+      "options": {
+        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [{
+        "columns": [
+          { "selector": "ts", "text": "", "type": "timestamp" },
+          { "selector": "received", "text": "Received", "type": "number" },
+          { "selector": "authorized", "text": "Authorized", "type": "number" },
+          { "selector": "refined", "text": "Refined", "type": "number" },
+          { "selector": "report_built", "text": "Report Built", "type": "number" },
+          { "selector": "guarantee_built", "text": "Guarantee Built", "type": "number" },
+          { "selector": "distributed", "text": "Distributed", "type": "number" },
+          { "selector": "failed", "text": "Failed", "type": "number" }
+        ],
+        "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+        "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
+        "refId": "A", "root_selector": "", "source": "url", "type": "json",
+        "url": "http://localhost:8080/api/grafana/wp-funnel-timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&core=${core_index}",
+        "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
+      }],
+      "title": "WP Funnel Timeseries",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 60 },
+      "id": 20,
+      "panels": [],
+      "title": "Bottlenecks Timeseries",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "ms", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "auto", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 61 },
+      "id": 21,
+      "maxDataPoints": 300,
+      "options": {
+        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [{
+        "columns": [
+          { "selector": "ts", "text": "", "type": "timestamp" },
+          { "selector": "authorize_p50", "text": "Authorize p50", "type": "number" },
+          { "selector": "authorize_p95", "text": "Authorize p95", "type": "number" },
+          { "selector": "refine_p50", "text": "Refine p50", "type": "number" },
+          { "selector": "refine_p95", "text": "Refine p95", "type": "number" },
+          { "selector": "report_p50", "text": "Report p50", "type": "number" },
+          { "selector": "report_p95", "text": "Report p95", "type": "number" },
+          { "selector": "guarantee_p50", "text": "Guarantee p50", "type": "number" },
+          { "selector": "guarantee_p95", "text": "Guarantee p95", "type": "number" },
+          { "selector": "distribute_p50", "text": "Distribute p50", "type": "number" },
+          { "selector": "distribute_p95", "text": "Distribute p95", "type": "number" },
+          { "selector": "pipeline_p50", "text": "Pipeline p50", "type": "number" },
+          { "selector": "pipeline_p95", "text": "Pipeline p95", "type": "number" }
+        ],
+        "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+        "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
+        "refId": "A", "root_selector": "", "source": "url", "type": "json",
+        "url": "http://localhost:8080/api/grafana/bottlenecks-timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&core=${core_index}",
+        "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
+      }],
+      "title": "Bottlenecks Timeseries",
+      "type": "timeseries"
     }
   ],
   "schemaVersion": 39,

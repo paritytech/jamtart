@@ -341,7 +341,9 @@
         },
         "overrides": [
           { "matcher": { "id": "byName", "options": "p99 (ms)" }, "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }] },
-          { "matcher": { "id": "byName", "options": "p50 (ms)" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }] }
+          { "matcher": { "id": "byName", "options": "p50 (ms)" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "p75 (ms)" }, "properties": [{ "id": "color", "value": { "fixedColor": "yellow", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "p95 (ms)" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }] }
         ]
       },
       "gridPos": { "h": 8, "w": 8, "x": 0, "y": 19 },
@@ -356,6 +358,8 @@
         "columns": [
           { "selector": "authored_at", "text": "", "type": "timestamp" },
           { "selector": "p50_ms", "text": "p50 (ms)", "type": "number" },
+          { "selector": "p75_ms", "text": "p75 (ms)", "type": "number" },
+          { "selector": "p95_ms", "text": "p95 (ms)", "type": "number" },
           { "selector": "p99_ms", "text": "p99 (ms)", "type": "number" }
         ],
         "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
@@ -387,7 +391,9 @@
         },
         "overrides": [
           { "matcher": { "id": "byName", "options": "p99 (ms)" }, "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }] },
-          { "matcher": { "id": "byName", "options": "p50 (ms)" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }] }
+          { "matcher": { "id": "byName", "options": "p50 (ms)" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "p75 (ms)" }, "properties": [{ "id": "color", "value": { "fixedColor": "yellow", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "p95 (ms)" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }] }
         ]
       },
       "gridPos": { "h": 8, "w": 8, "x": 8, "y": 19 },
@@ -402,6 +408,8 @@
         "columns": [
           { "selector": "authored_at", "text": "", "type": "timestamp" },
           { "selector": "p50_ms", "text": "p50 (ms)", "type": "number" },
+          { "selector": "p75_ms", "text": "p75 (ms)", "type": "number" },
+          { "selector": "p95_ms", "text": "p95 (ms)", "type": "number" },
           { "selector": "p99_ms", "text": "p99 (ms)", "type": "number" }
         ],
         "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
@@ -433,7 +441,9 @@
         },
         "overrides": [
           { "matcher": { "id": "byName", "options": "p99 (ms)" }, "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }] },
-          { "matcher": { "id": "byName", "options": "p50 (ms)" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }] }
+          { "matcher": { "id": "byName", "options": "p50 (ms)" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "p75 (ms)" }, "properties": [{ "id": "color", "value": { "fixedColor": "yellow", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "p95 (ms)" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }] }
         ]
       },
       "gridPos": { "h": 8, "w": 8, "x": 16, "y": 19 },
@@ -448,6 +458,8 @@
         "columns": [
           { "selector": "authored_at", "text": "", "type": "timestamp" },
           { "selector": "p50_ms", "text": "p50 (ms)", "type": "number" },
+          { "selector": "p75_ms", "text": "p75 (ms)", "type": "number" },
+          { "selector": "p95_ms", "text": "p95 (ms)", "type": "number" },
           { "selector": "p99_ms", "text": "p99 (ms)", "type": "number" }
         ],
         "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },

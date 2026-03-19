@@ -2321,3 +2321,331 @@ async fn test_grafana_da_stats() {
     assert!(row["shard_requests_sent"].as_i64().unwrap_or(0) >= 1);
     assert!(row["shards_transferred"].as_i64().unwrap_or(0) >= 1);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shard Latency Histogram — end-to-end
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_grafana_shard_latency_histogram() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+
+    let now = common::now_jce_micros();
+    let erasure_root = [0xEE; 32];
+    let guarantor_peer = [0x55; 32];
+
+    // Node A: assurer — 3 shard requests with known delays
+    // Event IDs are sequential per node starting from 0.
+    let mut stream_a = connect_test_node(port, 1, &telemetry).await;
+
+    // Request 1: 5ms delay (5000 us)
+    send_events(&mut stream_a, &[
+        common::sending_shard_request_event(now, guarantor_peer, erasure_root, 10),           // event_id=0
+    ]).await;
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    send_events(&mut stream_a, &[
+        common::shards_transferred_event(now + 5_000, 0),                                      // request_id=0, +5ms
+    ]).await;
+
+    // Request 2: 50ms delay (50000 us)
+    send_events(&mut stream_a, &[
+        common::sending_shard_request_event(now + 100_000, guarantor_peer, erasure_root, 11),  // event_id=2
+    ]).await;
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    send_events(&mut stream_a, &[
+        common::shards_transferred_event(now + 150_000, 2),                                    // request_id=2, +50ms
+    ]).await;
+
+    // Request 3: 200ms delay (200000 us)
+    send_events(&mut stream_a, &[
+        common::sending_shard_request_event(now + 300_000, guarantor_peer, erasure_root, 12),  // event_id=4
+    ]).await;
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    send_events(&mut stream_a, &[
+        common::shards_transferred_event(now + 500_000, 4),                                    // request_id=4, +200ms
+    ]).await;
+
+    common::flush_all(&telemetry).await;
+
+    let path = format!(
+        "/api/grafana/shard-latency?{}&interval=1m",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("shard-latency should return an array");
+    assert!(!arr.is_empty(), "should have at least one time bucket");
+
+    // Check assurer samples >= 3
+    let total_samples: i64 = arr
+        .iter()
+        .map(|r| r["assurer_samples"].as_i64().unwrap_or(0))
+        .sum();
+    assert!(
+        total_samples >= 3,
+        "expected assurer_samples >= 3, got {}",
+        total_samples
+    );
+
+    // The p50 should be reasonable — with 3 samples at 5ms, 50ms, 200ms
+    // the median is 50ms, which falls in bucket 25-50ms or 50-100ms
+    let row = &arr[0];
+    assert!(
+        row["assurer_p50"].is_number(),
+        "expected assurer_p50 to be a number"
+    );
+    let p50 = row["assurer_p50"].as_i64().unwrap_or(0);
+    assert!(
+        p50 > 0 && p50 < 500,
+        "expected p50 in reasonable range (0-500ms), got {}",
+        p50
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shard Latency with Failures
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_grafana_shard_latency_with_failure() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+
+    let now = common::now_jce_micros();
+    let erasure_root = [0xEE; 32];
+    let guarantor_peer = [0x55; 32];
+
+    // Node A: assurer — send SendingShardRequest then ShardRequestFailed
+    let mut stream_a = connect_test_node(port, 1, &telemetry).await;
+
+    // Request that fails after 10ms
+    send_events(&mut stream_a, &[
+        common::sending_shard_request_event(now, guarantor_peer, erasure_root, 10),  // event_id=0
+    ]).await;
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    send_events(&mut stream_a, &[
+        common::shard_request_failed_event_with_id(now + 10_000, 0, "timeout"),       // request_id=0, +10ms
+    ]).await;
+
+    // Request that succeeds after 20ms (to confirm both paths work on same node)
+    send_events(&mut stream_a, &[
+        common::sending_shard_request_event(now + 100_000, guarantor_peer, erasure_root, 11),  // event_id=2
+    ]).await;
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    send_events(&mut stream_a, &[
+        common::shards_transferred_event(now + 120_000, 2),                                     // request_id=2, +20ms
+    ]).await;
+
+    common::flush_all(&telemetry).await;
+
+    let path = format!(
+        "/api/grafana/shard-latency?{}&interval=1m",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("shard-latency should return an array");
+    assert!(!arr.is_empty(), "should have at least one time bucket");
+
+    // Sum failed_count across all buckets
+    let total_failed: i64 = arr
+        .iter()
+        .map(|r| r["failed_count"].as_i64().unwrap_or(0))
+        .sum();
+    assert!(
+        total_failed >= 1,
+        "expected failed_count >= 1, got {}",
+        total_failed
+    );
+
+    // Sum assurer_samples: both the failed and successful request contribute
+    // (failed still measures latency in the assurer histogram)
+    let total_samples: i64 = arr
+        .iter()
+        .map(|r| r["assurer_samples"].as_i64().unwrap_or(0))
+        .sum();
+    assert!(
+        total_samples >= 2,
+        "expected assurer_samples >= 2 (1 failed + 1 success), got {}",
+        total_samples
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Guarantee Convergence — multi-core slot summary
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_grafana_guarantee_convergence_multi_core_slot_summary() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+
+    let now = common::now_jce_micros();
+    let report_hash_a = [0xAA; 32];
+    let report_hash_b = [0xBB; 32];
+
+    // Node 1: guarantor A — builds guarantee with report_hash_a, slot=300, core=3
+    let mut stream_1 = connect_test_node(port, 1, &telemetry).await;
+    send_events(&mut stream_1, &[
+        common::wp_received_event(now, 9000, 3),
+        common::guarantee_built_event_with_hash(now + 100_000, 9000, report_hash_a, 300),
+    ]).await;
+
+    // Node 2: guarantor B — builds guarantee with report_hash_b, slot=300, core=5
+    let mut stream_2 = connect_test_node(port, 2, &telemetry).await;
+    send_events(&mut stream_2, &[
+        common::wp_received_event(now, 9001, 5),
+        common::guarantee_built_event_with_hash(now + 100_000, 9001, report_hash_b, 300),
+    ]).await;
+
+    // Nodes 3, 4: validators — receive both guarantees
+    let mut stream_3 = connect_test_node(port, 3, &telemetry).await;
+    let mut stream_4 = connect_test_node(port, 4, &telemetry).await;
+
+    send_events(&mut stream_3, &[
+        common::guarantee_received_event(now + 200_000, 300, report_hash_a),
+        common::guarantee_received_event(now + 250_000, 300, report_hash_b),
+    ]).await;
+    send_events(&mut stream_4, &[
+        common::guarantee_received_event(now + 300_000, 300, report_hash_a),
+        common::guarantee_received_event(now + 350_000, 300, report_hash_b),
+    ]).await;
+
+    common::flush_all(&telemetry).await;
+
+    // Overview: per-slot summary
+    let path = format!("/api/grafana/guarantee-convergence?{}", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+
+    // Find slot 300
+    let slot300 = arr.iter().find(|r| r["slot"].as_i64() == Some(300));
+    assert!(slot300.is_some(), "expected data for slot 300");
+    let row = slot300.unwrap();
+    assert!(
+        row["guarantee_count"].as_i64().unwrap_or(0) >= 2,
+        "expected guarantee_count >= 2 for two different report hashes"
+    );
+
+    // Detail: per-guarantee
+    let path = format!(
+        "/api/grafana/guarantee-convergence/detail?{}",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+
+    // Should have entries for both report hashes in slot 300
+    let slot300_entries: Vec<&Value> = arr
+        .iter()
+        .filter(|r| r["slot"].as_i64() == Some(300))
+        .collect();
+    assert!(
+        slot300_entries.len() >= 2,
+        "expected at least 2 detail entries for slot 300, got {}",
+        slot300_entries.len()
+    );
+
+    // Each should have node_count >= 2 (two validators received each guarantee)
+    for entry in &slot300_entries {
+        assert!(
+            entry["node_count"].as_i64().unwrap_or(0) >= 2,
+            "expected node_count >= 2, got {:?}",
+            entry["node_count"]
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Assurance Convergence — pending buffer path (receiver before sender)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_grafana_assurance_convergence_pending_buffer() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+
+    let now = common::now_jce_micros();
+    let anchor = [0xCC; 32];
+
+    // Step 1: send Importing on any node to populate HeaderHashLookup (anchor → slot)
+    let mut stream_x = connect_test_node(port, 10, &telemetry).await;
+    send_events(&mut stream_x, &[
+        common::importing_event(now, 600, anchor),
+    ]).await;
+
+    // Step 2: send AssuranceReceived BEFORE DistributingAssurance (out-of-order)
+    // Node B: receiver — sees assurance from sender (node 1, peer_id=[1;32])
+    let sender_peer_id = [1u8; 32];
+    let mut stream_b = connect_test_node(port, 2, &telemetry).await;
+    send_events(&mut stream_b, &[
+        common::assurance_received_event_with(now + 200_000, anchor, sender_peer_id),
+    ]).await;
+
+    // Node C: another receiver
+    let mut stream_c = connect_test_node(port, 3, &telemetry).await;
+    send_events(&mut stream_c, &[
+        common::assurance_received_event_with(now + 250_000, anchor, sender_peer_id),
+    ]).await;
+
+    // Step 3: send DistributingAssurance AFTER receivers (pending buffer resolves)
+    // Node A: sender — distributes assurance
+    let mut stream_a = connect_test_node(port, 1, &telemetry).await;
+    send_events(&mut stream_a, &[
+        common::distributing_assurance_event(now + 100_000, anchor),
+    ]).await;
+
+    common::flush_all(&telemetry).await;
+
+    // Test overview endpoint
+    let path = format!("/api/grafana/assurance-convergence?{}", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+    assert!(
+        !arr.is_empty(),
+        "pending buffer path should still produce assurance convergence data"
+    );
+
+    // Find slot 600 (from the Importing event)
+    let slot600 = arr.iter().find(|r| r["slot"].as_i64() == Some(600));
+    assert!(
+        slot600.is_some(),
+        "expected assurance convergence data for slot 600"
+    );
+    let row = slot600.unwrap();
+    assert!(
+        row["sender_count"].as_i64().unwrap_or(0) >= 1,
+        "expected sender_count >= 1"
+    );
+    assert!(row["p50_ms"].is_number(), "expected p50_ms");
+
+    // Test senders endpoint — should find the sender
+    let path = format!(
+        "/api/grafana/assurance-convergence/senders?{}",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+    assert!(
+        !arr.is_empty(),
+        "senders endpoint should have data from pending buffer resolution"
+    );
+    let row = &arr[0];
+    assert!(
+        row["node_count"].as_i64().unwrap_or(0) >= 2,
+        "expected node_count >= 2 (two receivers)"
+    );
+}
