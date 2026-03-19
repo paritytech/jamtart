@@ -40,6 +40,8 @@ use crate::onchain_types::*;
         guarantee_convergence_detail,
         assurance_convergence,
         assurance_convergence_senders,
+        da_stats,
+        shard_latency,
         wp_funnel_timeseries,
         bottlenecks_timeseries,
         event_types,
@@ -80,6 +82,8 @@ use crate::onchain_types::*;
         GuaranteeConvergenceDetailRow,
         AssuranceConvergenceRow,
         AssuranceConvergenceSenderRow,
+        DaStatsRow,
+        ShardLatencyRow,
         WpFunnelTimeseriesRow,
         BottlenecksTimeseriesRow,
         EventRow,
@@ -122,6 +126,8 @@ pub fn router() -> Router<ApiState> {
         .route("/guarantee-convergence/detail", get(guarantee_convergence_detail))
         .route("/assurance-convergence", get(assurance_convergence))
         .route("/assurance-convergence/senders", get(assurance_convergence_senders))
+        .route("/da-stats", get(da_stats))
+        .route("/shard-latency", get(shard_latency))
         .route("/wp-funnel-timeseries", get(wp_funnel_timeseries))
         .route("/bottlenecks-timeseries", get(bottlenecks_timeseries))
         .route("/event-types", get(event_types))
@@ -886,6 +892,68 @@ async fn assurance_convergence_senders(
         .await
         .map(Json)
         .map_err(|e| map_sqlx_error("grafana/assurance-convergence/senders", e))
+}
+
+/// Per-node DA operational stats — shard event counts, latency averages,
+/// shard inventory. Aggregated over the requested time range.
+///
+/// Replaces the disabled `get_da_stats_enhanced` legacy endpoint.
+/// Events tracked: SendingShardRequest(120), ReceivingShardRequest(121),
+/// ShardRequestFailed(122), ShardRequestSent(123), ShardRequestReceived(124),
+/// ShardsTransferred(125), PreimageAnnouncementFailed(190),
+/// PreimageAnnounced(191), AnnouncedPreimageForgotten(192).
+#[utoipa::path(
+    get,
+    path = "/api/grafana/da-stats",
+    params(TimeRangeQuery),
+    responses(
+        (status = 200, description = "Per-node DA operational stats", body = [DaStatsRow]),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn da_stats(
+    Query(q): Query<TimeRangeQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    state
+        .store
+        .grafana_da_stats(q.start, q.end, q.node.as_deref())
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/da-stats", e))
+}
+
+/// Shard latency timeseries — approximate percentiles from merged histograms.
+///
+/// Latency measured from two perspectives:
+/// - Assurer round-trip: SendingShardRequest(120) → ShardsTransferred(125)
+/// - Guarantor processing: ReceivingShardRequest(121) → ShardRequestReceived(124)
+///
+/// Histograms (14 buckets, ms: 0-1-2-5-10-25-50-100-250-500-1000-2000-3000-5000-∞)
+/// are merged across nodes per time bucket. Percentiles are interpolated
+/// from the cumulative distribution.
+#[utoipa::path(
+    get,
+    path = "/api/grafana/shard-latency",
+    params(WpTimeseriesQuery),
+    responses(
+        (status = 200, description = "Shard latency percentiles per time bucket", body = [ShardLatencyRow]),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn shard_latency(
+    Query(q): Query<WpTimeseriesQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let interval = q.interval.as_deref().unwrap_or("1m");
+    state
+        .store
+        .grafana_shard_latency_raw(q.start, q.end, interval)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/shard-latency", e))
 }
 
 /// Work package pipeline funnel bucketed over time.

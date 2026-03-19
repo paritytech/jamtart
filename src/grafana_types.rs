@@ -763,6 +763,55 @@ pub struct AssuranceConvergenceSenderRow {
     pub distributed_at: DateTime<Utc>,
 }
 
+// ── /api/grafana/da-stats ────────────────────────────────────────────────
+
+/// Per-node DA operational stats aggregated over a time range.
+///
+/// **Data source:** `da_node_stats` hypertable, populated by da_tracker flush.
+/// One row per node with summed event counts, weighted avg latency, and
+/// max active shard count.
+#[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
+pub struct DaStatsRow {
+    pub node_id: String,
+    pub shard_requests_sent: i64,
+    pub shard_requests_received: i64,
+    pub shard_sent_confirmed: i64,
+    pub shard_received_confirmed: i64,
+    pub shards_transferred: i64,
+    pub shard_failures: i64,
+    pub preimage_ann_failures: i64,
+    pub preimages_announced: i64,
+    pub preimages_forgotten: i64,
+    pub assurer_avg_latency_ms: Option<f32>,
+    pub assurer_latency_samples: i64,
+    pub guarantor_avg_latency_ms: Option<f32>,
+    pub guarantor_latency_samples: i64,
+    pub active_shards: i32,
+}
+
+// ── /api/grafana/shard-latency ──────────────────────────────────────────
+
+/// Shard latency percentiles per time bucket (computed from merged histograms).
+///
+/// **Data source:** `shard_latency_hist` hypertable. Histograms are summed
+/// across nodes per time bucket, then percentiles are interpolated from the
+/// cumulative distribution in Rust.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ShardLatencyRow {
+    pub ts: DateTime<Utc>,
+    pub assurer_p50: Option<i32>,
+    pub assurer_p95: Option<i32>,
+    pub assurer_p99: Option<i32>,
+    pub assurer_p100: Option<i32>,
+    pub assurer_samples: i32,
+    pub guarantor_p50: Option<i32>,
+    pub guarantor_p95: Option<i32>,
+    pub guarantor_p99: Option<i32>,
+    pub guarantor_p100: Option<i32>,
+    pub guarantor_samples: i32,
+    pub failed_count: i32,
+}
+
 // ── /api/grafana/wp-funnel-timeseries ────────────────────────────────────
 
 /// Work package pipeline funnel bucketed over time — how many WPs reached

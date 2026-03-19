@@ -244,6 +244,7 @@ async fn main() -> anyhow::Result<()> {
         let guarantee_convergence_tracker = telemetry_server.get_guarantee_convergence_tracker();
         let assurance_convergence_tracker = telemetry_server.get_assurance_convergence_tracker();
         let header_hash_lookup = telemetry_server.get_header_hash_lookup();
+        let da_tracker = telemetry_server.get_da_tracker();
         let event_counter = telemetry_server.get_event_counter();
         let enricher_map = telemetry_server.get_enricher_map();
         let pool = store.pool().clone();
@@ -273,8 +274,9 @@ async fn main() -> anyhow::Result<()> {
                 ).await;
                 tart_backend::event_counter::flush_event_counter(&event_counter, &pool).await;
                 tick_count += 1;
-                // Log enricher diagnostics every 2 ticks (10s)
+                // Flush DA tracker every 2 ticks (10s)
                 if tick_count % 2 == 0 {
+                    tart_backend::da_tracker::flush_da_tracker(&da_tracker, &pool).await;
                     tart_backend::enricher::log_enricher_diagnostics(&enricher_map, 10.0);
                 }
                 // Evict stale header_hash_lookup entries every 6 ticks (30s)

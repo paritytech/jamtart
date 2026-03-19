@@ -10,6 +10,7 @@ use crate::event_counter::{self, EventCounter};
 use crate::events::{Event, NodeInformation};
 use crate::rate_limiter::RateLimiter;
 use crate::convergence_tracker::{self, AssuranceConvergenceTracker, GuaranteeConvergenceTracker, HeaderHashLookup};
+use crate::da_tracker::{self, DaTracker};
 use crate::slot_tracker::{self, SlotTracker};
 use crate::store::EventStore;
 use crate::wp_tracker::{self, WpTracker};
@@ -145,6 +146,7 @@ pub struct TelemetryServer {
     guarantee_convergence_tracker: GuaranteeConvergenceTracker,
     assurance_convergence_tracker: AssuranceConvergenceTracker,
     header_hash_lookup: HeaderHashLookup,
+    da_tracker: DaTracker,
     connection_watch: Arc<tokio::sync::watch::Sender<usize>>,
     /// Kept alive so the watch channel stays open (senders fail when all receivers drop)
     #[allow(dead_code)]
@@ -249,6 +251,7 @@ impl TelemetryServer {
             guarantee_convergence_tracker: convergence_tracker::new_guarantee_convergence_tracker(),
             assurance_convergence_tracker: convergence_tracker::new_assurance_convergence_tracker(),
             header_hash_lookup: convergence_tracker::new_header_hash_lookup(),
+            da_tracker: da_tracker::new_da_tracker(),
             connection_watch: Arc::new(connection_watch),
             _connection_watch_rx: connection_watch_rx,
         })
@@ -328,6 +331,7 @@ impl TelemetryServer {
             let guarantee_convergence_tracker = Arc::clone(&self.guarantee_convergence_tracker);
             let assurance_convergence_tracker = Arc::clone(&self.assurance_convergence_tracker);
             let header_hash_lookup = Arc::clone(&self.header_hash_lookup);
+            let da_tracker = Arc::clone(&self.da_tracker);
             let connection_watch = Arc::clone(&self.connection_watch);
 
             let handle = std::thread::Builder::new()
@@ -384,6 +388,7 @@ impl TelemetryServer {
                                                 guarantee_convergence_tracker: Arc::clone(&guarantee_convergence_tracker),
                                                 assurance_convergence_tracker: Arc::clone(&assurance_convergence_tracker),
                                                 header_hash_lookup: Arc::clone(&header_hash_lookup),
+                                                da_tracker: Arc::clone(&da_tracker),
                                                 connection_watch: Arc::clone(&connection_watch),
                                             };
 
@@ -445,6 +450,7 @@ impl TelemetryServer {
             guarantee_convergence_tracker: Arc::clone(&self.guarantee_convergence_tracker),
             assurance_convergence_tracker: Arc::clone(&self.assurance_convergence_tracker),
             header_hash_lookup: Arc::clone(&self.header_hash_lookup),
+            da_tracker: Arc::clone(&self.da_tracker),
             connection_watch: Arc::clone(&self.connection_watch),
         };
 
@@ -528,6 +534,10 @@ impl TelemetryServer {
         Arc::clone(&self.header_hash_lookup)
     }
 
+    pub fn get_da_tracker(&self) -> DaTracker {
+        Arc::clone(&self.da_tracker)
+    }
+
     /// Flush slot_tracker, wp_tracker, and event_counter to database on-demand.
     /// For testing only — in production these flush every 5s via the periodic task.
     pub async fn flush_trackers(&self) {
@@ -554,6 +564,7 @@ impl TelemetryServer {
                 std::time::Duration::from_secs(60),
             )
             .await;
+            da_tracker::flush_da_tracker(&self.da_tracker, store.pool()).await;
             event_counter::flush_event_counter(&self.event_counter, store.pool()).await;
         }
     }
@@ -583,6 +594,7 @@ impl TelemetryServer {
                 std::time::Duration::from_secs(3600),
             )
             .await;
+            da_tracker::flush_da_tracker(&self.da_tracker, store.pool()).await;
             event_counter::flush_event_counter(&self.event_counter, store.pool()).await;
         }
     }
@@ -633,6 +645,7 @@ struct ConnectionContext {
     guarantee_convergence_tracker: GuaranteeConvergenceTracker,
     assurance_convergence_tracker: AssuranceConvergenceTracker,
     header_hash_lookup: HeaderHashLookup,
+    da_tracker: DaTracker,
     connection_watch: Arc<tokio::sync::watch::Sender<usize>>,
 }
 
@@ -654,6 +667,7 @@ async fn handle_connection_optimized(
         guarantee_convergence_tracker,
         assurance_convergence_tracker,
         header_hash_lookup,
+        da_tracker,
         connection_watch,
     } = ctx;
     // Set TCP nodelay for lower latency
@@ -1069,6 +1083,143 @@ async fn handle_connection_optimized(
                                                     }
                                                 });
                                         }
+                                    }
+                                    _ => {}
+                                }
+                            }
+
+                            // Update DaTracker for shard distribution and preimage events
+                            {
+                                let et_raw = event.event_type() as u16;
+                                let evt_ts = event.timestamp();
+                                match et_raw {
+                                    120 => { // SendingShardRequest — assurer initiates
+                                        da_tracker.entry(node_id_str.clone())
+                                            .and_modify(|s| {
+                                                s.shard_requests_sent += 1;
+                                                s.assurer_pending.insert(this_event_id, evt_ts);
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            })
+                                            .or_insert_with(|| {
+                                                let mut s = da_tracker::DaNodeState::default();
+                                                s.shard_requests_sent = 1;
+                                                s.assurer_pending.insert(this_event_id, evt_ts);
+                                                s.dirty = true;
+                                                s
+                                            });
+                                    }
+                                    121 => { // ReceivingShardRequest — guarantor receives
+                                        da_tracker.entry(node_id_str.clone())
+                                            .and_modify(|s| {
+                                                s.shard_requests_received += 1;
+                                                s.guarantor_pending.insert(this_event_id, evt_ts);
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            })
+                                            .or_insert_with(|| {
+                                                let mut s = da_tracker::DaNodeState::default();
+                                                s.shard_requests_received = 1;
+                                                s.guarantor_pending.insert(this_event_id, evt_ts);
+                                                s.dirty = true;
+                                                s
+                                            });
+                                    }
+                                    122 => { // ShardRequestFailed — check both pending maps
+                                        if let Event::ShardRequestFailed { request_id, .. } = &*event {
+                                            da_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                                s.shard_failures += 1;
+                                                // Compute delta and record in histogram
+                                                if let Some(sent_ts) = s.assurer_pending.remove(request_id) {
+                                                    let delta_us = evt_ts.saturating_sub(sent_ts);
+                                                    let delta_ms = (delta_us / 1000) as i32;
+                                                    s.assurer_latency_sum_us += delta_us;
+                                                    s.assurer_latency_count += 1;
+                                                    let idx = da_tracker::hist_bucket_index(delta_ms);
+                                                    s.assurer_hist[idx] += 1;
+                                                    s.assurer_hist_total += 1;
+                                                    s.assurer_hist_failed += 1;
+                                                } else if let Some(recv_ts) = s.guarantor_pending.remove(request_id) {
+                                                    let delta_us = evt_ts.saturating_sub(recv_ts);
+                                                    let delta_ms = (delta_us / 1000) as i32;
+                                                    s.guarantor_latency_sum_us += delta_us;
+                                                    s.guarantor_latency_count += 1;
+                                                    let idx = da_tracker::hist_bucket_index(delta_ms);
+                                                    s.guarantor_hist[idx] += 1;
+                                                    s.guarantor_hist_total += 1;
+                                                    s.guarantor_hist_failed += 1;
+                                                }
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            });
+                                        }
+                                    }
+                                    123 => { // ShardRequestSent
+                                        da_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                            s.shard_sent_confirmed += 1;
+                                            s.dirty = true;
+                                            s.last_activity = std::time::Instant::now();
+                                        });
+                                    }
+                                    124 => { // ShardRequestReceived — guarantor side completion
+                                        if let Event::ShardRequestReceived { request_id, shard, .. } = &*event {
+                                            da_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                                s.shard_received_confirmed += 1;
+                                                s.active_shards.insert(*shard);
+                                                // Compute guarantor latency
+                                                if let Some(recv_ts) = s.guarantor_pending.remove(request_id) {
+                                                    let delta_us = evt_ts.saturating_sub(recv_ts);
+                                                    let delta_ms = (delta_us / 1000) as i32;
+                                                    s.guarantor_latency_sum_us += delta_us;
+                                                    s.guarantor_latency_count += 1;
+                                                    let idx = da_tracker::hist_bucket_index(delta_ms);
+                                                    s.guarantor_hist[idx] += 1;
+                                                    s.guarantor_hist_total += 1;
+                                                }
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            });
+                                        }
+                                    }
+                                    125 => { // ShardsTransferred — assurer side completion ONLY
+                                        if let Event::ShardsTransferred { request_id, .. } = &*event {
+                                            da_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                                s.shards_transferred += 1;
+                                                // Compute assurer latency (only assurer_pending)
+                                                if let Some(sent_ts) = s.assurer_pending.remove(request_id) {
+                                                    let delta_us = evt_ts.saturating_sub(sent_ts);
+                                                    let delta_ms = (delta_us / 1000) as i32;
+                                                    s.assurer_latency_sum_us += delta_us;
+                                                    s.assurer_latency_count += 1;
+                                                    let idx = da_tracker::hist_bucket_index(delta_ms);
+                                                    s.assurer_hist[idx] += 1;
+                                                    s.assurer_hist_total += 1;
+                                                }
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            });
+                                        }
+                                    }
+                                    190 => { // PreimageAnnouncementFailed
+                                        da_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                            s.preimage_ann_failures += 1;
+                                            s.dirty = true;
+                                            s.last_activity = std::time::Instant::now();
+                                        });
+                                    }
+                                    191 => { // PreimageAnnounced
+                                        da_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                            s.preimages_announced += 1;
+                                            s.dirty = true;
+                                            s.last_activity = std::time::Instant::now();
+                                        });
+                                    }
+                                    192 => { // AnnouncedPreimageForgotten
+                                        da_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                            s.preimages_forgotten += 1;
+                                            s.dirty = true;
+                                            s.last_activity = std::time::Instant::now();
+                                        });
                                     }
                                     _ => {}
                                 }

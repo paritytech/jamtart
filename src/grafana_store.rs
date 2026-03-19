@@ -8,6 +8,34 @@ use sqlx::Row;
 use crate::grafana_types::*;
 use crate::store::EventStore;
 
+/// Histogram bucket boundaries (ms) matching shard_latency_hist columns.
+const HIST_BOUNDS: [u32; 15] = [0, 1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2000, 3000, 5000, 10000];
+
+/// Compute approximate percentiles (p50, p95, p99, p100) from a merged histogram.
+/// Returns None if total is 0.
+fn percentiles_from_histogram(buckets: &[u32; 14], total: u32) -> Option<(i32, i32, i32, i32)> {
+    if total == 0 {
+        return None;
+    }
+    let targets = [0.50, 0.95, 0.99, 1.0];
+    let mut results = [0i32; 4];
+    for (i, &target) in targets.iter().enumerate() {
+        let threshold = (total as f64 * target).ceil() as u32;
+        let mut cumsum = 0u32;
+        for (j, &count) in buckets.iter().enumerate() {
+            cumsum += count;
+            if cumsum >= threshold {
+                // Interpolate within bucket: midpoint of [lower, upper)
+                let lower = HIST_BOUNDS[j];
+                let upper = HIST_BOUNDS[j + 1];
+                results[i] = ((lower + upper) / 2) as i32;
+                break;
+            }
+        }
+    }
+    Some((results[0], results[1], results[2], results[3]))
+}
+
 /// Whitelisted time_bucket intervals for dynamic SQL (6s-aligned sub-minute).
 const VALID_INTERVALS: &[&str] = &[
     "6s", "12s", "18s", "24s", "30s", "1m", "2m", "5m", "10m", "15m", "30m", "1h", "2h", "4h",
@@ -1353,7 +1381,147 @@ impl EventStore {
             .collect())
     }
 
-    // ── 18. grafana_wp_funnel_timeseries ─────────────────────────────────
+    // ── 18. grafana_da_stats ────────────────────────────────────────────
+
+    /// Per-node DA operational stats aggregated over time range.
+    pub async fn grafana_da_stats(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        node_filter: Option<&str>,
+    ) -> Result<Vec<DaStatsRow>, sqlx::Error> {
+        sqlx::query_as::<_, DaStatsRow>(
+            r#"
+            SELECT node_id,
+                SUM(shard_requests_sent)::BIGINT AS shard_requests_sent,
+                SUM(shard_requests_received)::BIGINT AS shard_requests_received,
+                SUM(shard_sent_confirmed)::BIGINT AS shard_sent_confirmed,
+                SUM(shard_received_confirmed)::BIGINT AS shard_received_confirmed,
+                SUM(shards_transferred)::BIGINT AS shards_transferred,
+                SUM(shard_failures)::BIGINT AS shard_failures,
+                SUM(preimage_ann_failures)::BIGINT AS preimage_ann_failures,
+                SUM(preimages_announced)::BIGINT AS preimages_announced,
+                SUM(preimages_forgotten)::BIGINT AS preimages_forgotten,
+                CASE WHEN SUM(assurer_latency_samples) > 0
+                    THEN (SUM(assurer_avg_latency_ms::DOUBLE PRECISION * assurer_latency_samples) / SUM(assurer_latency_samples))::REAL
+                END AS assurer_avg_latency_ms,
+                SUM(assurer_latency_samples)::BIGINT AS assurer_latency_samples,
+                CASE WHEN SUM(guarantor_latency_samples) > 0
+                    THEN (SUM(guarantor_avg_latency_ms::DOUBLE PRECISION * guarantor_latency_samples) / SUM(guarantor_latency_samples))::REAL
+                END AS guarantor_avg_latency_ms,
+                SUM(guarantor_latency_samples)::BIGINT AS guarantor_latency_samples,
+                MAX(active_shards)::INT AS active_shards
+            FROM da_node_stats
+            WHERE ts >= $1 AND ts < $2
+              AND ($3::TEXT IS NULL OR node_id = $3)
+            GROUP BY node_id
+            ORDER BY shards_transferred DESC
+            "#,
+        )
+        .bind(start)
+        .bind(end)
+        .bind(node_filter)
+        .fetch_all(self.pool())
+        .await
+    }
+
+    // ── 19. grafana_shard_latency ─────────────────────────────────────────
+
+    /// Shard latency histograms merged per time bucket. Returns raw merged
+    /// histogram data; percentile interpolation happens in Rust.
+    pub async fn grafana_shard_latency_raw(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        interval: &str,
+    ) -> Result<Vec<ShardLatencyRow>, sqlx::Error> {
+        let interval = snap_interval(interval);
+        let pg_interval = interval_to_pg(interval);
+
+        let sql = format!(
+            r#"
+            SELECT time_bucket('{pg_interval}'::interval, ts) AS bucket, side,
+                SUM(b_0_1)::INT AS b_0_1, SUM(b_1_2)::INT AS b_1_2, SUM(b_2_5)::INT AS b_2_5,
+                SUM(b_5_10)::INT AS b_5_10, SUM(b_10_25)::INT AS b_10_25, SUM(b_25_50)::INT AS b_25_50,
+                SUM(b_50_100)::INT AS b_50_100, SUM(b_100_250)::INT AS b_100_250, SUM(b_250_500)::INT AS b_250_500,
+                SUM(b_500_1000)::INT AS b_500_1000, SUM(b_1000_2000)::INT AS b_1000_2000,
+                SUM(b_2000_3000)::INT AS b_2000_3000, SUM(b_3000_5000)::INT AS b_3000_5000,
+                SUM(b_5000_plus)::INT AS b_5000_plus,
+                SUM(total_count)::INT AS total_count,
+                SUM(failed_count)::INT AS failed_count
+            FROM shard_latency_hist
+            WHERE ts >= $1 AND ts < $2
+            GROUP BY 1, 2
+            ORDER BY 1, 2
+            "#,
+        );
+
+        let rows = sqlx::query(&sql)
+            .bind(start)
+            .bind(end)
+            .fetch_all(self.pool())
+            .await?;
+
+        // Group by bucket, compute percentiles from merged histograms
+        use std::collections::BTreeMap;
+        let mut buckets: BTreeMap<DateTime<Utc>, ShardLatencyRow> = BTreeMap::new();
+
+        for row in &rows {
+            let ts: DateTime<Utc> = row.get("bucket");
+            let side: i16 = row.get("side");
+            let hist = [
+                row.get::<i32, _>("b_0_1") as u32,
+                row.get::<i32, _>("b_1_2") as u32,
+                row.get::<i32, _>("b_2_5") as u32,
+                row.get::<i32, _>("b_5_10") as u32,
+                row.get::<i32, _>("b_10_25") as u32,
+                row.get::<i32, _>("b_25_50") as u32,
+                row.get::<i32, _>("b_50_100") as u32,
+                row.get::<i32, _>("b_100_250") as u32,
+                row.get::<i32, _>("b_250_500") as u32,
+                row.get::<i32, _>("b_500_1000") as u32,
+                row.get::<i32, _>("b_1000_2000") as u32,
+                row.get::<i32, _>("b_2000_3000") as u32,
+                row.get::<i32, _>("b_3000_5000") as u32,
+                row.get::<i32, _>("b_5000_plus") as u32,
+            ];
+            let total: i32 = row.get("total_count");
+            let failed: i32 = row.get("failed_count");
+
+            let p = percentiles_from_histogram(&hist, total as u32);
+
+            let entry = buckets.entry(ts).or_insert_with(|| ShardLatencyRow {
+                ts,
+                assurer_p50: None, assurer_p95: None, assurer_p99: None, assurer_p100: None, assurer_samples: 0,
+                guarantor_p50: None, guarantor_p95: None, guarantor_p99: None, guarantor_p100: None, guarantor_samples: 0,
+                failed_count: 0,
+            });
+
+            if side == 0 {
+                if let Some(p) = p {
+                    entry.assurer_p50 = Some(p.0);
+                    entry.assurer_p95 = Some(p.1);
+                    entry.assurer_p99 = Some(p.2);
+                    entry.assurer_p100 = Some(p.3);
+                }
+                entry.assurer_samples = total;
+                entry.failed_count += failed;
+            } else {
+                if let Some(p) = p {
+                    entry.guarantor_p50 = Some(p.0);
+                    entry.guarantor_p95 = Some(p.1);
+                    entry.guarantor_p99 = Some(p.2);
+                    entry.guarantor_p100 = Some(p.3);
+                }
+                entry.guarantor_samples = total;
+                entry.failed_count += failed;
+            }
+        }
+
+        Ok(buckets.into_values().collect())
+    }
+
+    // ── 20. grafana_wp_funnel_timeseries ─────────────────────────────────
 
     /// Work package pipeline funnel bucketed over time.
     pub async fn grafana_wp_funnel_timeseries(

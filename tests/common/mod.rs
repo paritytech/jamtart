@@ -664,3 +664,43 @@ pub fn block_executed_event(ts: u64, authoring_id: u64, services: &[(u32, u64)])
         accumulate_costs,
     }
 }
+
+/// Construct a SendingShardRequest event (event_type=120).
+#[allow(dead_code)]
+pub fn sending_shard_request_event(ts: u64, guarantor: [u8; 32], erasure_root: [u8; 32], shard: u16) -> Event {
+    Event::SendingShardRequest {
+        timestamp: ts,
+        guarantor,
+        erasure_root,
+        shard,
+    }
+}
+
+/// Construct a ReceivingShardRequest event (event_type=121).
+#[allow(dead_code)]
+pub fn receiving_shard_request_event(ts: u64, assurer: [u8; 32]) -> Event {
+    Event::ReceivingShardRequest {
+        timestamp: ts,
+        assurer,
+    }
+}
+
+/// Construct a ShardRequestReceived event (event_type=124).
+#[allow(dead_code)]
+pub fn shard_request_received_event(ts: u64, request_id: u64, erasure_root: [u8; 32], shard: u16) -> Event {
+    Event::ShardRequestReceived {
+        timestamp: ts,
+        request_id,
+        erasure_root,
+        shard,
+    }
+}
+
+/// Construct a ShardsTransferred event (event_type=125).
+#[allow(dead_code)]
+pub fn shards_transferred_event(ts: u64, request_id: u64) -> Event {
+    Event::ShardsTransferred {
+        timestamp: ts,
+        request_id,
+    }
+}

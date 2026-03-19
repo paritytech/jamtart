@@ -98,3 +98,59 @@ SELECT create_hypertable('assurance_convergence_senders', 'distributed_at', if_n
 
 CREATE INDEX IF NOT EXISTS idx_assurance_conv_senders_node
     ON assurance_convergence_senders (sender_node_id, distributed_at DESC);
+
+-- ── DA node stats ───────────────────────────────────────────────────────
+-- Per-node DA operational stats: shard event counts, latency averages, shard inventory.
+-- Populated by da_tracker flush every 10s. One row per active node per flush.
+CREATE TABLE IF NOT EXISTS da_node_stats (
+    ts                        TIMESTAMPTZ NOT NULL,
+    node_id                   TEXT NOT NULL,
+    shard_requests_sent       INT DEFAULT 0,
+    shard_requests_received   INT DEFAULT 0,
+    shard_sent_confirmed      INT DEFAULT 0,
+    shard_received_confirmed  INT DEFAULT 0,
+    shards_transferred        INT DEFAULT 0,
+    shard_failures            INT DEFAULT 0,
+    preimage_ann_failures     INT DEFAULT 0,
+    preimages_announced       INT DEFAULT 0,
+    preimages_forgotten       INT DEFAULT 0,
+    assurer_avg_latency_ms    REAL,
+    assurer_latency_samples   INT DEFAULT 0,
+    guarantor_avg_latency_ms  REAL,
+    guarantor_latency_samples INT DEFAULT 0,
+    active_shards             INT DEFAULT 0
+);
+
+SELECT create_hypertable('da_node_stats', 'ts', if_not_exists => TRUE);
+
+CREATE INDEX IF NOT EXISTS idx_da_node_stats_node
+    ON da_node_stats (node_id, ts DESC);
+
+-- ── Shard latency histogram ─────────────────────────────────────────────
+-- Latency distribution for shard requests. 14 buckets (ms): [0,1), [1,2), [2,5), [5,10),
+-- [10,25), [25,50), [50,100), [100,250), [250,500), [500,1000), [1000,2000), [2000,3000),
+-- [3000,5000), [5000,∞). Side: 0=assurer (120→125), 1=guarantor (121→124).
+-- Histograms are mergeable: SUM bucket columns across nodes/time for combined distribution.
+CREATE TABLE IF NOT EXISTS shard_latency_hist (
+    ts              TIMESTAMPTZ NOT NULL,
+    node_id         TEXT NOT NULL,
+    side            SMALLINT NOT NULL,
+    b_0_1           INT DEFAULT 0,
+    b_1_2           INT DEFAULT 0,
+    b_2_5           INT DEFAULT 0,
+    b_5_10          INT DEFAULT 0,
+    b_10_25         INT DEFAULT 0,
+    b_25_50         INT DEFAULT 0,
+    b_50_100        INT DEFAULT 0,
+    b_100_250       INT DEFAULT 0,
+    b_250_500       INT DEFAULT 0,
+    b_500_1000      INT DEFAULT 0,
+    b_1000_2000     INT DEFAULT 0,
+    b_2000_3000     INT DEFAULT 0,
+    b_3000_5000     INT DEFAULT 0,
+    b_5000_plus     INT DEFAULT 0,
+    total_count     INT DEFAULT 0,
+    failed_count    INT DEFAULT 0
+);
+
+SELECT create_hypertable('shard_latency_hist', 'ts', if_not_exists => TRUE);

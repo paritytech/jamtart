@@ -153,6 +153,11 @@ async fn test_grafana_all_endpoints_empty_200() {
             "/api/grafana/assurance-convergence/senders?{}",
             time_range_params()
         ),
+        format!("/api/grafana/da-stats?{}", time_range_params()),
+        format!(
+            "/api/grafana/shard-latency?{}&interval=1m",
+            time_range_params()
+        ),
         format!(
             "/api/grafana/wp-funnel-timeseries?{}&interval=1m",
             time_range_params()
@@ -2271,4 +2276,48 @@ async fn test_grafana_assurance_convergence() {
     let row = &arr[0];
     assert!(row["sender_node_id"].is_string(), "expected sender_node_id");
     assert!(row["node_count"].as_i64().unwrap_or(0) >= 2, "expected node_count >= 2");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DA Tracker — da-stats endpoint
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_grafana_da_stats() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+
+    let now = common::now_jce_micros();
+    let erasure_root = [0xEE; 32];
+    let guarantor_peer = [0x55; 32];
+
+    // Node A: assurer — send shard request then transfer completes
+    let mut stream_a = connect_test_node(port, 1, &telemetry).await;
+    // Event IDs: first event after connection is event_id=0 (NodeInformation doesn't count)
+    // Actually event IDs are per-node, starting from 0 after the NodeInformation
+    send_events(&mut stream_a, &[
+        common::sending_shard_request_event(now, guarantor_peer, erasure_root, 42),
+        // event_id=0 for this node
+    ]).await;
+    // Small delay to ensure ordering
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    send_events(&mut stream_a, &[
+        common::shards_transferred_event(now + 50_000, 0), // request_id=0, +50ms
+    ]).await;
+
+    common::flush_all(&telemetry).await;
+
+    let path = format!("/api/grafana/da-stats?{}", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+    assert!(!arr.is_empty(), "should have at least one node");
+    // Find node A's row
+    let node_a_id = hex::encode([1u8; 32]);
+    let node_a_row = arr.iter().find(|r| r["node_id"].as_str() == Some(&node_a_id));
+    assert!(node_a_row.is_some(), "expected node A row");
+    let row = node_a_row.unwrap();
+    assert!(row["shard_requests_sent"].as_i64().unwrap_or(0) >= 1);
+    assert!(row["shards_transferred"].as_i64().unwrap_or(0) >= 1);
 }
