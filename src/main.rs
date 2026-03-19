@@ -281,7 +281,7 @@ async fn main() -> anyhow::Result<()> {
                 }
                 // Evict stale header_hash_lookup entries every 6 ticks (30s)
                 if tick_count % 6 == 0 {
-                    tart_backend::convergence_tracker::evict_header_hash_lookup(&header_hash_lookup, 5000);
+                    tart_backend::convergence_tracker::evict_header_hash_lookup(&header_hash_lookup, 50000);
                 }
                 // Sweep stale enrichers every 30 ticks (~2.5 min)
                 if tick_count % 30 == 0 {
@@ -302,6 +302,12 @@ async fn main() -> anyhow::Result<()> {
                         );
                         if let Err(e) = sqlx::query(&sql).execute(&pool).await {
                             tracing::warn!("retention cleanup for {} failed: {e}", table_and_col.0);
+                        }
+                    }
+                    for table in &["assurance_convergence_senders", "da_node_stats", "shard_latency_hist"] {
+                        let sql = format!("SELECT drop_chunks('{}', older_than => INTERVAL '7 days')", table);
+                        if let Err(e) = sqlx::query(&sql).execute(&pool).await {
+                            tracing::warn!("drop_chunks for {} failed: {e}", table);
                         }
                     }
                 }

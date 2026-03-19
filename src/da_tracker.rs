@@ -318,7 +318,7 @@ pub async fn flush_da_tracker(tracker: &DaTracker, pool: &PgPool) {
             )
             .bind(ts)
             .bind(snap.node_id.as_ref())
-            .bind("assurer")
+            .bind(0i16)
             .bind(h[0] as i32)
             .bind(h[1] as i32)
             .bind(h[2] as i32)
@@ -356,7 +356,7 @@ pub async fn flush_da_tracker(tracker: &DaTracker, pool: &PgPool) {
             )
             .bind(ts)
             .bind(snap.node_id.as_ref())
-            .bind("guarantor")
+            .bind(1i16)
             .bind(h[0] as i32)
             .bind(h[1] as i32)
             .bind(h[2] as i32)
@@ -389,13 +389,15 @@ pub async fn flush_da_tracker(tracker: &DaTracker, pool: &PgPool) {
         nodes_evicted += 1;
     }
 
-    debug!(
-        "da_tracker flush: {} node_stats rows, {} hist rows, {} nodes evicted, {} tracked",
-        rows_written,
-        hist_rows_written,
-        nodes_evicted,
-        tracker.len(),
-    );
+    if rows_written > 0 || !stale_keys.is_empty() {
+        debug!(
+            "da_tracker flush: {} node_stats rows, {} hist rows, {} nodes evicted, {} tracked",
+            rows_written,
+            hist_rows_written,
+            nodes_evicted,
+            tracker.len(),
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

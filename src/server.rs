@@ -1048,7 +1048,6 @@ async fn handle_connection_optimized(
                                                         last_event: std::time::Instant::now(),
                                                         flushed: false,
                                                         dirty: true,
-                                                        senders_flushed: false,
                                                     }
                                                 });
                                         }
@@ -1079,7 +1078,6 @@ async fn handle_connection_optimized(
                                                         last_event: std::time::Instant::now(),
                                                         flushed: false,
                                                         dirty: true,
-                                                        senders_flushed: false,
                                                     }
                                                 });
                                         }

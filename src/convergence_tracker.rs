@@ -44,6 +44,7 @@ pub struct GuaranteeConvergenceRow {
 
 pub struct GuaranteeConvergenceSlotRow {
     pub slot: i32,
+    pub slot_timestamp: Option<DateTime<Utc>>,
     pub guarantee_count: i16,
     pub node_count: i16,
     pub p50_ms: Option<i32>,
@@ -227,8 +228,10 @@ pub async fn flush_guarantee_convergence(
         let anchor = min_built_at.unwrap();
         let percentiles = compute_percentiles(anchor, &all_timestamps);
 
+        let slot_ts = crate::onchain_stats::slot_to_timestamp(slot as u32, 6);
         slot_summaries.push(GuaranteeConvergenceSlotRow {
             slot,
+            slot_timestamp: Some(slot_ts),
             guarantee_count,
             node_count: min_node_count.unwrap_or(0),
             p50_ms: percentiles.as_ref().map(|p| p.p50_ms),
@@ -311,9 +314,10 @@ pub async fn flush_guarantee_convergence(
     for row in &slot_summaries {
         let built_dt = ts_to_datetime(row.built_at);
         let result = sqlx::query(
-            r#"INSERT INTO guarantee_convergence_slots (slot, guarantee_count, node_count, p50_ms, p75_ms, p95_ms, p99_ms, p100_ms, built_at)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            r#"INSERT INTO guarantee_convergence_slots (slot, slot_timestamp, guarantee_count, node_count, p50_ms, p75_ms, p95_ms, p99_ms, p100_ms, built_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                ON CONFLICT (slot) DO UPDATE SET
+                   slot_timestamp = COALESCE(guarantee_convergence_slots.slot_timestamp, EXCLUDED.slot_timestamp),
                    guarantee_count = EXCLUDED.guarantee_count,
                    node_count = EXCLUDED.node_count,
                    p50_ms = EXCLUDED.p50_ms,
@@ -324,6 +328,7 @@ pub async fn flush_guarantee_convergence(
                    built_at = EXCLUDED.built_at"#,
         )
         .bind(row.slot)
+        .bind(row.slot_timestamp)
         .bind(row.guarantee_count)
         .bind(row.node_count)
         .bind(row.p50_ms)
@@ -412,8 +417,6 @@ pub struct AnchorState {
     pub last_event: Instant,
     pub flushed: bool,
     pub dirty: bool,
-    /// Whether per-sender rows have been written to the DB at least once.
-    pub senders_flushed: bool,
 }
 
 pub struct SenderAssuranceState {
@@ -448,7 +451,7 @@ struct AssuranceAnchorFlushRow {
     slot: Option<i32>,
     slot_timestamp: Option<DateTime<Utc>>,
     sender_count: i16,
-    receiver_count: i16,
+    receiver_count: i32,
     p50_ms: i32,
     p75_ms: i32,
     p95_ms: i32,
@@ -487,7 +490,6 @@ pub async fn flush_assurance_convergence(
     let mut sender_rows: Vec<AssuranceSenderFlushRow> = Vec::new();
     let mut to_mark_flushed: Vec<[u8; 32]> = Vec::new();
     let mut to_mark_clean: Vec<[u8; 32]> = Vec::new();
-    let mut to_mark_senders_flushed: Vec<[u8; 32]> = Vec::new();
     let mut to_evict: Vec<[u8; 32]> = Vec::new();
 
     for entry in tracker.iter() {
@@ -570,7 +572,7 @@ pub async fn flush_assurance_convergence(
                     slot: slot_i32,
                     slot_timestamp: slot_ts,
                     sender_count: state.senders.len() as i16,
-                    receiver_count: all_deltas.len() as i16,
+                    receiver_count: all_deltas.len() as i32,
                     p50_ms: ap.p50_ms,
                     p75_ms: ap.p75_ms,
                     p95_ms: ap.p95_ms,
@@ -588,9 +590,6 @@ pub async fn flush_assurance_convergence(
                     to_mark_flushed.push(anchor);
                 }
                 to_mark_clean.push(anchor);
-                if write_senders {
-                    to_mark_senders_flushed.push(anchor);
-                }
             }
         }
 
@@ -679,12 +678,6 @@ pub async fn flush_assurance_convergence(
     for key in &to_mark_clean {
         if let Some(mut state) = tracker.get_mut(key) {
             state.dirty = false;
-        }
-    }
-
-    for key in &to_mark_senders_flushed {
-        if let Some(mut state) = tracker.get_mut(key) {
-            state.senders_flushed = true;
         }
     }
 
@@ -845,7 +838,6 @@ mod tests {
             last_event: Instant::now(),
             flushed: false,
             dirty: false,
-            senders_flushed: false,
         };
 
         assert_eq!(state.pending_received.len(), 2);

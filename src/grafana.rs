@@ -781,7 +781,7 @@ async fn wp_funnel(
     path = "/api/grafana/guarantee-convergence",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Per-slot guarantee convergence summary", body = [GuaranteeConvergenceSlotRow]),
+        (status = 200, description = "Per-slot guarantee convergence (one row per slot, ASC). Aggregates all GuaranteeBuilt(105) → GuaranteeReceived(112) deltas for a slot into cross-core percentiles (p50/p75/p95/p99/p100 ms). Source: guarantee_convergence_slots table.", body = [GuaranteeConvergenceSlotRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -808,7 +808,7 @@ async fn guarantee_convergence(
     path = "/api/grafana/guarantee-convergence/detail",
     params(GuaranteeConvergenceDetailQuery),
     responses(
-        (status = 200, description = "Per-guarantee convergence detail", body = [GuaranteeConvergenceDetailRow]),
+        (status = 200, description = "Per-guarantee drill-down (one row per work_report_hash, by slot ASC). GuaranteeBuilt(105) → GuaranteeReceived(112) propagation latency. Optional core/wp_hash filters. Source: guarantee_convergence table.", body = [GuaranteeConvergenceDetailRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -845,7 +845,7 @@ async fn guarantee_convergence_detail(
     path = "/api/grafana/assurance-convergence",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Per-anchor assurance convergence summary", body = [AssuranceConvergenceRow]),
+        (status = 200, description = "Per-anchor assurance convergence (one row per block, by slot ASC). Aggregates DistributingAssurance(126) → AssuranceReceived(131) deltas across all ~1023 senders. Includes distribution start spread. Source: assurance_convergence table.", body = [AssuranceConvergenceRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -871,7 +871,7 @@ async fn assurance_convergence(
     path = "/api/grafana/assurance-convergence/senders",
     params(AssuranceConvergenceSendersQuery),
     responses(
-        (status = 200, description = "Per-sender assurance convergence detail", body = [AssuranceConvergenceSenderRow]),
+        (status = 200, description = "Per-sender assurance detail (one row per anchor×sender). Individual sender's assurance propagation to receivers. Optional anchor/node filters. Source: assurance_convergence_senders.", body = [AssuranceConvergenceSenderRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -907,7 +907,7 @@ async fn assurance_convergence_senders(
     path = "/api/grafana/da-stats",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Per-node DA operational stats", body = [DaStatsRow]),
+        (status = 200, description = "Per-node DA operational stats (one row per node, ordered by shards_transferred DESC). SUMmed event counts, weighted AVG latency, MAX active shards. Source: da_node_stats hypertable.", body = [DaStatsRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -938,7 +938,7 @@ async fn da_stats(
     path = "/api/grafana/shard-latency",
     params(WpTimeseriesQuery),
     responses(
-        (status = 200, description = "Shard latency percentiles per time bucket", body = [ShardLatencyRow]),
+        (status = 200, description = "Shard latency percentile timeseries (one row per time bucket). Assurer round-trip (120→125) + guarantor processing (121→124). Approximate p50/p95/p99/p100 interpolated from merged 14-bucket histograms. Source: shard_latency_hist hypertable.", body = [ShardLatencyRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -966,7 +966,7 @@ async fn shard_latency(
     path = "/api/grafana/wp-funnel-timeseries",
     params(WpTimeseriesQuery),
     responses(
-        (status = 200, description = "Pipeline funnel counts per time bucket", body = [WpFunnelTimeseriesRow]),
+        (status = 200, description = "Pipeline stage counts per time bucket (one row per bucket, ASC). Per-stage COUNT of WPs reaching each stage. Optional core filter. Source: wp_tracking table, time_bucket on first_seen.", body = [WpFunnelTimeseriesRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -995,7 +995,7 @@ async fn wp_funnel_timeseries(
     path = "/api/grafana/bottlenecks-timeseries",
     params(WpTimeseriesQuery),
     responses(
-        (status = 200, description = "Pipeline bottleneck percentiles per time bucket", body = [BottlenecksTimeseriesRow]),
+        (status = 200, description = "Pipeline bottleneck percentiles per time bucket (one row per bucket). percentile_cont(0.5/0.95) on inter-stage deltas. Only WPs with received_at IS NOT NULL. Optional core filter. Source: wp_tracking.", body = [BottlenecksTimeseriesRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
