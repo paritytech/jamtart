@@ -603,7 +603,145 @@ curl "http://localhost:8080/api/grafana/wp-funnel-timeseries?start=${__from:date
 
 ---
 
-### 1.17 GET /api/grafana/bottlenecks-timeseries
+### 1.17 GET /api/grafana/assurance-convergence
+
+Assurance propagation convergence — per-anchor summary. Each row represents one block anchor, showing how quickly assurances propagated to receiving validators. Also includes distribution start spread.
+
+Per-sender tracking: each validator distributes their own assurance (~1023 per block). Anchor: DistributingAssurance(126) per sender. Measured: AssuranceReceived(131) on receivers. Availability window: 5 slots (30s). Deltas clamped to max(0, delta) for clock skew.
+
+**Query:** `TimeRangeQuery`
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `start` | ISO 8601 datetime | yes | Start of time range |
+| `end` | ISO 8601 datetime | yes | End of time range |
+
+**Response:** `Vec<AssuranceConvergenceRow>`
+
+```json
+[
+  {
+    "anchor": "dddd...dddd",
+    "slot": 500,
+    "slot_timestamp": "2025-03-18T12:00:00Z",
+    "sender_count": 1020,
+    "receiver_count": 520000,
+    "p50_ms": 25, "p75_ms": 40, "p95_ms": 80, "p99_ms": 150, "p100_ms": 400,
+    "dist_start_p50_ms": 15, "dist_start_p95_ms": 50, "dist_start_p99_ms": 100, "dist_start_p100_ms": 200,
+    "first_distributed_at": "2025-03-18T12:00:01Z",
+    "last_distributed_at": "2025-03-18T12:00:02Z"
+  }
+]
+```
+
+---
+
+### 1.18 GET /api/grafana/assurance-convergence/senders
+
+Per-sender assurance convergence detail for debugging. One row per (anchor, sender). Shows how quickly a specific sender's assurance reached other validators.
+
+**Query:** `AssuranceConvergenceSendersQuery`
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `start` | ISO 8601 datetime | yes | Start of time range |
+| `end` | ISO 8601 datetime | yes | End of time range |
+| `anchor` | string (hex) | no | Filter to specific block anchor |
+| `node` | string | no | Filter to specific sender node_id |
+
+**Response:** `Vec<AssuranceConvergenceSenderRow>`
+
+```json
+[
+  {
+    "anchor": "dddd...dddd",
+    "slot": 500,
+    "sender_node_id": "0101...0101",
+    "node_count": 500,
+    "p50_ms": 20, "p75_ms": 35, "p95_ms": 70, "p99_ms": 120, "p100_ms": 300,
+    "distributed_at": "2025-03-18T12:00:01Z"
+  }
+]
+```
+
+---
+
+### 1.19 GET /api/grafana/da-stats
+
+Per-node DA operational stats aggregated over the time range. Replaces the disabled `get_da_stats_enhanced` legacy endpoint (which used an O(n²) self-join).
+
+Events tracked: SendingShardRequest(120), ReceivingShardRequest(121), ShardRequestFailed(122), ShardRequestSent(123), ShardRequestReceived(124), ShardsTransferred(125), PreimageAnnouncementFailed(190), PreimageAnnounced(191), AnnouncedPreimageForgotten(192).
+
+Latency: weighted average across flush periods. Assurer round-trip (120→125), guarantor processing (121→124).
+
+**Query:** `TimeRangeQuery`
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `start` | ISO 8601 datetime | yes | Start of time range |
+| `end` | ISO 8601 datetime | yes | End of time range |
+| `node` | string | no | Filter to specific node_id |
+
+**Response:** `Vec<DaStatsRow>`
+
+```json
+[
+  {
+    "node_id": "0101...0101",
+    "shard_requests_sent": 5000,
+    "shard_requests_received": 3000,
+    "shard_sent_confirmed": 4800,
+    "shard_received_confirmed": 2900,
+    "shards_transferred": 4500,
+    "shard_failures": 200,
+    "preimage_ann_failures": 5,
+    "preimages_announced": 100,
+    "preimages_forgotten": 10,
+    "assurer_avg_latency_ms": 45.2,
+    "assurer_latency_samples": 4500,
+    "guarantor_avg_latency_ms": 12.5,
+    "guarantor_latency_samples": 2900,
+    "active_shards": 342
+  }
+]
+```
+
+---
+
+### 1.20 GET /api/grafana/shard-latency
+
+Shard latency timeseries with approximate percentiles from merged histograms. 14 buckets (ms): [0,1), [1,2), [2,5), [5,10), [10,25), [25,50), [50,100), [100,250), [250,500), [500,1000), [1000,2000), [2000,3000), [3000,5000), [5000,∞). 3000ms boundary captures the 3s protocol timeout.
+
+Two perspectives: assurer round-trip (SendingShardRequest(120) → ShardsTransferred(125)), guarantor processing (ReceivingShardRequest(121) → ShardRequestReceived(124)).
+
+Failure reason breakdown: query existing `/api/grafana/timeseries?event_types=122&group_by=reason` — uses shard_counts table populated by event_counter.
+
+**Query:** `WpTimeseriesQuery`
+
+| Param | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `start` | ISO 8601 datetime | yes | — | Start of time range |
+| `end` | ISO 8601 datetime | yes | — | End of time range |
+| `interval` | string | no | `1m` | Bucket width (snapped) |
+
+**Response:** `Vec<ShardLatencyRow>`
+
+```json
+[
+  {
+    "ts": "2025-03-18T12:00:00Z",
+    "assurer_p50": 25, "assurer_p95": 80, "assurer_p99": 150, "assurer_p100": 400,
+    "assurer_samples": 5000,
+    "guarantor_p50": 8, "guarantor_p95": 25, "guarantor_p99": 50, "guarantor_p100": 100,
+    "guarantor_samples": 3000,
+    "failed_count": 50
+  }
+]
+```
+
+---
+
+### 1.21 GET /api/grafana/bottlenecks-timeseries
 
 Work package pipeline bottleneck percentiles bucketed over time. Same data as `/bottlenecks` but grouped into time buckets, showing how stage-to-stage latency evolves. Per bucket: `percentile_cont(0.5)` and `percentile_cont(0.95)` on inter-stage timestamp deltas from `wp_tracking`.
 
@@ -658,7 +796,7 @@ curl "http://localhost:8080/api/grafana/bottlenecks-timeseries?start=${__from:da
 
 ---
 
-### 1.18 GET /api/grafana/event-types
+### 1.22 GET /api/grafana/event-types
 
 Static metadata for all 115 telemetry event types. No database query — instantly cacheable.
 
@@ -714,7 +852,7 @@ Group names are expanded server-side via `expand_event_types()` into their const
 
 ---
 
-### 1.19 GET /api/grafana/events
+### 1.23 GET /api/grafana/events
 
 Raw event data matching criteria. Returns the most recent events first.
 
@@ -734,7 +872,7 @@ Raw event data matching criteria. Returns the most recent events first.
 curl 'http://localhost:8080/api/grafana/events?start=2025-01-15T00:00:00Z&end=2025-01-15T01:00:00Z&event_types=92,99&limit=100'
 ```
 
-### 1.20 GET /api/grafana/guarantee-discards
+### 1.24 GET /api/grafana/guarantee-discards
 
 Time-bucketed guarantee discard counts grouped by discard reason. Queries the pre-aggregated `guarantee_receiving_counts` table for GuaranteeDiscarded events (type 113).
 
@@ -807,6 +945,18 @@ struct ServiceTimeseriesQuery {
     end: DateTime<Utc>,        // required
     interval: Option<String>,  // default "1m"
     service: Option<String>,   // comma-sep, decimal or 0x hex, Grafana braces
+}
+```
+
+### AssuranceConvergenceSendersQuery
+Used by: `/assurance-convergence/senders`
+
+```rust
+struct AssuranceConvergenceSendersQuery {
+    start: DateTime<Utc>,      // required
+    end: DateTime<Utc>,        // required
+    anchor: Option<String>,    // hex-encoded block anchor
+    node: Option<String>,      // sender node_id
 }
 ```
 

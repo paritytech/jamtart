@@ -269,6 +269,10 @@ pub struct BlockConvergenceRow {
     pub node_count: i16,
     /// 50th percentile propagation delay (ms)
     pub p50_ms: i32,
+    /// 75th percentile propagation delay (ms)
+    pub p75_ms: Option<i32>,
+    /// 95th percentile propagation delay (ms)
+    pub p95_ms: Option<i32>,
     /// 99th percentile propagation delay (ms)
     pub p99_ms: i32,
     /// Maximum propagation delay (ms)

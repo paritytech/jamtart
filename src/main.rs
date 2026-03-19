@@ -287,6 +287,24 @@ async fn main() -> anyhow::Result<()> {
                 if tick_count % 30 == 0 {
                     enricher_map.retain(|_, e| !e.is_stale());
                 }
+                // Retention cleanup: delete convergence rows older than 7 days (every 60 ticks = 5 min)
+                if tick_count % 60 == 0 {
+                    let cutoff = "NOW() - INTERVAL '7 days'";
+                    for table_and_col in &[
+                        ("slot_convergence", "authored_at"),
+                        ("guarantee_convergence", "built_at"),
+                        ("guarantee_convergence_slots", "built_at"),
+                        ("assurance_convergence", "first_distributed_at"),
+                    ] {
+                        let sql = format!(
+                            "DELETE FROM {} WHERE {} < {}",
+                            table_and_col.0, table_and_col.1, cutoff
+                        );
+                        if let Err(e) = sqlx::query(&sql).execute(&pool).await {
+                            tracing::warn!("retention cleanup for {} failed: {e}", table_and_col.0);
+                        }
+                    }
+                }
             }
         });
     }

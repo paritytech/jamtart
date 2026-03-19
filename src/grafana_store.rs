@@ -473,7 +473,7 @@ impl EventStore {
         let rows = if let Some(et) = event_type {
             sqlx::query(
                 r#"
-                SELECT slot, event_type, node_count, p50_ms, p99_ms, p100_ms, authored_at
+                SELECT slot, event_type, node_count, p50_ms, p75_ms, p95_ms, p99_ms, p100_ms, authored_at
                 FROM slot_convergence
                 WHERE authored_at >= $1 AND authored_at < $2 AND event_type = $3
                 ORDER BY slot ASC
@@ -487,7 +487,7 @@ impl EventStore {
         } else {
             sqlx::query(
                 r#"
-                SELECT slot, event_type, node_count, p50_ms, p99_ms, p100_ms, authored_at
+                SELECT slot, event_type, node_count, p50_ms, p75_ms, p95_ms, p99_ms, p100_ms, authored_at
                 FROM slot_convergence
                 WHERE authored_at >= $1 AND authored_at < $2
                 ORDER BY slot ASC, event_type ASC
@@ -509,6 +509,8 @@ impl EventStore {
                     event_type_name: crate::event_type_meta::event_type_name(et),
                     node_count: row.get("node_count"),
                     p50_ms: row.get("p50_ms"),
+                    p75_ms: row.get("p75_ms"),
+                    p95_ms: row.get("p95_ms"),
                     p99_ms: row.get("p99_ms"),
                     p100_ms: row.get("p100_ms"),
                     authored_at: row.get("authored_at"),

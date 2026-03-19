@@ -32,6 +32,8 @@ pub struct SlotConvergenceRow {
     pub event_type: i16,
     pub node_count: i16,
     pub p50_ms: i32,
+    pub p75_ms: i32,
+    pub p95_ms: i32,
     pub p99_ms: i32,
     pub p100_ms: i32,
     pub authored_at: u64,
@@ -77,8 +79,9 @@ impl SlotState {
 
             let len = offsets_ms.len();
             let p50 = offsets_ms[len / 2];
+            let p75_idx = ((len as f64 * 0.75) as usize).min(len - 1);
+            let p95_idx = ((len as f64 * 0.95) as usize).min(len - 1);
             let p99_idx = ((len as f64 * 0.99) as usize).min(len - 1);
-            let p99 = offsets_ms[p99_idx];
             let p100 = offsets_ms[len - 1];
 
             rows.push(SlotConvergenceRow {
@@ -86,7 +89,9 @@ impl SlotState {
                 event_type: event_type as i16,
                 node_count: len as i16,
                 p50_ms: p50 as i32,
-                p99_ms: p99 as i32,
+                p75_ms: offsets_ms[p75_idx] as i32,
+                p95_ms: offsets_ms[p95_idx] as i32,
+                p99_ms: offsets_ms[p99_idx] as i32,
                 p100_ms: p100 as i32,
                 authored_at,
             });
@@ -148,12 +153,14 @@ pub async fn flush_slot_tracker(
         for row in rows {
             let authored_dt = timestamp_to_datetime(row.authored_at);
             let result = sqlx::query(
-                r#"INSERT INTO slot_convergence (slot, event_type, node_count, p50_ms, p99_ms, p100_ms, authored_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7)
+                r#"INSERT INTO slot_convergence (slot, event_type, node_count, p50_ms, p75_ms, p95_ms, p99_ms, p100_ms, authored_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                    ON CONFLICT (slot, event_type)
                    DO UPDATE SET
                        node_count = GREATEST(slot_convergence.node_count, EXCLUDED.node_count),
                        p50_ms = EXCLUDED.p50_ms,
+                       p75_ms = EXCLUDED.p75_ms,
+                       p95_ms = EXCLUDED.p95_ms,
                        p99_ms = EXCLUDED.p99_ms,
                        p100_ms = GREATEST(slot_convergence.p100_ms, EXCLUDED.p100_ms),
                        authored_at = COALESCE(slot_convergence.authored_at, EXCLUDED.authored_at)"#,
@@ -162,6 +169,8 @@ pub async fn flush_slot_tracker(
             .bind(row.event_type)
             .bind(row.node_count)
             .bind(row.p50_ms)
+            .bind(row.p75_ms)
+            .bind(row.p95_ms)
             .bind(row.p99_ms)
             .bind(row.p100_ms)
             .bind(authored_dt)
@@ -178,12 +187,14 @@ pub async fn flush_slot_tracker(
         for row in rows {
             let authored_dt = timestamp_to_datetime(row.authored_at);
             let result = sqlx::query(
-                r#"INSERT INTO slot_convergence (slot, event_type, node_count, p50_ms, p99_ms, p100_ms, authored_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7)
+                r#"INSERT INTO slot_convergence (slot, event_type, node_count, p50_ms, p75_ms, p95_ms, p99_ms, p100_ms, authored_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                    ON CONFLICT (slot, event_type)
                    DO UPDATE SET
                        node_count = GREATEST(slot_convergence.node_count, EXCLUDED.node_count),
                        p50_ms = EXCLUDED.p50_ms,
+                       p75_ms = EXCLUDED.p75_ms,
+                       p95_ms = EXCLUDED.p95_ms,
                        p99_ms = EXCLUDED.p99_ms,
                        p100_ms = GREATEST(slot_convergence.p100_ms, EXCLUDED.p100_ms),
                        authored_at = COALESCE(slot_convergence.authored_at, EXCLUDED.authored_at)"#,
@@ -192,6 +203,8 @@ pub async fn flush_slot_tracker(
             .bind(row.event_type)
             .bind(row.node_count)
             .bind(row.p50_ms)
+            .bind(row.p75_ms)
+            .bind(row.p95_ms)
             .bind(row.p99_ms)
             .bind(row.p100_ms)
             .bind(authored_dt)
@@ -270,7 +283,9 @@ mod tests {
         assert_eq!(rows[0].slot, 42);
         assert_eq!(rows[0].event_type, 11);
         assert_eq!(rows[0].node_count, 1);
-        assert_eq!(rows[0].p50_ms, rows[0].p99_ms);
+        assert_eq!(rows[0].p50_ms, rows[0].p75_ms);
+        assert_eq!(rows[0].p75_ms, rows[0].p95_ms);
+        assert_eq!(rows[0].p95_ms, rows[0].p99_ms);
         assert_eq!(rows[0].p99_ms, rows[0].p100_ms);
     }
 
@@ -285,10 +300,10 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].node_count, 100);
         // offsets_ms sorted: [1, 2, ..., 100] (each i*1000 / 1000 = i)
-        // p50 = offsets[50] = 51
-        assert_eq!(rows[0].p50_ms, 51);
-        // p99_idx = min((100 * 0.99) as usize, 99) = min(99, 99) = 99
-        assert_eq!(rows[0].p99_ms, 100);
+        assert_eq!(rows[0].p50_ms, 51);   // index 50
+        assert_eq!(rows[0].p75_ms, 76);   // index 75
+        assert_eq!(rows[0].p95_ms, 96);   // index 95
+        assert_eq!(rows[0].p99_ms, 100);  // index 99
         assert_eq!(rows[0].p100_ms, 100);
     }
 
