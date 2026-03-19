@@ -237,28 +237,31 @@
           "color": {
             "mode": "thresholds"
           },
-          "max": 1,
-          "min": 0,
-          "unit": "percentunit",
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
                 "color": "green",
                 "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 0.05
-              },
-              {
-                "color": "red",
-                "value": 0.2
               }
             ]
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Failure Rate" },
+            "properties": [
+              { "id": "unit", "value": "percentunit" },
+              { "id": "min", "value": 0 },
+              { "id": "max", "value": 1 },
+              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
+                { "color": "green", "value": null },
+                { "color": "yellow", "value": 0.05 },
+                { "color": "red", "value": 0.2 }
+              ]}}
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 4,
@@ -433,6 +436,88 @@
       "title": "Dropped Events",
       "type": "timeseries",
       "maxDataPoints": 300
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "[JIP-3] Database table sizes from /api/grafana/db-stats — total, table, index, and toast bytes per table.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "inspect": false }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Total" }, "properties": [{ "id": "unit", "value": "decbytes" }] },
+          { "matcher": { "id": "byName", "options": "Data" }, "properties": [{ "id": "unit", "value": "decbytes" }] },
+          { "matcher": { "id": "byName", "options": "Index" }, "properties": [{ "id": "unit", "value": "decbytes" }] },
+          { "matcher": { "id": "byName", "options": "Large Values" }, "properties": [{ "id": "unit", "value": "decbytes" }] }
+        ]
+      },
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 18 },
+      "id": 6,
+      "options": {
+        "cellHeight": "sm",
+        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": true },
+        "showHeader": true,
+        "sortBy": [{ "desc": true, "displayName": "Total" }]
+      },
+      "transformations": [{
+        "id": "organize",
+        "options": {
+          "indexByName": { "Name": 0, "Total": 1, "Data": 2, "Index": 3, "Large Values": 4 }
+        }
+      }],
+      "targets": [{
+        "columns": [
+          { "selector": "table_name", "text": "Name", "type": "string" },
+          { "selector": "total_bytes", "text": "Total", "type": "number" },
+          { "selector": "table_bytes", "text": "Data", "type": "number" },
+          { "selector": "index_bytes", "text": "Index", "type": "number" },
+          { "selector": "toast_bytes", "text": "Large Values", "type": "number" }
+        ],
+        "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+        "format": "table", "parser": "backend",
+        "refId": "A", "root_selector": "tables", "source": "url", "type": "json",
+        "url": "http://tart-backend:8080/api/grafana/db-stats",
+        "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
+      }],
+      "title": "Table Sizes",
+      "type": "table"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "[JIP-3] Row counts per table from /api/grafana/db-stats — approximate for hypertables, exact for regular tables.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "inspect": false }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 18 },
+      "id": 7,
+      "options": {
+        "cellHeight": "sm",
+        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": true },
+        "showHeader": true,
+        "sortBy": [{ "desc": true, "displayName": "Rows" }]
+      },
+      "transformations": [{
+        "id": "organize",
+        "options": {
+          "indexByName": { "Name": 0, "Rows": 1 }
+        }
+      }],
+      "targets": [{
+        "columns": [
+          { "selector": "table_name", "text": "Name", "type": "string" },
+          { "selector": "row_count", "text": "Rows", "type": "number" }
+        ],
+        "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+        "format": "table", "parser": "backend",
+        "refId": "A", "root_selector": "row_counts", "source": "url", "type": "json",
+        "url": "http://tart-backend:8080/api/grafana/db-stats",
+        "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
+      }],
+      "title": "Row Counts",
+      "type": "table"
     }
   ],
   "schemaVersion": 39,
