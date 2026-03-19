@@ -2093,13 +2093,25 @@ async fn test_grafana_wp_funnel_timeseries() {
 
     let json: Value = response.json();
     let arr = json.as_array().expect("should return array");
-    assert!(!arr.is_empty(), "should have at least one bucket");
+    // Gap-filling: generate_series produces rows for the entire range, most with zeros
+    assert!(arr.len() > 1, "gap-filled response should have multiple buckets");
 
-    let row = &arr[0];
-    assert!(row["ts"].is_string(), "missing ts");
-    assert!(row["total"].as_i64().unwrap_or(0) >= 1, "expected total >= 1");
-    assert!(row["received"].as_i64().unwrap_or(0) >= 1, "expected received >= 1");
-    assert!(row["distributed"].as_i64().unwrap_or(0) >= 1, "expected distributed >= 1");
+    // Verify at least one zero-filled bucket exists
+    let zero_row = arr.iter().find(|r| r["total"].as_i64() == Some(0));
+    assert!(zero_row.is_some(), "should have at least one zero-filled bucket");
+
+    // Find the bucket with actual data and verify exact counts
+    let data_row = arr.iter().find(|r| r["total"].as_i64().unwrap_or(0) > 0)
+        .expect("should have at least one bucket with data");
+    assert!(data_row["ts"].is_string(), "missing ts");
+    assert_eq!(data_row["total"].as_i64(), Some(1), "expected total=1");
+    assert_eq!(data_row["received"].as_i64(), Some(1), "expected received=1");
+    assert_eq!(data_row["authorized"].as_i64(), Some(1), "expected authorized=1");
+    assert_eq!(data_row["refined"].as_i64(), Some(1), "expected refined=1");
+    assert_eq!(data_row["report_built"].as_i64(), Some(1), "expected report_built=1");
+    assert_eq!(data_row["guarantee_built"].as_i64(), Some(1), "expected guarantee_built=1");
+    assert_eq!(data_row["distributed"].as_i64(), Some(1), "expected distributed=1");
+    assert_eq!(data_row["failed"].as_i64(), Some(0), "expected failed=0");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2133,13 +2145,25 @@ async fn test_grafana_bottlenecks_timeseries() {
 
     let json: Value = response.json();
     let arr = json.as_array().expect("should return array");
-    assert!(!arr.is_empty(), "should have at least one bucket");
+    // Gap-filling: generate_series produces rows for the entire range
+    assert!(arr.len() > 1, "gap-filled response should have multiple buckets");
 
-    let row = &arr[0];
-    assert!(row["ts"].is_string(), "missing ts");
-    assert!(row["total_wps"].as_i64().unwrap_or(0) >= 1, "expected total_wps >= 1");
-    // authorize_p50 should be ~100ms (received→authorized delta)
-    assert!(row["authorize_p50"].is_number(), "expected authorize_p50 to be a number");
+    // Verify at least one gap-filled bucket exists (zero counts, null percentiles)
+    let zero_row = arr.iter().find(|r| r["total_wps"].as_i64() == Some(0));
+    assert!(zero_row.is_some(), "should have at least one zero-filled bucket");
+    if let Some(zr) = zero_row {
+        assert!(zr["authorize_p50"].is_null(), "gap-filled bucket should have null percentiles");
+    }
+
+    // Find the bucket with actual data and verify exact values
+    let data_row = arr.iter().find(|r| r["total_wps"].as_i64().unwrap_or(0) > 0)
+        .expect("should have at least one bucket with data");
+    assert!(data_row["ts"].is_string(), "missing ts");
+    assert_eq!(data_row["total_wps"].as_i64(), Some(1), "expected total_wps=1");
+    assert_eq!(data_row["failed_wps"].as_i64(), Some(0), "expected failed_wps=0");
+    // authorize_p50 should be ~100ms (received→authorized delta is 100_000 JCE micros = 100ms)
+    let auth_p50 = data_row["authorize_p50"].as_f64().expect("authorize_p50 should be a number");
+    assert!(auth_p50 > 50.0 && auth_p50 < 200.0, "authorize_p50={auth_p50} should be ~100ms");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

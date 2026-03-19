@@ -1528,6 +1528,12 @@ impl EventStore {
     // ── 20. grafana_wp_funnel_timeseries ─────────────────────────────────
 
     /// Work package pipeline funnel bucketed over time.
+    ///
+    /// Uses `generate_series` + LEFT JOIN to produce a row for every bucket in
+    /// the requested range, even when no WPs exist in that bucket. Without this,
+    /// Grafana bar charts show gaps instead of zero-height bars — the X-axis
+    /// becomes discontinuous and it's impossible to distinguish "no data returned"
+    /// from "zero WP activity in this period."
     pub async fn grafana_wp_funnel_timeseries(
         &self,
         start: DateTime<Utc>,
@@ -1541,19 +1547,36 @@ impl EventStore {
         let sql = format!(
             r#"
             SELECT
-                time_bucket('{pg_interval}'::interval, first_seen) AS ts,
-                COUNT(*)::BIGINT AS total,
-                COUNT(*) FILTER (WHERE received_at IS NOT NULL)::BIGINT       AS received,
-                COUNT(*) FILTER (WHERE authorized_at IS NOT NULL)::BIGINT     AS authorized,
-                COUNT(*) FILTER (WHERE refined_at IS NOT NULL)::BIGINT        AS refined,
-                COUNT(*) FILTER (WHERE report_built_at IS NOT NULL)::BIGINT   AS report_built,
-                COUNT(*) FILTER (WHERE guarantee_built_at IS NOT NULL)::BIGINT AS guarantee_built,
-                COUNT(*) FILTER (WHERE distributed_at IS NOT NULL)::BIGINT    AS distributed,
-                COUNT(*) FILTER (WHERE failed_at IS NOT NULL)::BIGINT         AS failed
-            FROM wp_tracking
-            WHERE first_seen >= $1 AND first_seen < $2
-              AND ($3::SMALLINT IS NULL OR core = $3)
-            GROUP BY 1
+                gs.bucket AS ts,
+                COALESCE(d.total, 0) AS total,
+                COALESCE(d.received, 0) AS received,
+                COALESCE(d.authorized, 0) AS authorized,
+                COALESCE(d.refined, 0) AS refined,
+                COALESCE(d.report_built, 0) AS report_built,
+                COALESCE(d.guarantee_built, 0) AS guarantee_built,
+                COALESCE(d.distributed, 0) AS distributed,
+                COALESCE(d.failed, 0) AS failed
+            FROM generate_series(
+                time_bucket('{pg_interval}'::interval, $1::timestamptz),
+                $2::timestamptz,
+                '{pg_interval}'::interval
+            ) AS gs(bucket)
+            LEFT JOIN (
+                SELECT
+                    time_bucket('{pg_interval}'::interval, first_seen) AS bucket,
+                    COUNT(*)::BIGINT AS total,
+                    COUNT(*) FILTER (WHERE received_at IS NOT NULL)::BIGINT       AS received,
+                    COUNT(*) FILTER (WHERE authorized_at IS NOT NULL)::BIGINT     AS authorized,
+                    COUNT(*) FILTER (WHERE refined_at IS NOT NULL)::BIGINT        AS refined,
+                    COUNT(*) FILTER (WHERE report_built_at IS NOT NULL)::BIGINT   AS report_built,
+                    COUNT(*) FILTER (WHERE guarantee_built_at IS NOT NULL)::BIGINT AS guarantee_built,
+                    COUNT(*) FILTER (WHERE distributed_at IS NOT NULL)::BIGINT    AS distributed,
+                    COUNT(*) FILTER (WHERE failed_at IS NOT NULL)::BIGINT         AS failed
+                FROM wp_tracking
+                WHERE first_seen >= $1 AND first_seen < $2
+                  AND ($3::SMALLINT IS NULL OR core = $3)
+                GROUP BY 1
+            ) d ON d.bucket = gs.bucket
             ORDER BY 1
             "#,
         );
@@ -1569,6 +1592,10 @@ impl EventStore {
     // ── 15. grafana_bottlenecks_timeseries ────────────────────────────────
 
     /// Work package pipeline bottleneck analysis bucketed over time.
+    ///
+    /// Gap-filled with `generate_series` — same reasoning as wp_funnel_timeseries.
+    /// Empty buckets have NULL percentiles (no WPs = no latency to compute) and
+    /// zero counts.
     pub async fn grafana_bottlenecks_timeseries(
         &self,
         start: DateTime<Utc>,
@@ -1582,50 +1609,67 @@ impl EventStore {
         let sql = format!(
             r#"
             SELECT
-                time_bucket('{pg_interval}'::interval, first_seen) AS ts,
-                percentile_cont(0.5) WITHIN GROUP (
-                    ORDER BY EXTRACT(EPOCH FROM (authorized_at - received_at)) * 1000
-                )::DOUBLE PRECISION AS authorize_p50,
-                percentile_cont(0.95) WITHIN GROUP (
-                    ORDER BY EXTRACT(EPOCH FROM (authorized_at - received_at)) * 1000
-                )::DOUBLE PRECISION AS authorize_p95,
-                percentile_cont(0.5) WITHIN GROUP (
-                    ORDER BY EXTRACT(EPOCH FROM (refined_at - authorized_at)) * 1000
-                )::DOUBLE PRECISION AS refine_p50,
-                percentile_cont(0.95) WITHIN GROUP (
-                    ORDER BY EXTRACT(EPOCH FROM (refined_at - authorized_at)) * 1000
-                )::DOUBLE PRECISION AS refine_p95,
-                percentile_cont(0.5) WITHIN GROUP (
-                    ORDER BY EXTRACT(EPOCH FROM (report_built_at - refined_at)) * 1000
-                )::DOUBLE PRECISION AS report_p50,
-                percentile_cont(0.95) WITHIN GROUP (
-                    ORDER BY EXTRACT(EPOCH FROM (report_built_at - refined_at)) * 1000
-                )::DOUBLE PRECISION AS report_p95,
-                percentile_cont(0.5) WITHIN GROUP (
-                    ORDER BY EXTRACT(EPOCH FROM (guarantee_built_at - report_built_at)) * 1000
-                )::DOUBLE PRECISION AS guarantee_p50,
-                percentile_cont(0.95) WITHIN GROUP (
-                    ORDER BY EXTRACT(EPOCH FROM (guarantee_built_at - report_built_at)) * 1000
-                )::DOUBLE PRECISION AS guarantee_p95,
-                percentile_cont(0.5) WITHIN GROUP (
-                    ORDER BY EXTRACT(EPOCH FROM (distributed_at - guarantee_built_at)) * 1000
-                )::DOUBLE PRECISION AS distribute_p50,
-                percentile_cont(0.95) WITHIN GROUP (
-                    ORDER BY EXTRACT(EPOCH FROM (distributed_at - guarantee_built_at)) * 1000
-                )::DOUBLE PRECISION AS distribute_p95,
-                percentile_cont(0.5) WITHIN GROUP (
-                    ORDER BY EXTRACT(EPOCH FROM (COALESCE(distributed_at, last_updated) - received_at)) * 1000
-                )::DOUBLE PRECISION AS pipeline_p50,
-                percentile_cont(0.95) WITHIN GROUP (
-                    ORDER BY EXTRACT(EPOCH FROM (COALESCE(distributed_at, last_updated) - received_at)) * 1000
-                )::DOUBLE PRECISION AS pipeline_p95,
-                COUNT(*)::BIGINT AS total_wps,
-                COUNT(*) FILTER (WHERE failed_at IS NOT NULL)::BIGINT AS failed_wps
-            FROM wp_tracking
-            WHERE first_seen >= $1 AND first_seen < $2
-              AND ($3::SMALLINT IS NULL OR core = $3)
-              AND received_at IS NOT NULL
-            GROUP BY 1
+                gs.bucket AS ts,
+                d.authorize_p50, d.authorize_p95,
+                d.refine_p50, d.refine_p95,
+                d.report_p50, d.report_p95,
+                d.guarantee_p50, d.guarantee_p95,
+                d.distribute_p50, d.distribute_p95,
+                d.pipeline_p50, d.pipeline_p95,
+                COALESCE(d.total_wps, 0) AS total_wps,
+                COALESCE(d.failed_wps, 0) AS failed_wps
+            FROM generate_series(
+                time_bucket('{pg_interval}'::interval, $1::timestamptz),
+                $2::timestamptz,
+                '{pg_interval}'::interval
+            ) AS gs(bucket)
+            LEFT JOIN (
+                SELECT
+                    time_bucket('{pg_interval}'::interval, first_seen) AS bucket,
+                    percentile_cont(0.5) WITHIN GROUP (
+                        ORDER BY EXTRACT(EPOCH FROM (authorized_at - received_at)) * 1000
+                    )::DOUBLE PRECISION AS authorize_p50,
+                    percentile_cont(0.95) WITHIN GROUP (
+                        ORDER BY EXTRACT(EPOCH FROM (authorized_at - received_at)) * 1000
+                    )::DOUBLE PRECISION AS authorize_p95,
+                    percentile_cont(0.5) WITHIN GROUP (
+                        ORDER BY EXTRACT(EPOCH FROM (refined_at - authorized_at)) * 1000
+                    )::DOUBLE PRECISION AS refine_p50,
+                    percentile_cont(0.95) WITHIN GROUP (
+                        ORDER BY EXTRACT(EPOCH FROM (refined_at - authorized_at)) * 1000
+                    )::DOUBLE PRECISION AS refine_p95,
+                    percentile_cont(0.5) WITHIN GROUP (
+                        ORDER BY EXTRACT(EPOCH FROM (report_built_at - refined_at)) * 1000
+                    )::DOUBLE PRECISION AS report_p50,
+                    percentile_cont(0.95) WITHIN GROUP (
+                        ORDER BY EXTRACT(EPOCH FROM (report_built_at - refined_at)) * 1000
+                    )::DOUBLE PRECISION AS report_p95,
+                    percentile_cont(0.5) WITHIN GROUP (
+                        ORDER BY EXTRACT(EPOCH FROM (guarantee_built_at - report_built_at)) * 1000
+                    )::DOUBLE PRECISION AS guarantee_p50,
+                    percentile_cont(0.95) WITHIN GROUP (
+                        ORDER BY EXTRACT(EPOCH FROM (guarantee_built_at - report_built_at)) * 1000
+                    )::DOUBLE PRECISION AS guarantee_p95,
+                    percentile_cont(0.5) WITHIN GROUP (
+                        ORDER BY EXTRACT(EPOCH FROM (distributed_at - guarantee_built_at)) * 1000
+                    )::DOUBLE PRECISION AS distribute_p50,
+                    percentile_cont(0.95) WITHIN GROUP (
+                        ORDER BY EXTRACT(EPOCH FROM (distributed_at - guarantee_built_at)) * 1000
+                    )::DOUBLE PRECISION AS distribute_p95,
+                    percentile_cont(0.5) WITHIN GROUP (
+                        ORDER BY EXTRACT(EPOCH FROM (COALESCE(distributed_at, last_updated) - received_at)) * 1000
+                    )::DOUBLE PRECISION AS pipeline_p50,
+                    percentile_cont(0.95) WITHIN GROUP (
+                        ORDER BY EXTRACT(EPOCH FROM (COALESCE(distributed_at, last_updated) - received_at)) * 1000
+                    )::DOUBLE PRECISION AS pipeline_p95,
+                    COUNT(*)::BIGINT AS total_wps,
+                    COUNT(*) FILTER (WHERE failed_at IS NOT NULL)::BIGINT AS failed_wps
+                FROM wp_tracking
+                WHERE first_seen >= $1 AND first_seen < $2
+                  AND ($3::SMALLINT IS NULL OR core = $3)
+                  AND received_at IS NOT NULL
+                GROUP BY 1
+            ) d ON d.bucket = gs.bucket
             ORDER BY 1
             "#,
         );
