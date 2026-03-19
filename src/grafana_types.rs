@@ -626,10 +626,12 @@ pub struct WpFunnelResponse {
 /// convergence_tracker flush. Aggregates all guarantees in a slot: flattens
 /// received_timestamps across all work_report_hashes for that slot and computes
 /// true cross-core percentiles of (received - built_at) latency.
-#[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct GuaranteeConvergenceSlotRow {
     /// Slot number
     pub slot: i32,
+    /// Slot timestamp (for Grafana X-axis)
+    pub slot_timestamp: DateTime<Utc>,
     /// Number of guarantees in this slot
     pub guarantee_count: i16,
     /// Minimum receiver count across guarantees

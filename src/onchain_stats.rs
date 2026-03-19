@@ -26,7 +26,7 @@ const MAX_RESPONSE_SIZE: u32 = 100 * 1024 * 1024;
 ///
 /// Uses `JAM_COMMON_ERA` (the JAM epoch start, Unix seconds) from `jam_types`.
 /// Formula: `UNIX_EPOCH + JAM_COMMON_ERA + slot * slot_period_secs`
-fn slot_to_timestamp(slot: u32, slot_period_secs: u16) -> DateTime<Utc> {
+pub fn slot_to_timestamp(slot: u32, slot_period_secs: u16) -> DateTime<Utc> {
     let epoch_secs = JAM_COMMON_ERA + slot as u64 * slot_period_secs as u64;
     Utc.timestamp_opt(epoch_secs as i64, 0)
         .single()

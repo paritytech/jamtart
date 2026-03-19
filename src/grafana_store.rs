@@ -1165,7 +1165,7 @@ impl EventStore {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Result<Vec<GuaranteeConvergenceSlotRow>, sqlx::Error> {
-        sqlx::query_as::<_, GuaranteeConvergenceSlotRow>(
+        let rows = sqlx::query(
             r#"
             SELECT slot, guarantee_count, node_count,
                    p50_ms, p75_ms, p95_ms, p99_ms, p100_ms, built_at
@@ -1177,7 +1177,28 @@ impl EventStore {
         .bind(start)
         .bind(end)
         .fetch_all(self.pool())
-        .await
+        .await?;
+
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let slot: i32 = row.get("slot");
+                let slot_timestamp =
+                    crate::onchain_stats::slot_to_timestamp(slot as u32, 6);
+                GuaranteeConvergenceSlotRow {
+                    slot,
+                    slot_timestamp,
+                    guarantee_count: row.get("guarantee_count"),
+                    node_count: row.get("node_count"),
+                    p50_ms: row.get("p50_ms"),
+                    p75_ms: row.get("p75_ms"),
+                    p95_ms: row.get("p95_ms"),
+                    p99_ms: row.get("p99_ms"),
+                    p100_ms: row.get("p100_ms"),
+                    built_at: row.get("built_at"),
+                }
+            })
+            .collect())
     }
 
     // ── 15. grafana_guarantee_convergence_detail ──────────────────────────
