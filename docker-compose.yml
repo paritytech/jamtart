@@ -71,6 +71,10 @@ services:
   tart-backend:
     build: .
     container_name: tart-backend
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./target/release/tart-backend:/app/tart-backend
     ports:
       - "9000:9000"  # Telemetry port
       - "8080:8080"  # API port
@@ -109,6 +113,8 @@ services:
   grafana:
     image: grafana/grafana:12.3.3
     container_name: tart-grafana
+    extra_hosts:
+      - "tart-backend:host-gateway"
     ports:
       - "3000:3000"      
     environment:

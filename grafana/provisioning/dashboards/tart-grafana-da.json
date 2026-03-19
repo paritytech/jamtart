@@ -64,6 +64,7 @@
         "x": 0,
         "y": 1
       },
+      "description": "[JIP-3] Average shard storage size across all nodes over time. Source: Status(10) events — each node reports num_shards and shards_size every ~2s. Aggregated to 1-minute AVG from node_stats_1m continuous aggregate.",
       "id": 2,
       "options": {
         "colorMode": "value",
@@ -174,6 +175,7 @@
         "x": 6,
         "y": 1
       },
+      "description": "[JIP-3] Per-node shard inventory over time: number of erasure-coded shards held and total storage size. Each point is a Status(10) event snapshot (~every 2s per node). Use to spot nodes with missing or excessive shards.",
       "id": 3,
       "options": {
         "legend": {
@@ -325,6 +327,7 @@
         "x": 0,
         "y": 10
       },
+      "description": "[JIP-3] P2P peer count per node over time. Source: Status(10) events. Low peer counts indicate connectivity issues that may affect shard distribution and assurance propagation.",
       "id": 5,
       "options": {
         "legend": {
@@ -502,6 +505,7 @@
         "x": 12,
         "y": 10
       },
+      "description": "[JIP-3] Network-wide peer health: MIN/AVG/MAX peer counts across all nodes per 1-minute bucket. Source: Status(10) aggregated via node_stats_1m. A dropping MIN line indicates nodes losing connectivity.",
       "id": 6,
       "options": {
         "legend": {
@@ -636,6 +640,7 @@
         "x": 0,
         "y": 19
       },
+      "description": "[JIP-3] Per-node preimage inventory over time: number of preimages stored and total size in bytes. Source: Status(10) events. Preimages are service code/data blobs announced via PreimageAnnounced(191).",
       "id": 8,
       "options": {
         "legend": {
@@ -749,6 +754,7 @@
         ]
       },
       "gridPos": { "h": 10, "w": 24, "x": 0, "y": 28 },
+      "description": "[JIP-3] Guarantee propagation convergence per slot: p50/p75/p95/p99/p100 of (GuaranteeReceived(112) \u2212 GuaranteeBuilt(105)) across all validators. Measures how quickly guarantees reach the network after being built by guarantors. Source: guarantee_convergence_slots table.",
       "id": 10,
       "maxDataPoints": 300,
       "options": {
@@ -808,6 +814,7 @@
         ]
       },
       "gridPos": { "h": 10, "w": 12, "x": 0, "y": 39 },
+      "description": "[JIP-3] Assurance reception convergence per block: p50/p75/p95/p99/p100 of (AssuranceReceived(131) \u2212 DistributingAssurance(126)) across all senders and receivers. Measures how quickly assurances propagate after distribution begins. Availability window is 5 slots (30s). Source: assurance_convergence table.",
       "id": 12,
       "maxDataPoints": 300,
       "options": {
@@ -854,6 +861,7 @@
         "overrides": []
       },
       "gridPos": { "h": 10, "w": 12, "x": 12, "y": 39 },
+      "description": "[JIP-3] How quickly validators begin distributing assurances for each block. Percentiles of (DistributingAssurance(126) timestamp \u2212 first distributor timestamp) across ~1023 validators. A wide spread means some validators are slow to start distributing. Source: assurance_convergence table.",
       "id": 13,
       "maxDataPoints": 300,
       "options": {
@@ -907,6 +915,7 @@
         "overrides": []
       },
       "gridPos": { "h": 10, "w": 12, "x": 0, "y": 50 },
+      "description": "[JIP-3] Shard request round-trip latency from the assurer's perspective: SendingShardRequest(120) \u2192 ShardsTransferred(125). Approximate percentiles interpolated from merged 14-bucket histograms (0\u20135000+ ms). Each assurer sends ~343 requests per slot (one per core). Source: shard_latency_hist hypertable.",
       "id": 15,
       "maxDataPoints": 300,
       "options": {
@@ -952,6 +961,7 @@
         "overrides": []
       },
       "gridPos": { "h": 10, "w": 12, "x": 12, "y": 50 },
+      "description": "[JIP-3] Shard request processing latency from the guarantor's perspective: ReceivingShardRequest(121) \u2192 ShardRequestReceived(124). Measures how long the guarantor takes to process and respond. Approximate percentiles from merged histograms. Source: shard_latency_hist hypertable.",
       "id": 16,
       "maxDataPoints": 300,
       "options": {
@@ -999,6 +1009,7 @@
         "overrides": []
       },
       "gridPos": { "h": 10, "w": 24, "x": 0, "y": 61 },
+      "description": "[JIP-3] Per-node DA operational summary: shard event counts (SendingShardRequest(120) through ShardsTransferred(125)), preimage counts (190\u2013192), weighted-average shard latency (assurer and guarantor sides), and active shard count. Source: da_node_stats hypertable, aggregated over time range.",
       "id": 18,
       "options": {
         "cellHeight": "sm",

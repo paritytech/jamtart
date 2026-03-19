@@ -1157,11 +1157,12 @@
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 49 },
       "id": 18,
       "panels": [],
-      "title": "WP Funnel Timeseries",
+      "title": "WP Funnel \u2014 Core ${core_index}",
       "type": "row"
     },
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "[JIP-3] Work package pipeline stage counts per time bucket for core ${core_index}. Stacked bars show how many WPs reached each stage: WorkPackageReceived(94) \u2192 Authorized(95) \u2192 Refined(101) \u2192 WorkReportBuilt(102) \u2192 GuaranteeBuilt(105) \u2192 GuaranteesDistributed(109). Failed shows WorkPackageFailed(92). Drop-off between stages indicates pipeline issues. (From wp_tracking, bucketed by first_seen)",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -1214,7 +1215,7 @@
         "url": "http://tart-backend:8080/api/grafana/wp-funnel-timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&core=${core_index}",
         "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
       }],
-      "title": "WP Funnel Timeseries",
+      "title": "WP Funnel \u2014 Core ${core_index}",
       "type": "barchart"
     },
     {
@@ -1222,22 +1223,22 @@
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 60 },
       "id": 20,
       "panels": [],
-      "title": "Bottlenecks Timeseries",
+      "title": "Bottlenecks \u2014 Core ${core_index}",
       "type": "row"
     },
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "[JIP-3] P50/P95 latency for the authorize stage on core ${core_index}. Measures WorkPackageReceived(94) \u2192 Authorized(95) delta in ms. (From wp_tracking)",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
           "custom": {
             "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
-            "axisLabel": "ms", "axisPlacement": "auto", "barAlignment": 0,
-            "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none",
+            "axisLabel": "", "axisPlacement": "auto",
+            "fillOpacity": 80, "gradientMode": "none",
             "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
-            "pointSize": 5, "scaleDistribution": { "type": "linear" },
-            "showPoints": "auto", "spanNulls": false,
+            "lineWidth": 1,
+            "scaleDistribution": { "type": "linear" },
             "stacking": { "group": "A", "mode": "none" },
             "thresholdsStyle": { "mode": "off" }
           },
@@ -1247,28 +1248,21 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 61 },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 62 },
       "id": 21,
-      "maxDataPoints": 300,
+      "maxDataPoints": 60,
       "options": {
+        "barRadius": 0, "barWidth": 0.9, "fullHighlight": false, "groupWidth": 0.7,
         "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "orientation": "auto", "showValue": "never", "stacking": "none",
+        "tooltip": { "mode": "multi", "sort": "desc" },
+        "xTickLabelRotation": -45
       },
       "targets": [{
         "columns": [
           { "selector": "ts", "text": "", "type": "timestamp" },
-          { "selector": "authorize_p50", "text": "Authorize p50", "type": "number" },
-          { "selector": "authorize_p95", "text": "Authorize p95", "type": "number" },
-          { "selector": "refine_p50", "text": "Refine p50", "type": "number" },
-          { "selector": "refine_p95", "text": "Refine p95", "type": "number" },
-          { "selector": "report_p50", "text": "Report p50", "type": "number" },
-          { "selector": "report_p95", "text": "Report p95", "type": "number" },
-          { "selector": "guarantee_p50", "text": "Guarantee p50", "type": "number" },
-          { "selector": "guarantee_p95", "text": "Guarantee p95", "type": "number" },
-          { "selector": "distribute_p50", "text": "Distribute p50", "type": "number" },
-          { "selector": "distribute_p95", "text": "Distribute p95", "type": "number" },
-          { "selector": "pipeline_p50", "text": "Pipeline p50", "type": "number" },
-          { "selector": "pipeline_p95", "text": "Pipeline p95", "type": "number" }
+          { "selector": "authorize_p50", "text": "P50", "type": "number" },
+          { "selector": "authorize_p95", "text": "P95", "type": "number" }
         ],
         "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
         "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
@@ -1276,8 +1270,243 @@
         "url": "http://tart-backend:8080/api/grafana/bottlenecks-timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&core=${core_index}",
         "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
       }],
-      "title": "Bottlenecks Timeseries",
-      "type": "timeseries"
+      "title": "Authorize \u2014 Core ${core_index}",
+      "type": "barchart"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "[JIP-3] P50/P95 latency for the refine stage on core ${core_index}. Measures Authorized(95) \u2192 Refined(101) delta in ms. (From wp_tracking)",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto",
+            "fillOpacity": 80, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 1,
+            "scaleDistribution": { "type": "linear" },
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 62 },
+      "id": 22,
+      "maxDataPoints": 60,
+      "options": {
+        "barRadius": 0, "barWidth": 0.9, "fullHighlight": false, "groupWidth": 0.7,
+        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "orientation": "auto", "showValue": "never", "stacking": "none",
+        "tooltip": { "mode": "multi", "sort": "desc" },
+        "xTickLabelRotation": -45
+      },
+      "targets": [{
+        "columns": [
+          { "selector": "ts", "text": "", "type": "timestamp" },
+          { "selector": "refine_p50", "text": "P50", "type": "number" },
+          { "selector": "refine_p95", "text": "P95", "type": "number" }
+        ],
+        "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+        "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
+        "refId": "A", "root_selector": "", "source": "url", "type": "json",
+        "url": "http://tart-backend:8080/api/grafana/bottlenecks-timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&core=${core_index}",
+        "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
+      }],
+      "title": "Refine \u2014 Core ${core_index}",
+      "type": "barchart"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "[JIP-3] P50/P95 latency for the report stage on core ${core_index}. Measures Refined(101) \u2192 WorkReportBuilt(102) delta in ms. (From wp_tracking)",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto",
+            "fillOpacity": 80, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 1,
+            "scaleDistribution": { "type": "linear" },
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 62 },
+      "id": 23,
+      "maxDataPoints": 60,
+      "options": {
+        "barRadius": 0, "barWidth": 0.9, "fullHighlight": false, "groupWidth": 0.7,
+        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "orientation": "auto", "showValue": "never", "stacking": "none",
+        "tooltip": { "mode": "multi", "sort": "desc" },
+        "xTickLabelRotation": -45
+      },
+      "targets": [{
+        "columns": [
+          { "selector": "ts", "text": "", "type": "timestamp" },
+          { "selector": "report_p50", "text": "P50", "type": "number" },
+          { "selector": "report_p95", "text": "P95", "type": "number" }
+        ],
+        "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+        "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
+        "refId": "A", "root_selector": "", "source": "url", "type": "json",
+        "url": "http://tart-backend:8080/api/grafana/bottlenecks-timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&core=${core_index}",
+        "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
+      }],
+      "title": "Report \u2014 Core ${core_index}",
+      "type": "barchart"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "[JIP-3] P50/P95 latency for the guarantee stage on core ${core_index}. Measures WorkReportBuilt(102) \u2192 GuaranteeBuilt(105) delta in ms. (From wp_tracking)",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto",
+            "fillOpacity": 80, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 1,
+            "scaleDistribution": { "type": "linear" },
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 70 },
+      "id": 24,
+      "maxDataPoints": 60,
+      "options": {
+        "barRadius": 0, "barWidth": 0.9, "fullHighlight": false, "groupWidth": 0.7,
+        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "orientation": "auto", "showValue": "never", "stacking": "none",
+        "tooltip": { "mode": "multi", "sort": "desc" },
+        "xTickLabelRotation": -45
+      },
+      "targets": [{
+        "columns": [
+          { "selector": "ts", "text": "", "type": "timestamp" },
+          { "selector": "guarantee_p50", "text": "P50", "type": "number" },
+          { "selector": "guarantee_p95", "text": "P95", "type": "number" }
+        ],
+        "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+        "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
+        "refId": "A", "root_selector": "", "source": "url", "type": "json",
+        "url": "http://tart-backend:8080/api/grafana/bottlenecks-timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&core=${core_index}",
+        "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
+      }],
+      "title": "Guarantee \u2014 Core ${core_index}",
+      "type": "barchart"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "[JIP-3] P50/P95 latency for the distribute stage on core ${core_index}. Measures GuaranteeBuilt(105) \u2192 GuaranteesDistributed(109) delta in ms. (From wp_tracking)",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto",
+            "fillOpacity": 80, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 1,
+            "scaleDistribution": { "type": "linear" },
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 70 },
+      "id": 25,
+      "maxDataPoints": 60,
+      "options": {
+        "barRadius": 0, "barWidth": 0.9, "fullHighlight": false, "groupWidth": 0.7,
+        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "orientation": "auto", "showValue": "never", "stacking": "none",
+        "tooltip": { "mode": "multi", "sort": "desc" },
+        "xTickLabelRotation": -45
+      },
+      "targets": [{
+        "columns": [
+          { "selector": "ts", "text": "", "type": "timestamp" },
+          { "selector": "distribute_p50", "text": "P50", "type": "number" },
+          { "selector": "distribute_p95", "text": "P95", "type": "number" }
+        ],
+        "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+        "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
+        "refId": "A", "root_selector": "", "source": "url", "type": "json",
+        "url": "http://tart-backend:8080/api/grafana/bottlenecks-timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&core=${core_index}",
+        "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
+      }],
+      "title": "Distribute \u2014 Core ${core_index}",
+      "type": "barchart"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "[JIP-3] P50/P95 end-to-end pipeline latency on core ${core_index}. Measures WorkPackageReceived(94) \u2192 GuaranteesDistributed(109) or last update, in ms. (From wp_tracking)",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto",
+            "fillOpacity": 80, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 1,
+            "scaleDistribution": { "type": "linear" },
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 70 },
+      "id": 26,
+      "maxDataPoints": 60,
+      "options": {
+        "barRadius": 0, "barWidth": 0.9, "fullHighlight": false, "groupWidth": 0.7,
+        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "orientation": "auto", "showValue": "never", "stacking": "none",
+        "tooltip": { "mode": "multi", "sort": "desc" },
+        "xTickLabelRotation": -45
+      },
+      "targets": [{
+        "columns": [
+          { "selector": "ts", "text": "", "type": "timestamp" },
+          { "selector": "pipeline_p50", "text": "P50", "type": "number" },
+          { "selector": "pipeline_p95", "text": "P95", "type": "number" }
+        ],
+        "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+        "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
+        "refId": "A", "root_selector": "", "source": "url", "type": "json",
+        "url": "http://tart-backend:8080/api/grafana/bottlenecks-timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&core=${core_index}",
+        "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
+      }],
+      "title": "Pipeline Total \u2014 Core ${core_index}",
+      "type": "barchart"
     }
   ],
   "schemaVersion": 39,
