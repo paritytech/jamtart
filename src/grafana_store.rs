@@ -874,6 +874,21 @@ impl EventStore {
                 index_bytes::BIGINT,
                 toast_bytes::BIGINT
             FROM hypertable_detailed_size('event_services')
+            UNION ALL
+            SELECT 'da_node_stats', total_bytes, table_bytes, index_bytes, toast_bytes
+            FROM hypertable_detailed_size('da_node_stats')
+            UNION ALL
+            SELECT 'shard_latency_hist', total_bytes, table_bytes, index_bytes, toast_bytes
+            FROM hypertable_detailed_size('shard_latency_hist')
+            UNION ALL
+            SELECT 'assurance_convergence_senders', total_bytes, table_bytes, index_bytes, toast_bytes
+            FROM hypertable_detailed_size('assurance_convergence_senders')
+            UNION ALL
+            SELECT 'guarantee_convergence', pg_total_relation_size('guarantee_convergence'), pg_relation_size('guarantee_convergence'), pg_indexes_size('guarantee_convergence'), 0
+            UNION ALL
+            SELECT 'guarantee_convergence_slots', pg_total_relation_size('guarantee_convergence_slots'), pg_relation_size('guarantee_convergence_slots'), pg_indexes_size('guarantee_convergence_slots'), 0
+            UNION ALL
+            SELECT 'assurance_convergence', pg_total_relation_size('assurance_convergence'), pg_relation_size('assurance_convergence'), pg_indexes_size('assurance_convergence'), 0
             "#,
         )
         .fetch_all(self.pool())
@@ -894,6 +909,18 @@ impl EventStore {
             SELECT 'slot_convergence', (SELECT COUNT(*) FROM slot_convergence)
             UNION ALL
             SELECT 'nodes', (SELECT COUNT(*) FROM nodes)
+            UNION ALL
+            SELECT 'guarantee_convergence', (SELECT COUNT(*) FROM guarantee_convergence)
+            UNION ALL
+            SELECT 'guarantee_convergence_slots', (SELECT COUNT(*) FROM guarantee_convergence_slots)
+            UNION ALL
+            SELECT 'assurance_convergence', (SELECT COUNT(*) FROM assurance_convergence)
+            UNION ALL
+            SELECT 'assurance_convergence_senders', approximate_row_count('assurance_convergence_senders')
+            UNION ALL
+            SELECT 'da_node_stats', approximate_row_count('da_node_stats')
+            UNION ALL
+            SELECT 'shard_latency_hist', approximate_row_count('shard_latency_hist')
             "#,
         )
         .fetch_all(self.pool())

@@ -187,10 +187,13 @@ pub async fn flush_guarantee_convergence(
     dirty_slots.sort();
     dirty_slots.dedup();
 
-    // Build per-slot summaries scanning ALL in-memory entries for those slots
+    // Build per-slot summaries scanning ALL in-memory entries for those slots.
+    // Each guarantee's deltas are computed against its OWN built_at, then all
+    // deltas are flattened into one vector for the slot-wide percentile computation.
+    // This avoids inflating deltas when guarantees in the same slot are built seconds apart.
     let mut slot_summaries: Vec<GuaranteeConvergenceSlotRow> = Vec::new();
     for &slot in &dirty_slots {
-        let mut all_timestamps: Vec<u64> = Vec::new();
+        let mut all_deltas_ms: Vec<i32> = Vec::new();
         let mut min_built_at: Option<u64> = None;
         let mut guarantee_count: i16 = 0;
         let mut min_node_count: Option<i16> = None;
@@ -214,19 +217,19 @@ pub async fn flush_guarantee_convergence(
             min_node_count = Some(min_node_count.map_or(nc, |prev: i16| prev.min(nc)));
             min_built_at = Some(min_built_at.map_or(built_at, |prev| prev.min(built_at)));
 
-            // Flatten all received timestamps relative to this guarantee's built_at
+            // Compute deltas against THIS guarantee's built_at (not min across slot)
             for &t in &state.received_timestamps {
-                // Store raw timestamps; we'll compute offsets from min_built_at later
-                all_timestamps.push(t);
+                let delta = (t as i64 - built_at as i64) / 1000;
+                all_deltas_ms.push(delta.max(0) as i32);
             }
         }
 
-        if guarantee_count == 0 || all_timestamps.is_empty() {
+        if guarantee_count == 0 || all_deltas_ms.is_empty() {
             continue;
         }
 
         let anchor = min_built_at.unwrap();
-        let percentiles = compute_percentiles(anchor, &all_timestamps);
+        let percentiles = compute_percentiles_from_deltas(&all_deltas_ms);
 
         let slot_ts = crate::onchain_stats::slot_to_timestamp(slot as u32, 6);
         slot_summaries.push(GuaranteeConvergenceSlotRow {
