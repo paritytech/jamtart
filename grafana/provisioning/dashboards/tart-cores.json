@@ -1202,7 +1202,7 @@
         "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
         "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
         "refId": "A", "root_selector": "", "source": "url", "type": "json",
-        "url": "http://localhost:8080/api/grafana/wp-funnel-timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&core=${core_index}",
+        "url": "http://tart-backend:8080/api/grafana/wp-funnel-timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&core=${core_index}",
         "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
       }],
       "title": "WP Funnel Timeseries",
@@ -1263,7 +1263,7 @@
         "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
         "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
         "refId": "A", "root_selector": "", "source": "url", "type": "json",
-        "url": "http://localhost:8080/api/grafana/bottlenecks-timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&core=${core_index}",
+        "url": "http://tart-backend:8080/api/grafana/bottlenecks-timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&core=${core_index}",
         "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
       }],
       "title": "Bottlenecks Timeseries",

@@ -767,7 +767,7 @@
         "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
         "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
         "refId": "A", "root_selector": "", "source": "url", "type": "json",
-        "url": "http://localhost:8080/api/grafana/guarantee-convergence?start=${__from:date:iso}&end=${__to:date:iso}",
+        "url": "http://tart-backend:8080/api/grafana/guarantee-convergence?start=${__from:date:iso}&end=${__to:date:iso}",
         "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
       }],
       "title": "Guarantee Convergence",
@@ -826,7 +826,7 @@
         "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
         "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
         "refId": "A", "root_selector": "", "source": "url", "type": "json",
-        "url": "http://localhost:8080/api/grafana/assurance-convergence?start=${__from:date:iso}&end=${__to:date:iso}",
+        "url": "http://tart-backend:8080/api/grafana/assurance-convergence?start=${__from:date:iso}&end=${__to:date:iso}",
         "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
       }],
       "title": "Reception Convergence",
@@ -871,7 +871,7 @@
         "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
         "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
         "refId": "A", "root_selector": "", "source": "url", "type": "json",
-        "url": "http://localhost:8080/api/grafana/assurance-convergence?start=${__from:date:iso}&end=${__to:date:iso}",
+        "url": "http://tart-backend:8080/api/grafana/assurance-convergence?start=${__from:date:iso}&end=${__to:date:iso}",
         "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
       }],
       "title": "Distribution Start Spread",
@@ -924,7 +924,7 @@
         "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
         "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
         "refId": "A", "root_selector": "", "source": "url", "type": "json",
-        "url": "http://localhost:8080/api/grafana/shard-latency?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}",
+        "url": "http://tart-backend:8080/api/grafana/shard-latency?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}",
         "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
       }],
       "title": "Assurer Round-Trip",
@@ -969,7 +969,7 @@
         "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
         "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
         "refId": "A", "root_selector": "", "source": "url", "type": "json",
-        "url": "http://localhost:8080/api/grafana/shard-latency?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}",
+        "url": "http://tart-backend:8080/api/grafana/shard-latency?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}",
         "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
       }],
       "title": "Guarantor Processing",
@@ -1019,7 +1019,7 @@
         "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
         "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
         "refId": "A", "root_selector": "", "source": "url", "type": "json",
-        "url": "http://localhost:8080/api/grafana/da-stats?start=${__from:date:iso}&end=${__to:date:iso}",
+        "url": "http://tart-backend:8080/api/grafana/da-stats?start=${__from:date:iso}&end=${__to:date:iso}",
         "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
       }],
       "title": "DA Operations",
