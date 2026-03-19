@@ -1153,71 +1153,112 @@ async fn handle_connection_optimized(
                                         }
                                     }
                                     123 => { // ShardRequestSent
-                                        da_tracker.entry(node_id_str.clone()).and_modify(|s| {
-                                            s.shard_sent_confirmed += 1;
-                                            s.dirty = true;
-                                            s.last_activity = std::time::Instant::now();
-                                        });
+                                        da_tracker.entry(node_id_str.clone())
+                                            .and_modify(|s| {
+                                                s.shard_sent_confirmed += 1;
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            })
+                                            .or_insert_with(|| {
+                                                let mut s = da_tracker::DaNodeState::default();
+                                                s.shard_sent_confirmed = 1;
+                                                s.dirty = true;
+                                                s
+                                            });
                                     }
                                     124 => { // ShardRequestReceived — guarantor side completion
                                         if let Event::ShardRequestReceived { request_id, shard, .. } = &*event {
-                                            da_tracker.entry(node_id_str.clone()).and_modify(|s| {
-                                                s.shard_received_confirmed += 1;
-                                                s.active_shards.insert(*shard);
-                                                // Compute guarantor latency
-                                                if let Some(recv_ts) = s.guarantor_pending.remove(request_id) {
-                                                    let delta_us = evt_ts.saturating_sub(recv_ts);
-                                                    let delta_ms = (delta_us / 1000) as i32;
-                                                    s.guarantor_latency_sum_us += delta_us;
-                                                    s.guarantor_latency_count += 1;
-                                                    let idx = da_tracker::hist_bucket_index(delta_ms);
-                                                    s.guarantor_hist[idx] += 1;
-                                                    s.guarantor_hist_total += 1;
-                                                }
-                                                s.dirty = true;
-                                                s.last_activity = std::time::Instant::now();
-                                            });
+                                            da_tracker.entry(node_id_str.clone())
+                                                .and_modify(|s| {
+                                                    s.shard_received_confirmed += 1;
+                                                    s.active_shards.insert(*shard);
+                                                    if let Some(recv_ts) = s.guarantor_pending.remove(request_id) {
+                                                        let delta_us = evt_ts.saturating_sub(recv_ts);
+                                                        let delta_ms = (delta_us / 1000) as i32;
+                                                        s.guarantor_latency_sum_us += delta_us;
+                                                        s.guarantor_latency_count += 1;
+                                                        let idx = da_tracker::hist_bucket_index(delta_ms);
+                                                        s.guarantor_hist[idx] += 1;
+                                                        s.guarantor_hist_total += 1;
+                                                    }
+                                                    s.dirty = true;
+                                                    s.last_activity = std::time::Instant::now();
+                                                })
+                                                .or_insert_with(|| {
+                                                    let mut s = da_tracker::DaNodeState::default();
+                                                    s.shard_received_confirmed = 1;
+                                                    s.active_shards.insert(*shard);
+                                                    s.dirty = true;
+                                                    s
+                                                });
                                         }
                                     }
                                     125 => { // ShardsTransferred — assurer side completion ONLY
                                         if let Event::ShardsTransferred { request_id, .. } = &*event {
-                                            da_tracker.entry(node_id_str.clone()).and_modify(|s| {
-                                                s.shards_transferred += 1;
-                                                // Compute assurer latency (only assurer_pending)
-                                                if let Some(sent_ts) = s.assurer_pending.remove(request_id) {
-                                                    let delta_us = evt_ts.saturating_sub(sent_ts);
-                                                    let delta_ms = (delta_us / 1000) as i32;
-                                                    s.assurer_latency_sum_us += delta_us;
-                                                    s.assurer_latency_count += 1;
-                                                    let idx = da_tracker::hist_bucket_index(delta_ms);
-                                                    s.assurer_hist[idx] += 1;
-                                                    s.assurer_hist_total += 1;
-                                                }
-                                                s.dirty = true;
-                                                s.last_activity = std::time::Instant::now();
-                                            });
+                                            da_tracker.entry(node_id_str.clone())
+                                                .and_modify(|s| {
+                                                    s.shards_transferred += 1;
+                                                    if let Some(sent_ts) = s.assurer_pending.remove(request_id) {
+                                                        let delta_us = evt_ts.saturating_sub(sent_ts);
+                                                        let delta_ms = (delta_us / 1000) as i32;
+                                                        s.assurer_latency_sum_us += delta_us;
+                                                        s.assurer_latency_count += 1;
+                                                        let idx = da_tracker::hist_bucket_index(delta_ms);
+                                                        s.assurer_hist[idx] += 1;
+                                                        s.assurer_hist_total += 1;
+                                                    }
+                                                    s.dirty = true;
+                                                    s.last_activity = std::time::Instant::now();
+                                                })
+                                                .or_insert_with(|| {
+                                                    let mut s = da_tracker::DaNodeState::default();
+                                                    s.shards_transferred = 1;
+                                                    s.dirty = true;
+                                                    s
+                                                });
                                         }
                                     }
                                     190 => { // PreimageAnnouncementFailed
-                                        da_tracker.entry(node_id_str.clone()).and_modify(|s| {
-                                            s.preimage_ann_failures += 1;
-                                            s.dirty = true;
-                                            s.last_activity = std::time::Instant::now();
-                                        });
+                                        da_tracker.entry(node_id_str.clone())
+                                            .and_modify(|s| {
+                                                s.preimage_ann_failures += 1;
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            })
+                                            .or_insert_with(|| {
+                                                let mut s = da_tracker::DaNodeState::default();
+                                                s.preimage_ann_failures = 1;
+                                                s.dirty = true;
+                                                s
+                                            });
                                     }
                                     191 => { // PreimageAnnounced
-                                        da_tracker.entry(node_id_str.clone()).and_modify(|s| {
-                                            s.preimages_announced += 1;
-                                            s.dirty = true;
-                                            s.last_activity = std::time::Instant::now();
-                                        });
+                                        da_tracker.entry(node_id_str.clone())
+                                            .and_modify(|s| {
+                                                s.preimages_announced += 1;
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            })
+                                            .or_insert_with(|| {
+                                                let mut s = da_tracker::DaNodeState::default();
+                                                s.preimages_announced = 1;
+                                                s.dirty = true;
+                                                s
+                                            });
                                     }
                                     192 => { // AnnouncedPreimageForgotten
-                                        da_tracker.entry(node_id_str.clone()).and_modify(|s| {
-                                            s.preimages_forgotten += 1;
-                                            s.dirty = true;
-                                            s.last_activity = std::time::Instant::now();
-                                        });
+                                        da_tracker.entry(node_id_str.clone())
+                                            .and_modify(|s| {
+                                                s.preimages_forgotten += 1;
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            })
+                                            .or_insert_with(|| {
+                                                let mut s = da_tracker::DaNodeState::default();
+                                                s.preimages_forgotten = 1;
+                                                s.dirty = true;
+                                                s
+                                            });
                                     }
                                     _ => {}
                                 }

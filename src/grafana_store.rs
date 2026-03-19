@@ -9,23 +9,23 @@ use crate::grafana_types::*;
 use crate::store::EventStore;
 
 /// Histogram bucket boundaries (ms) matching shard_latency_hist columns.
-const HIST_BOUNDS: [u32; 15] = [0, 1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2000, 3000, 5000, 10000];
+/// Last bucket [5000, ∞) — use 5000 as upper bound for the overflow bucket.
+const HIST_BOUNDS: [u32; 15] = [0, 1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2000, 3000, 5000, 5000];
 
-/// Compute approximate percentiles (p50, p95, p99, p100) from a merged histogram.
-/// Returns None if total is 0.
-fn percentiles_from_histogram(buckets: &[u32; 14], total: u32) -> Option<(i32, i32, i32, i32)> {
+/// Compute approximate percentiles (p50, p75, p95, p99, p100) from a merged histogram.
+/// Returns None if total is 0. Overflow bucket reports 5000 (lower bound, unbounded above).
+fn percentiles_from_histogram(buckets: &[u32; 14], total: u32) -> Option<(i32, i32, i32, i32, i32)> {
     if total == 0 {
         return None;
     }
-    let targets = [0.50, 0.95, 0.99, 1.0];
-    let mut results = [0i32; 4];
+    let targets = [0.50, 0.75, 0.95, 0.99, 1.0];
+    let mut results = [0i32; 5];
     for (i, &target) in targets.iter().enumerate() {
         let threshold = (total as f64 * target).ceil() as u32;
         let mut cumsum = 0u32;
         for (j, &count) in buckets.iter().enumerate() {
             cumsum += count;
             if cumsum >= threshold {
-                // Interpolate within bucket: midpoint of [lower, upper)
                 let lower = HIST_BOUNDS[j];
                 let upper = HIST_BOUNDS[j + 1];
                 results[i] = ((lower + upper) / 2) as i32;
@@ -33,7 +33,7 @@ fn percentiles_from_histogram(buckets: &[u32; 14], total: u32) -> Option<(i32, i
             }
         }
     }
-    Some((results[0], results[1], results[2], results[3]))
+    Some((results[0], results[1], results[2], results[3], results[4]))
 }
 
 /// Whitelisted time_bucket intervals for dynamic SQL (6s-aligned sub-minute).
@@ -1494,26 +1494,28 @@ impl EventStore {
 
             let entry = buckets.entry(ts).or_insert_with(|| ShardLatencyRow {
                 ts,
-                assurer_p50: None, assurer_p95: None, assurer_p99: None, assurer_p100: None, assurer_samples: 0,
-                guarantor_p50: None, guarantor_p95: None, guarantor_p99: None, guarantor_p100: None, guarantor_samples: 0,
+                assurer_p50: None, assurer_p75: None, assurer_p95: None, assurer_p99: None, assurer_p100: None, assurer_samples: 0,
+                guarantor_p50: None, guarantor_p75: None, guarantor_p95: None, guarantor_p99: None, guarantor_p100: None, guarantor_samples: 0,
                 failed_count: 0,
             });
 
             if side == 0 {
                 if let Some(p) = p {
                     entry.assurer_p50 = Some(p.0);
-                    entry.assurer_p95 = Some(p.1);
-                    entry.assurer_p99 = Some(p.2);
-                    entry.assurer_p100 = Some(p.3);
+                    entry.assurer_p75 = Some(p.1);
+                    entry.assurer_p95 = Some(p.2);
+                    entry.assurer_p99 = Some(p.3);
+                    entry.assurer_p100 = Some(p.4);
                 }
                 entry.assurer_samples = total;
                 entry.failed_count += failed;
             } else {
                 if let Some(p) = p {
                     entry.guarantor_p50 = Some(p.0);
-                    entry.guarantor_p95 = Some(p.1);
-                    entry.guarantor_p99 = Some(p.2);
-                    entry.guarantor_p100 = Some(p.3);
+                    entry.guarantor_p75 = Some(p.1);
+                    entry.guarantor_p95 = Some(p.2);
+                    entry.guarantor_p99 = Some(p.3);
+                    entry.guarantor_p100 = Some(p.4);
                 }
                 entry.guarantor_samples = total;
                 entry.failed_count += failed;
@@ -1694,5 +1696,80 @@ mod tests {
         assert_eq!(snap_interval("1000ms"), "6s");
         assert_eq!(snap_interval("5000ms"), "6s");
         assert_eq!(snap_interval("10000ms"), "12s");
+    }
+
+    #[test]
+    fn hist_percentiles_empty() {
+        let buckets = [0u32; 14];
+        assert_eq!(percentiles_from_histogram(&buckets, 0), None);
+    }
+
+    #[test]
+    fn hist_percentiles_all_in_one_bucket() {
+        // 100 samples in bucket index 4 [10,25) → midpoint = (10+25)/2 = 17
+        let mut buckets = [0u32; 14];
+        buckets[4] = 100;
+        let (p50, p75, p95, p99, p100) = percentiles_from_histogram(&buckets, 100).unwrap();
+        assert_eq!(p50, 17);
+        assert_eq!(p75, 17);
+        assert_eq!(p95, 17);
+        assert_eq!(p99, 17);
+        assert_eq!(p100, 17);
+    }
+
+    #[test]
+    fn hist_percentiles_split_two_buckets() {
+        // 50 in bucket 4 [10,25) + 50 in bucket 6 [50,100)
+        let mut buckets = [0u32; 14];
+        buckets[4] = 50;
+        buckets[6] = 50;
+        let (p50, _p75, _p95, _p99, p100) = percentiles_from_histogram(&buckets, 100).unwrap();
+        // p50 threshold = ceil(100*0.50) = 50, cumsum reaches 50 at bucket 4 → midpoint 17
+        assert_eq!(p50, 17);
+        // p100 threshold = ceil(100*1.0) = 100, cumsum reaches 100 at bucket 6 → midpoint (50+100)/2 = 75
+        assert_eq!(p100, 75);
+    }
+
+    #[test]
+    fn hist_percentiles_single_sample() {
+        // 1 sample in bucket 5 [25,50) → midpoint = (25+50)/2 = 37
+        let mut buckets = [0u32; 14];
+        buckets[5] = 1;
+        let (p50, p75, p95, p99, p100) = percentiles_from_histogram(&buckets, 1).unwrap();
+        assert_eq!(p50, 37);
+        assert_eq!(p75, 37);
+        assert_eq!(p95, 37);
+        assert_eq!(p99, 37);
+        assert_eq!(p100, 37);
+    }
+
+    #[test]
+    fn hist_percentiles_overflow_bucket() {
+        // Samples in last bucket index 13 [5000,5000) → midpoint = (5000+5000)/2 = 5000
+        let mut buckets = [0u32; 14];
+        buckets[13] = 10;
+        let (p50, p75, p95, p99, p100) = percentiles_from_histogram(&buckets, 10).unwrap();
+        assert_eq!(p50, 5000);
+        assert_eq!(p75, 5000);
+        assert_eq!(p95, 5000);
+        assert_eq!(p99, 5000);
+        assert_eq!(p100, 5000);
+    }
+
+    #[test]
+    fn hist_percentiles_spread() {
+        // Spread across multiple buckets — verify ordering
+        let mut buckets = [0u32; 14];
+        buckets[0] = 5;   // [0,1)
+        buckets[2] = 10;  // [2,5)
+        buckets[5] = 20;  // [25,50)
+        buckets[8] = 15;  // [250,500)
+        buckets[11] = 10; // [2000,3000)
+        let total = 5 + 10 + 20 + 15 + 10;
+        let (p50, p75, p95, p99, p100) = percentiles_from_histogram(&buckets, total).unwrap();
+        assert!(p50 <= p75, "p50 ({p50}) <= p75 ({p75})");
+        assert!(p75 <= p95, "p75 ({p75}) <= p95 ({p95})");
+        assert!(p95 <= p99, "p95 ({p95}) <= p99 ({p99})");
+        assert!(p99 <= p100, "p99 ({p99}) <= p100 ({p100})");
     }
 }

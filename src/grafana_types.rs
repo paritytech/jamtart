@@ -804,11 +804,13 @@ pub struct DaStatsRow {
 pub struct ShardLatencyRow {
     pub ts: DateTime<Utc>,
     pub assurer_p50: Option<i32>,
+    pub assurer_p75: Option<i32>,
     pub assurer_p95: Option<i32>,
     pub assurer_p99: Option<i32>,
     pub assurer_p100: Option<i32>,
     pub assurer_samples: i32,
     pub guarantor_p50: Option<i32>,
+    pub guarantor_p75: Option<i32>,
     pub guarantor_p95: Option<i32>,
     pub guarantor_p99: Option<i32>,
     pub guarantor_p100: Option<i32>,

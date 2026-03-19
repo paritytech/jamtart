@@ -898,4 +898,19 @@ mod tests {
         assert_eq!(p.p99_ms, 10);  // index (3*0.99)=2 → sorted[2] = 10
         assert_eq!(p.p100_ms, 10);
     }
+
+    #[test]
+    fn header_hash_lookup_eviction() {
+        let lookup = new_header_hash_lookup();
+        // Insert 100 entries with distinct keys
+        for i in 0u32..100 {
+            let mut key = [0u8; 32];
+            key[0..4].copy_from_slice(&i.to_le_bytes());
+            lookup.insert(key, i);
+        }
+        assert_eq!(lookup.len(), 100);
+        // Evict with max_entries=50 — should remove ~25% of entries
+        evict_header_hash_lookup(&lookup, 50);
+        assert!(lookup.len() < 100, "size should be reduced after eviction");
+    }
 }

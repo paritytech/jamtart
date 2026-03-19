@@ -502,4 +502,30 @@ mod tests {
         assert_eq!(state.guarantor_hist[3], 1);
         assert_eq!(state.guarantor_hist_total, 1);
     }
+
+    #[test]
+    fn negative_delta_clamping() {
+        // Negative delta should be clamped to bucket 0 [0,1)
+        assert_eq!(hist_bucket_index(-5), 0);
+    }
+
+    #[test]
+    fn cap_enforcement() {
+        let mut state = DaNodeState::default();
+        // Insert 20001 entries into assurer_pending
+        let now_us = 100_000_000u64;
+        for i in 0..20_001u64 {
+            state.assurer_pending.insert(i, now_us - 1_000); // all fresh (1ms ago)
+        }
+        assert_eq!(state.assurer_pending.len(), 20_001);
+        evict_pending(&mut state.assurer_pending, now_us);
+        // After eviction, count should be capped at PENDING_CAP (20000)
+        assert!(state.assurer_pending.len() <= 20_000);
+    }
+
+    #[test]
+    fn hist_bucket_boundary_5ms() {
+        // Exactly 5ms should go to bucket index 3 [5,10), not index 2 [2,5)
+        assert_eq!(hist_bucket_index(5), 3);
+    }
 }
