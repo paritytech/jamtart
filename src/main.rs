@@ -242,6 +242,8 @@ async fn main() -> anyhow::Result<()> {
         let slot_tracker = telemetry_server.get_slot_tracker();
         let wp_tracker = telemetry_server.get_wp_tracker();
         let guarantee_convergence_tracker = telemetry_server.get_guarantee_convergence_tracker();
+        let assurance_convergence_tracker = telemetry_server.get_assurance_convergence_tracker();
+        let header_hash_lookup = telemetry_server.get_header_hash_lookup();
         let event_counter = telemetry_server.get_event_counter();
         let enricher_map = telemetry_server.get_enricher_map();
         let pool = store.pool().clone();
@@ -263,11 +265,21 @@ async fn main() -> anyhow::Result<()> {
                     std::time::Duration::from_secs(10),
                     std::time::Duration::from_secs(60),
                 ).await;
+                tart_backend::convergence_tracker::flush_assurance_convergence(
+                    &assurance_convergence_tracker,
+                    &pool,
+                    std::time::Duration::from_secs(10),
+                    std::time::Duration::from_secs(60),
+                ).await;
                 tart_backend::event_counter::flush_event_counter(&event_counter, &pool).await;
                 tick_count += 1;
                 // Log enricher diagnostics every 2 ticks (10s)
                 if tick_count % 2 == 0 {
                     tart_backend::enricher::log_enricher_diagnostics(&enricher_map, 10.0);
+                }
+                // Evict stale header_hash_lookup entries every 6 ticks (30s)
+                if tick_count % 6 == 0 {
+                    tart_backend::convergence_tracker::evict_header_hash_lookup(&header_hash_lookup, 5000);
                 }
                 // Sweep stale enrichers every 30 ticks (~2.5 min)
                 if tick_count % 30 == 0 {

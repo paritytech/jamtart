@@ -9,7 +9,7 @@ use crate::event_broadcaster::{build_ws_envelope, BroadcastRecord, EventBroadcas
 use crate::event_counter::{self, EventCounter};
 use crate::events::{Event, NodeInformation};
 use crate::rate_limiter::RateLimiter;
-use crate::convergence_tracker::{self, GuaranteeConvergenceTracker};
+use crate::convergence_tracker::{self, AssuranceConvergenceTracker, GuaranteeConvergenceTracker, HeaderHashLookup};
 use crate::slot_tracker::{self, SlotTracker};
 use crate::store::EventStore;
 use crate::wp_tracker::{self, WpTracker};
@@ -143,6 +143,8 @@ pub struct TelemetryServer {
     slot_tracker: SlotTracker,
     wp_tracker: WpTracker,
     guarantee_convergence_tracker: GuaranteeConvergenceTracker,
+    assurance_convergence_tracker: AssuranceConvergenceTracker,
+    header_hash_lookup: HeaderHashLookup,
     connection_watch: Arc<tokio::sync::watch::Sender<usize>>,
     /// Kept alive so the watch channel stays open (senders fail when all receivers drop)
     #[allow(dead_code)]
@@ -245,6 +247,8 @@ impl TelemetryServer {
             slot_tracker: slot_tracker::new_slot_tracker(),
             wp_tracker: wp_tracker::new_wp_tracker(),
             guarantee_convergence_tracker: convergence_tracker::new_guarantee_convergence_tracker(),
+            assurance_convergence_tracker: convergence_tracker::new_assurance_convergence_tracker(),
+            header_hash_lookup: convergence_tracker::new_header_hash_lookup(),
             connection_watch: Arc::new(connection_watch),
             _connection_watch_rx: connection_watch_rx,
         })
@@ -322,6 +326,8 @@ impl TelemetryServer {
             let slot_tracker = Arc::clone(&self.slot_tracker);
             let wp_tracker = Arc::clone(&self.wp_tracker);
             let guarantee_convergence_tracker = Arc::clone(&self.guarantee_convergence_tracker);
+            let assurance_convergence_tracker = Arc::clone(&self.assurance_convergence_tracker);
+            let header_hash_lookup = Arc::clone(&self.header_hash_lookup);
             let connection_watch = Arc::clone(&self.connection_watch);
 
             let handle = std::thread::Builder::new()
@@ -376,6 +382,8 @@ impl TelemetryServer {
                                                 slot_tracker: Arc::clone(&slot_tracker),
                                                 wp_tracker: Arc::clone(&wp_tracker),
                                                 guarantee_convergence_tracker: Arc::clone(&guarantee_convergence_tracker),
+                                                assurance_convergence_tracker: Arc::clone(&assurance_convergence_tracker),
+                                                header_hash_lookup: Arc::clone(&header_hash_lookup),
                                                 connection_watch: Arc::clone(&connection_watch),
                                             };
 
@@ -435,6 +443,8 @@ impl TelemetryServer {
             slot_tracker: Arc::clone(&self.slot_tracker),
             wp_tracker: Arc::clone(&self.wp_tracker),
             guarantee_convergence_tracker: Arc::clone(&self.guarantee_convergence_tracker),
+            assurance_convergence_tracker: Arc::clone(&self.assurance_convergence_tracker),
+            header_hash_lookup: Arc::clone(&self.header_hash_lookup),
             connection_watch: Arc::clone(&self.connection_watch),
         };
 
@@ -510,6 +520,14 @@ impl TelemetryServer {
         Arc::clone(&self.guarantee_convergence_tracker)
     }
 
+    pub fn get_assurance_convergence_tracker(&self) -> AssuranceConvergenceTracker {
+        Arc::clone(&self.assurance_convergence_tracker)
+    }
+
+    pub fn get_header_hash_lookup(&self) -> HeaderHashLookup {
+        Arc::clone(&self.header_hash_lookup)
+    }
+
     /// Flush slot_tracker, wp_tracker, and event_counter to database on-demand.
     /// For testing only — in production these flush every 5s via the periodic task.
     pub async fn flush_trackers(&self) {
@@ -524,6 +542,13 @@ impl TelemetryServer {
             crate::wp_tracker::flush_wp_tracker(&self.wp_tracker, store.pool()).await;
             convergence_tracker::flush_guarantee_convergence(
                 &self.guarantee_convergence_tracker,
+                store.pool(),
+                std::time::Duration::from_secs(10),
+                std::time::Duration::from_secs(60),
+            )
+            .await;
+            convergence_tracker::flush_assurance_convergence(
+                &self.assurance_convergence_tracker,
                 store.pool(),
                 std::time::Duration::from_secs(10),
                 std::time::Duration::from_secs(60),
@@ -546,6 +571,13 @@ impl TelemetryServer {
             crate::wp_tracker::flush_wp_tracker(&self.wp_tracker, store.pool()).await;
             convergence_tracker::flush_guarantee_convergence(
                 &self.guarantee_convergence_tracker,
+                store.pool(),
+                std::time::Duration::ZERO,
+                std::time::Duration::from_secs(3600),
+            )
+            .await;
+            convergence_tracker::flush_assurance_convergence(
+                &self.assurance_convergence_tracker,
                 store.pool(),
                 std::time::Duration::ZERO,
                 std::time::Duration::from_secs(3600),
@@ -599,6 +631,8 @@ struct ConnectionContext {
     slot_tracker: SlotTracker,
     wp_tracker: WpTracker,
     guarantee_convergence_tracker: GuaranteeConvergenceTracker,
+    assurance_convergence_tracker: AssuranceConvergenceTracker,
+    header_hash_lookup: HeaderHashLookup,
     connection_watch: Arc<tokio::sync::watch::Sender<usize>>,
 }
 
@@ -618,6 +652,8 @@ async fn handle_connection_optimized(
         slot_tracker,
         wp_tracker,
         guarantee_convergence_tracker,
+        assurance_convergence_tracker,
+        header_hash_lookup,
         connection_watch,
     } = ctx;
     // Set TCP nodelay for lower latency
@@ -794,6 +830,10 @@ async fn handle_connection_optimized(
                                             .or_insert_with(|| {
                                                 crate::slot_tracker::SlotState::new(et_raw, evt_ts, Some(evt_ts))
                                             });
+                                        // Populate HeaderHashLookup for assurance convergence
+                                        if let Event::Authored { outline, .. } = &*event {
+                                            header_hash_lookup.insert(outline.hash, slot);
+                                        }
                                     }
                                     11 | 12 | 40 | 43 => { // BestBlockChanged, FinalizedBlockChanged, Authoring, Importing
                                         slot_tracker.entry(slot)
@@ -803,6 +843,10 @@ async fn handle_connection_optimized(
                                             .or_insert_with(|| {
                                                 crate::slot_tracker::SlotState::new(et_raw, evt_ts, None)
                                             });
+                                        // Populate HeaderHashLookup for assurance convergence
+                                        if let Event::Importing { outline, .. } = &*event {
+                                            header_hash_lookup.insert(outline.hash, slot);
+                                        }
                                     }
                                     _ => {}
                                 }
@@ -933,6 +977,95 @@ async fn handle_connection_optimized(
                                                         last_event: std::time::Instant::now(),
                                                         flushed: false,
                                                         dirty: true,
+                                                    }
+                                                });
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+
+                            // Update AssuranceConvergenceTracker for assurance propagation convergence
+                            {
+                                let et_raw = event.event_type() as u16;
+                                let evt_ts = event.timestamp();
+                                match et_raw {
+                                    126 => { // DistributingAssurance — sender begins distribution
+                                        if let Event::DistributingAssurance { statement, .. } = &*event {
+                                            let anchor = statement.anchor;
+                                            let slot = header_hash_lookup.get(&anchor).map(|s| *s);
+                                            let sender_id = node_id_str.clone();
+                                            assurance_convergence_tracker.entry(anchor)
+                                                .and_modify(|s| {
+                                                    if s.slot.is_none() {
+                                                        s.slot = slot;
+                                                    }
+                                                    // Drain pending_received for this sender
+                                                    let distributed_at = evt_ts;
+                                                    let mut resolved = Vec::new();
+                                                    s.pending_received.retain(|(sid, ts)| {
+                                                        if *sid == sender_id {
+                                                            let delta = (*ts as i64 - distributed_at as i64) / 1000;
+                                                            resolved.push(delta.max(0) as i32);
+                                                            false
+                                                        } else {
+                                                            true
+                                                        }
+                                                    });
+                                                    let sender_state = s.senders.entry(sender_id.clone())
+                                                        .or_insert_with(|| crate::convergence_tracker::SenderAssuranceState {
+                                                            distributed_at,
+                                                            deltas_ms: Vec::new(),
+                                                        });
+                                                    sender_state.deltas_ms.extend(resolved);
+                                                    s.dirty = true;
+                                                    s.last_event = std::time::Instant::now();
+                                                })
+                                                .or_insert_with(|| {
+                                                    let mut senders = std::collections::HashMap::new();
+                                                    senders.insert(sender_id, crate::convergence_tracker::SenderAssuranceState {
+                                                        distributed_at: evt_ts,
+                                                        deltas_ms: Vec::new(),
+                                                    });
+                                                    crate::convergence_tracker::AnchorState {
+                                                        slot,
+                                                        senders,
+                                                        pending_received: Vec::new(),
+                                                        last_event: std::time::Instant::now(),
+                                                        flushed: false,
+                                                        dirty: true,
+                                                        senders_flushed: false,
+                                                    }
+                                                });
+                                        }
+                                    }
+                                    131 => { // AssuranceReceived — validator received an assurance
+                                        if let Event::AssuranceReceived { anchor, sender, .. } = &*event {
+                                            let sender_node_id: Arc<str> = Arc::from(hex::encode(sender));
+                                            assurance_convergence_tracker.entry(*anchor)
+                                                .and_modify(|s| {
+                                                    if s.slot.is_none() {
+                                                        s.slot = header_hash_lookup.get(anchor).map(|sl| *sl);
+                                                    }
+                                                    if let Some(sender_state) = s.senders.get_mut(&sender_node_id) {
+                                                        let delta = (evt_ts as i64 - sender_state.distributed_at as i64) / 1000;
+                                                        sender_state.deltas_ms.push(delta.max(0) as i32);
+                                                    } else {
+                                                        // Sender not yet seen — buffer for later resolution
+                                                        s.pending_received.push((sender_node_id.clone(), evt_ts));
+                                                    }
+                                                    s.dirty = true;
+                                                    s.last_event = std::time::Instant::now();
+                                                })
+                                                .or_insert_with(|| {
+                                                    crate::convergence_tracker::AnchorState {
+                                                        slot: header_hash_lookup.get(anchor).map(|sl| *sl),
+                                                        senders: std::collections::HashMap::new(),
+                                                        pending_received: vec![(sender_node_id, evt_ts)],
+                                                        last_event: std::time::Instant::now(),
+                                                        flushed: false,
+                                                        dirty: true,
+                                                        senders_flushed: false,
                                                     }
                                                 });
                                         }

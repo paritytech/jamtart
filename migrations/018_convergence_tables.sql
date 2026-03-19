@@ -49,3 +49,52 @@ CREATE TABLE IF NOT EXISTS guarantee_convergence_slots (
 
 CREATE INDEX IF NOT EXISTS idx_guarantee_conv_slots_time
     ON guarantee_convergence_slots (built_at DESC);
+
+-- ── Assurance convergence per-anchor summary ────────────────────────────
+-- One row per block anchor. Aggregates all senders' assurance propagation.
+-- Measures: DistributingAssurance(126) → AssuranceReceived(131) per sender.
+-- Also tracks distribution start spread (how quickly validators begin distributing).
+CREATE TABLE IF NOT EXISTS assurance_convergence (
+    anchor              BYTEA NOT NULL PRIMARY KEY,
+    slot                INT,
+    slot_timestamp      TIMESTAMPTZ,
+    sender_count        SMALLINT NOT NULL,
+    receiver_count      INT NOT NULL,
+    -- Reception convergence (distribution→reception deltas, clamped to >= 0)
+    p50_ms              INT NOT NULL,
+    p75_ms              INT,
+    p95_ms              INT,
+    p99_ms              INT NOT NULL,
+    p100_ms             INT NOT NULL,
+    -- Distribution start spread (relative to first distributor)
+    dist_start_p50_ms   INT,
+    dist_start_p95_ms   INT,
+    dist_start_p99_ms   INT,
+    dist_start_p100_ms  INT,
+    first_distributed_at TIMESTAMPTZ,
+    last_distributed_at  TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_assurance_convergence_slot
+    ON assurance_convergence (slot DESC);
+
+-- ── Assurance convergence per-sender detail ─────────────────────────────
+-- For debugging individual node assurance propagation.
+-- Hypertable: ~1023 senders × ~14.4k anchors/day ≈ ~14.7M rows/day at full load.
+-- INSERT-only (no unique constraint — cross-chunk uniqueness impractical on hypertables).
+CREATE TABLE IF NOT EXISTS assurance_convergence_senders (
+    distributed_at      TIMESTAMPTZ NOT NULL,
+    anchor              BYTEA NOT NULL,
+    sender_node_id      TEXT NOT NULL,
+    node_count          SMALLINT NOT NULL,
+    p50_ms              INT NOT NULL,
+    p75_ms              INT,
+    p95_ms              INT,
+    p99_ms              INT NOT NULL,
+    p100_ms             INT NOT NULL
+);
+
+SELECT create_hypertable('assurance_convergence_senders', 'distributed_at', if_not_exists => TRUE);
+
+CREATE INDEX IF NOT EXISTS idx_assurance_conv_senders_node
+    ON assurance_convergence_senders (sender_node_id, distributed_at DESC);

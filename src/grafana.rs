@@ -38,6 +38,8 @@ use crate::onchain_types::*;
         wp_funnel,
         guarantee_convergence,
         guarantee_convergence_detail,
+        assurance_convergence,
+        assurance_convergence_senders,
         wp_funnel_timeseries,
         bottlenecks_timeseries,
         event_types,
@@ -76,6 +78,8 @@ use crate::onchain_types::*;
         WpFunnelResponse,
         GuaranteeConvergenceSlotRow,
         GuaranteeConvergenceDetailRow,
+        AssuranceConvergenceRow,
+        AssuranceConvergenceSenderRow,
         WpFunnelTimeseriesRow,
         BottlenecksTimeseriesRow,
         EventRow,
@@ -116,6 +120,8 @@ pub fn router() -> Router<ApiState> {
         .route("/wp-funnel", get(wp_funnel))
         .route("/guarantee-convergence", get(guarantee_convergence))
         .route("/guarantee-convergence/detail", get(guarantee_convergence_detail))
+        .route("/assurance-convergence", get(assurance_convergence))
+        .route("/assurance-convergence/senders", get(assurance_convergence_senders))
         .route("/wp-funnel-timeseries", get(wp_funnel_timeseries))
         .route("/bottlenecks-timeseries", get(bottlenecks_timeseries))
         .route("/event-types", get(event_types))
@@ -227,6 +233,19 @@ pub struct EventsQuery {
     pub event_types: String,
     /// Maximum number of events to return (default: 500, max: 2000)
     pub limit: Option<i64>,
+}
+
+/// Parameters for assurance convergence senders query.
+#[derive(Deserialize, IntoParams)]
+pub struct AssuranceConvergenceSendersQuery {
+    /// Start of time range (ISO 8601)
+    pub start: DateTime<Utc>,
+    /// End of time range (ISO 8601)
+    pub end: DateTime<Utc>,
+    /// Filter to a single block anchor (hex-encoded)
+    pub anchor: Option<String>,
+    /// Filter to a single sender node_id
+    pub node: Option<String>,
 }
 
 /// Parameters for guarantee convergence detail query.
@@ -804,6 +823,69 @@ async fn guarantee_convergence_detail(
         .await
         .map(Json)
         .map_err(|e| map_sqlx_error("grafana/guarantee-convergence/detail", e))
+}
+
+/// Assurance convergence overview — per-anchor summary.
+///
+/// Each row represents one block anchor, showing how quickly assurances
+/// from all senders propagated to receiving validators. Also includes
+/// distribution start spread (how quickly validators begin distributing).
+///
+/// Anchor: DistributingAssurance(126) per sender.
+/// Measured: AssuranceReceived(131) on receiving validators.
+/// Availability window: 5 slots (30 seconds).
+#[utoipa::path(
+    get,
+    path = "/api/grafana/assurance-convergence",
+    params(TimeRangeQuery),
+    responses(
+        (status = 200, description = "Per-anchor assurance convergence summary", body = [AssuranceConvergenceRow]),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn assurance_convergence(
+    Query(q): Query<TimeRangeQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    state
+        .store
+        .grafana_assurance_convergence(q.start, q.end)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/assurance-convergence", e))
+}
+
+/// Assurance convergence per-sender detail — for debugging individual node propagation.
+///
+/// Returns one row per (anchor, sender), showing how quickly this sender's
+/// assurance reached other validators. Filter by anchor or node for drill-down.
+#[utoipa::path(
+    get,
+    path = "/api/grafana/assurance-convergence/senders",
+    params(AssuranceConvergenceSendersQuery),
+    responses(
+        (status = 200, description = "Per-sender assurance convergence detail", body = [AssuranceConvergenceSenderRow]),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn assurance_convergence_senders(
+    Query(q): Query<AssuranceConvergenceSendersQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let anchor_bytes = q.anchor.as_deref().and_then(|h| hex::decode(h).ok());
+    state
+        .store
+        .grafana_assurance_convergence_senders(
+            q.start,
+            q.end,
+            anchor_bytes.as_deref(),
+            q.node.as_deref(),
+        )
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/assurance-convergence/senders", e))
 }
 
 /// Work package pipeline funnel bucketed over time.

@@ -1251,7 +1251,109 @@ impl EventStore {
             .collect())
     }
 
-    // ── 16. grafana_wp_funnel_timeseries ─────────────────────────────────
+    // ── 16. grafana_assurance_convergence ────────────────────────────────
+
+    /// Assurance convergence overview: per-anchor summary.
+    pub async fn grafana_assurance_convergence(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<Vec<AssuranceConvergenceRow>, sqlx::Error> {
+        let rows = sqlx::query(
+            r#"
+            SELECT anchor, slot, slot_timestamp, sender_count, receiver_count,
+                   p50_ms, p75_ms, p95_ms, p99_ms, p100_ms,
+                   dist_start_p50_ms, dist_start_p95_ms, dist_start_p99_ms, dist_start_p100_ms,
+                   first_distributed_at, last_distributed_at
+            FROM assurance_convergence
+            WHERE ($1::TIMESTAMPTZ IS NULL OR first_distributed_at >= $1)
+              AND ($2::TIMESTAMPTZ IS NULL OR first_distributed_at < $2)
+            ORDER BY slot ASC NULLS LAST
+            "#,
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_all(self.pool())
+        .await?;
+
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let anchor_bytes: Vec<u8> = row.get("anchor");
+                AssuranceConvergenceRow {
+                    anchor: hex::encode(&anchor_bytes),
+                    slot: row.get("slot"),
+                    slot_timestamp: row.get("slot_timestamp"),
+                    sender_count: row.get("sender_count"),
+                    receiver_count: row.get("receiver_count"),
+                    p50_ms: row.get("p50_ms"),
+                    p75_ms: row.get("p75_ms"),
+                    p95_ms: row.get("p95_ms"),
+                    p99_ms: row.get("p99_ms"),
+                    p100_ms: row.get("p100_ms"),
+                    dist_start_p50_ms: row.get("dist_start_p50_ms"),
+                    dist_start_p95_ms: row.get("dist_start_p95_ms"),
+                    dist_start_p99_ms: row.get("dist_start_p99_ms"),
+                    dist_start_p100_ms: row.get("dist_start_p100_ms"),
+                    first_distributed_at: row.get("first_distributed_at"),
+                    last_distributed_at: row.get("last_distributed_at"),
+                }
+            })
+            .collect())
+    }
+
+    // ── 17. grafana_assurance_convergence_senders ─────────────────────────
+
+    /// Assurance convergence per-sender detail.
+    pub async fn grafana_assurance_convergence_senders(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        anchor_filter: Option<&[u8]>,
+        node_filter: Option<&str>,
+    ) -> Result<Vec<AssuranceConvergenceSenderRow>, sqlx::Error> {
+        let rows = sqlx::query(
+            r#"
+            SELECT s.anchor, s.sender_node_id, s.node_count,
+                   s.p50_ms, s.p75_ms, s.p95_ms, s.p99_ms, s.p100_ms,
+                   s.distributed_at,
+                   a.slot
+            FROM assurance_convergence_senders s
+            LEFT JOIN assurance_convergence a ON a.anchor = s.anchor
+            WHERE s.distributed_at >= $1 AND s.distributed_at < $2
+              AND ($3::BYTEA IS NULL OR s.anchor = $3)
+              AND ($4::TEXT IS NULL OR s.sender_node_id = $4)
+            ORDER BY s.distributed_at ASC
+            "#,
+        )
+        .bind(start)
+        .bind(end)
+        .bind(anchor_filter)
+        .bind(node_filter)
+        .fetch_all(self.pool())
+        .await?;
+
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let anchor_bytes: Vec<u8> = row.get("anchor");
+                AssuranceConvergenceSenderRow {
+                    anchor: hex::encode(&anchor_bytes),
+                    slot: row.get("slot"),
+                    sender_node_id: row.get("sender_node_id"),
+                    node_count: row.get("node_count"),
+                    p50_ms: row.get("p50_ms"),
+                    p75_ms: row.get("p75_ms"),
+                    p95_ms: row.get("p95_ms"),
+                    p99_ms: row.get("p99_ms"),
+                    p100_ms: row.get("p100_ms"),
+                    distributed_at: row.get("distributed_at"),
+                }
+            })
+            .collect())
+    }
+
+    // ── 18. grafana_wp_funnel_timeseries ─────────────────────────────────
 
     /// Work package pipeline funnel bucketed over time.
     pub async fn grafana_wp_funnel_timeseries(

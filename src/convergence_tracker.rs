@@ -1,5 +1,6 @@
-//! Guarantee convergence tracker. Measures how quickly guarantees propagate across the validator network.
+//! Convergence trackers for guarantee and assurance propagation across the validator network.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -369,6 +370,339 @@ pub async fn flush_guarantee_convergence(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Header hash lookup (Importing/Authored → slot mapping)
+// ---------------------------------------------------------------------------
+
+/// Maps block header hash → slot number. Populated from Importing(43) and Authored(42) events.
+pub type HeaderHashLookup = Arc<DashMap<[u8; 32], u32>>;
+
+pub fn new_header_hash_lookup() -> HeaderHashLookup {
+    Arc::new(DashMap::new())
+}
+
+/// Remove entries older than the TTL from the header hash lookup.
+pub fn evict_header_hash_lookup(lookup: &HeaderHashLookup, max_entries: usize) {
+    // Simple size-based eviction: if over max_entries, remove ~25%
+    if lookup.len() > max_entries {
+        let to_remove = lookup.len() / 4;
+        let keys: Vec<[u8; 32]> = lookup.iter().take(to_remove).map(|e| *e.key()).collect();
+        for key in keys {
+            lookup.remove(&key);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Assurance convergence tracker
+// ---------------------------------------------------------------------------
+
+pub type AssuranceConvergenceTracker = Arc<DashMap<[u8; 32], AnchorState>>;
+
+pub fn new_assurance_convergence_tracker() -> AssuranceConvergenceTracker {
+    Arc::new(DashMap::new())
+}
+
+pub struct AnchorState {
+    pub slot: Option<u32>,
+    pub senders: HashMap<Arc<str>, SenderAssuranceState>,
+    /// Buffered (sender_node_id, received_ts) for AssuranceReceived events that arrived
+    /// before the sender's DistributingAssurance. Drained when the sender is seen.
+    pub pending_received: Vec<(Arc<str>, u64)>,
+    pub last_event: Instant,
+    pub flushed: bool,
+    pub dirty: bool,
+    /// Whether per-sender rows have been written to the DB at least once.
+    pub senders_flushed: bool,
+}
+
+pub struct SenderAssuranceState {
+    pub distributed_at: u64,
+    /// (received_ts - distributed_at) deltas in ms, one per receiving node. Clamped to max(0, delta).
+    pub deltas_ms: Vec<i32>,
+}
+
+/// Compute percentiles from pre-computed deltas (ms). Returns None if empty.
+pub fn compute_percentiles_from_deltas(deltas: &[i32]) -> Option<ConvergencePercentiles> {
+    if deltas.is_empty() {
+        return None;
+    }
+    let mut sorted: Vec<i32> = deltas.to_vec();
+    sorted.sort();
+    let len = sorted.len();
+    let p50 = sorted[len / 2];
+    let p75_idx = ((len as f64 * 0.75) as usize).min(len - 1);
+    let p95_idx = ((len as f64 * 0.95) as usize).min(len - 1);
+    let p99_idx = ((len as f64 * 0.99) as usize).min(len - 1);
+    Some(ConvergencePercentiles {
+        p50_ms: p50,
+        p75_ms: sorted[p75_idx],
+        p95_ms: sorted[p95_idx],
+        p99_ms: sorted[p99_idx],
+        p100_ms: sorted[len - 1],
+    })
+}
+
+struct AssuranceAnchorFlushRow {
+    anchor: [u8; 32],
+    slot: Option<i32>,
+    slot_timestamp: Option<DateTime<Utc>>,
+    sender_count: i16,
+    receiver_count: i16,
+    p50_ms: i32,
+    p75_ms: i32,
+    p95_ms: i32,
+    p99_ms: i32,
+    p100_ms: i32,
+    dist_start_p50_ms: i32,
+    dist_start_p95_ms: i32,
+    dist_start_p99_ms: i32,
+    dist_start_p100_ms: i32,
+    first_distributed_at: DateTime<Utc>,
+    last_distributed_at: DateTime<Utc>,
+}
+
+struct AssuranceSenderFlushRow {
+    distributed_at: DateTime<Utc>,
+    anchor: [u8; 32],
+    sender_node_id: Arc<str>,
+    node_count: i16,
+    p50_ms: i32,
+    p75_ms: i32,
+    p95_ms: i32,
+    p99_ms: i32,
+    p100_ms: i32,
+}
+
+pub async fn flush_assurance_convergence(
+    tracker: &AssuranceConvergenceTracker,
+    pool: &PgPool,
+    age_insert: Duration,
+    age_evict: Duration,
+) {
+    let now = Instant::now();
+
+    // Phase 1: Collect entries to flush/evict
+    let mut anchor_rows: Vec<AssuranceAnchorFlushRow> = Vec::new();
+    let mut sender_rows: Vec<AssuranceSenderFlushRow> = Vec::new();
+    let mut to_mark_flushed: Vec<[u8; 32]> = Vec::new();
+    let mut to_mark_clean: Vec<[u8; 32]> = Vec::new();
+    let mut to_mark_senders_flushed: Vec<[u8; 32]> = Vec::new();
+    let mut to_evict: Vec<[u8; 32]> = Vec::new();
+
+    for entry in tracker.iter() {
+        let anchor = *entry.key();
+        let state = entry.value();
+        let age = now.duration_since(state.last_event);
+
+        // Skip if no senders (nothing to compute)
+        if state.senders.is_empty() {
+            if age >= age_evict {
+                to_evict.push(anchor);
+            }
+            continue;
+        }
+
+        let should_flush = if age >= age_evict {
+            // About to evict — flush if dirty
+            state.dirty
+        } else if !state.flushed && age >= age_insert {
+            true
+        } else {
+            state.flushed && state.dirty
+        };
+
+        let should_evict = age >= age_evict;
+
+        if should_flush {
+            // Per-sender percentiles + collect all deltas for anchor summary
+            let mut all_deltas: Vec<i32> = Vec::new();
+            let mut distributed_ats: Vec<u64> = Vec::new();
+            // Write per-sender rows if dirty (new data since last flush)
+            let write_senders = state.dirty;
+
+            for (sender_id, sender_state) in &state.senders {
+                distributed_ats.push(sender_state.distributed_at);
+                all_deltas.extend_from_slice(&sender_state.deltas_ms);
+
+                if write_senders {
+                    if let Some(sp) = compute_percentiles_from_deltas(&sender_state.deltas_ms) {
+                        sender_rows.push(AssuranceSenderFlushRow {
+                            distributed_at: ts_to_datetime(sender_state.distributed_at),
+                            anchor,
+                            sender_node_id: sender_id.clone(),
+                            node_count: sender_state.deltas_ms.len() as i16,
+                            p50_ms: sp.p50_ms,
+                            p75_ms: sp.p75_ms,
+                            p95_ms: sp.p95_ms,
+                            p99_ms: sp.p99_ms,
+                            p100_ms: sp.p100_ms,
+                        });
+                    }
+                }
+            }
+
+            // Anchor summary percentiles
+            if let Some(ap) = compute_percentiles_from_deltas(&all_deltas) {
+                // Distribution start spread: deltas relative to min distributed_at
+                let min_dist = *distributed_ats.iter().min().unwrap();
+                let max_dist = *distributed_ats.iter().max().unwrap();
+                let dist_spread_deltas: Vec<i32> = distributed_ats
+                    .iter()
+                    .map(|&t| ((t as i64 - min_dist as i64) / 1000).max(0) as i32)
+                    .collect();
+                let dist_p = compute_percentiles_from_deltas(&dist_spread_deltas)
+                    .unwrap_or(ConvergencePercentiles {
+                        p50_ms: 0,
+                        p75_ms: 0,
+                        p95_ms: 0,
+                        p99_ms: 0,
+                        p100_ms: 0,
+                    });
+
+                let slot_i32 = state.slot.map(|s| s as i32);
+                let slot_ts = state.slot.map(|s| {
+                    crate::onchain_stats::slot_to_timestamp(s, 6)
+                });
+
+                anchor_rows.push(AssuranceAnchorFlushRow {
+                    anchor,
+                    slot: slot_i32,
+                    slot_timestamp: slot_ts,
+                    sender_count: state.senders.len() as i16,
+                    receiver_count: all_deltas.len() as i16,
+                    p50_ms: ap.p50_ms,
+                    p75_ms: ap.p75_ms,
+                    p95_ms: ap.p95_ms,
+                    p99_ms: ap.p99_ms,
+                    p100_ms: ap.p100_ms,
+                    dist_start_p50_ms: dist_p.p50_ms,
+                    dist_start_p95_ms: dist_p.p95_ms,
+                    dist_start_p99_ms: dist_p.p99_ms,
+                    dist_start_p100_ms: dist_p.p100_ms,
+                    first_distributed_at: ts_to_datetime(min_dist),
+                    last_distributed_at: ts_to_datetime(max_dist),
+                });
+
+                if !state.flushed {
+                    to_mark_flushed.push(anchor);
+                }
+                to_mark_clean.push(anchor);
+                if write_senders {
+                    to_mark_senders_flushed.push(anchor);
+                }
+            }
+        }
+
+        if should_evict {
+            to_evict.push(anchor);
+        }
+    }
+
+    // Phase 2: DB writes — per-anchor summary
+    for row in &anchor_rows {
+        let result = sqlx::query(
+            r#"INSERT INTO assurance_convergence (anchor, slot, slot_timestamp, sender_count, receiver_count,
+                p50_ms, p75_ms, p95_ms, p99_ms, p100_ms,
+                dist_start_p50_ms, dist_start_p95_ms, dist_start_p99_ms, dist_start_p100_ms,
+                first_distributed_at, last_distributed_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+            ON CONFLICT (anchor) DO UPDATE SET
+                slot = COALESCE(assurance_convergence.slot, EXCLUDED.slot),
+                slot_timestamp = COALESCE(assurance_convergence.slot_timestamp, EXCLUDED.slot_timestamp),
+                sender_count = EXCLUDED.sender_count,
+                receiver_count = EXCLUDED.receiver_count,
+                p50_ms = EXCLUDED.p50_ms, p75_ms = EXCLUDED.p75_ms, p95_ms = EXCLUDED.p95_ms,
+                p99_ms = EXCLUDED.p99_ms, p100_ms = EXCLUDED.p100_ms,
+                dist_start_p50_ms = EXCLUDED.dist_start_p50_ms,
+                dist_start_p95_ms = EXCLUDED.dist_start_p95_ms,
+                dist_start_p99_ms = EXCLUDED.dist_start_p99_ms,
+                dist_start_p100_ms = EXCLUDED.dist_start_p100_ms,
+                first_distributed_at = EXCLUDED.first_distributed_at,
+                last_distributed_at = EXCLUDED.last_distributed_at"#,
+        )
+        .bind(&row.anchor[..])
+        .bind(row.slot)
+        .bind(row.slot_timestamp)
+        .bind(row.sender_count)
+        .bind(row.receiver_count)
+        .bind(row.p50_ms)
+        .bind(row.p75_ms)
+        .bind(row.p95_ms)
+        .bind(row.p99_ms)
+        .bind(row.p100_ms)
+        .bind(row.dist_start_p50_ms)
+        .bind(row.dist_start_p95_ms)
+        .bind(row.dist_start_p99_ms)
+        .bind(row.dist_start_p100_ms)
+        .bind(row.first_distributed_at)
+        .bind(row.last_distributed_at)
+        .execute(pool)
+        .await;
+
+        if let Err(e) = result {
+            warn!(slot = ?row.slot, "assurance_convergence UPSERT failed: {e}");
+        }
+    }
+
+    // Per-sender detail rows (INSERT-only, hypertable)
+    for row in &sender_rows {
+        let result = sqlx::query(
+            r#"INSERT INTO assurance_convergence_senders (distributed_at, anchor, sender_node_id, node_count,
+                p50_ms, p75_ms, p95_ms, p99_ms, p100_ms)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"#,
+        )
+        .bind(row.distributed_at)
+        .bind(&row.anchor[..])
+        .bind(row.sender_node_id.as_ref())
+        .bind(row.node_count)
+        .bind(row.p50_ms)
+        .bind(row.p75_ms)
+        .bind(row.p95_ms)
+        .bind(row.p99_ms)
+        .bind(row.p100_ms)
+        .execute(pool)
+        .await;
+
+        if let Err(e) = result {
+            warn!("assurance_convergence_senders INSERT failed: {e}");
+        }
+    }
+
+    // Phase 3: Update flags and evict
+    for key in &to_mark_flushed {
+        if let Some(mut state) = tracker.get_mut(key) {
+            state.flushed = true;
+        }
+    }
+
+    for key in &to_mark_clean {
+        if let Some(mut state) = tracker.get_mut(key) {
+            state.dirty = false;
+        }
+    }
+
+    for key in &to_mark_senders_flushed {
+        if let Some(mut state) = tracker.get_mut(key) {
+            state.senders_flushed = true;
+        }
+    }
+
+    for key in &to_evict {
+        tracker.remove(key);
+    }
+
+    let total = anchor_rows.len();
+    if total > 0 || !to_evict.is_empty() {
+        debug!(
+            anchor_rows = anchor_rows.len(),
+            sender_rows = sender_rows.len(),
+            evicted = to_evict.len(),
+            "assurance_convergence flush complete"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -468,5 +802,108 @@ mod tests {
         };
 
         assert!(compute_percentiles(state.built_at.unwrap(), &state.received_timestamps).is_none());
+    }
+
+    // --- Assurance convergence tests ---
+
+    #[test]
+    fn compute_percentiles_from_deltas_empty_returns_none() {
+        assert!(compute_percentiles_from_deltas(&[]).is_none());
+    }
+
+    #[test]
+    fn compute_percentiles_from_deltas_single() {
+        let p = compute_percentiles_from_deltas(&[42]).unwrap();
+        assert_eq!(p.p50_ms, 42);
+        assert_eq!(p.p75_ms, 42);
+        assert_eq!(p.p95_ms, 42);
+        assert_eq!(p.p99_ms, 42);
+        assert_eq!(p.p100_ms, 42);
+    }
+
+    #[test]
+    fn compute_percentiles_from_deltas_multiple() {
+        // sorted: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        let deltas: Vec<i32> = (1..=10).collect();
+        let p = compute_percentiles_from_deltas(&deltas).unwrap();
+        assert_eq!(p.p50_ms, 6);   // index 10/2 = 5 → sorted[5] = 6
+        assert_eq!(p.p75_ms, 8);   // index (10*0.75)=7 → sorted[7] = 8
+        assert_eq!(p.p95_ms, 10);  // index (10*0.95)=9 → sorted[9] = 10
+        assert_eq!(p.p99_ms, 10);  // index (10*0.99)=9 → sorted[9] = 10
+        assert_eq!(p.p100_ms, 10);
+    }
+
+    #[test]
+    fn pending_received_buffer_resolves() {
+        let mut state = AnchorState {
+            slot: Some(100),
+            senders: HashMap::new(),
+            pending_received: vec![
+                (Arc::from("node-A"), 200_000),
+                (Arc::from("node-B"), 300_000),
+            ],
+            last_event: Instant::now(),
+            flushed: false,
+            dirty: false,
+            senders_flushed: false,
+        };
+
+        assert_eq!(state.pending_received.len(), 2);
+
+        // Simulate sender appearing: drain pending and create sender state
+        let sender_id: Arc<str> = Arc::from("sender-1");
+        let distributed_at: u64 = 100_000;
+        state.senders.insert(
+            sender_id.clone(),
+            SenderAssuranceState {
+                distributed_at,
+                deltas_ms: Vec::new(),
+            },
+        );
+
+        // Drain pending_received for this sender
+        let pending = std::mem::take(&mut state.pending_received);
+        for (_receiver_node_id, received_ts) in &pending {
+            let delta_ms = ((*received_ts as i64 - distributed_at as i64) / 1000).max(0) as i32;
+            state
+                .senders
+                .get_mut(&sender_id)
+                .unwrap()
+                .deltas_ms
+                .push(delta_ms);
+        }
+
+        assert!(state.pending_received.is_empty());
+        let sender = state.senders.get(&sender_id).unwrap();
+        assert_eq!(sender.deltas_ms.len(), 2);
+        // (200_000 - 100_000) / 1000 = 100 ms
+        assert_eq!(sender.deltas_ms[0], 100);
+        // (300_000 - 100_000) / 1000 = 200 ms
+        assert_eq!(sender.deltas_ms[1], 200);
+    }
+
+    #[test]
+    fn distribution_start_spread() {
+        // 3 senders at timestamps 100_000, 105_000, 110_000 (in microseconds)
+        // Spread deltas relative to min (100_000):
+        //   (100_000 - 100_000) / 1000 = 0 ms
+        //   (105_000 - 100_000) / 1000 = 5 ms
+        //   (110_000 - 100_000) / 1000 = 10 ms
+        let distributed_ats: Vec<u64> = vec![100_000, 105_000, 110_000];
+        let min_dist = *distributed_ats.iter().min().unwrap();
+        let spread_deltas: Vec<i32> = distributed_ats
+            .iter()
+            .map(|&t| ((t as i64 - min_dist as i64) / 1000).max(0) as i32)
+            .collect();
+
+        assert_eq!(spread_deltas, vec![0, 5, 10]);
+
+        let p = compute_percentiles_from_deltas(&spread_deltas).unwrap();
+        // sorted: [0, 5, 10], len=3
+        assert_eq!(p.p50_ms, 5);   // index 3/2 = 1 → sorted[1] = 5
+        assert_eq!(p.p75_ms, 10);  // index (3*0.75)=2 → sorted[2] = 10
+        assert_eq!(p.p95_ms, 10);  // index (3*0.95)=2 → sorted[2] = 10
+        assert_eq!(p.p99_ms, 10);  // index (3*0.99)=2 → sorted[2] = 10
+        assert_eq!(p.p100_ms, 10);
     }
 }

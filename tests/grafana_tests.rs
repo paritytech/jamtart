@@ -146,6 +146,14 @@ async fn test_grafana_all_endpoints_empty_200() {
             time_range_params()
         ),
         format!(
+            "/api/grafana/assurance-convergence?{}",
+            time_range_params()
+        ),
+        format!(
+            "/api/grafana/assurance-convergence/senders?{}",
+            time_range_params()
+        ),
+        format!(
             "/api/grafana/wp-funnel-timeseries?{}&interval=1m",
             time_range_params()
         ),
@@ -2197,4 +2205,70 @@ async fn test_grafana_guarantee_convergence() {
     assert!(row["work_report_hash"].is_string(), "expected work_report_hash");
     assert!(row["p50_ms"].is_number(), "expected p50_ms");
     assert!(row["p99_ms"].is_number(), "expected p99_ms");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Assurance Convergence
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_grafana_assurance_convergence() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+
+    let now = common::now_jce_micros();
+    let anchor = [0xDD; 32];
+
+    // Node X: sends Importing to populate HeaderHashLookup
+    let mut stream_x = connect_test_node(port, 10, &telemetry).await;
+    send_events(&mut stream_x, &[
+        common::importing_event(now, 500, anchor),
+    ]).await;
+
+    // Node A: sender — distributes assurance
+    let mut stream_a = connect_test_node(port, 1, &telemetry).await;
+    // peer_id for node 1 = [1; 32] (connect_test_node uses [node_id; 32])
+    let sender_a_peer_id = [1u8; 32];
+    send_events(&mut stream_a, &[
+        common::distributing_assurance_event(now + 100_000, anchor), // distributed_at = now + 100ms
+    ]).await;
+
+    // Nodes B, C: receivers
+    let mut stream_b = connect_test_node(port, 2, &telemetry).await;
+    let mut stream_c = connect_test_node(port, 3, &telemetry).await;
+    send_events(&mut stream_b, &[
+        common::assurance_received_event_with(now + 200_000, anchor, sender_a_peer_id), // +100ms after distribution
+    ]).await;
+    send_events(&mut stream_c, &[
+        common::assurance_received_event_with(now + 300_000, anchor, sender_a_peer_id), // +200ms after distribution
+    ]).await;
+
+    common::flush_all(&telemetry).await;
+
+    // Test overview endpoint
+    let path = format!("/api/grafana/assurance-convergence?{}", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+    assert!(!arr.is_empty(), "should have at least one anchor");
+    let row = &arr[0];
+    assert_eq!(row["slot"].as_i64(), Some(500));
+    assert!(row["sender_count"].as_i64().unwrap_or(0) >= 1, "expected sender_count >= 1");
+    assert!(row["p50_ms"].is_number(), "expected p50_ms");
+
+    // Test senders endpoint
+    let path = format!(
+        "/api/grafana/assurance-convergence/senders?{}",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+    assert!(!arr.is_empty(), "should have at least one sender row");
+    let row = &arr[0];
+    assert!(row["sender_node_id"].is_string(), "expected sender_node_id");
+    assert!(row["node_count"].as_i64().unwrap_or(0) >= 2, "expected node_count >= 2");
 }

@@ -683,6 +683,86 @@ pub struct GuaranteeConvergenceDetailRow {
     pub built_at: DateTime<Utc>,
 }
 
+// ── /api/grafana/assurance-convergence ───────────────────────────────────
+
+/// Per-anchor assurance convergence summary.
+///
+/// **Data source:** `assurance_convergence` table, populated by the
+/// convergence_tracker flush. Each row represents one block anchor,
+/// aggregating all senders' assurance propagation for that block.
+///
+/// Reception convergence: DistributingAssurance(126) → AssuranceReceived(131)
+/// deltas, clamped to max(0, delta).
+///
+/// Distribution start spread: how quickly validators begin distributing
+/// assurances (relative to the first distributor for this anchor).
+#[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
+pub struct AssuranceConvergenceRow {
+    /// Block anchor (hex-encoded HeaderHash)
+    pub anchor: String,
+    /// Slot number
+    pub slot: Option<i32>,
+    /// Slot timestamp (for Grafana X-axis)
+    pub slot_timestamp: Option<DateTime<Utc>>,
+    /// Number of senders (validators distributing assurances)
+    pub sender_count: i16,
+    /// Total receiver count across all senders
+    pub receiver_count: i32,
+    /// p50 reception convergence (ms)
+    pub p50_ms: i32,
+    /// p75 reception convergence (ms)
+    pub p75_ms: Option<i32>,
+    /// p95 reception convergence (ms)
+    pub p95_ms: Option<i32>,
+    /// p99 reception convergence (ms)
+    pub p99_ms: i32,
+    /// p100 reception convergence (ms)
+    pub p100_ms: i32,
+    /// Distribution start spread p50 (ms)
+    pub dist_start_p50_ms: Option<i32>,
+    /// Distribution start spread p95 (ms)
+    pub dist_start_p95_ms: Option<i32>,
+    /// Distribution start spread p99 (ms)
+    pub dist_start_p99_ms: Option<i32>,
+    /// Distribution start spread p100 (ms)
+    pub dist_start_p100_ms: Option<i32>,
+    /// Earliest distribution start
+    pub first_distributed_at: Option<DateTime<Utc>>,
+    /// Latest distribution start
+    pub last_distributed_at: Option<DateTime<Utc>>,
+}
+
+// ── /api/grafana/assurance-convergence/senders ──────────────────────────
+
+/// Per-sender assurance convergence detail (for debugging individual nodes).
+///
+/// **Data source:** `assurance_convergence_senders` hypertable.
+/// One row per (anchor, sender). Shows how quickly this sender's assurance
+/// propagated to receiving validators.
+#[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
+pub struct AssuranceConvergenceSenderRow {
+    /// Block anchor (hex-encoded)
+    pub anchor: String,
+    /// Slot number
+    pub slot: Option<i32>,
+    /// Sender node ID
+    pub sender_node_id: String,
+    /// Number of receiving validators
+    pub node_count: i16,
+    /// p50 propagation latency (ms)
+    pub p50_ms: i32,
+    /// p75 propagation latency (ms)
+    pub p75_ms: Option<i32>,
+    /// p95 propagation latency (ms)
+    pub p95_ms: Option<i32>,
+    /// p99 propagation latency (ms)
+    pub p99_ms: i32,
+    /// p100 propagation latency (ms)
+    pub p100_ms: i32,
+    /// When this sender started distributing
+    pub distributed_at: DateTime<Utc>,
+}
+
 // ── /api/grafana/wp-funnel-timeseries ────────────────────────────────────
 
 /// Work package pipeline funnel bucketed over time — how many WPs reached

@@ -262,6 +262,26 @@ pub fn authored_event(ts: u64, authoring_id: u64) -> Event {
     }
 }
 
+/// Construct an Importing event (event_type=43) with the given slot and block hash.
+#[allow(dead_code)]
+pub fn importing_event(ts: u64, slot: u32, block_hash: [u8; 32]) -> Event {
+    use tart_backend::types::BlockSummary;
+    Event::Importing {
+        timestamp: ts,
+        slot,
+        outline: BlockSummary {
+            size_bytes: 2048,
+            hash: block_hash,
+            num_tickets: 2,
+            num_preimages: 1,
+            total_preimages_size: 512,
+            num_guarantees: 3,
+            num_assurances: 2,
+            num_dispute_verdicts: 0,
+        },
+    }
+}
+
 /// Construct a WorkPackageReceived event (event_type=94).
 #[allow(dead_code)]
 pub fn wp_received_event(ts: u64, submission_id: u64, core: u16) -> Event {
@@ -463,6 +483,29 @@ pub fn assurance_received_event(ts: u64) -> Event {
         timestamp: ts,
         sender: [0x03; 32],
         anchor: [0xBB; 32],
+    }
+}
+
+/// Construct an AssuranceReceived event with custom anchor and sender (event_type=131).
+#[allow(dead_code)]
+pub fn assurance_received_event_with(ts: u64, anchor: [u8; 32], sender: [u8; 32]) -> Event {
+    Event::AssuranceReceived {
+        timestamp: ts,
+        sender,
+        anchor,
+    }
+}
+
+/// Construct a DistributingAssurance event (event_type=126).
+#[allow(dead_code)]
+pub fn distributing_assurance_event(ts: u64, anchor: [u8; 32]) -> Event {
+    use tart_backend::types::AvailabilityStatement;
+    Event::DistributingAssurance {
+        timestamp: ts,
+        statement: AvailabilityStatement {
+            anchor,
+            bitfield: vec![0xFF; 43], // ~343 cores / 8 = 43 bytes
+        },
     }
 }
 
