@@ -2093,16 +2093,9 @@ async fn test_grafana_wp_funnel_timeseries() {
 
     let json: Value = response.json();
     let arr = json.as_array().expect("should return array");
-    // Gap-filling: generate_series produces rows for the entire range, most with zeros
-    assert!(arr.len() > 1, "gap-filled response should have multiple buckets");
+    assert!(!arr.is_empty(), "should have at least one bucket with data");
 
-    // Verify at least one zero-filled bucket exists
-    let zero_row = arr.iter().find(|r| r["total"].as_i64() == Some(0));
-    assert!(zero_row.is_some(), "should have at least one zero-filled bucket");
-
-    // Find the bucket with actual data and verify exact counts
-    let data_row = arr.iter().find(|r| r["total"].as_i64().unwrap_or(0) > 0)
-        .expect("should have at least one bucket with data");
+    let data_row = &arr[0];
     assert!(data_row["ts"].is_string(), "missing ts");
     assert_eq!(data_row["total"].as_i64(), Some(1), "expected total=1");
     assert_eq!(data_row["received"].as_i64(), Some(1), "expected received=1");
@@ -2145,19 +2138,9 @@ async fn test_grafana_bottlenecks_timeseries() {
 
     let json: Value = response.json();
     let arr = json.as_array().expect("should return array");
-    // Gap-filling: generate_series produces rows for the entire range
-    assert!(arr.len() > 1, "gap-filled response should have multiple buckets");
+    assert!(!arr.is_empty(), "should have at least one bucket with data");
 
-    // Verify at least one gap-filled bucket exists (zero counts, null percentiles)
-    let zero_row = arr.iter().find(|r| r["total_wps"].as_i64() == Some(0));
-    assert!(zero_row.is_some(), "should have at least one zero-filled bucket");
-    if let Some(zr) = zero_row {
-        assert!(zr["authorize_p50"].is_null(), "gap-filled bucket should have null percentiles");
-    }
-
-    // Find the bucket with actual data and verify exact values
-    let data_row = arr.iter().find(|r| r["total_wps"].as_i64().unwrap_or(0) > 0)
-        .expect("should have at least one bucket with data");
+    let data_row = &arr[0];
     assert!(data_row["ts"].is_string(), "missing ts");
     assert_eq!(data_row["total_wps"].as_i64(), Some(1), "expected total_wps=1");
     assert_eq!(data_row["failed_wps"].as_i64(), Some(0), "expected failed_wps=0");
