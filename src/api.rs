@@ -191,124 +191,116 @@ pub struct ApiState {
     pub metrics_tracker: Option<Arc<crate::metrics_tracker::MetricsTracker>>,
 }
 
-pub fn create_api_router(state: ApiState) -> Router {
-    Router::new()
+pub fn create_api_router(state: ApiState, disable_legacy_endpoints: bool) -> Router {
+    let mut app = Router::new()
         .route("/api/health", get(health_check))
         .route("/api/health/detailed", get(detailed_health_check))
-        .route("/api/stats", get(get_stats))
-        .route("/api/network", get(get_network_info))
-        .route("/api/nodes", get(get_nodes))
-        .route("/api/nodes/:node_id", get(get_node_details))
-        .route("/api/nodes/:node_id/events", get(get_node_events))
-        .route("/api/nodes/:node_id/status", get(get_node_status))
-        .route("/api/nodes/:node_id/peers", get(get_node_peers))
-        .route("/api/events", get(get_recent_events))
-        // Aggregation endpoints
-        .route("/api/workpackages", get(get_workpackage_stats))
-        .route("/api/workpackages/active", get(get_active_workpackages))
-        .route(
-            "/api/workpackages/:hash/journey",
-            get(get_workpackage_journey),
-        )
-        .route("/api/blocks", get(get_block_stats))
-        .route("/api/guarantees", get(get_guarantee_stats))
-        // Data availability endpoints
-        .route("/api/da/stats", get(get_da_stats))
-        // Core status endpoints
-        .route("/api/cores/status", get(get_cores_status))
-        .route(
-            "/api/cores/:core_index/guarantees",
-            get(get_core_guarantees),
-        )
-        // Execution metrics
-        .route("/api/metrics/execution", get(get_execution_metrics))
-        .route("/api/metrics/timeseries", get(get_timeseries_metrics))
-        // Validator/Core mapping
-        .route("/api/validators/cores", get(get_validator_core_mapping))
-        // Network topology
-        .route("/api/network/topology", get(get_peer_topology))
-        // Enhanced node status with core assignment
-        .route(
-            "/api/nodes/:node_id/status/enhanced",
-            get(get_node_status_enhanced),
-        )
-        // Real-time metrics endpoints
-        .route("/api/metrics/realtime", get(get_realtime_metrics))
-        .route("/api/metrics/live", get(get_live_counters))
-        .route("/api/metrics/stream", get(metrics_sse_handler))
-        // HIGH PRIORITY: Frontend team requested endpoints
-        .route(
-            "/api/cores/:core_index/guarantors",
-            get(get_core_guarantors),
-        )
-        .route(
-            "/api/cores/:core_index/work-packages",
-            get(get_core_work_packages),
-        )
-        .route(
-            "/api/workpackages/:hash/journey/enhanced",
-            get(get_workpackage_journey_enhanced),
-        )
-        .route("/api/da/stats/enhanced", get(get_da_stats_enhanced))
-        // MEDIUM PRIORITY: Analytics endpoints
-        .route("/api/analytics/failure-rates", get(get_failure_rates))
-        .route(
-            "/api/analytics/block-propagation",
-            get(get_block_propagation),
-        )
-        .route("/api/analytics/network-health", get(get_network_health))
-        .route(
-            "/api/guarantees/by-guarantor",
-            get(get_guarantees_by_guarantor),
-        )
-        // LOW PRIORITY: Timeline & grouped analytics
-        .route(
-            "/api/metrics/timeseries/grouped",
-            get(get_timeseries_grouped),
-        )
-        .route(
-            "/api/analytics/sync-status/timeline",
-            get(get_sync_status_timeline),
-        )
-        .route(
-            "/api/analytics/connections/timeline",
-            get(get_connections_timeline),
-        )
-        // JAM RPC endpoints (requires JAM_RPC_URL to be set)
-        .route("/api/jam/stats", get(get_jam_stats))
-        .route("/api/jam/services", get(get_jam_services))
-        .route("/api/jam/cores", get(get_jam_cores))
-        // DASHBOARD: Mock data replacement endpoints
-        .route(
-            "/api/cores/:core_index/validators",
-            get(get_core_validators),
-        )
-        .route("/api/cores/:core_index/metrics", get(get_core_metrics))
-        .route(
-            "/api/cores/:core_index/bottlenecks",
-            get(get_core_bottlenecks),
-        )
-        .route(
-            "/api/cores/:core_index/guarantors/enhanced",
-            get(get_core_guarantors_enhanced),
-        )
-        .route(
-            "/api/workpackages/:hash/audit-progress",
-            get(get_workpackage_audit_progress),
-        )
-        // Frontend search & explorer endpoints
-        .route("/api/events/search", get(search_events))
-        .route("/api/slots/:slot", get(get_slot_events))
-        .route("/api/nodes/:node_id/timeline", get(get_node_timeline))
-        .route(
-            "/api/workpackages/batch/journey",
-            axum::routing::post(batch_workpackage_journeys),
-        )
-        .route("/api/ws", get(websocket_handler))
         // Grafana-optimized API endpoints
         .nest("/api/grafana", crate::grafana::router())
         // OpenAPI spec (auto-generated from utoipa annotations)
         .route("/api/docs/openapi.json", get(openapi_spec))
+        .route("/api/ws", get(websocket_handler));
+
+    if !disable_legacy_endpoints {
+        app = app
+            .route("/api/stats", get(get_stats))
+            .route("/api/network", get(get_network_info))
+            .route("/api/nodes", get(get_nodes))
+            .route("/api/nodes/:node_id", get(get_node_details))
+            .route("/api/nodes/:node_id/events", get(get_node_events))
+            .route("/api/nodes/:node_id/status", get(get_node_status))
+            .route("/api/nodes/:node_id/peers", get(get_node_peers))
+            .route("/api/events", get(get_recent_events))
+            .route("/api/workpackages", get(get_workpackage_stats))
+            .route("/api/workpackages/active", get(get_active_workpackages))
+            .route(
+                "/api/workpackages/:hash/journey",
+                get(get_workpackage_journey),
+            )
+            .route("/api/blocks", get(get_block_stats))
+            .route("/api/guarantees", get(get_guarantee_stats))
+            .route("/api/da/stats", get(get_da_stats))
+            .route("/api/cores/status", get(get_cores_status))
+            .route(
+                "/api/cores/:core_index/guarantees",
+                get(get_core_guarantees),
+            )
+            .route("/api/metrics/execution", get(get_execution_metrics))
+            .route("/api/metrics/timeseries", get(get_timeseries_metrics))
+            .route("/api/validators/cores", get(get_validator_core_mapping))
+            .route("/api/network/topology", get(get_peer_topology))
+            .route(
+                "/api/nodes/:node_id/status/enhanced",
+                get(get_node_status_enhanced),
+            )
+            .route("/api/metrics/realtime", get(get_realtime_metrics))
+            .route("/api/metrics/live", get(get_live_counters))
+            .route("/api/metrics/stream", get(metrics_sse_handler))
+            .route(
+                "/api/cores/:core_index/guarantors",
+                get(get_core_guarantors),
+            )
+            .route(
+                "/api/cores/:core_index/work-packages",
+                get(get_core_work_packages),
+            )
+            .route(
+                "/api/workpackages/:hash/journey/enhanced",
+                get(get_workpackage_journey_enhanced),
+            )
+            .route("/api/da/stats/enhanced", get(get_da_stats_enhanced))
+            .route("/api/analytics/failure-rates", get(get_failure_rates))
+            .route(
+                "/api/analytics/block-propagation",
+                get(get_block_propagation),
+            )
+            .route("/api/analytics/network-health", get(get_network_health))
+            .route(
+                "/api/guarantees/by-guarantor",
+                get(get_guarantees_by_guarantor),
+            )
+            .route(
+                "/api/metrics/timeseries/grouped",
+                get(get_timeseries_grouped),
+            )
+            .route(
+                "/api/analytics/sync-status/timeline",
+                get(get_sync_status_timeline),
+            )
+            .route(
+                "/api/analytics/connections/timeline",
+                get(get_connections_timeline),
+            )
+            .route("/api/jam/stats", get(get_jam_stats))
+            .route("/api/jam/services", get(get_jam_services))
+            .route("/api/jam/cores", get(get_jam_cores))
+            .route(
+                "/api/cores/:core_index/validators",
+                get(get_core_validators),
+            )
+            .route("/api/cores/:core_index/metrics", get(get_core_metrics))
+            .route(
+                "/api/cores/:core_index/bottlenecks",
+                get(get_core_bottlenecks),
+            )
+            .route(
+                "/api/cores/:core_index/guarantors/enhanced",
+                get(get_core_guarantors_enhanced),
+            )
+            .route(
+                "/api/workpackages/:hash/audit-progress",
+                get(get_workpackage_audit_progress),
+            )
+            .route("/api/events/search", get(search_events))
+            .route("/api/slots/:slot", get(get_slot_events))
+            .route("/api/nodes/:node_id/timeline", get(get_node_timeline))
+            .route(
+                "/api/workpackages/batch/journey",
+                axum::routing::post(batch_workpackage_journeys),
+            );
+    }
+
+    app
         // Middleware layers wrap bottom-up: last .layer() is outermost.
         // Order (outermost first): CORS → Compression → Headers → Body limit → Timeout
         .layer(TimeoutLayer::new(std::time::Duration::from_secs(30))) // Innermost: timeout on handler

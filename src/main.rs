@@ -48,6 +48,11 @@ struct Cli {
     /// 0 = legacy single-runtime mode (all tasks on main runtime).
     #[arg(long, env = "INGESTION_THREADS", default_value_t = 8)]
     ingestion_threads: usize,
+
+    /// Disable all non-Grafana API endpoints (legacy REST, WebSocket, analytics).
+    /// Only /api/health, /api/health/detailed, /api/grafana/*, and /api/docs/openapi.json remain.
+    #[arg(long)]
+    disable_legacy_endpoints: bool,
 }
 
 /// Configure TCP socket buffer sizes for better performance.
@@ -391,8 +396,8 @@ async fn main() -> anyhow::Result<()> {
             std::time::Duration::from_secs(3),
         ));
 
-        // Spawn background cache warming task
-        {
+        // Spawn background cache warming task (only needed for legacy endpoints)
+        if !args.disable_legacy_endpoints {
             let cache_clone = Arc::clone(&cache);
             let store_clone = Arc::clone(store);
             let tracker_clone = Arc::clone(&metrics_tracker);
@@ -523,7 +528,10 @@ async fn main() -> anyhow::Result<()> {
             metrics_tracker: Some(Arc::clone(&metrics_tracker)),
         };
 
-        create_api_router(api_state)
+        if args.disable_legacy_endpoints {
+            info!("Legacy API endpoints disabled — only /api/health, /api/ws, /api/grafana/*, and /api/docs available");
+        }
+        create_api_router(api_state, args.disable_legacy_endpoints)
     } else {
         // No-database mode: minimal router with WebSocket + health only
         let minimal_state = MinimalApiState {
