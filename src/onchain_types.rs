@@ -73,6 +73,33 @@ pub struct OnchainCoreTimeseries {
     pub bundle_size: i64,
 }
 
+/// Network-wide aggregate time-bucketed core stats (no per-core breakdown).
+///
+/// **Data source:** `onchain_core_stats` with `time_bucket()` aggregation.
+/// One row per time bucket — all cores SUMmed together (AVG for popularity).
+/// Returned when no `core` filter is specified.
+#[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
+pub struct OnchainCoreTimeseriesAgg {
+    /// Bucket start timestamp
+    pub ts: DateTime<Utc>,
+    /// Total gas consumed across all cores
+    pub gas_used: i64,
+    /// Total bytes placed into DA across all cores
+    pub da_load: i64,
+    /// Average popularity across all cores
+    pub popularity: i16,
+    /// Total segments imported across all cores
+    pub imports: i64,
+    /// Total extrinsics across all cores
+    pub extrinsic_count: i64,
+    /// Total extrinsic bytes across all cores
+    pub extrinsic_size: i64,
+    /// Total segments exported across all cores
+    pub exports: i64,
+    /// Total work-bundle bytes across all cores
+    pub bundle_size: i64,
+}
+
 /// Raw per-block on-chain stats for a single core.
 ///
 /// **Data source:** `onchain_core_stats` filtered by core, no aggregation.
@@ -249,6 +276,29 @@ pub struct OnchainValidatorTimeseries {
     pub guarantees: i32,
     /// Assurances made (MAX in bucket)
     pub assurances: i32,
+}
+
+/// Network-wide aggregate time-bucketed validator stats (no per-validator breakdown).
+///
+/// **Data source:** `onchain_validator_stats` with `time_bucket()` aggregation.
+/// One row per time bucket — all validators SUMmed together.
+/// Returned when no `validator` filter is specified.
+#[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
+pub struct OnchainValidatorTimeseriesAgg {
+    /// Bucket start timestamp
+    pub ts: DateTime<Utc>,
+    /// Total blocks produced across all validators (SUM of per-validator MAX)
+    pub blocks_produced: i64,
+    /// Total tickets across all validators
+    pub tickets: i64,
+    /// Total preimages across all validators
+    pub preimages: i64,
+    /// Total preimage bytes across all validators
+    pub preimages_size: i64,
+    /// Total guarantees across all validators
+    pub guarantees: i64,
+    /// Total assurances across all validators
+    pub assurances: i64,
 }
 
 /// Raw per-block on-chain stats for a single validator.

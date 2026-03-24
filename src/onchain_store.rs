@@ -114,12 +114,51 @@ impl EventStore {
         .await
     }
 
-    /// Time-bucketed per-core on-chain stats.
+    /// Network-wide aggregate time-bucketed core stats (all cores SUMmed).
+    ///
+    /// Returns one row per time bucket. Used when no core filter is specified.
+    pub async fn onchain_cores_timeseries_agg(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        interval: &str,
+    ) -> Result<Vec<OnchainCoreTimeseriesAgg>, sqlx::Error> {
+        let pg_interval = validate_interval(interval)?;
+
+        let sql = format!(
+            r#"
+            SELECT
+                time_bucket('{pg_interval}'::interval, timestamp) AS ts,
+                COALESCE(SUM(gas_used), 0)::BIGINT AS gas_used,
+                COALESCE(SUM(da_load::BIGINT), 0)::BIGINT AS da_load,
+                COALESCE(AVG(popularity), 0)::SMALLINT AS popularity,
+                COALESCE(SUM(imports::BIGINT), 0)::BIGINT AS imports,
+                COALESCE(SUM(extrinsic_count::BIGINT), 0)::BIGINT AS extrinsic_count,
+                COALESCE(SUM(extrinsic_size::BIGINT), 0)::BIGINT AS extrinsic_size,
+                COALESCE(SUM(exports::BIGINT), 0)::BIGINT AS exports,
+                COALESCE(SUM(bundle_size::BIGINT), 0)::BIGINT AS bundle_size
+            FROM onchain_core_stats
+            WHERE timestamp >= $1 AND timestamp < $2
+              AND on_best_chain = true
+            GROUP BY ts
+            ORDER BY ts
+            "#
+        );
+
+        sqlx::query_as::<_, OnchainCoreTimeseriesAgg>(&sql)
+            .bind(start)
+            .bind(end)
+            .fetch_all(self.pool())
+            .await
+    }
+
+    /// Time-bucketed per-core on-chain stats for a specific core.
     pub async fn onchain_cores_timeseries(
         &self,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
         interval: &str,
+        core: i16,
     ) -> Result<Vec<OnchainCoreTimeseries>, sqlx::Error> {
         let pg_interval = validate_interval(interval)?;
 
@@ -139,6 +178,7 @@ impl EventStore {
             FROM onchain_core_stats
             WHERE timestamp >= $1 AND timestamp < $2
               AND on_best_chain = true
+              AND core = $3
             GROUP BY ts, core
             ORDER BY ts, core
             "#
@@ -147,6 +187,7 @@ impl EventStore {
         sqlx::query_as::<_, OnchainCoreTimeseries>(&sql)
             .bind(start)
             .bind(end)
+            .bind(core)
             .fetch_all(self.pool())
             .await
     }
@@ -380,21 +421,53 @@ impl EventStore {
         .await
     }
 
-    /// Time-bucketed per-validator on-chain stats (MAX aggregation).
+    /// Network-wide aggregate time-bucketed validator stats (all validators SUMmed).
+    ///
+    /// Returns one row per time bucket. Used when no validator filter is specified.
+    /// SUM of per-validator MAX gives total network activity per bucket.
+    pub async fn onchain_validators_timeseries_agg(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        interval: &str,
+    ) -> Result<Vec<OnchainValidatorTimeseriesAgg>, sqlx::Error> {
+        let pg_interval = validate_interval(interval)?;
+
+        let sql = format!(
+            r#"
+            SELECT
+                time_bucket('{pg_interval}'::interval, timestamp) AS ts,
+                COALESCE(SUM(blocks_produced), 0)::BIGINT AS blocks_produced,
+                COALESCE(SUM(tickets), 0)::BIGINT AS tickets,
+                COALESCE(SUM(preimages), 0)::BIGINT AS preimages,
+                COALESCE(SUM(preimages_size), 0)::BIGINT AS preimages_size,
+                COALESCE(SUM(guarantees), 0)::BIGINT AS guarantees,
+                COALESCE(SUM(assurances), 0)::BIGINT AS assurances
+            FROM onchain_validator_stats
+            WHERE timestamp >= $1 AND timestamp < $2
+              AND on_best_chain = true
+            GROUP BY ts
+            ORDER BY ts
+            "#
+        );
+
+        sqlx::query_as::<_, OnchainValidatorTimeseriesAgg>(&sql)
+            .bind(start)
+            .bind(end)
+            .fetch_all(self.pool())
+            .await
+    }
+
+    /// Time-bucketed per-validator on-chain stats (MAX aggregation) for specific validators.
     pub async fn onchain_validators_timeseries(
         &self,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
         interval: &str,
-        validators: Option<&[i16]>,
+        validators: &[i16],
     ) -> Result<Vec<OnchainValidatorTimeseries>, sqlx::Error> {
         let pg_interval = validate_interval(interval)?;
 
-        let validator_filter = if validators.is_some() {
-            "AND validator_index = ANY($3)"
-        } else {
-            ""
-        };
         let sql = format!(
             r#"
             SELECT
@@ -409,19 +482,18 @@ impl EventStore {
             FROM onchain_validator_stats
             WHERE timestamp >= $1 AND timestamp < $2
               AND on_best_chain = true
-              {validator_filter}
+              AND validator_index = ANY($3)
             GROUP BY ts, validator_index
             ORDER BY ts, validator_index
             "#
         );
 
-        let mut query = sqlx::query_as::<_, OnchainValidatorTimeseries>(&sql)
+        sqlx::query_as::<_, OnchainValidatorTimeseries>(&sql)
             .bind(start)
-            .bind(end);
-        if let Some(vals) = validators {
-            query = query.bind(vals);
-        }
-        query.fetch_all(self.pool()).await
+            .bind(end)
+            .bind(validators)
+            .fetch_all(self.pool())
+            .await
     }
 
     /// Raw per-block on-chain stats for a single validator.

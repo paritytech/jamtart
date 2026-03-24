@@ -91,12 +91,14 @@ use crate::onchain_types::*;
         crate::event_type_meta::EventTypeMeta,
         OnchainCoreSummary,
         OnchainCoreTimeseries,
+        OnchainCoreTimeseriesAgg,
         OnchainCoreDetail,
         OnchainServiceSummary,
         OnchainServiceTimeseries,
         OnchainServiceDetail,
         OnchainValidatorSummary,
         OnchainValidatorTimeseries,
+        OnchainValidatorTimeseriesAgg,
         OnchainValidatorDetail,
     )),
     tags(
@@ -1126,6 +1128,19 @@ pub struct OnchainTimeseriesQuery {
     pub interval: Option<String>,
 }
 
+/// Parameters for on-chain core timeseries queries (with optional core filter).
+#[derive(Deserialize, IntoParams)]
+pub struct OnchainCoreTimeseriesQuery {
+    /// Start of time range (ISO 8601)
+    pub start: DateTime<Utc>,
+    /// End of time range (ISO 8601)
+    pub end: DateTime<Utc>,
+    /// Bucket width. Supported: 6s, 12s, 18s, 24s, 30s, 1m, 2m, 5m, 10m, 15m, 30m, 1h–1d. Unsupported values are snapped to nearest valid.
+    pub interval: Option<String>,
+    /// Core index to filter by. Without this, returns network-wide aggregates.
+    pub core: Option<i16>,
+}
+
 /// Parameters for on-chain validator timeseries queries (with optional validator filter).
 #[derive(Deserialize, IntoParams)]
 pub struct OnchainValidatorTimeseriesQuery {
@@ -1193,34 +1208,49 @@ async fn onchain_cores_summary(
         .map_err(|e| map_sqlx_error("onchain/cores", e))
 }
 
-/// Time-bucketed per-core on-chain stats.
+/// Time-bucketed on-chain core stats.
 ///
-/// Each row = one (bucket, core) pair with SUMmed fields.
+/// Without `core` filter: network-wide aggregate — one row per time bucket
+/// with SUMmed fields across all cores (AVG for popularity).
+///
+/// With `core` filter: per-core timeseries — one row per time bucket for
+/// the specified core.
+///
 /// Data source: `onchain_core_stats` with `time_bucket()` aggregation.
 #[utoipa::path(
     get,
     path = "/api/grafana/onchain/cores/timeseries",
-    params(OnchainTimeseriesQuery),
+    params(OnchainCoreTimeseriesQuery),
     responses(
-        (status = 200, description = "Time-bucketed per-core on-chain stats. \
-            Each row = one (bucket, core) pair with SUMmed fields.",
-            body = [OnchainCoreTimeseries]),
+        (status = 200, description = "Without core filter: network-wide aggregate — one row \
+            per time bucket with SUMmed fields across all cores. \
+            With core filter: per-core timeseries for the specified core.",
+            body = [OnchainCoreTimeseriesAgg]),
         (status = 400, description = "Invalid interval"),
         (status = 500, description = "Database error"),
     ),
     tag = "onchain"
 )]
 async fn onchain_cores_timeseries(
-    Query(q): Query<OnchainTimeseriesQuery>,
+    Query(q): Query<OnchainCoreTimeseriesQuery>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let interval = q.interval.as_deref().unwrap_or("1m");
-    state
-        .store
-        .onchain_cores_timeseries(q.start, q.end, interval)
-        .await
-        .map(Json)
-        .map_err(|e| map_sqlx_error("onchain/cores/timeseries", e))
+    if let Some(core) = q.core {
+        let rows = state
+            .store
+            .onchain_cores_timeseries(q.start, q.end, interval, core)
+            .await
+            .map_err(|e| map_sqlx_error("onchain/cores/timeseries", e))?;
+        Ok(Json(serde_json::to_value(rows).unwrap()))
+    } else {
+        let rows = state
+            .store
+            .onchain_cores_timeseries_agg(q.start, q.end, interval)
+            .await
+            .map_err(|e| map_sqlx_error("onchain/cores/timeseries", e))?;
+        Ok(Json(serde_json::to_value(rows).unwrap()))
+    }
 }
 
 /// Raw per-block on-chain stats for a single core.
@@ -1384,18 +1414,24 @@ async fn onchain_validators_summary(
         .map_err(|e| map_sqlx_error("onchain/validators", e))
 }
 
-/// Time-bucketed per-validator on-chain stats.
+/// Time-bucketed on-chain validator stats.
 ///
-/// MAX aggregation (epoch-cumulative values).
+/// Without `validator` filter: network-wide aggregate — one row per time bucket
+/// with SUMmed fields across all validators.
+///
+/// With `validator` filter: per-validator timeseries — one row per time bucket
+/// for the specified validator(s). MAX aggregation (epoch-cumulative values).
+///
 /// Data source: `onchain_validator_stats` with `time_bucket()` aggregation.
 #[utoipa::path(
     get,
     path = "/api/grafana/onchain/validators/timeseries",
     params(OnchainValidatorTimeseriesQuery),
     responses(
-        (status = 200, description = "Time-bucketed per-validator on-chain stats. \
-            MAX aggregation (epoch-cumulative values).",
-            body = [OnchainValidatorTimeseries]),
+        (status = 200, description = "Without validator filter: network-wide aggregate — one row \
+            per time bucket with SUMmed fields across all validators. \
+            With validator filter: per-validator timeseries with MAX aggregation (epoch-cumulative).",
+            body = [OnchainValidatorTimeseriesAgg]),
         (status = 400, description = "Invalid interval"),
         (status = 500, description = "Database error"),
     ),
@@ -1406,13 +1442,22 @@ async fn onchain_validators_timeseries(
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let interval = q.interval.as_deref().unwrap_or("1m");
-    let validators: Option<Vec<i16>> = q.validator.map(|s| parse_validator_indices(&s));
-    state
-        .store
-        .onchain_validators_timeseries(q.start, q.end, interval, validators.as_deref())
-        .await
-        .map(Json)
-        .map_err(|e| map_sqlx_error("onchain/validators/timeseries", e))
+    if let Some(ref validator_str) = q.validator {
+        let validators = parse_validator_indices(validator_str);
+        let rows = state
+            .store
+            .onchain_validators_timeseries(q.start, q.end, interval, &validators)
+            .await
+            .map_err(|e| map_sqlx_error("onchain/validators/timeseries", e))?;
+        Ok(Json(serde_json::to_value(rows).unwrap()))
+    } else {
+        let rows = state
+            .store
+            .onchain_validators_timeseries_agg(q.start, q.end, interval)
+            .await
+            .map_err(|e| map_sqlx_error("onchain/validators/timeseries", e))?;
+        Ok(Json(serde_json::to_value(rows).unwrap()))
+    }
 }
 
 /// Raw per-block on-chain stats for a single validator.
