@@ -1234,7 +1234,7 @@
           "custom": {
             "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
             "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0,
-            "drawStyle": "bars", "fillOpacity": 80, "gradientMode": "none",
+            "drawStyle": "bars", "fillOpacity": 40, "gradientMode": "none",
             "hideFrom": { "legend": false, "tooltip": false, "viz": false },
             "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
             "pointSize": 5, "scaleDistribution": { "type": "linear" },
@@ -1247,8 +1247,8 @@
           "unit": "ms"
         },
         "overrides": [
-          { "matcher": { "id": "byName", "options": "P50" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }] },
-          { "matcher": { "id": "byName", "options": "P95" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }] }
+          { "matcher": { "id": "byName", "options": "P50" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }, { "id": "custom.fillOpacity", "value": 80 }] },
+          { "matcher": { "id": "byName", "options": "P95" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }, { "id": "custom.fillOpacity", "value": 20 }] }
         ]
       },
       "gridPos": { "h": 8, "w": 8, "x": 0, "y": 62 },
@@ -1282,7 +1282,7 @@
           "custom": {
             "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
             "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0,
-            "drawStyle": "bars", "fillOpacity": 80, "gradientMode": "none",
+            "drawStyle": "bars", "fillOpacity": 40, "gradientMode": "none",
             "hideFrom": { "legend": false, "tooltip": false, "viz": false },
             "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
             "pointSize": 5, "scaleDistribution": { "type": "linear" },
@@ -1295,8 +1295,8 @@
           "unit": "ms"
         },
         "overrides": [
-          { "matcher": { "id": "byName", "options": "P50" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }] },
-          { "matcher": { "id": "byName", "options": "P95" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }] }
+          { "matcher": { "id": "byName", "options": "P50" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }, { "id": "custom.fillOpacity", "value": 80 }] },
+          { "matcher": { "id": "byName", "options": "P95" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }, { "id": "custom.fillOpacity", "value": 20 }] }
         ]
       },
       "gridPos": { "h": 8, "w": 8, "x": 8, "y": 62 },
@@ -1330,7 +1330,7 @@
           "custom": {
             "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
             "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0,
-            "drawStyle": "bars", "fillOpacity": 80, "gradientMode": "none",
+            "drawStyle": "bars", "fillOpacity": 40, "gradientMode": "none",
             "hideFrom": { "legend": false, "tooltip": false, "viz": false },
             "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
             "pointSize": 5, "scaleDistribution": { "type": "linear" },
@@ -1343,8 +1343,8 @@
           "unit": "ms"
         },
         "overrides": [
-          { "matcher": { "id": "byName", "options": "P50" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }] },
-          { "matcher": { "id": "byName", "options": "P95" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }] }
+          { "matcher": { "id": "byName", "options": "P50" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }, { "id": "custom.fillOpacity", "value": 80 }] },
+          { "matcher": { "id": "byName", "options": "P95" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }, { "id": "custom.fillOpacity", "value": 20 }] }
         ]
       },
       "gridPos": { "h": 8, "w": 8, "x": 16, "y": 62 },
@@ -1378,7 +1378,7 @@
           "custom": {
             "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
             "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0,
-            "drawStyle": "bars", "fillOpacity": 80, "gradientMode": "none",
+            "drawStyle": "bars", "fillOpacity": 40, "gradientMode": "none",
             "hideFrom": { "legend": false, "tooltip": false, "viz": false },
             "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
             "pointSize": 5, "scaleDistribution": { "type": "linear" },
@@ -1391,8 +1391,8 @@
           "unit": "ms"
         },
         "overrides": [
-          { "matcher": { "id": "byName", "options": "P50" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }] },
-          { "matcher": { "id": "byName", "options": "P95" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }] }
+          { "matcher": { "id": "byName", "options": "P50" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }, { "id": "custom.fillOpacity", "value": 80 }] },
+          { "matcher": { "id": "byName", "options": "P95" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }, { "id": "custom.fillOpacity", "value": 20 }] }
         ]
       },
       "gridPos": { "h": 8, "w": 8, "x": 0, "y": 70 },
@@ -1426,7 +1426,7 @@
           "custom": {
             "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
             "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0,
-            "drawStyle": "bars", "fillOpacity": 80, "gradientMode": "none",
+            "drawStyle": "bars", "fillOpacity": 40, "gradientMode": "none",
             "hideFrom": { "legend": false, "tooltip": false, "viz": false },
             "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
             "pointSize": 5, "scaleDistribution": { "type": "linear" },
@@ -1439,8 +1439,8 @@
           "unit": "ms"
         },
         "overrides": [
-          { "matcher": { "id": "byName", "options": "P50" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }] },
-          { "matcher": { "id": "byName", "options": "P95" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }] }
+          { "matcher": { "id": "byName", "options": "P50" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }, { "id": "custom.fillOpacity", "value": 80 }] },
+          { "matcher": { "id": "byName", "options": "P95" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }, { "id": "custom.fillOpacity", "value": 20 }] }
         ]
       },
       "gridPos": { "h": 8, "w": 8, "x": 8, "y": 70 },
@@ -1474,7 +1474,7 @@
           "custom": {
             "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
             "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0,
-            "drawStyle": "bars", "fillOpacity": 80, "gradientMode": "none",
+            "drawStyle": "bars", "fillOpacity": 40, "gradientMode": "none",
             "hideFrom": { "legend": false, "tooltip": false, "viz": false },
             "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
             "pointSize": 5, "scaleDistribution": { "type": "linear" },
@@ -1487,8 +1487,8 @@
           "unit": "ms"
         },
         "overrides": [
-          { "matcher": { "id": "byName", "options": "P50" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }] },
-          { "matcher": { "id": "byName", "options": "P95" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }] }
+          { "matcher": { "id": "byName", "options": "P50" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }, { "id": "custom.fillOpacity", "value": 80 }] },
+          { "matcher": { "id": "byName", "options": "P95" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }, { "id": "custom.fillOpacity", "value": 20 }] }
         ]
       },
       "gridPos": { "h": 8, "w": 8, "x": 16, "y": 70 },

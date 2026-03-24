@@ -51,7 +51,7 @@ async fn setup_test_api() -> (TestServer, Arc<TelemetryServer>, u16, Arc<EventSt
         metrics_tracker: None,
     };
 
-    let app = create_api_router(api_state);
+    let app = create_api_router(api_state, false);
     let test_server = TestServer::new(app).unwrap();
 
     (test_server, telemetry_server, telemetry_port, store)

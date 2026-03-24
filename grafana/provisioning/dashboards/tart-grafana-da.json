@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "[JIP-3] Data availability layer — storage, peer health, and preimage statistics per node",
+  "description": "[JIP-3] Data availability layer \u2014 storage, peer health, and preimage statistics per node",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -64,7 +64,7 @@
         "x": 0,
         "y": 1
       },
-      "description": "[JIP-3] Average shard storage size across all nodes over time. Source: Status(10) events — each node reports num_shards and shards_size every ~2s. Aggregated to 1-minute AVG from node_stats_1m continuous aggregate.",
+      "description": "[JIP-3] Average shard storage size across all nodes over time. Source: Status(10) events \u2014 each node reports num_shards and shards_size every ~2s. Aggregated to 1-minute AVG from node_stats_1m continuous aggregate.",
       "id": 2,
       "options": {
         "colorMode": "value",
@@ -721,318 +721,1182 @@
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 27
+      },
       "id": 9,
       "panels": [],
       "title": "Guarantee Convergence",
       "type": "row"
     },
     {
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
-            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
-            "axisLabel": "ms", "axisPlacement": "auto", "barAlignment": 0,
-            "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
-            "pointSize": 5, "scaleDistribution": { "type": "linear" },
-            "showPoints": "auto", "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" },
-            "thresholdsStyle": { "mode": "off" }
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "ms",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": [
-          { "matcher": { "id": "byName", "options": "p50 (ms)" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }] },
-          { "matcher": { "id": "byName", "options": "p75 (ms)" }, "properties": [{ "id": "color", "value": { "fixedColor": "yellow", "mode": "fixed" } }] },
-          { "matcher": { "id": "byName", "options": "p95 (ms)" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }] },
-          { "matcher": { "id": "byName", "options": "p99 (ms)" }, "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }] }
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p50 (ms)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p75 (ms)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "yellow",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p95 (ms)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p99 (ms)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
         ]
       },
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 28 },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 28
+      },
       "description": "[JIP-3] Guarantee propagation convergence per slot: p50/p75/p95/p99/p100 of (GuaranteeReceived(112) \u2212 GuaranteeBuilt(105)) across all validators. Measures how quickly guarantees reach the network after being built by guarantors. Source: guarantee_convergence_slots table.",
       "id": 10,
       "maxDataPoints": 300,
       "options": {
-        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
-      "targets": [{
-        "columns": [
-          { "selector": "built_at", "text": "", "type": "timestamp" },
-          { "selector": "p50_ms", "text": "p50 (ms)", "type": "number" },
-          { "selector": "p75_ms", "text": "p75 (ms)", "type": "number" },
-          { "selector": "p95_ms", "text": "p95 (ms)", "type": "number" },
-          { "selector": "p99_ms", "text": "p99 (ms)", "type": "number" },
-          { "selector": "p100_ms", "text": "p100 (ms)", "type": "number" }
-        ],
-        "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-        "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
-        "refId": "A", "root_selector": "", "source": "url", "type": "json",
-        "url": "http://tart-backend:8080/api/grafana/guarantee-convergence?start=${__from:date:iso}&end=${__to:date:iso}",
-        "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
-      }],
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "built_at",
+              "text": "",
+              "type": "timestamp"
+            },
+            {
+              "selector": "p50_ms",
+              "text": "p50 (ms)",
+              "type": "number"
+            },
+            {
+              "selector": "p75_ms",
+              "text": "p75 (ms)",
+              "type": "number"
+            },
+            {
+              "selector": "p95_ms",
+              "text": "p95 (ms)",
+              "type": "number"
+            },
+            {
+              "selector": "p99_ms",
+              "text": "p99 (ms)",
+              "type": "number"
+            },
+            {
+              "selector": "p100_ms",
+              "text": "p100 (ms)",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "filters": [],
+          "format": "table",
+          "global_query_id": "",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/guarantee-convergence?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          }
+        }
+      ],
       "title": "Guarantee Convergence",
       "type": "timeseries"
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 38 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 38
+      },
       "id": 11,
       "panels": [],
       "title": "Assurance Convergence",
       "type": "row"
     },
     {
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
-            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
-            "axisLabel": "ms", "axisPlacement": "auto", "barAlignment": 0,
-            "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
-            "pointSize": 5, "scaleDistribution": { "type": "linear" },
-            "showPoints": "auto", "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" },
-            "thresholdsStyle": { "mode": "off" }
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "ms",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "always",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": [
-          { "matcher": { "id": "byName", "options": "p50 (ms)" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }] },
-          { "matcher": { "id": "byName", "options": "p75 (ms)" }, "properties": [{ "id": "color", "value": { "fixedColor": "yellow", "mode": "fixed" } }] },
-          { "matcher": { "id": "byName", "options": "p95 (ms)" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }] },
-          { "matcher": { "id": "byName", "options": "p99 (ms)" }, "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }] }
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p100 (ms)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "dark-red",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 30
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p99 (ms)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 20
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p95 (ms)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 10
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p75 (ms)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "yellow",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 5
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p50 (ms)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              }
+            ]
+          }
         ]
       },
-      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 39 },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 39
+      },
       "description": "[JIP-3] Assurance reception convergence per block: p50/p75/p95/p99/p100 of (AssuranceReceived(131) \u2212 DistributingAssurance(126)) across all senders and receivers. Measures how quickly assurances propagate after distribution begins. Availability window is 5 slots (30s). Source: assurance_convergence table.",
       "id": 12,
       "maxDataPoints": 300,
       "options": {
-        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
-      "targets": [{
-        "columns": [
-          { "selector": "slot_timestamp", "text": "", "type": "timestamp" },
-          { "selector": "p50_ms", "text": "p50 (ms)", "type": "number" },
-          { "selector": "p75_ms", "text": "p75 (ms)", "type": "number" },
-          { "selector": "p95_ms", "text": "p95 (ms)", "type": "number" },
-          { "selector": "p99_ms", "text": "p99 (ms)", "type": "number" },
-          { "selector": "p100_ms", "text": "p100 (ms)", "type": "number" }
-        ],
-        "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-        "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
-        "refId": "A", "root_selector": "", "source": "url", "type": "json",
-        "url": "http://tart-backend:8080/api/grafana/assurance-convergence?start=${__from:date:iso}&end=${__to:date:iso}",
-        "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
-      }],
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "slot_timestamp",
+              "text": "",
+              "type": "timestamp"
+            },
+            {
+              "selector": "p100_ms",
+              "text": "p100 (ms)",
+              "type": "number"
+            },
+            {
+              "selector": "p99_ms",
+              "text": "p99 (ms)",
+              "type": "number"
+            },
+            {
+              "selector": "p95_ms",
+              "text": "p95 (ms)",
+              "type": "number"
+            },
+            {
+              "selector": "p75_ms",
+              "text": "p75 (ms)",
+              "type": "number"
+            },
+            {
+              "selector": "p50_ms",
+              "text": "p50 (ms)",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "filters": [],
+          "format": "table",
+          "global_query_id": "",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/assurance-convergence?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          }
+        }
+      ],
       "title": "Reception Convergence",
       "type": "timeseries"
     },
     {
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
-            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
-            "axisLabel": "ms", "axisPlacement": "auto", "barAlignment": 0,
-            "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
-            "pointSize": 5, "scaleDistribution": { "type": "linear" },
-            "showPoints": "auto", "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" },
-            "thresholdsStyle": { "mode": "off" }
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "ms",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "always",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "dist_start p50 (ms)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "dist_start p95 (ms)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "dist_start p99 (ms)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "dist_start p100 (ms)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "dark-red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
-      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 39 },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 39
+      },
       "description": "[JIP-3] How quickly validators begin distributing assurances for each block. Percentiles of (DistributingAssurance(126) timestamp \u2212 first distributor timestamp) across ~1023 validators. A wide spread means some validators are slow to start distributing. Source: assurance_convergence table.",
       "id": 13,
       "maxDataPoints": 300,
       "options": {
-        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
-      "targets": [{
-        "columns": [
-          { "selector": "slot_timestamp", "text": "", "type": "timestamp" },
-          { "selector": "dist_start_p50_ms", "text": "dist_start p50 (ms)", "type": "number" },
-          { "selector": "dist_start_p95_ms", "text": "dist_start p95 (ms)", "type": "number" },
-          { "selector": "dist_start_p99_ms", "text": "dist_start p99 (ms)", "type": "number" },
-          { "selector": "dist_start_p100_ms", "text": "dist_start p100 (ms)", "type": "number" }
-        ],
-        "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-        "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
-        "refId": "A", "root_selector": "", "source": "url", "type": "json",
-        "url": "http://tart-backend:8080/api/grafana/assurance-convergence?start=${__from:date:iso}&end=${__to:date:iso}",
-        "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
-      }],
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "slot_timestamp",
+              "text": "",
+              "type": "timestamp"
+            },
+            {
+              "selector": "dist_start_p100_ms",
+              "text": "dist_start p100 (ms)",
+              "type": "number"
+            },
+            {
+              "selector": "dist_start_p99_ms",
+              "text": "dist_start p99 (ms)",
+              "type": "number"
+            },
+            {
+              "selector": "dist_start_p95_ms",
+              "text": "dist_start p95 (ms)",
+              "type": "number"
+            },
+            {
+              "selector": "dist_start_p50_ms",
+              "text": "dist_start p50 (ms)",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "filters": [],
+          "format": "table",
+          "global_query_id": "",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/assurance-convergence?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          }
+        }
+      ],
       "title": "Distribution Start Spread",
       "type": "timeseries"
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 49 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 49
+      },
       "id": 14,
       "panels": [],
       "title": "Shard Latency",
       "type": "row"
     },
     {
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
-            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
-            "axisLabel": "ms", "axisPlacement": "auto", "barAlignment": 0,
-            "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
-            "pointSize": 5, "scaleDistribution": { "type": "linear" },
-            "showPoints": "auto", "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" },
-            "thresholdsStyle": { "mode": "off" }
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "ms",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "always",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Assurer p50"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Assurer p95"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Assurer p99"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Assurer p100"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "dark-red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
-      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 50 },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 50
+      },
       "description": "[JIP-3] Shard request round-trip latency from the assurer's perspective: SendingShardRequest(120) \u2192 ShardsTransferred(125). Approximate percentiles interpolated from merged 14-bucket histograms (0\u20135000+ ms). Each assurer sends ~343 requests per slot (one per core). Source: shard_latency_hist hypertable.",
       "id": 15,
       "maxDataPoints": 300,
       "options": {
-        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
-      "targets": [{
-        "columns": [
-          { "selector": "ts", "text": "", "type": "timestamp" },
-          { "selector": "assurer_p50", "text": "Assurer p50", "type": "number" },
-          { "selector": "assurer_p95", "text": "Assurer p95", "type": "number" },
-          { "selector": "assurer_p99", "text": "Assurer p99", "type": "number" },
-          { "selector": "assurer_p100", "text": "Assurer p100", "type": "number" }
-        ],
-        "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-        "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
-        "refId": "A", "root_selector": "", "source": "url", "type": "json",
-        "url": "http://tart-backend:8080/api/grafana/shard-latency?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}",
-        "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
-      }],
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "ts",
+              "text": "",
+              "type": "timestamp"
+            },
+            {
+              "selector": "assurer_p100",
+              "text": "Assurer p100",
+              "type": "number"
+            },
+            {
+              "selector": "assurer_p99",
+              "text": "Assurer p99",
+              "type": "number"
+            },
+            {
+              "selector": "assurer_p95",
+              "text": "Assurer p95",
+              "type": "number"
+            },
+            {
+              "selector": "assurer_p50",
+              "text": "Assurer p50",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "filters": [],
+          "format": "table",
+          "global_query_id": "",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/shard-latency?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          }
+        }
+      ],
       "title": "Assurer Round-Trip",
       "type": "timeseries"
     },
     {
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
-            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
-            "axisLabel": "ms", "axisPlacement": "auto", "barAlignment": 0,
-            "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
-            "pointSize": 5, "scaleDistribution": { "type": "linear" },
-            "showPoints": "auto", "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" },
-            "thresholdsStyle": { "mode": "off" }
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "ms",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "always",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Guarantor p50"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Guarantor p95"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Guarantor p99"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Guarantor p100"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "dark-red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
-      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 50 },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 50
+      },
       "description": "[JIP-3] Shard request processing latency from the guarantor's perspective: ReceivingShardRequest(121) \u2192 ShardRequestReceived(124). Measures how long the guarantor takes to process and respond. Approximate percentiles from merged histograms. Source: shard_latency_hist hypertable.",
       "id": 16,
       "maxDataPoints": 300,
       "options": {
-        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
-      "targets": [{
-        "columns": [
-          { "selector": "ts", "text": "", "type": "timestamp" },
-          { "selector": "guarantor_p50", "text": "Guarantor p50", "type": "number" },
-          { "selector": "guarantor_p95", "text": "Guarantor p95", "type": "number" },
-          { "selector": "guarantor_p99", "text": "Guarantor p99", "type": "number" },
-          { "selector": "guarantor_p100", "text": "Guarantor p100", "type": "number" }
-        ],
-        "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-        "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
-        "refId": "A", "root_selector": "", "source": "url", "type": "json",
-        "url": "http://tart-backend:8080/api/grafana/shard-latency?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}",
-        "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
-      }],
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "ts",
+              "text": "",
+              "type": "timestamp"
+            },
+            {
+              "selector": "guarantor_p100",
+              "text": "Guarantor p100",
+              "type": "number"
+            },
+            {
+              "selector": "guarantor_p99",
+              "text": "Guarantor p99",
+              "type": "number"
+            },
+            {
+              "selector": "guarantor_p95",
+              "text": "Guarantor p95",
+              "type": "number"
+            },
+            {
+              "selector": "guarantor_p50",
+              "text": "Guarantor p50",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "filters": [],
+          "format": "table",
+          "global_query_id": "",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/shard-latency?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          }
+        }
+      ],
       "title": "Guarantor Processing",
       "type": "timeseries"
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 60 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 60
+      },
       "id": 17,
       "panels": [],
       "title": "DA Operations",
       "type": "row"
     },
     {
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "fixed" },
+          "color": {
+            "mode": "fixed"
+          },
           "custom": {
             "align": "auto",
-            "cellOptions": { "type": "auto" },
+            "cellOptions": {
+              "type": "auto"
+            },
             "inspect": false
           },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": []
       },
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 61 },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 61
+      },
       "description": "[JIP-3] Per-node DA operational summary: shard event counts (SendingShardRequest(120) through ShardsTransferred(125)), preimage counts (190\u2013192), weighted-average shard latency (assurer and guarantor sides), and active shard count. Source: da_node_stats hypertable, aggregated over time range.",
       "id": 18,
       "options": {
         "cellHeight": "sm",
-        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
         "showHeader": true,
-        "sortBy": [{ "desc": true, "displayName": "Shard Requests Sent" }]
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Shard Requests Sent"
+          }
+        ]
       },
-      "targets": [{
-        "columns": [
-          { "selector": "node_id", "text": "Node", "type": "string" },
-          { "selector": "shard_requests_sent", "text": "Shard Requests Sent", "type": "number" },
-          { "selector": "shards_transferred", "text": "Shards Transferred", "type": "number" },
-          { "selector": "shard_failures", "text": "Shard Failures", "type": "number" },
-          { "selector": "assurer_avg_latency_ms", "text": "Assurer Avg Latency (ms)", "type": "number" },
-          { "selector": "guarantor_avg_latency_ms", "text": "Guarantor Avg Latency (ms)", "type": "number" },
-          { "selector": "active_shards", "text": "Active Shards", "type": "number" }
-        ],
-        "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
-        "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
-        "refId": "A", "root_selector": "", "source": "url", "type": "json",
-        "url": "http://tart-backend:8080/api/grafana/da-stats?start=${__from:date:iso}&end=${__to:date:iso}",
-        "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
-      }],
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "node_id",
+              "text": "Node",
+              "type": "string"
+            },
+            {
+              "selector": "shard_requests_sent",
+              "text": "Shard Requests Sent",
+              "type": "number"
+            },
+            {
+              "selector": "shards_transferred",
+              "text": "Shards Transferred",
+              "type": "number"
+            },
+            {
+              "selector": "shard_failures",
+              "text": "Shard Failures",
+              "type": "number"
+            },
+            {
+              "selector": "assurer_avg_latency_ms",
+              "text": "Assurer Avg Latency (ms)",
+              "type": "number"
+            },
+            {
+              "selector": "guarantor_avg_latency_ms",
+              "text": "Guarantor Avg Latency (ms)",
+              "type": "number"
+            },
+            {
+              "selector": "active_shards",
+              "text": "Active Shards",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "filters": [],
+          "format": "table",
+          "global_query_id": "",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/da-stats?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          }
+        }
+      ],
       "title": "DA Operations",
       "type": "table"
     }
