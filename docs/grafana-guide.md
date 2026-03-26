@@ -621,6 +621,8 @@ Per-sender tracking: each validator distributes their own assurance (~1023 per b
 | `end` | ISO 8601 datetime | yes | End of time range |
 | `interval` | string | no | Bucket width for histogram aggregation (6s–1d). When provided, returns `ConvergenceTimeseriesRow`. |
 
+**Note:** Interval mode returns only reception-convergence percentiles. Distribution start spread (`dist_start_*` fields) is not histogram-backed and is only available in per-anchor mode (without interval). The "Distribution Start Spread" panel should not use the interval parameter.
+
 **Response (without interval):** `Vec<AssuranceConvergenceRow>`
 
 **Response (with interval):** `Vec<ConvergenceTimeseriesRow>` — `{ts, p50_ms, p75_ms, p95_ms, p99_ms, p100_ms, sample_count}`

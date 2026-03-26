@@ -876,7 +876,7 @@
         {
           "columns": [
             {
-              "selector": "built_at",
+              "selector": "ts",
               "text": "",
               "type": "timestamp"
             },
@@ -1122,7 +1122,7 @@
         {
           "columns": [
             {
-              "selector": "slot_timestamp",
+              "selector": "ts",
               "text": "",
               "type": "timestamp"
             },
@@ -1357,7 +1357,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/assurance-convergence?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}",
+          "url": "http://tart-backend:8080/api/grafana/assurance-convergence?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
