@@ -918,7 +918,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/guarantee-convergence?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/guarantee-convergence?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1164,7 +1164,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/assurance-convergence?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/assurance-convergence?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1357,7 +1357,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/assurance-convergence?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/assurance-convergence?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}",
           "url_options": {
             "method": "GET",
             "data": "",

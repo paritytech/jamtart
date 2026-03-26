@@ -486,14 +486,17 @@ Guarantee propagation convergence — per-slot overview. Measures how quickly gu
 
 The anchor is GuaranteeBuilt(105) — emitted by the guarantor when the guarantee is created. The measured events are GuaranteeReceived(112) — emitted by each validator that receives the guarantee. Percentiles are computed from (received_timestamp - built_at) across all receiving validators, flattened across all guarantees in the slot.
 
-**Query:** `TimeRangeQuery`
+**Query:** `ConvergenceQuery`
 
 | Param | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `start` | ISO 8601 datetime | yes | — | Start of time range |
 | `end` | ISO 8601 datetime | yes | — | End of time range |
+| `interval` | string | no | — | Bucket width for histogram aggregation (6s–1d). When provided, returns `ConvergenceTimeseriesRow` with percentiles from merged histograms. |
 
-**Response:** `Vec<GuaranteeConvergenceSlotRow>`
+**Response (without interval):** `Vec<GuaranteeConvergenceSlotRow>`
+
+**Response (with interval):** `Vec<ConvergenceTimeseriesRow>` — `{ts, p50_ms, p75_ms, p95_ms, p99_ms, p100_ms, sample_count}`
 
 ```json
 [
@@ -543,6 +546,7 @@ If the guarantor node is not connected to telemetry, `core` and `wp_hash` will b
     "slot": 42,
     "core": 5,
     "wp_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "builder_node_id": "0101...0101",
     "node_count": 980,
     "p50_ms": 45,
     "p75_ms": 85,
@@ -609,14 +613,17 @@ Assurance propagation convergence — per-anchor summary. Each row represents on
 
 Per-sender tracking: each validator distributes their own assurance (~1023 per block). Anchor: DistributingAssurance(126) per sender. Measured: AssuranceReceived(131) on receivers. Availability window: 5 slots (30s). Deltas clamped to max(0, delta) for clock skew.
 
-**Query:** `TimeRangeQuery`
+**Query:** `ConvergenceQuery`
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
 | `start` | ISO 8601 datetime | yes | Start of time range |
 | `end` | ISO 8601 datetime | yes | End of time range |
+| `interval` | string | no | Bucket width for histogram aggregation (6s–1d). When provided, returns `ConvergenceTimeseriesRow`. |
 
-**Response:** `Vec<AssuranceConvergenceRow>`
+**Response (without interval):** `Vec<AssuranceConvergenceRow>`
+
+**Response (with interval):** `Vec<ConvergenceTimeseriesRow>` — `{ts, p50_ms, p75_ms, p95_ms, p99_ms, p100_ms, sample_count}`
 
 ```json
 [
@@ -648,8 +655,11 @@ Per-sender assurance convergence detail for debugging. One row per (anchor, send
 | `end` | ISO 8601 datetime | yes | End of time range |
 | `anchor` | string (hex) | no | Filter to specific block anchor |
 | `node` | string | no | Filter to specific sender node_id |
+| `interval` | string | no | Bucket width for histogram aggregation (6s–1d). When provided, returns `ConvergenceTimeseriesRow`. `anchor` is ignored in interval mode. |
 
-**Response:** `Vec<AssuranceConvergenceSenderRow>`
+**Response (without interval):** `Vec<AssuranceConvergenceSenderRow>`
+
+**Response (with interval):** `Vec<ConvergenceTimeseriesRow>` — `{ts, p50_ms, p75_ms, p95_ms, p99_ms, p100_ms, sample_count}`
 
 ```json
 [

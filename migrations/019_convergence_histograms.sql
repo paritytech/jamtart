@@ -1,0 +1,89 @@
+-- Migration 019: Add convergence histograms for precise interval aggregation
+--
+-- Adds 23-bucket latency histograms to convergence tables, enabling mergeable
+-- time-bucket aggregation. Buckets (ms):
+--   [0,2) [2,5) [5,10) [10,15) [15,20) [20,30) [30,50) [50,75) [75,100)
+--   [100,150) [150,250) [250,500) [500,1000) [1000,2000) [2000,5000)
+--   [5000,10000) [10000,15000) [15000,20000) [20000,25000) [25000,30000)
+--   [30000,60000) [60000,120000) [120000,∞)
+--
+-- Also adds builder_node_id to guarantee_convergence for per-guarantor analysis.
+
+-- ── guarantee_convergence ─────────────────────────────────────────────
+ALTER TABLE guarantee_convergence ADD COLUMN IF NOT EXISTS builder_node_id TEXT;
+ALTER TABLE guarantee_convergence ADD COLUMN IF NOT EXISTS h_0_2 INT DEFAULT 0;
+ALTER TABLE guarantee_convergence ADD COLUMN IF NOT EXISTS h_2_5 INT DEFAULT 0;
+ALTER TABLE guarantee_convergence ADD COLUMN IF NOT EXISTS h_5_10 INT DEFAULT 0;
+ALTER TABLE guarantee_convergence ADD COLUMN IF NOT EXISTS h_10_15 INT DEFAULT 0;
+ALTER TABLE guarantee_convergence ADD COLUMN IF NOT EXISTS h_15_20 INT DEFAULT 0;
+ALTER TABLE guarantee_convergence ADD COLUMN IF NOT EXISTS h_20_30 INT DEFAULT 0;
+ALTER TABLE guarantee_convergence ADD COLUMN IF NOT EXISTS h_30_50 INT DEFAULT 0;
+ALTER TABLE guarantee_convergence ADD COLUMN IF NOT EXISTS h_50_75 INT DEFAULT 0;
+ALTER TABLE guarantee_convergence ADD COLUMN IF NOT EXISTS h_75_100 INT DEFAULT 0;
+ALTER TABLE guarantee_convergence ADD COLUMN IF NOT EXISTS h_100_150 INT DEFAULT 0;
+ALTER TABLE guarantee_convergence ADD COLUMN IF NOT EXISTS h_150_250 INT DEFAULT 0;
+ALTER TABLE guarantee_convergence ADD COLUMN IF NOT EXISTS h_250_500 INT DEFAULT 0;
+ALTER TABLE guarantee_convergence ADD COLUMN IF NOT EXISTS h_500_1000 INT DEFAULT 0;
+ALTER TABLE guarantee_convergence ADD COLUMN IF NOT EXISTS h_1000_2000 INT DEFAULT 0;
+ALTER TABLE guarantee_convergence ADD COLUMN IF NOT EXISTS h_2000_5000 INT DEFAULT 0;
+ALTER TABLE guarantee_convergence ADD COLUMN IF NOT EXISTS h_5000_10000 INT DEFAULT 0;
+ALTER TABLE guarantee_convergence ADD COLUMN IF NOT EXISTS h_10000_15000 INT DEFAULT 0;
+ALTER TABLE guarantee_convergence ADD COLUMN IF NOT EXISTS h_15000_20000 INT DEFAULT 0;
+ALTER TABLE guarantee_convergence ADD COLUMN IF NOT EXISTS h_20000_25000 INT DEFAULT 0;
+ALTER TABLE guarantee_convergence ADD COLUMN IF NOT EXISTS h_25000_30000 INT DEFAULT 0;
+ALTER TABLE guarantee_convergence ADD COLUMN IF NOT EXISTS h_30000_60000 INT DEFAULT 0;
+ALTER TABLE guarantee_convergence ADD COLUMN IF NOT EXISTS h_60000_120000 INT DEFAULT 0;
+ALTER TABLE guarantee_convergence ADD COLUMN IF NOT EXISTS h_120000_plus INT DEFAULT 0;
+ALTER TABLE guarantee_convergence ADD COLUMN IF NOT EXISTS hist_total INT DEFAULT 0;
+
+-- ── assurance_convergence ─────────────────────────────────────────────
+ALTER TABLE assurance_convergence ADD COLUMN IF NOT EXISTS h_0_2 INT DEFAULT 0;
+ALTER TABLE assurance_convergence ADD COLUMN IF NOT EXISTS h_2_5 INT DEFAULT 0;
+ALTER TABLE assurance_convergence ADD COLUMN IF NOT EXISTS h_5_10 INT DEFAULT 0;
+ALTER TABLE assurance_convergence ADD COLUMN IF NOT EXISTS h_10_15 INT DEFAULT 0;
+ALTER TABLE assurance_convergence ADD COLUMN IF NOT EXISTS h_15_20 INT DEFAULT 0;
+ALTER TABLE assurance_convergence ADD COLUMN IF NOT EXISTS h_20_30 INT DEFAULT 0;
+ALTER TABLE assurance_convergence ADD COLUMN IF NOT EXISTS h_30_50 INT DEFAULT 0;
+ALTER TABLE assurance_convergence ADD COLUMN IF NOT EXISTS h_50_75 INT DEFAULT 0;
+ALTER TABLE assurance_convergence ADD COLUMN IF NOT EXISTS h_75_100 INT DEFAULT 0;
+ALTER TABLE assurance_convergence ADD COLUMN IF NOT EXISTS h_100_150 INT DEFAULT 0;
+ALTER TABLE assurance_convergence ADD COLUMN IF NOT EXISTS h_150_250 INT DEFAULT 0;
+ALTER TABLE assurance_convergence ADD COLUMN IF NOT EXISTS h_250_500 INT DEFAULT 0;
+ALTER TABLE assurance_convergence ADD COLUMN IF NOT EXISTS h_500_1000 INT DEFAULT 0;
+ALTER TABLE assurance_convergence ADD COLUMN IF NOT EXISTS h_1000_2000 INT DEFAULT 0;
+ALTER TABLE assurance_convergence ADD COLUMN IF NOT EXISTS h_2000_5000 INT DEFAULT 0;
+ALTER TABLE assurance_convergence ADD COLUMN IF NOT EXISTS h_5000_10000 INT DEFAULT 0;
+ALTER TABLE assurance_convergence ADD COLUMN IF NOT EXISTS h_10000_15000 INT DEFAULT 0;
+ALTER TABLE assurance_convergence ADD COLUMN IF NOT EXISTS h_15000_20000 INT DEFAULT 0;
+ALTER TABLE assurance_convergence ADD COLUMN IF NOT EXISTS h_20000_25000 INT DEFAULT 0;
+ALTER TABLE assurance_convergence ADD COLUMN IF NOT EXISTS h_25000_30000 INT DEFAULT 0;
+ALTER TABLE assurance_convergence ADD COLUMN IF NOT EXISTS h_30000_60000 INT DEFAULT 0;
+ALTER TABLE assurance_convergence ADD COLUMN IF NOT EXISTS h_60000_120000 INT DEFAULT 0;
+ALTER TABLE assurance_convergence ADD COLUMN IF NOT EXISTS h_120000_plus INT DEFAULT 0;
+ALTER TABLE assurance_convergence ADD COLUMN IF NOT EXISTS hist_total INT DEFAULT 0;
+
+-- ── assurance_convergence_senders ─────────────────────────────────────
+ALTER TABLE assurance_convergence_senders ADD COLUMN IF NOT EXISTS h_0_2 INT DEFAULT 0;
+ALTER TABLE assurance_convergence_senders ADD COLUMN IF NOT EXISTS h_2_5 INT DEFAULT 0;
+ALTER TABLE assurance_convergence_senders ADD COLUMN IF NOT EXISTS h_5_10 INT DEFAULT 0;
+ALTER TABLE assurance_convergence_senders ADD COLUMN IF NOT EXISTS h_10_15 INT DEFAULT 0;
+ALTER TABLE assurance_convergence_senders ADD COLUMN IF NOT EXISTS h_15_20 INT DEFAULT 0;
+ALTER TABLE assurance_convergence_senders ADD COLUMN IF NOT EXISTS h_20_30 INT DEFAULT 0;
+ALTER TABLE assurance_convergence_senders ADD COLUMN IF NOT EXISTS h_30_50 INT DEFAULT 0;
+ALTER TABLE assurance_convergence_senders ADD COLUMN IF NOT EXISTS h_50_75 INT DEFAULT 0;
+ALTER TABLE assurance_convergence_senders ADD COLUMN IF NOT EXISTS h_75_100 INT DEFAULT 0;
+ALTER TABLE assurance_convergence_senders ADD COLUMN IF NOT EXISTS h_100_150 INT DEFAULT 0;
+ALTER TABLE assurance_convergence_senders ADD COLUMN IF NOT EXISTS h_150_250 INT DEFAULT 0;
+ALTER TABLE assurance_convergence_senders ADD COLUMN IF NOT EXISTS h_250_500 INT DEFAULT 0;
+ALTER TABLE assurance_convergence_senders ADD COLUMN IF NOT EXISTS h_500_1000 INT DEFAULT 0;
+ALTER TABLE assurance_convergence_senders ADD COLUMN IF NOT EXISTS h_1000_2000 INT DEFAULT 0;
+ALTER TABLE assurance_convergence_senders ADD COLUMN IF NOT EXISTS h_2000_5000 INT DEFAULT 0;
+ALTER TABLE assurance_convergence_senders ADD COLUMN IF NOT EXISTS h_5000_10000 INT DEFAULT 0;
+ALTER TABLE assurance_convergence_senders ADD COLUMN IF NOT EXISTS h_10000_15000 INT DEFAULT 0;
+ALTER TABLE assurance_convergence_senders ADD COLUMN IF NOT EXISTS h_15000_20000 INT DEFAULT 0;
+ALTER TABLE assurance_convergence_senders ADD COLUMN IF NOT EXISTS h_20000_25000 INT DEFAULT 0;
+ALTER TABLE assurance_convergence_senders ADD COLUMN IF NOT EXISTS h_25000_30000 INT DEFAULT 0;
+ALTER TABLE assurance_convergence_senders ADD COLUMN IF NOT EXISTS h_30000_60000 INT DEFAULT 0;
+ALTER TABLE assurance_convergence_senders ADD COLUMN IF NOT EXISTS h_60000_120000 INT DEFAULT 0;
+ALTER TABLE assurance_convergence_senders ADD COLUMN IF NOT EXISTS h_120000_plus INT DEFAULT 0;
+ALTER TABLE assurance_convergence_senders ADD COLUMN IF NOT EXISTS hist_total INT DEFAULT 0;

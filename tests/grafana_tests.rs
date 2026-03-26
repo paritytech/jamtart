@@ -2217,6 +2217,23 @@ async fn test_grafana_guarantee_convergence() {
     assert!(row["work_report_hash"].is_string(), "expected work_report_hash");
     assert!(row["p50_ms"].is_number(), "expected p50_ms");
     assert!(row["p99_ms"].is_number(), "expected p99_ms");
+    assert!(row["builder_node_id"].is_string(), "expected builder_node_id");
+
+    // Test interval mode — should return ConvergenceTimeseriesRow
+    let path = format!(
+        "/api/grafana/guarantee-convergence?{}&interval=1m",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+    assert!(!arr.is_empty(), "interval mode should have data");
+    let row = &arr[0];
+    assert!(row["ts"].is_string(), "expected ts in interval mode");
+    assert!(row["sample_count"].as_i64().unwrap_or(0) > 0, "expected sample_count > 0");
+    assert!(row["p50_ms"].is_number(), "expected p50_ms in interval mode");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2283,6 +2300,37 @@ async fn test_grafana_assurance_convergence() {
     let row = &arr[0];
     assert!(row["sender_node_id"].is_string(), "expected sender_node_id");
     assert!(row["node_count"].as_i64().unwrap_or(0) >= 2, "expected node_count >= 2");
+
+    // Test interval mode on overview endpoint
+    let path = format!(
+        "/api/grafana/assurance-convergence?{}&interval=1m",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+    assert!(!arr.is_empty(), "assurance interval mode should have data");
+    let row = &arr[0];
+    assert!(row["ts"].is_string(), "expected ts in interval mode");
+    assert!(row["sample_count"].as_i64().unwrap_or(0) > 0, "expected sample_count > 0");
+    assert!(row["p50_ms"].is_number(), "expected p50_ms in interval mode");
+
+    // Test interval mode on senders endpoint
+    let path = format!(
+        "/api/grafana/assurance-convergence/senders?{}&interval=1m",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+    assert!(!arr.is_empty(), "senders interval mode should have data");
+    let row = &arr[0];
+    assert!(row["ts"].is_string(), "expected ts in senders interval mode");
+    assert!(row["sample_count"].as_i64().unwrap_or(0) > 0, "expected sample_count > 0");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
