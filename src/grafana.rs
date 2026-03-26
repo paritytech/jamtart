@@ -7,7 +7,7 @@
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::get,
     Json, Router,
 };
@@ -82,6 +82,7 @@ use crate::onchain_types::*;
         GuaranteeConvergenceDetailRow,
         AssuranceConvergenceRow,
         AssuranceConvergenceSenderRow,
+        ConvergenceTimeseriesRow,
         DaStatsRow,
         ShardLatencyRow,
         WpFunnelTimeseriesRow,
@@ -243,6 +244,17 @@ pub struct EventsQuery {
     pub limit: Option<i64>,
 }
 
+/// Parameters for convergence endpoints that support both per-slot and histogram modes.
+#[derive(Deserialize, IntoParams)]
+pub struct ConvergenceQuery {
+    /// Start of time range (ISO 8601)
+    pub start: DateTime<Utc>,
+    /// End of time range (ISO 8601)
+    pub end: DateTime<Utc>,
+    /// Bucket width for histogram mode. When present, returns percentile timeseries from merged histograms instead of per-slot rows.
+    pub interval: Option<String>,
+}
+
 /// Parameters for assurance convergence senders query.
 #[derive(Deserialize, IntoParams)]
 pub struct AssuranceConvergenceSendersQuery {
@@ -254,6 +266,8 @@ pub struct AssuranceConvergenceSendersQuery {
     pub anchor: Option<String>,
     /// Filter to a single sender node_id
     pub node: Option<String>,
+    /// Bucket width for histogram mode. When present, returns percentile timeseries from merged histograms instead of per-sender rows.
+    pub interval: Option<String>,
 }
 
 /// Parameters for guarantee convergence detail query.
@@ -781,23 +795,32 @@ async fn wp_funnel(
 #[utoipa::path(
     get,
     path = "/api/grafana/guarantee-convergence",
-    params(TimeRangeQuery),
+    params(ConvergenceQuery),
     responses(
-        (status = 200, description = "Per-slot guarantee convergence (one row per slot, ASC). Aggregates all GuaranteeBuilt(105) → GuaranteeReceived(112) deltas for a slot into cross-core percentiles (p50/p75/p95/p99/p100 ms). Source: guarantee_convergence_slots table.", body = [GuaranteeConvergenceSlotRow]),
+        (status = 200, description = "Per-slot guarantee convergence (one row per slot, ASC). Without interval: per-slot rows from guarantee_convergence_slots. With interval: percentile timeseries from merged histograms.", body = [GuaranteeConvergenceSlotRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
 )]
 async fn guarantee_convergence(
-    Query(q): Query<TimeRangeQuery>,
+    Query(q): Query<ConvergenceQuery>,
     State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
-    state
-        .store
-        .grafana_guarantee_convergence(q.start, q.end)
-        .await
-        .map(Json)
-        .map_err(|e| map_sqlx_error("grafana/guarantee-convergence", e))
+) -> Result<Response, StatusCode> {
+    if let Some(interval) = &q.interval {
+        state
+            .store
+            .grafana_guarantee_convergence_hist(q.start, q.end, interval)
+            .await
+            .map(|rows| Json(rows).into_response())
+            .map_err(|e| map_sqlx_error("grafana/guarantee-convergence", e))
+    } else {
+        state
+            .store
+            .grafana_guarantee_convergence(q.start, q.end)
+            .await
+            .map(|rows| Json(rows).into_response())
+            .map_err(|e| map_sqlx_error("grafana/guarantee-convergence", e))
+    }
 }
 
 /// Guarantee convergence detail — per-guarantee rows for drill-down.
@@ -845,23 +868,32 @@ async fn guarantee_convergence_detail(
 #[utoipa::path(
     get,
     path = "/api/grafana/assurance-convergence",
-    params(TimeRangeQuery),
+    params(ConvergenceQuery),
     responses(
-        (status = 200, description = "Per-anchor assurance convergence (one row per block, by slot ASC). Aggregates DistributingAssurance(126) → AssuranceReceived(131) deltas across all ~1023 senders. Includes distribution start spread. Source: assurance_convergence table.", body = [AssuranceConvergenceRow]),
+        (status = 200, description = "Per-anchor assurance convergence. Without interval: per-anchor rows from assurance_convergence. With interval: percentile timeseries from merged histograms.", body = [AssuranceConvergenceRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
 )]
 async fn assurance_convergence(
-    Query(q): Query<TimeRangeQuery>,
+    Query(q): Query<ConvergenceQuery>,
     State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
-    state
-        .store
-        .grafana_assurance_convergence(q.start, q.end)
-        .await
-        .map(Json)
-        .map_err(|e| map_sqlx_error("grafana/assurance-convergence", e))
+) -> Result<Response, StatusCode> {
+    if let Some(interval) = &q.interval {
+        state
+            .store
+            .grafana_assurance_convergence_hist(q.start, q.end, interval)
+            .await
+            .map(|rows| Json(rows).into_response())
+            .map_err(|e| map_sqlx_error("grafana/assurance-convergence", e))
+    } else {
+        state
+            .store
+            .grafana_assurance_convergence(q.start, q.end)
+            .await
+            .map(|rows| Json(rows).into_response())
+            .map_err(|e| map_sqlx_error("grafana/assurance-convergence", e))
+    }
 }
 
 /// Assurance convergence per-sender detail — for debugging individual node propagation.
@@ -873,7 +905,7 @@ async fn assurance_convergence(
     path = "/api/grafana/assurance-convergence/senders",
     params(AssuranceConvergenceSendersQuery),
     responses(
-        (status = 200, description = "Per-sender assurance detail (one row per anchor×sender). Individual sender's assurance propagation to receivers. Optional anchor/node filters. Source: assurance_convergence_senders.", body = [AssuranceConvergenceSenderRow]),
+        (status = 200, description = "Per-sender assurance detail. Without interval: per-sender rows. With interval: percentile timeseries from merged histograms. Optional anchor/node filters.", body = [AssuranceConvergenceSenderRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -881,19 +913,33 @@ async fn assurance_convergence(
 async fn assurance_convergence_senders(
     Query(q): Query<AssuranceConvergenceSendersQuery>,
     State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
-    let anchor_bytes = q.anchor.as_deref().and_then(|h| hex::decode(h).ok());
-    state
-        .store
-        .grafana_assurance_convergence_senders(
-            q.start,
-            q.end,
-            anchor_bytes.as_deref(),
-            q.node.as_deref(),
-        )
-        .await
-        .map(Json)
-        .map_err(|e| map_sqlx_error("grafana/assurance-convergence/senders", e))
+) -> Result<Response, StatusCode> {
+    if let Some(interval) = &q.interval {
+        state
+            .store
+            .grafana_assurance_convergence_senders_hist(
+                q.start,
+                q.end,
+                interval,
+                q.node.as_deref(),
+            )
+            .await
+            .map(|rows| Json(rows).into_response())
+            .map_err(|e| map_sqlx_error("grafana/assurance-convergence/senders", e))
+    } else {
+        let anchor_bytes = q.anchor.as_deref().and_then(|h| hex::decode(h).ok());
+        state
+            .store
+            .grafana_assurance_convergence_senders(
+                q.start,
+                q.end,
+                anchor_bytes.as_deref(),
+                q.node.as_deref(),
+            )
+            .await
+            .map(|rows| Json(rows).into_response())
+            .map_err(|e| map_sqlx_error("grafana/assurance-convergence/senders", e))
+    }
 }
 
 /// Per-node DA operational stats — shard event counts, latency averages,

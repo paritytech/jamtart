@@ -955,6 +955,9 @@ async fn handle_connection_optimized(
                                                     if s.wp_hash.is_none() {
                                                         s.wp_hash = enriched.wp_hash;
                                                     }
+                                                    if s.builder_node_id.is_none() {
+                                                        s.builder_node_id = Some(node_id_str.clone());
+                                                    }
                                                     s.dirty = true;
                                                     s.last_event = std::time::Instant::now();
                                                 })
@@ -964,6 +967,7 @@ async fn handle_connection_optimized(
                                                         slot: Some(slot),
                                                         core: enriched.core,
                                                         wp_hash: enriched.wp_hash,
+                                                        builder_node_id: Some(node_id_str.clone()),
                                                         received_timestamps: Vec::new(),
                                                         last_event: std::time::Instant::now(),
                                                         flushed: false,
@@ -987,6 +991,7 @@ async fn handle_connection_optimized(
                                                         slot: None,
                                                         core: None,
                                                         wp_hash: None,
+                                                        builder_node_id: None,
                                                         received_timestamps: vec![evt_ts],
                                                         last_event: std::time::Instant::now(),
                                                         flushed: false,

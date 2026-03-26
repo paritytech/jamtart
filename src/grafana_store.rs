@@ -8,32 +8,10 @@ use sqlx::Row;
 use crate::grafana_types::*;
 use crate::store::EventStore;
 
-/// Histogram bucket boundaries (ms) matching shard_latency_hist columns.
-/// Last bucket [5000, ∞) — use 5000 as upper bound for the overflow bucket.
-const HIST_BOUNDS: [u32; 15] = [0, 1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2000, 3000, 5000, 5000];
-
-/// Compute approximate percentiles (p50, p75, p95, p99, p100) from a merged histogram.
-/// Returns None if total is 0. Overflow bucket reports 5000 (lower bound, unbounded above).
+/// Compute approximate percentiles (p50, p75, p95, p99, p100) from a merged DA histogram.
+/// Delegates to the shared `histogram::percentiles_from_histogram` with DA bounds.
 fn percentiles_from_histogram(buckets: &[u32; 14], total: u32) -> Option<(i32, i32, i32, i32, i32)> {
-    if total == 0 {
-        return None;
-    }
-    let targets = [0.50, 0.75, 0.95, 0.99, 1.0];
-    let mut results = [0i32; 5];
-    for (i, &target) in targets.iter().enumerate() {
-        let threshold = (total as f64 * target).ceil() as u32;
-        let mut cumsum = 0u32;
-        for (j, &count) in buckets.iter().enumerate() {
-            cumsum += count;
-            if cumsum >= threshold {
-                let lower = HIST_BOUNDS[j];
-                let upper = HIST_BOUNDS[j + 1];
-                results[i] = ((lower + upper) / 2) as i32;
-                break;
-            }
-        }
-    }
-    Some((results[0], results[1], results[2], results[3], results[4]))
+    crate::histogram::percentiles_from_histogram(buckets, total, &crate::histogram::DA_BOUNDS)
 }
 
 /// Whitelisted time_bucket intervals for dynamic SQL (6s-aligned sub-minute).
@@ -1270,7 +1248,7 @@ impl EventStore {
     ) -> Result<Vec<GuaranteeConvergenceDetailRow>, sqlx::Error> {
         let rows = sqlx::query(
             r#"
-            SELECT work_report_hash, slot, core, wp_hash, node_count,
+            SELECT work_report_hash, slot, core, wp_hash, builder_node_id, node_count,
                    p50_ms, p75_ms, p95_ms, p99_ms, p100_ms, built_at
             FROM guarantee_convergence
             WHERE built_at >= $1 AND built_at < $2
@@ -1296,6 +1274,7 @@ impl EventStore {
                     slot: row.get("slot"),
                     core: row.get("core"),
                     wp_hash: wp.map(|h| hex::encode(&h)),
+                    builder_node_id: row.get("builder_node_id"),
                     node_count: row.get("node_count"),
                     p50_ms: row.get("p50_ms"),
                     p75_ms: row.get("p75_ms"),
@@ -1408,6 +1387,141 @@ impl EventStore {
                 }
             })
             .collect())
+    }
+
+    // ── 16b. grafana_guarantee_convergence_hist (interval mode) ─────────
+
+    /// Guarantee convergence histogram timeseries — percentiles from merged histograms.
+    pub async fn grafana_guarantee_convergence_hist(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        interval: &str,
+    ) -> Result<Vec<ConvergenceTimeseriesRow>, sqlx::Error> {
+        let interval = snap_interval(interval);
+        let pg_interval = interval_to_pg(interval);
+
+        let sql = format!(
+            r#"
+            SELECT time_bucket('{pg_interval}'::interval, built_at) AS ts,
+                SUM(h_0_2)::INT AS h_0_2, SUM(h_2_5)::INT AS h_2_5,
+                SUM(h_5_10)::INT AS h_5_10, SUM(h_10_15)::INT AS h_10_15,
+                SUM(h_15_20)::INT AS h_15_20, SUM(h_20_30)::INT AS h_20_30,
+                SUM(h_30_50)::INT AS h_30_50, SUM(h_50_75)::INT AS h_50_75,
+                SUM(h_75_100)::INT AS h_75_100, SUM(h_100_150)::INT AS h_100_150,
+                SUM(h_150_250)::INT AS h_150_250, SUM(h_250_500)::INT AS h_250_500,
+                SUM(h_500_1000)::INT AS h_500_1000, SUM(h_1000_2000)::INT AS h_1000_2000,
+                SUM(h_2000_5000)::INT AS h_2000_5000, SUM(h_5000_10000)::INT AS h_5000_10000,
+                SUM(h_10000_15000)::INT AS h_10000_15000, SUM(h_15000_20000)::INT AS h_15000_20000,
+                SUM(h_20000_25000)::INT AS h_20000_25000, SUM(h_25000_30000)::INT AS h_25000_30000,
+                SUM(h_30000_60000)::INT AS h_30000_60000, SUM(h_60000_120000)::INT AS h_60000_120000,
+                SUM(h_120000_plus)::INT AS h_120000_plus,
+                SUM(hist_total)::INT AS hist_total
+            FROM guarantee_convergence
+            WHERE built_at >= $1 AND built_at < $2
+            GROUP BY 1
+            ORDER BY 1
+            "#,
+        );
+
+        let rows = sqlx::query(&sql)
+            .bind(start)
+            .bind(end)
+            .fetch_all(self.pool())
+            .await?;
+
+        Ok(rows_to_convergence_timeseries(&rows))
+    }
+
+    // ── 17b. grafana_assurance_convergence_hist (interval mode) ──────────
+
+    /// Assurance convergence histogram timeseries — percentiles from merged histograms.
+    pub async fn grafana_assurance_convergence_hist(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        interval: &str,
+    ) -> Result<Vec<ConvergenceTimeseriesRow>, sqlx::Error> {
+        let interval = snap_interval(interval);
+        let pg_interval = interval_to_pg(interval);
+
+        let sql = format!(
+            r#"
+            SELECT time_bucket('{pg_interval}'::interval, first_distributed_at) AS ts,
+                SUM(h_0_2)::INT AS h_0_2, SUM(h_2_5)::INT AS h_2_5,
+                SUM(h_5_10)::INT AS h_5_10, SUM(h_10_15)::INT AS h_10_15,
+                SUM(h_15_20)::INT AS h_15_20, SUM(h_20_30)::INT AS h_20_30,
+                SUM(h_30_50)::INT AS h_30_50, SUM(h_50_75)::INT AS h_50_75,
+                SUM(h_75_100)::INT AS h_75_100, SUM(h_100_150)::INT AS h_100_150,
+                SUM(h_150_250)::INT AS h_150_250, SUM(h_250_500)::INT AS h_250_500,
+                SUM(h_500_1000)::INT AS h_500_1000, SUM(h_1000_2000)::INT AS h_1000_2000,
+                SUM(h_2000_5000)::INT AS h_2000_5000, SUM(h_5000_10000)::INT AS h_5000_10000,
+                SUM(h_10000_15000)::INT AS h_10000_15000, SUM(h_15000_20000)::INT AS h_15000_20000,
+                SUM(h_20000_25000)::INT AS h_20000_25000, SUM(h_25000_30000)::INT AS h_25000_30000,
+                SUM(h_30000_60000)::INT AS h_30000_60000, SUM(h_60000_120000)::INT AS h_60000_120000,
+                SUM(h_120000_plus)::INT AS h_120000_plus,
+                SUM(hist_total)::INT AS hist_total
+            FROM assurance_convergence
+            WHERE first_distributed_at >= $1 AND first_distributed_at < $2
+            GROUP BY 1
+            ORDER BY 1
+            "#,
+        );
+
+        let rows = sqlx::query(&sql)
+            .bind(start)
+            .bind(end)
+            .fetch_all(self.pool())
+            .await?;
+
+        Ok(rows_to_convergence_timeseries(&rows))
+    }
+
+    // ── 17c. grafana_assurance_convergence_senders_hist (interval mode) ──
+
+    /// Assurance convergence senders histogram timeseries — percentiles from merged histograms.
+    pub async fn grafana_assurance_convergence_senders_hist(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        interval: &str,
+        node_filter: Option<&str>,
+    ) -> Result<Vec<ConvergenceTimeseriesRow>, sqlx::Error> {
+        let interval = snap_interval(interval);
+        let pg_interval = interval_to_pg(interval);
+
+        let sql = format!(
+            r#"
+            SELECT time_bucket('{pg_interval}'::interval, distributed_at) AS ts,
+                SUM(h_0_2)::INT AS h_0_2, SUM(h_2_5)::INT AS h_2_5,
+                SUM(h_5_10)::INT AS h_5_10, SUM(h_10_15)::INT AS h_10_15,
+                SUM(h_15_20)::INT AS h_15_20, SUM(h_20_30)::INT AS h_20_30,
+                SUM(h_30_50)::INT AS h_30_50, SUM(h_50_75)::INT AS h_50_75,
+                SUM(h_75_100)::INT AS h_75_100, SUM(h_100_150)::INT AS h_100_150,
+                SUM(h_150_250)::INT AS h_150_250, SUM(h_250_500)::INT AS h_250_500,
+                SUM(h_500_1000)::INT AS h_500_1000, SUM(h_1000_2000)::INT AS h_1000_2000,
+                SUM(h_2000_5000)::INT AS h_2000_5000, SUM(h_5000_10000)::INT AS h_5000_10000,
+                SUM(h_10000_15000)::INT AS h_10000_15000, SUM(h_15000_20000)::INT AS h_15000_20000,
+                SUM(h_20000_25000)::INT AS h_20000_25000, SUM(h_25000_30000)::INT AS h_25000_30000,
+                SUM(h_30000_60000)::INT AS h_30000_60000, SUM(h_60000_120000)::INT AS h_60000_120000,
+                SUM(h_120000_plus)::INT AS h_120000_plus,
+                SUM(hist_total)::INT AS hist_total
+            FROM assurance_convergence_senders
+            WHERE distributed_at >= $1 AND distributed_at < $2
+              AND ($3::TEXT IS NULL OR sender_node_id = $3)
+            GROUP BY 1
+            ORDER BY 1
+            "#,
+        );
+
+        let rows = sqlx::query(&sql)
+            .bind(start)
+            .bind(end)
+            .bind(node_filter)
+            .fetch_all(self.pool())
+            .await?;
+
+        Ok(rows_to_convergence_timeseries(&rows))
     }
 
     // ── 18. grafana_da_stats ────────────────────────────────────────────
@@ -1666,6 +1780,36 @@ impl EventStore {
     }
 }
 
+fn rows_to_convergence_timeseries(rows: &[sqlx::postgres::PgRow]) -> Vec<ConvergenceTimeseriesRow> {
+    use crate::histogram::{percentiles_from_histogram, CONVERGENCE_BOUNDS};
+    rows.iter().map(|row| {
+        let ts: DateTime<Utc> = row.get("ts");
+        let hist = [
+            row.get::<i32, _>("h_0_2") as u32, row.get::<i32, _>("h_2_5") as u32,
+            row.get::<i32, _>("h_5_10") as u32, row.get::<i32, _>("h_10_15") as u32,
+            row.get::<i32, _>("h_15_20") as u32, row.get::<i32, _>("h_20_30") as u32,
+            row.get::<i32, _>("h_30_50") as u32, row.get::<i32, _>("h_50_75") as u32,
+            row.get::<i32, _>("h_75_100") as u32, row.get::<i32, _>("h_100_150") as u32,
+            row.get::<i32, _>("h_150_250") as u32, row.get::<i32, _>("h_250_500") as u32,
+            row.get::<i32, _>("h_500_1000") as u32, row.get::<i32, _>("h_1000_2000") as u32,
+            row.get::<i32, _>("h_2000_5000") as u32, row.get::<i32, _>("h_5000_10000") as u32,
+            row.get::<i32, _>("h_10000_15000") as u32, row.get::<i32, _>("h_15000_20000") as u32,
+            row.get::<i32, _>("h_20000_25000") as u32, row.get::<i32, _>("h_25000_30000") as u32,
+            row.get::<i32, _>("h_30000_60000") as u32, row.get::<i32, _>("h_60000_120000") as u32,
+            row.get::<i32, _>("h_120000_plus") as u32,
+        ];
+        let total: i32 = row.get("hist_total");
+        let p = percentiles_from_histogram(&hist, total as u32, &CONVERGENCE_BOUNDS);
+        ConvergenceTimeseriesRow {
+            ts,
+            p50_ms: p.map(|p| p.0), p75_ms: p.map(|p| p.1),
+            p95_ms: p.map(|p| p.2), p99_ms: p.map(|p| p.3),
+            p100_ms: p.map(|p| p.4),
+            sample_count: total,
+        }
+    }).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1733,15 +1877,15 @@ mod tests {
 
     #[test]
     fn hist_percentiles_all_in_one_bucket() {
-        // 100 samples in bucket index 4 [10,25) → midpoint = (10+25)/2 = 17
+        // 100 samples in bucket index 4 [10,25) → upper bound = 25
         let mut buckets = [0u32; 14];
         buckets[4] = 100;
         let (p50, p75, p95, p99, p100) = percentiles_from_histogram(&buckets, 100).unwrap();
-        assert_eq!(p50, 17);
-        assert_eq!(p75, 17);
-        assert_eq!(p95, 17);
-        assert_eq!(p99, 17);
-        assert_eq!(p100, 17);
+        assert_eq!(p50, 25);
+        assert_eq!(p75, 25);
+        assert_eq!(p95, 25);
+        assert_eq!(p99, 25);
+        assert_eq!(p100, 25);
     }
 
     #[test]
@@ -1751,28 +1895,28 @@ mod tests {
         buckets[4] = 50;
         buckets[6] = 50;
         let (p50, _p75, _p95, _p99, p100) = percentiles_from_histogram(&buckets, 100).unwrap();
-        // p50 threshold = ceil(100*0.50) = 50, cumsum reaches 50 at bucket 4 → midpoint 17
-        assert_eq!(p50, 17);
-        // p100 threshold = ceil(100*1.0) = 100, cumsum reaches 100 at bucket 6 → midpoint (50+100)/2 = 75
-        assert_eq!(p100, 75);
+        // p50 threshold = ceil(100*0.50) = 50, cumsum reaches 50 at bucket 4 → upper bound = 25
+        assert_eq!(p50, 25);
+        // p100 threshold = ceil(100*1.0) = 100, cumsum reaches 100 at bucket 6 → upper bound = 100
+        assert_eq!(p100, 100);
     }
 
     #[test]
     fn hist_percentiles_single_sample() {
-        // 1 sample in bucket 5 [25,50) → midpoint = (25+50)/2 = 37
+        // 1 sample in bucket 5 [25,50) → upper bound = 50
         let mut buckets = [0u32; 14];
         buckets[5] = 1;
         let (p50, p75, p95, p99, p100) = percentiles_from_histogram(&buckets, 1).unwrap();
-        assert_eq!(p50, 37);
-        assert_eq!(p75, 37);
-        assert_eq!(p95, 37);
-        assert_eq!(p99, 37);
-        assert_eq!(p100, 37);
+        assert_eq!(p50, 50);
+        assert_eq!(p75, 50);
+        assert_eq!(p95, 50);
+        assert_eq!(p99, 50);
+        assert_eq!(p100, 50);
     }
 
     #[test]
     fn hist_percentiles_overflow_bucket() {
-        // Samples in last bucket index 13 [5000,5000) → midpoint = (5000+5000)/2 = 5000
+        // Samples in last bucket index 13 [5000,∞) → lower bound = 5000 (overflow)
         let mut buckets = [0u32; 14];
         buckets[13] = 10;
         let (p50, p75, p95, p99, p100) = percentiles_from_histogram(&buckets, 10).unwrap();

@@ -22,6 +22,7 @@ pub struct GuaranteeConvergenceState {
     pub slot: Option<u32>,
     pub core: Option<u16>,
     pub wp_hash: Option<[u8; 32]>,
+    pub builder_node_id: Option<Arc<str>>,
     pub received_timestamps: Vec<u64>,
     pub last_event: Instant,
     pub flushed: bool,
@@ -33,6 +34,7 @@ pub struct GuaranteeConvergenceRow {
     pub slot: i32,
     pub core: Option<i16>,
     pub wp_hash: Option<Vec<u8>>,
+    pub builder_node_id: Option<Arc<str>>,
     pub node_count: i16,
     pub p50_ms: i32,
     pub p75_ms: Option<i32>,
@@ -40,6 +42,8 @@ pub struct GuaranteeConvergenceRow {
     pub p99_ms: i32,
     pub p100_ms: i32,
     pub built_at: u64,
+    pub histogram: [u32; crate::histogram::CONVERGENCE_BUCKET_COUNT],
+    pub hist_total: u32,
 }
 
 pub struct GuaranteeConvergenceSlotRow {
@@ -88,6 +92,15 @@ pub fn compute_percentiles(anchor_ts: u64, timestamps: &[u64]) -> Option<Converg
     })
 }
 
+/// Compute offsets in ms from an anchor timestamp, and bucket them into a convergence histogram.
+fn offsets_to_histogram(anchor_ts: u64, timestamps: &[u64]) -> ([u32; crate::histogram::CONVERGENCE_BUCKET_COUNT], u32) {
+    let deltas: Vec<i32> = timestamps
+        .iter()
+        .map(|&t| ((t as i64 - anchor_ts as i64) / 1000) as i32)
+        .collect();
+    crate::histogram::bucket_deltas_convergence(&deltas)
+}
+
 fn ts_to_datetime(jce_micros: u64) -> DateTime<Utc> {
     let unix_us = JCE_EPOCH_UNIX_MICROS + jce_micros as i64;
     let secs = unix_us / 1_000_000;
@@ -129,11 +142,13 @@ pub async fn flush_guarantee_convergence(
         if age >= age_evict {
             if state.dirty {
                 if let Some(p) = compute_percentiles(built_at, &state.received_timestamps) {
+                    let (histogram, hist_total) = offsets_to_histogram(built_at, &state.received_timestamps);
                     to_upsert.push(GuaranteeConvergenceRow {
                         work_report_hash,
                         slot,
                         core: state.core.map(|c| c as i16),
                         wp_hash: state.wp_hash.map(|h| h.to_vec()),
+                        builder_node_id: state.builder_node_id.clone(),
                         node_count: state.received_timestamps.len() as i16,
                         p50_ms: p.p50_ms,
                         p75_ms: Some(p.p75_ms),
@@ -141,6 +156,8 @@ pub async fn flush_guarantee_convergence(
                         p99_ms: p.p99_ms,
                         p100_ms: p.p100_ms,
                         built_at,
+                        histogram,
+                        hist_total,
                     });
                     dirty_slots.push(slot);
                 }
@@ -148,11 +165,13 @@ pub async fn flush_guarantee_convergence(
             to_evict.push(work_report_hash);
         } else if !state.flushed && age >= age_insert {
             if let Some(p) = compute_percentiles(built_at, &state.received_timestamps) {
+                let (histogram, hist_total) = offsets_to_histogram(built_at, &state.received_timestamps);
                 to_insert.push(GuaranteeConvergenceRow {
                     work_report_hash,
                     slot,
                     core: state.core.map(|c| c as i16),
                     wp_hash: state.wp_hash.map(|h| h.to_vec()),
+                    builder_node_id: state.builder_node_id.clone(),
                     node_count: state.received_timestamps.len() as i16,
                     p50_ms: p.p50_ms,
                     p75_ms: Some(p.p75_ms),
@@ -160,16 +179,20 @@ pub async fn flush_guarantee_convergence(
                     p99_ms: p.p99_ms,
                     p100_ms: p.p100_ms,
                     built_at,
+                    histogram,
+                    hist_total,
                 });
                 dirty_slots.push(slot);
             }
         } else if state.flushed && state.dirty {
             if let Some(p) = compute_percentiles(built_at, &state.received_timestamps) {
+                let (histogram, hist_total) = offsets_to_histogram(built_at, &state.received_timestamps);
                 to_upsert.push(GuaranteeConvergenceRow {
                     work_report_hash,
                     slot,
                     core: state.core.map(|c| c as i16),
                     wp_hash: state.wp_hash.map(|h| h.to_vec()),
+                    builder_node_id: state.builder_node_id.clone(),
                     node_count: state.received_timestamps.len() as i16,
                     p50_ms: p.p50_ms,
                     p75_ms: Some(p.p75_ms),
@@ -177,6 +200,8 @@ pub async fn flush_guarantee_convergence(
                     p99_ms: p.p99_ms,
                     p100_ms: p.p100_ms,
                     built_at,
+                    histogram,
+                    hist_total,
                 });
                 dirty_slots.push(slot);
             }
@@ -246,25 +271,47 @@ pub async fn flush_guarantee_convergence(
         });
     }
 
-    // Phase 2: DB writes — per-guarantee rows
-    for row in &to_insert {
+    // Phase 2: DB writes — per-guarantee rows (INSERT and UPSERT share the same SQL)
+    let all_guarantee_rows: Vec<(&GuaranteeConvergenceRow, &str)> = to_insert
+        .iter().map(|r| (r, "INSERT"))
+        .chain(to_upsert.iter().map(|r| (r, "UPSERT")))
+        .collect();
+
+    for (row, label) in &all_guarantee_rows {
         let built_dt = ts_to_datetime(row.built_at);
+        let h = &row.histogram;
         let result = sqlx::query(
-            r#"INSERT INTO guarantee_convergence (work_report_hash, slot, core, wp_hash, node_count, p50_ms, p75_ms, p95_ms, p99_ms, p100_ms, built_at)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            r#"INSERT INTO guarantee_convergence (work_report_hash, slot, core, wp_hash, builder_node_id,
+                node_count, p50_ms, p75_ms, p95_ms, p99_ms, p100_ms, built_at,
+                h_0_2, h_2_5, h_5_10, h_10_15, h_15_20, h_20_30, h_30_50, h_50_75, h_75_100,
+                h_100_150, h_150_250, h_250_500, h_500_1000, h_1000_2000, h_2000_5000,
+                h_5000_10000, h_10000_15000, h_15000_20000, h_20000_25000, h_25000_30000,
+                h_30000_60000, h_60000_120000, h_120000_plus, hist_total)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24,
+                $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36)
                ON CONFLICT (work_report_hash) DO UPDATE SET
+                   builder_node_id = COALESCE(guarantee_convergence.builder_node_id, EXCLUDED.builder_node_id),
                    node_count = GREATEST(guarantee_convergence.node_count, EXCLUDED.node_count),
-                   p50_ms = EXCLUDED.p50_ms,
-                   p75_ms = EXCLUDED.p75_ms,
-                   p95_ms = EXCLUDED.p95_ms,
-                   p99_ms = EXCLUDED.p99_ms,
+                   p50_ms = EXCLUDED.p50_ms, p75_ms = EXCLUDED.p75_ms,
+                   p95_ms = EXCLUDED.p95_ms, p99_ms = EXCLUDED.p99_ms,
                    p100_ms = GREATEST(guarantee_convergence.p100_ms, EXCLUDED.p100_ms),
-                   built_at = COALESCE(guarantee_convergence.built_at, EXCLUDED.built_at)"#,
+                   built_at = COALESCE(guarantee_convergence.built_at, EXCLUDED.built_at),
+                   h_0_2 = EXCLUDED.h_0_2, h_2_5 = EXCLUDED.h_2_5, h_5_10 = EXCLUDED.h_5_10,
+                   h_10_15 = EXCLUDED.h_10_15, h_15_20 = EXCLUDED.h_15_20, h_20_30 = EXCLUDED.h_20_30,
+                   h_30_50 = EXCLUDED.h_30_50, h_50_75 = EXCLUDED.h_50_75, h_75_100 = EXCLUDED.h_75_100,
+                   h_100_150 = EXCLUDED.h_100_150, h_150_250 = EXCLUDED.h_150_250, h_250_500 = EXCLUDED.h_250_500,
+                   h_500_1000 = EXCLUDED.h_500_1000, h_1000_2000 = EXCLUDED.h_1000_2000, h_2000_5000 = EXCLUDED.h_2000_5000,
+                   h_5000_10000 = EXCLUDED.h_5000_10000, h_10000_15000 = EXCLUDED.h_10000_15000, h_15000_20000 = EXCLUDED.h_15000_20000,
+                   h_20000_25000 = EXCLUDED.h_20000_25000, h_25000_30000 = EXCLUDED.h_25000_30000,
+                   h_30000_60000 = EXCLUDED.h_30000_60000, h_60000_120000 = EXCLUDED.h_60000_120000,
+                   h_120000_plus = EXCLUDED.h_120000_plus, hist_total = EXCLUDED.hist_total"#,
         )
         .bind(&row.work_report_hash[..])
         .bind(row.slot)
         .bind(row.core)
         .bind(&row.wp_hash)
+        .bind(row.builder_node_id.as_deref())
         .bind(row.node_count)
         .bind(row.p50_ms)
         .bind(row.p75_ms)
@@ -272,44 +319,18 @@ pub async fn flush_guarantee_convergence(
         .bind(row.p99_ms)
         .bind(row.p100_ms)
         .bind(built_dt)
+        .bind(h[0] as i32).bind(h[1] as i32).bind(h[2] as i32).bind(h[3] as i32)
+        .bind(h[4] as i32).bind(h[5] as i32).bind(h[6] as i32).bind(h[7] as i32)
+        .bind(h[8] as i32).bind(h[9] as i32).bind(h[10] as i32).bind(h[11] as i32)
+        .bind(h[12] as i32).bind(h[13] as i32).bind(h[14] as i32).bind(h[15] as i32)
+        .bind(h[16] as i32).bind(h[17] as i32).bind(h[18] as i32).bind(h[19] as i32)
+        .bind(h[20] as i32).bind(h[21] as i32).bind(h[22] as i32)
+        .bind(row.hist_total as i32)
         .execute(pool)
         .await;
 
         if let Err(e) = result {
-            warn!(slot = row.slot, "guarantee_convergence INSERT failed: {e}");
-        }
-    }
-
-    for row in &to_upsert {
-        let built_dt = ts_to_datetime(row.built_at);
-        let result = sqlx::query(
-            r#"INSERT INTO guarantee_convergence (work_report_hash, slot, core, wp_hash, node_count, p50_ms, p75_ms, p95_ms, p99_ms, p100_ms, built_at)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-               ON CONFLICT (work_report_hash) DO UPDATE SET
-                   node_count = GREATEST(guarantee_convergence.node_count, EXCLUDED.node_count),
-                   p50_ms = EXCLUDED.p50_ms,
-                   p75_ms = EXCLUDED.p75_ms,
-                   p95_ms = EXCLUDED.p95_ms,
-                   p99_ms = EXCLUDED.p99_ms,
-                   p100_ms = GREATEST(guarantee_convergence.p100_ms, EXCLUDED.p100_ms),
-                   built_at = COALESCE(guarantee_convergence.built_at, EXCLUDED.built_at)"#,
-        )
-        .bind(&row.work_report_hash[..])
-        .bind(row.slot)
-        .bind(row.core)
-        .bind(&row.wp_hash)
-        .bind(row.node_count)
-        .bind(row.p50_ms)
-        .bind(row.p75_ms)
-        .bind(row.p95_ms)
-        .bind(row.p99_ms)
-        .bind(row.p100_ms)
-        .bind(built_dt)
-        .execute(pool)
-        .await;
-
-        if let Err(e) = result {
-            warn!(slot = row.slot, "guarantee_convergence UPSERT failed: {e}");
+            warn!(slot = row.slot, "guarantee_convergence {label} failed: {e}");
         }
     }
 
@@ -466,6 +487,8 @@ struct AssuranceAnchorFlushRow {
     dist_start_p100_ms: i32,
     first_distributed_at: DateTime<Utc>,
     last_distributed_at: DateTime<Utc>,
+    histogram: [u32; crate::histogram::CONVERGENCE_BUCKET_COUNT],
+    hist_total: u32,
 }
 
 struct AssuranceSenderFlushRow {
@@ -478,6 +501,8 @@ struct AssuranceSenderFlushRow {
     p95_ms: i32,
     p99_ms: i32,
     p100_ms: i32,
+    histogram: [u32; crate::histogram::CONVERGENCE_BUCKET_COUNT],
+    hist_total: u32,
 }
 
 pub async fn flush_assurance_convergence(
@@ -532,6 +557,7 @@ pub async fn flush_assurance_convergence(
 
                 if write_senders {
                     if let Some(sp) = compute_percentiles_from_deltas(&sender_state.deltas_ms) {
+                        let (sh, st) = crate::histogram::bucket_deltas_convergence(&sender_state.deltas_ms);
                         sender_rows.push(AssuranceSenderFlushRow {
                             distributed_at: ts_to_datetime(sender_state.distributed_at),
                             anchor,
@@ -542,6 +568,8 @@ pub async fn flush_assurance_convergence(
                             p95_ms: sp.p95_ms,
                             p99_ms: sp.p99_ms,
                             p100_ms: sp.p100_ms,
+                            histogram: sh,
+                            hist_total: st,
                         });
                     }
                 }
@@ -570,6 +598,7 @@ pub async fn flush_assurance_convergence(
                     crate::onchain_stats::slot_to_timestamp(s, 6)
                 });
 
+                let (ah, at) = crate::histogram::bucket_deltas_convergence(&all_deltas);
                 anchor_rows.push(AssuranceAnchorFlushRow {
                     anchor,
                     slot: slot_i32,
@@ -587,6 +616,8 @@ pub async fn flush_assurance_convergence(
                     dist_start_p100_ms: dist_p.p100_ms,
                     first_distributed_at: ts_to_datetime(min_dist),
                     last_distributed_at: ts_to_datetime(max_dist),
+                    histogram: ah,
+                    hist_total: at,
                 });
 
                 if !state.flushed {
@@ -603,12 +634,19 @@ pub async fn flush_assurance_convergence(
 
     // Phase 2: DB writes — per-anchor summary
     for row in &anchor_rows {
+        let h = &row.histogram;
         let result = sqlx::query(
             r#"INSERT INTO assurance_convergence (anchor, slot, slot_timestamp, sender_count, receiver_count,
                 p50_ms, p75_ms, p95_ms, p99_ms, p100_ms,
                 dist_start_p50_ms, dist_start_p95_ms, dist_start_p99_ms, dist_start_p100_ms,
-                first_distributed_at, last_distributed_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                first_distributed_at, last_distributed_at,
+                h_0_2, h_2_5, h_5_10, h_10_15, h_15_20, h_20_30, h_30_50, h_50_75, h_75_100,
+                h_100_150, h_150_250, h_250_500, h_500_1000, h_1000_2000, h_2000_5000,
+                h_5000_10000, h_10000_15000, h_15000_20000, h_20000_25000, h_25000_30000,
+                h_30000_60000, h_60000_120000, h_120000_plus, hist_total)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+                $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
+                $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40)
             ON CONFLICT (anchor) DO UPDATE SET
                 slot = COALESCE(assurance_convergence.slot, EXCLUDED.slot),
                 slot_timestamp = COALESCE(assurance_convergence.slot_timestamp, EXCLUDED.slot_timestamp),
@@ -621,7 +659,16 @@ pub async fn flush_assurance_convergence(
                 dist_start_p99_ms = EXCLUDED.dist_start_p99_ms,
                 dist_start_p100_ms = EXCLUDED.dist_start_p100_ms,
                 first_distributed_at = EXCLUDED.first_distributed_at,
-                last_distributed_at = EXCLUDED.last_distributed_at"#,
+                last_distributed_at = EXCLUDED.last_distributed_at,
+                h_0_2 = EXCLUDED.h_0_2, h_2_5 = EXCLUDED.h_2_5, h_5_10 = EXCLUDED.h_5_10,
+                h_10_15 = EXCLUDED.h_10_15, h_15_20 = EXCLUDED.h_15_20, h_20_30 = EXCLUDED.h_20_30,
+                h_30_50 = EXCLUDED.h_30_50, h_50_75 = EXCLUDED.h_50_75, h_75_100 = EXCLUDED.h_75_100,
+                h_100_150 = EXCLUDED.h_100_150, h_150_250 = EXCLUDED.h_150_250, h_250_500 = EXCLUDED.h_250_500,
+                h_500_1000 = EXCLUDED.h_500_1000, h_1000_2000 = EXCLUDED.h_1000_2000, h_2000_5000 = EXCLUDED.h_2000_5000,
+                h_5000_10000 = EXCLUDED.h_5000_10000, h_10000_15000 = EXCLUDED.h_10000_15000, h_15000_20000 = EXCLUDED.h_15000_20000,
+                h_20000_25000 = EXCLUDED.h_20000_25000, h_25000_30000 = EXCLUDED.h_25000_30000,
+                h_30000_60000 = EXCLUDED.h_30000_60000, h_60000_120000 = EXCLUDED.h_60000_120000,
+                h_120000_plus = EXCLUDED.h_120000_plus, hist_total = EXCLUDED.hist_total"#,
         )
         .bind(&row.anchor[..])
         .bind(row.slot)
@@ -639,6 +686,13 @@ pub async fn flush_assurance_convergence(
         .bind(row.dist_start_p100_ms)
         .bind(row.first_distributed_at)
         .bind(row.last_distributed_at)
+        .bind(h[0] as i32).bind(h[1] as i32).bind(h[2] as i32).bind(h[3] as i32)
+        .bind(h[4] as i32).bind(h[5] as i32).bind(h[6] as i32).bind(h[7] as i32)
+        .bind(h[8] as i32).bind(h[9] as i32).bind(h[10] as i32).bind(h[11] as i32)
+        .bind(h[12] as i32).bind(h[13] as i32).bind(h[14] as i32).bind(h[15] as i32)
+        .bind(h[16] as i32).bind(h[17] as i32).bind(h[18] as i32).bind(h[19] as i32)
+        .bind(h[20] as i32).bind(h[21] as i32).bind(h[22] as i32)
+        .bind(row.hist_total as i32)
         .execute(pool)
         .await;
 
@@ -649,10 +703,17 @@ pub async fn flush_assurance_convergence(
 
     // Per-sender detail rows (INSERT-only, hypertable)
     for row in &sender_rows {
+        let h = &row.histogram;
         let result = sqlx::query(
             r#"INSERT INTO assurance_convergence_senders (distributed_at, anchor, sender_node_id, node_count,
-                p50_ms, p75_ms, p95_ms, p99_ms, p100_ms)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"#,
+                p50_ms, p75_ms, p95_ms, p99_ms, p100_ms,
+                h_0_2, h_2_5, h_5_10, h_10_15, h_15_20, h_20_30, h_30_50, h_50_75, h_75_100,
+                h_100_150, h_150_250, h_250_500, h_500_1000, h_1000_2000, h_2000_5000,
+                h_5000_10000, h_10000_15000, h_15000_20000, h_20000_25000, h_25000_30000,
+                h_30000_60000, h_60000_120000, h_120000_plus, hist_total)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+                $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
+                $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33)"#,
         )
         .bind(row.distributed_at)
         .bind(&row.anchor[..])
@@ -663,6 +724,13 @@ pub async fn flush_assurance_convergence(
         .bind(row.p95_ms)
         .bind(row.p99_ms)
         .bind(row.p100_ms)
+        .bind(h[0] as i32).bind(h[1] as i32).bind(h[2] as i32).bind(h[3] as i32)
+        .bind(h[4] as i32).bind(h[5] as i32).bind(h[6] as i32).bind(h[7] as i32)
+        .bind(h[8] as i32).bind(h[9] as i32).bind(h[10] as i32).bind(h[11] as i32)
+        .bind(h[12] as i32).bind(h[13] as i32).bind(h[14] as i32).bind(h[15] as i32)
+        .bind(h[16] as i32).bind(h[17] as i32).bind(h[18] as i32).bind(h[19] as i32)
+        .bind(h[20] as i32).bind(h[21] as i32).bind(h[22] as i32)
+        .bind(row.hist_total as i32)
         .execute(pool)
         .await;
 
@@ -751,6 +819,7 @@ mod tests {
             slot: Some(42),
             core: Some(3),
             wp_hash: Some([0xAB; 32]),
+            builder_node_id: None,
             received_timestamps: vec![2000, 5000, 3000],
             last_event: Instant::now(),
             flushed: false,
@@ -774,6 +843,7 @@ mod tests {
             slot: Some(1),
             core: None,
             wp_hash: None,
+            builder_node_id: None,
             received_timestamps: vec![1000, 2000],
             last_event: Instant::now(),
             flushed: false,
@@ -791,6 +861,7 @@ mod tests {
             slot: Some(1),
             core: None,
             wp_hash: None,
+            builder_node_id: None,
             received_timestamps: vec![],
             last_event: Instant::now(),
             flushed: false,

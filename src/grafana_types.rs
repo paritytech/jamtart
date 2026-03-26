@@ -671,6 +671,8 @@ pub struct GuaranteeConvergenceDetailRow {
     pub core: Option<i16>,
     /// Work package hash (hex-encoded, NULL if guarantor not connected)
     pub wp_hash: Option<String>,
+    /// Node ID of the guarantor that built this guarantee
+    pub builder_node_id: Option<String>,
     /// Number of receiving validators
     pub node_count: i16,
     /// p50 propagation latency (ms)
@@ -765,6 +767,31 @@ pub struct AssuranceConvergenceSenderRow {
     pub p100_ms: i32,
     /// When this sender started distributing
     pub distributed_at: DateTime<Utc>,
+}
+
+// ── /api/grafana/convergence-timeseries ──────────────────────────────────
+
+/// Convergence percentile timeseries row (from merged histograms).
+///
+/// **Data source:** Histogram columns on `guarantee_convergence`,
+/// `assurance_convergence`, or `assurance_convergence_senders` tables,
+/// SUMmed per time_bucket and converted to percentiles in Rust.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ConvergenceTimeseriesRow {
+    /// Bucket start timestamp
+    pub ts: DateTime<Utc>,
+    /// p50 propagation latency (ms)
+    pub p50_ms: Option<i32>,
+    /// p75 propagation latency (ms)
+    pub p75_ms: Option<i32>,
+    /// p95 propagation latency (ms)
+    pub p95_ms: Option<i32>,
+    /// p99 propagation latency (ms)
+    pub p99_ms: Option<i32>,
+    /// p100 propagation latency (ms)
+    pub p100_ms: Option<i32>,
+    /// Total samples in this bucket
+    pub sample_count: i32,
 }
 
 // ── /api/grafana/da-stats ────────────────────────────────────────────────

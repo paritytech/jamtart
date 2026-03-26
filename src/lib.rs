@@ -16,6 +16,7 @@ pub mod events;
 pub mod grafana;
 pub mod grafana_store;
 pub mod grafana_types;
+pub mod histogram;
 pub mod onchain_stats;
 pub mod onchain_store;
 pub mod onchain_types;
