@@ -23,12 +23,10 @@ const VALID_INTERVALS: &[&str] = &[
 /// Whitelisted group_by columns for dynamic SQL.
 const VALID_GROUP_BY: &[&str] = &["node_id", "node", "event_type", "core"];
 
-/// Whitelisted aggregate table names for dynamic SQL.
+/// Whitelisted aggregate table/view names for dynamic SQL.
+/// After migration 020: only UNION views (backed by count tables).
+/// Old continuous aggregates (event_stats_30s/1m/1h, core_stats_1m) are dropped.
 const VALID_TABLES: &[&str] = &[
-    "event_stats_30s",
-    "event_stats_1m",
-    "event_stats_1h",
-    "core_stats_1m",
     "all_event_stats_30s",
     "all_event_stats_1m",
     "all_event_stats_1h",
@@ -275,25 +273,25 @@ impl EventStore {
                 (SELECT COUNT(*)::INT FROM nodes WHERE is_connected = true) AS connected_nodes,
                 COALESCE((
                     SELECT MAX(event_count)::BIGINT
-                    FROM event_stats_1m
+                    FROM all_event_stats_1m
                     WHERE bucket >= $1 AND bucket < $2
                       AND event_type = 42
                 ), 0) AS slot_events,
                 COALESCE((
                     SELECT SUM(event_count)::BIGINT
-                    FROM event_stats_1m
+                    FROM all_event_stats_1m
                     WHERE bucket >= $1 AND bucket < $2
                       AND event_type = 105
                 ), 0) AS guarantees,
                 COALESCE((
                     SELECT SUM(event_count)::BIGINT
-                    FROM event_stats_1m
+                    FROM all_event_stats_1m
                     WHERE bucket >= $1 AND bucket < $2
                       AND event_type = 92
                 ), 0) AS failures,
                 COALESCE((
                     SELECT SUM(event_count)::BIGINT
-                    FROM event_stats_1m
+                    FROM all_event_stats_1m
                     WHERE bucket >= $1 AND bucket < $2
                       AND event_type = 94
                 ), 0) AS wp_events
@@ -335,7 +333,7 @@ impl EventStore {
                 COALESCE(SUM(event_count) FILTER (WHERE event_type = 94), 0)::BIGINT  AS work_packages,
                 COALESCE(SUM(event_count) FILTER (WHERE event_type = 105), 0)::BIGINT AS guarantees,
                 COALESCE(SUM(event_count) FILTER (WHERE event_type = 92), 0)::BIGINT  AS failures
-            FROM core_stats_1m
+            FROM all_core_stats_1m
             WHERE bucket >= $1 AND bucket < $2
               AND ($3::SMALLINT IS NULL OR core = $3)
             GROUP BY core
@@ -1119,19 +1117,8 @@ impl EventStore {
                 "event_types parameter is required".into(),
             ));
         }
-        let pre_agg: Vec<i16> = event_types
-            .iter()
-            .copied()
-            .filter(|&et| crate::event_counter::is_pre_aggregated(et as u16))
-            .collect();
-        if !pre_agg.is_empty() {
-            return Err(sqlx::Error::Protocol(
-                format!(
-                    "Event types {:?} are pre-aggregated. Use /timeseries instead.",
-                    pre_agg
-                ),
-            ));
-        }
+        // All 115 event types now write to ingested_raw_events (1h retention).
+        // No pre-aggregated type rejection — all types are browsable.
         let limit = limit.min(2000);
 
         let rows = sqlx::query(

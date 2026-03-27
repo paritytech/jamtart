@@ -161,13 +161,15 @@ pub fn test_node_info(peer_id: [u8; 32]) -> NodeInformation {
 pub async fn refresh_aggregates(pool: &sqlx::PgPool) {
     // The refresh window covers a generous range so test data is always included
     let aggregates = [
-        "event_stats_30s",
-        "event_stats_1m",
-        "event_stats_1h",
-        "core_stats_1m",
+        // Non-event aggregates (not affected by migration 020)
         "service_stats_1m",
         "node_stats_1m",
-        // Count table aggregates (pre-aggregated events)
+        // Count table aggregates — all 14 groups (single aggregation source after migration 020)
+        "status_counts_1m",
+        "connection_counts_1m",
+        "block_counts_1m",
+        "ticket_low_counts_1m",
+        "wp_pipeline_counts_1m",
         "block_distribution_counts_1m",
         "ticket_counts_1m",
         "guarantee_sending_counts_1m",

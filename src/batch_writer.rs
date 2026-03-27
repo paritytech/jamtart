@@ -661,11 +661,9 @@ async fn flush_events(store: &Arc<EventStore>, event_batch: &mut Vec<EventRecord
         }
     }
 
-    // Flush events to DB — filter out pre-aggregated types (written to count tables instead)
-    let batch: Vec<_> = std::mem::take(event_batch)
-        .into_iter()
-        .filter(|r| !crate::event_counter::is_pre_aggregated(r.event.event_type() as u16))
-        .collect();
+    // Flush ALL events to DB — all types write to ingested_raw_events (1h browsing store)
+    // AND to count tables (long-term aggregation via event_counter). No filtering.
+    let batch: Vec<_> = std::mem::take(event_batch);
     store.store_events_batch(batch).await.map_err(|e| {
         error!("Failed to store event batch: {}", e);
         anyhow::anyhow!("Event batch storage failed: {}", e)

@@ -1882,12 +1882,16 @@ async fn test_events_endpoint_returns_pre_aggregated_types() {
     );
     let response = server.get(&path).await;
 
-    // After refactoring: /events returns 400 for pre-aggregated types
+    // After migration 020: all types write to ingested_raw_events (1h retention).
+    // /events no longer rejects pre-aggregated types — all 115 types are browsable.
     assert_eq!(
         response.status_code(),
-        StatusCode::BAD_REQUEST,
-        "pre-aggregated type 128 should be rejected with 400"
+        StatusCode::OK,
+        "all event types should now be browsable (unified architecture)"
     );
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+    assert_eq!(arr.len(), 3, "expected 3 assurance events");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2049,16 +2053,17 @@ async fn test_event_services_dual_write_for_segments() {
     .expect("segment_counts query failed");
     assert!(count.0 > 0, "expected segment_counts row for type 160");
 
-    // Check ingested_raw_events has NO row for type 160 (filtered out)
+    // After migration 020: all types write to ingested_raw_events (1h browsing store).
+    // Type 160 is now in BOTH segment_counts AND ingested_raw_events.
     let raw: (i64,) = sqlx::query_as(
         "SELECT COUNT(*)::BIGINT FROM ingested_raw_events WHERE event_type = 160",
     )
     .fetch_one(pool)
     .await
     .expect("ingested_raw_events query failed");
-    assert_eq!(
-        raw.0, 0,
-        "type 160 should not be in ingested_raw_events"
+    assert!(
+        raw.0 > 0,
+        "type 160 should now be in ingested_raw_events (unified architecture)"
     );
 }
 

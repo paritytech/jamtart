@@ -446,7 +446,7 @@ impl EventStore {
 
         // PostgreSQL epoch: 2000-01-01 00:00:00 UTC in Unix microseconds
         const PG_EPOCH_UNIX_MICROS: i64 = 946_684_800_000_000;
-        const FIELD_COUNT: i16 = 8;
+        const FIELD_COUNT: i16 = 9; // +1 for wp_hash
 
         // Build binary COPY payload
         let mut buf: Vec<u8> = Vec::with_capacity(19 + events.len() * 280 + 2);
@@ -511,6 +511,15 @@ impl EventStore {
                 }
                 None => buf.extend_from_slice(&(-1i32).to_be_bytes()), // NULL
             }
+
+            // Column 9: wp_hash (BYTEA, nullable) — 32-byte work package hash from enricher
+            match record.enriched.wp_hash {
+                Some(ref hash) => {
+                    buf.extend_from_slice(&32i32.to_be_bytes());
+                    buf.extend_from_slice(hash);
+                }
+                None => buf.extend_from_slice(&(-1i32).to_be_bytes()), // NULL
+            }
         }
 
         // Trailer: -1 as i16
@@ -520,7 +529,7 @@ impl EventStore {
         let mut conn = self.write_pool.acquire().await?;
         let mut copy_in = conn
             .copy_in_raw(
-                "COPY ingested_raw_events (timestamp, node_id, event_id, event_type, data, slot, core, submission_id) FROM STDIN WITH (FORMAT binary)",
+                "COPY ingested_raw_events (timestamp, node_id, event_id, event_type, data, slot, core, submission_id, wp_hash) FROM STDIN WITH (FORMAT binary)",
             )
             .await?;
 
@@ -560,10 +569,12 @@ impl EventStore {
             let core = record.enriched.core.map(|c| c as i16);
             let submission_id = record.enriched.submission_id.map(|s| s as i64);
 
+            let wp_hash = record.enriched.wp_hash.map(|h| h.to_vec());
+
             sqlx::query(
                 r#"
-                INSERT INTO ingested_raw_events (timestamp, node_id, event_id, event_type, data, slot, core, submission_id)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                INSERT INTO ingested_raw_events (timestamp, node_id, event_id, event_type, data, slot, core, submission_id, wp_hash)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 "#,
             )
             .bind(timestamp)
@@ -574,6 +585,7 @@ impl EventStore {
             .bind(slot)
             .bind(core)
             .bind(submission_id)
+            .bind(wp_hash)
             .execute(&mut *tx)
             .await
             .map_err(|e| {
@@ -815,7 +827,7 @@ impl EventStore {
 
         // Use continuous aggregate for recent event count
         let recent_events = sqlx::query_scalar::<_, i64>(
-            "SELECT COALESCE(SUM(event_count), 0)::BIGINT FROM event_stats_1m WHERE bucket > NOW() - INTERVAL '1 hour'",
+            "SELECT COALESCE(SUM(event_count), 0)::BIGINT FROM all_event_stats_1m WHERE bucket > NOW() - INTERVAL '1 hour'",
         )
         .fetch_one(&self.pool)
         .await
@@ -849,7 +861,7 @@ impl EventStore {
     ///
     /// **DANGER**: Deletes ALL data. Only use in test/dev environments.
     pub async fn cleanup_test_data(&self) -> Result<(), sqlx::Error> {
-        sqlx::query("TRUNCATE TABLE ingested_raw_events, nodes, stats_cache, node_stats, event_services, wp_tracking, slot_convergence, guarantee_convergence, guarantee_convergence_slots, assurance_convergence, assurance_convergence_senders, da_node_stats, shard_latency_hist, block_distribution_counts, ticket_counts, guarantee_sending_counts, guarantee_receiving_counts, shard_counts, assurance_counts, bundle_counts, segment_counts, preimage_counts, onchain_core_stats, onchain_validator_stats, onchain_service_stats CASCADE")
+        sqlx::query("TRUNCATE TABLE ingested_raw_events, nodes, stats_cache, node_stats, event_services, wp_tracking, slot_convergence, guarantee_convergence, guarantee_convergence_slots, assurance_convergence, assurance_convergence_senders, da_node_stats, shard_latency_hist, block_distribution_counts, ticket_counts, guarantee_sending_counts, guarantee_receiving_counts, shard_counts, assurance_counts, bundle_counts, segment_counts, preimage_counts, status_counts, connection_counts, block_counts, ticket_low_counts, wp_pipeline_counts, onchain_core_stats, onchain_validator_stats, onchain_service_stats CASCADE")
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -1109,7 +1121,7 @@ impl EventStore {
                 COALESCE(SUM(event_count) FILTER (WHERE event_type = 47), 0)::BIGINT as executed,
                 COALESCE(SUM(event_count) FILTER (WHERE event_type = 11), 0)::BIGINT as best_block_changes,
                 COALESCE(SUM(event_count) FILTER (WHERE event_type = 12), 0)::BIGINT as finalized_block_changes
-            FROM event_stats_1m
+            FROM all_event_stats_1m
             WHERE event_type IN (40, 41, 42, 43, 44, 45, 46, 47, 11, 12)
             AND bucket > NOW() - INTERVAL '{}'
             "#,
@@ -1136,7 +1148,7 @@ impl EventStore {
         let authoring_by_node: Vec<(String, i64)> = sqlx::query_as(&format!(
             r#"
             SELECT node_id, SUM(event_count)::BIGINT as blocks_authored
-            FROM event_stats_1m
+            FROM all_event_stats_1m
             WHERE event_type = 42
             AND bucket > NOW() - INTERVAL '{}'
             GROUP BY node_id
@@ -2833,7 +2845,7 @@ impl EventStore {
                 COALESCE(SUM(event_count) FILTER (WHERE event_type = 42), 0)::BIGINT as authored,
                 COALESCE(SUM(event_count) FILTER (WHERE event_type = 62), 0)::BIGINT as announcements,
                 COUNT(DISTINCT node_id) as active_nodes
-            FROM event_stats_1m
+            FROM all_event_stats_1m
             WHERE bucket > NOW() - make_interval(secs => $1)
             "#,
         )
@@ -2905,7 +2917,7 @@ impl EventStore {
             SELECT
                 COALESCE(SUM(event_count), 0)::BIGINT as events_1m,
                 COALESCE(SUM(event_count) FILTER (WHERE event_type = 11), 0)::BIGINT as blocks_1m
-            FROM event_stats_1m
+            FROM all_event_stats_1m
             WHERE bucket > NOW() - INTERVAL '1 minute'
             "#,
         )
@@ -2968,7 +2980,7 @@ impl EventStore {
                             time_bucket($2::interval, bucket) AS bucket,
                             SUM(event_count)::BIGINT as blocks,
                             COUNT(DISTINCT node_id) as authoring_nodes
-                        FROM event_stats_1m
+                        FROM all_event_stats_1m
                         WHERE event_type = 11
                         AND bucket > NOW() - $1::interval
                         GROUP BY 1
@@ -3015,7 +3027,7 @@ impl EventStore {
                             SUM(event_count)::BIGINT as total_events,
                             COUNT(DISTINCT node_id) as active_nodes,
                             COUNT(DISTINCT event_type) as event_types
-                        FROM event_stats_1m
+                        FROM all_event_stats_1m
                         WHERE bucket > NOW() - $1::interval
                         GROUP BY 1
                     )
@@ -3066,7 +3078,7 @@ impl EventStore {
                             COALESCE(SUM(event_count) FILTER (WHERE event_type = 62), 0)::BIGINT as block_announcements,
                             COALESCE(SUM(event_count) FILTER (WHERE event_type BETWEEN 90 AND 113), 0)::BIGINT as wp_events,
                             COALESCE(SUM(event_count) FILTER (WHERE event_type BETWEEN 105 AND 113), 0)::BIGINT as guarantee_events
-                        FROM event_stats_1m
+                        FROM all_event_stats_1m
                         WHERE bucket > NOW() - $1::interval
                         GROUP BY 1
                     )
@@ -4430,7 +4442,7 @@ impl EventStore {
             SELECT
                 COALESCE(SUM(event_count), 0)::BIGINT as total_events,
                 COALESCE(SUM(event_count) FILTER (WHERE event_type = ANY($1)), 0)::BIGINT as failed_events
-            FROM event_stats_1m
+            FROM all_event_stats_1m
             WHERE bucket > NOW() - INTERVAL '{}'
             "#,
             interval
@@ -4456,25 +4468,25 @@ impl EventStore {
                     'block_authoring' as category,
                     COALESCE(SUM(event_count) FILTER (WHERE event_type IN (40, 41, 42, 44, 46)), 0) as attempts,
                     COALESCE(SUM(event_count) FILTER (WHERE event_type IN (41, 44, 46)), 0) as failures
-                FROM event_stats_1m WHERE bucket > NOW() - INTERVAL '{}'
+                FROM all_event_stats_1m WHERE bucket > NOW() - INTERVAL '{}'
                 UNION ALL
                 SELECT
                     'work_package' as category,
                     COALESCE(SUM(event_count) FILTER (WHERE event_type IN (94, 95, 101, 102, 92, 99)), 0) as attempts,
                     COALESCE(SUM(event_count) FILTER (WHERE event_type IN (92, 99)), 0) as failures
-                FROM event_stats_1m WHERE bucket > NOW() - INTERVAL '{}'
+                FROM all_event_stats_1m WHERE bucket > NOW() - INTERVAL '{}'
                 UNION ALL
                 SELECT
                     'ticket_generation' as category,
                     COALESCE(SUM(event_count) FILTER (WHERE event_type IN (80, 81, 82, 83, 84)), 0) as attempts,
                     COALESCE(SUM(event_count) FILTER (WHERE event_type IN (81, 83)), 0) as failures
-                FROM event_stats_1m WHERE bucket > NOW() - INTERVAL '{}'
+                FROM all_event_stats_1m WHERE bucket > NOW() - INTERVAL '{}'
                 UNION ALL
                 SELECT
                     'guarantee' as category,
                     COALESCE(SUM(event_count) FILTER (WHERE event_type IN (105, 106, 107, 108, 109)), 0) as attempts,
                     COALESCE(SUM(event_count) FILTER (WHERE event_type = 107), 0) as failures
-                FROM event_stats_1m WHERE bucket > NOW() - INTERVAL '{}'
+                FROM all_event_stats_1m WHERE bucket > NOW() - INTERVAL '{}'
             ) categories
             WHERE attempts > 0
             "#, interval, interval, interval, interval
@@ -4491,7 +4503,7 @@ impl EventStore {
                     node_id,
                     SUM(event_count)::BIGINT as total_events,
                     SUM(event_count) FILTER (WHERE event_type = ANY($1))::BIGINT as failures
-                FROM event_stats_1m
+                FROM all_event_stats_1m
                 WHERE bucket > NOW() - INTERVAL '{}'
                 GROUP BY node_id
                 HAVING SUM(event_count) FILTER (WHERE event_type = ANY($1)) > 0
@@ -4501,7 +4513,7 @@ impl EventStore {
                     node_id, event_type as most_common_failure
                 FROM (
                     SELECT node_id, event_type, SUM(event_count) as cnt
-                    FROM event_stats_1m
+                    FROM all_event_stats_1m
                     WHERE bucket > NOW() - INTERVAL '{}'
                     AND event_type = ANY($1)
                     GROUP BY node_id, event_type
@@ -4777,7 +4789,7 @@ impl EventStore {
                 COALESCE(SUM(event_count) FILTER (WHERE event_type = 105), 0)::BIGINT as guarantees_1h,
                 COALESCE(SUM(event_count) FILTER (WHERE event_type = 92), 0)::BIGINT as wp_failures_1h,
                 COALESCE(SUM(event_count) FILTER (WHERE event_type = 94), 0)::BIGINT as wp_received_1h
-            FROM event_stats_1m
+            FROM all_event_stats_1m
             WHERE bucket > NOW() - INTERVAL '{}'
             "#, interval
         ))
@@ -5470,7 +5482,7 @@ impl EventStore {
             SELECT
                 COALESCE(SUM(event_count), 0)::BIGINT as total_events,
                 COALESCE(SUM(event_count) FILTER (WHERE event_type IN (41, 44, 46, 81, 94, 97, 99, 102, 109, 110, 112, 113)), 0)::BIGINT as failures
-            FROM event_stats_1m
+            FROM all_event_stats_1m
             WHERE bucket > NOW() - INTERVAL '5 minutes'
             "#,
         )
@@ -5500,7 +5512,7 @@ impl EventStore {
             SELECT
                 node_id,
                 SUM(event_count)::BIGINT as dropped
-            FROM event_stats_1m
+            FROM all_event_stats_1m
             WHERE event_type = 0
             AND bucket > NOW() - INTERVAL '5 minutes'
             GROUP BY node_id
