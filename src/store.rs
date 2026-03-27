@@ -861,7 +861,42 @@ impl EventStore {
     ///
     /// **DANGER**: Deletes ALL data. Only use in test/dev environments.
     pub async fn cleanup_test_data(&self) -> Result<(), sqlx::Error> {
-        sqlx::query("TRUNCATE TABLE ingested_raw_events, nodes, stats_cache, node_stats, event_services, wp_tracking, slot_convergence, guarantee_convergence, guarantee_convergence_slots, assurance_convergence, assurance_convergence_senders, da_node_stats, shard_latency_hist, block_distribution_counts, ticket_counts, guarantee_sending_counts, guarantee_receiving_counts, shard_counts, assurance_counts, bundle_counts, segment_counts, preimage_counts, status_counts, connection_counts, block_counts, ticket_low_counts, wp_pipeline_counts, onchain_core_stats, onchain_validator_stats, onchain_service_stats CASCADE")
+        // Use DO block with DELETE instead of TRUNCATE — TimescaleDB compressed
+        // chunks may not be cleared by TRUNCATE, causing test data leaks.
+        sqlx::query(r#"
+            DO $$ BEGIN
+                DELETE FROM ingested_raw_events;
+                DELETE FROM nodes;
+                DELETE FROM stats_cache;
+                DELETE FROM node_stats;
+                DELETE FROM event_services;
+                DELETE FROM wp_tracking;
+                DELETE FROM slot_convergence;
+                DELETE FROM guarantee_convergence;
+                DELETE FROM guarantee_convergence_slots;
+                DELETE FROM assurance_convergence;
+                DELETE FROM assurance_convergence_senders;
+                DELETE FROM da_node_stats;
+                DELETE FROM shard_latency_hist;
+                DELETE FROM block_distribution_counts;
+                DELETE FROM ticket_counts;
+                DELETE FROM guarantee_sending_counts;
+                DELETE FROM guarantee_receiving_counts;
+                DELETE FROM shard_counts;
+                DELETE FROM assurance_counts;
+                DELETE FROM bundle_counts;
+                DELETE FROM segment_counts;
+                DELETE FROM preimage_counts;
+                DELETE FROM status_counts;
+                DELETE FROM connection_counts;
+                DELETE FROM block_counts;
+                DELETE FROM ticket_low_counts;
+                DELETE FROM wp_pipeline_counts;
+                DELETE FROM onchain_core_stats;
+                DELETE FROM onchain_validator_stats;
+                DELETE FROM onchain_service_stats;
+            END $$
+        "#)
             .execute(&self.pool)
             .await?;
         Ok(())

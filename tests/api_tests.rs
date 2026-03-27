@@ -519,17 +519,7 @@ async fn test_timeseries_metrics() {
     assert!(json.is_object() || json.is_array());
 }
 
-#[tokio::test]
-async fn test_timeseries_grouped() {
-    let (server, _, _) = setup_test_api().await;
-    // Required query params: metric, group_by
-    let response = server
-        .get("/api/metrics/timeseries/grouped?metric=events&group_by=node")
-        .await;
-    assert_eq!(response.status_code(), StatusCode::OK);
-    let json: Value = response.json();
-    assert!(json.is_object() || json.is_array());
-}
+// test_timeseries_grouped: DELETED — endpoint removed (Phase 1, unused by UI)
 
 #[tokio::test]
 async fn test_realtime_metrics() {
@@ -560,14 +550,7 @@ async fn test_failure_rates() {
     assert!(json.is_object());
 }
 
-#[tokio::test]
-async fn test_block_propagation() {
-    let (server, _, _) = setup_test_api().await;
-    let response = server.get("/api/analytics/block-propagation").await;
-    assert_eq!(response.status_code(), StatusCode::OK);
-    let json: Value = response.json();
-    assert!(json.is_object());
-}
+// test_block_propagation: DELETED — endpoint removed (Phase 1, unused by UI)
 
 #[tokio::test]
 async fn test_network_health() {

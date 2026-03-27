@@ -250,19 +250,13 @@ pub fn create_api_router(state: ApiState, disable_legacy_endpoints: bool) -> Rou
             )
             .route("/api/da/stats/enhanced", get(get_da_stats_enhanced))
             .route("/api/analytics/failure-rates", get(get_failure_rates))
-            .route(
-                "/api/analytics/block-propagation",
-                get(get_block_propagation),
-            )
+            // block-propagation: DELETED (unused by UI, no component calls it)
             .route("/api/analytics/network-health", get(get_network_health))
             .route(
                 "/api/guarantees/by-guarantor",
                 get(get_guarantees_by_guarantor),
             )
-            .route(
-                "/api/metrics/timeseries/grouped",
-                get(get_timeseries_grouped),
-            )
+            // timeseries/grouped: DELETED (unused by UI, no component calls it)
             .route(
                 "/api/analytics/sync-status/timeline",
                 get(get_sync_status_timeline),
