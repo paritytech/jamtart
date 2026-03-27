@@ -736,3 +736,33 @@ pub fn shards_transferred_event(ts: u64, request_id: u64) -> Event {
         request_id,
     }
 }
+
+// Phase 3 test helpers
+
+#[allow(dead_code)]
+pub fn connected_in_event(ts: u64, peer: [u8; 32]) -> Event {
+    Event::ConnectedIn {
+        timestamp: ts,
+        connecting_id: 1,
+        peer_id: peer,
+    }
+}
+
+#[allow(dead_code)]
+pub fn disconnected_event(ts: u64, peer: [u8; 32]) -> Event {
+    Event::Disconnected {
+        timestamp: ts,
+        peer,
+        terminator: None,
+        reason: BoundedString::new("closed").unwrap(),
+    }
+}
+
+#[allow(dead_code)]
+pub fn guarantee_send_failed_event(ts: u64, sending_id: u64, reason: &str) -> Event {
+    Event::GuaranteeSendFailed {
+        timestamp: ts,
+        sending_id,
+        reason: BoundedString::new(reason).unwrap(),
+    }
+}

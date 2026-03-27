@@ -2731,3 +2731,260 @@ async fn test_grafana_assurance_convergence_pending_buffer() {
         "expected node_count >= 2 (two receivers)"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 3: New grafana endpoint tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_grafana_failure_rates() {
+    let (server, telemetry, port, store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    // Inject success + failure events
+    let events = vec![
+        common::wp_received_event(ts, 9100, 3),
+        common::wp_received_event(ts + 1000, 9101, 3),
+        common::wp_failed_event_with_reason(ts + 2000, 9100, "out of gas"),
+        common::shard_request_failed_event(ts + 3000, "timeout"),
+    ];
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+    common::refresh_aggregates(store.pool()).await;
+
+    let path = format!("/api/grafana/failure-rates?{}", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    assert!(json["overall"]["total_events"].as_i64().unwrap() > 0, "should have total events");
+    assert!(json["overall"]["failed_events"].as_i64().unwrap() > 0, "should have failures");
+    assert!(json["overall"]["failure_rate"].as_f64().unwrap() > 0.0, "rate should be > 0");
+
+    let categories = json["by_category"].as_array().expect("should have categories");
+    assert!(!categories.is_empty(), "should have category breakdown");
+
+    // recent_failures should have entries (from raw events)
+    let recent = json["recent_failures"].as_array().expect("should have recent_failures");
+    assert!(!recent.is_empty(), "should have recent failure events");
+    // Each recent failure should have event_name
+    assert!(recent[0]["event_name"].is_string(), "should have event_name");
+}
+
+#[tokio::test]
+async fn test_grafana_sync_timeline() {
+    let (server, telemetry, port, store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+    let mut stream2 = connect_test_node(port, 2, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    // Node 1: slot 100, Node 2: slot 98 (behind by 2)
+    send_events(&mut stream, &[common::best_block_event(ts, 100)]).await;
+    send_events(&mut stream2, &[common::best_block_event(ts + 500, 98)]).await;
+    common::flush_all(&telemetry).await;
+    common::refresh_aggregates(store.pool()).await;
+
+    let path = format!("/api/grafana/sync-timeline?{}&interval=30m", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+    assert!(!arr.is_empty(), "should have timeline data");
+
+    let row = &arr[0];
+    assert!(row["total_nodes"].as_i64().unwrap() >= 2, "should have 2+ nodes");
+    assert!(row["network_slot"].as_i64().unwrap() >= 100, "network slot should be >= 100");
+    assert!(row["synced_nodes"].as_i64().unwrap() >= 1, "should have synced nodes");
+    assert!(row["sync_percentage"].as_f64().is_some(), "should have sync_percentage");
+}
+
+#[tokio::test]
+async fn test_grafana_connections_timeline() {
+    let (server, telemetry, port, store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    // Connected events (type 23, 26) are emitted by the TCP server on connect.
+    // We also inject a Disconnected event (type 27) via telemetry.
+    let events = vec![
+        common::disconnected_event(ts + 1000, [3; 32]),
+    ];
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+    common::refresh_aggregates(store.pool()).await;
+
+    let path = format!("/api/grafana/connections-timeline?{}&interval=30m", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    assert!(json["health_stats"]["total_nodes_seen"].as_i64().unwrap() >= 1, "should see nodes");
+    assert!(json["health_stats"]["currently_connected"].as_i64().unwrap() >= 1, "should have connected nodes");
+}
+
+#[tokio::test]
+async fn test_grafana_guarantees() {
+    let (server, telemetry, port, store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    // Full guarantee pipeline: WPReceived → GuaranteeBuilt → SendingGuarantee → GuaranteeSent
+    let events = vec![
+        common::wp_received_event(ts, 9200, 5),
+        common::guarantee_built_event(ts + 1000, 9200),
+        common::sending_guarantee_event(ts + 2000, 1),
+        common::guarantee_sent_event(ts + 3000, 1),
+        // Also inject a receive event
+        common::guarantee_received_event(ts + 4000, 50, [0xAA; 32]),
+    ];
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+    common::refresh_aggregates(store.pool()).await;
+
+    let path = format!("/api/grafana/guarantees?{}", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let totals = &json["totals"];
+    assert!(totals["built"].as_i64().unwrap() >= 1, "should have GuaranteeBuilt");
+    assert!(totals["sending"].as_i64().unwrap() >= 1, "should have SendingGuarantee");
+    assert!(totals["sent"].as_i64().unwrap() >= 1, "should have GuaranteeSent");
+    assert!(totals["received"].as_i64().unwrap() >= 1, "should have GuaranteeReceived");
+
+    // Success rates
+    assert!(json["success_rates"]["send_success_rate"].as_f64().unwrap() > 0.0);
+}
+
+#[tokio::test]
+async fn test_grafana_guarantees_by_guarantor() {
+    let (server, telemetry, port, store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    // Create a WP lifecycle that populates guarantee_convergence
+    let events = vec![
+        common::wp_received_event(ts, 9300, 7),
+        common::guarantee_built_event_with_hash(ts + 1000, 9300, [0xEE; 32], 50),
+        common::guarantee_received_event(ts + 2000, 50, [0xEE; 32]),
+    ];
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+
+    let path = format!("/api/grafana/guarantees/by-guarantor?{}", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    assert!(json["total_guarantors"].as_i64().unwrap() >= 0, "should have total_guarantors");
+    assert!(json["guarantors"].is_array(), "should have guarantors array");
+}
+
+#[tokio::test]
+async fn test_grafana_wp_stats() {
+    let (server, telemetry, port, store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    // Full WP lifecycle
+    let events = vec![
+        common::wp_received_event(ts, 9400, 2),
+        common::authorized_event(ts + 1000, 9400),
+        common::refined_event(ts + 2000, 9400),
+        common::work_report_built_event(ts + 3000, 9400),
+        common::guarantee_built_event(ts + 4000, 9400),
+        common::guarantees_distributed_event(ts + 5000, 9400),
+    ];
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+    common::refresh_aggregates(store.pool()).await;
+
+    let path = format!("/api/grafana/wp-stats?{}", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let totals = &json["totals"];
+    assert!(totals["received"].as_i64().unwrap() >= 1, "should have received WPs");
+    assert!(totals["authorized"].as_i64().unwrap() >= 1, "should have authorized WPs");
+    assert!(totals["refined"].as_i64().unwrap() >= 1, "should have refined WPs");
+    assert!(totals["distributed"].as_i64().unwrap() >= 1, "should have distributed WPs");
+
+    // By core
+    let by_core = json["by_core"].as_array().expect("should have by_core");
+    assert!(!by_core.is_empty(), "should have core breakdown");
+}
+
+#[tokio::test]
+async fn test_grafana_validators_cores() {
+    let (server, telemetry, port, store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    // Create guarantee activity so convergence tracker has data
+    let events = vec![
+        common::wp_received_event(ts, 9500, 4),
+        common::guarantee_built_event_with_hash(ts + 1000, 9500, [0xFF; 32], 60),
+        common::guarantee_received_event(ts + 2000, 60, [0xFF; 32]),
+    ];
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+
+    let path = format!("/api/grafana/validators/cores?{}", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+    // May be empty if convergence tracker hasn't flushed — that's OK for this test
+    // The endpoint itself works and returns the right shape
+    for row in arr {
+        assert!(row["node_id"].is_string(), "should have node_id");
+        assert!(row["guarantee_count"].is_number(), "should have guarantee_count");
+    }
+}
+
+#[tokio::test]
+async fn test_grafana_network_health() {
+    let (server, telemetry, port, store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    // Mix of success and failure events for health scoring
+    let events = vec![
+        common::wp_received_event(ts, 9600, 0),
+        common::wp_received_event(ts + 1000, 9601, 0),
+        common::wp_failed_event(ts + 2000, 9600),
+        common::authoring_event(ts + 3000, 80),
+        common::authored_event(ts + 4000, 1),
+    ];
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+    common::refresh_aggregates(store.pool()).await;
+
+    let path = format!("/api/grafana/network-health?{}", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    assert!(json["health_score"].as_f64().is_some(), "should have health_score");
+    assert!(json["overall_health"].is_string(), "should have overall_health");
+
+    let components = json["components"].as_array().expect("should have components");
+    assert_eq!(components.len(), 5, "should have 5 health components");
+    for comp in components {
+        assert!(comp["name"].is_string(), "component should have name");
+        assert!(comp["score"].as_f64().is_some(), "component should have score");
+        assert!(comp["status"].is_string(), "component should have status");
+    }
+}

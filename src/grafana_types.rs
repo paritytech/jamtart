@@ -1000,3 +1000,323 @@ pub struct PaginationMeta {
     /// Whether more records exist beyond offset + limit
     pub has_more: bool,
 }
+
+// ── Phase 3 response types ──────────────────────────────────────────────
+
+// ── /api/grafana/failure-rates ──────────────────────────────────────────
+
+/// Network failure rates with per-category and per-node breakdown.
+///
+/// **Data source:** `all_event_stats_1m` UNION view for aggregate failure
+/// counts across 6 categories. `ingested_raw_events` (1h retention) for
+/// recent failure details with reason text from JSONB.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FailureRatesResponse {
+    /// Overall failure rate across all categories
+    pub overall: FailureOverall,
+    /// Per-category breakdown: block_authoring, tickets, work_packages, guarantees, shards, assurances
+    pub by_category: Vec<FailureCategory>,
+    /// Top 20 nodes by failure count
+    pub by_node: Vec<FailureByNode>,
+    /// Last 20 failure events from past 5 minutes with reason text
+    pub recent_failures: Vec<RecentFailure>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FailureOverall {
+    /// Total events (successes + failures) across all monitored types
+    pub total_events: i64,
+    /// Failed events count
+    pub failed_events: i64,
+    /// Failure rate: failed_events / total_events (0.0 to 1.0)
+    pub failure_rate: f64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FailureCategory {
+    /// Category name: block_authoring, tickets, work_packages, guarantees, shards, assurances
+    pub category: String,
+    /// Total attempts (successes + failures) in this category
+    pub attempts: i64,
+    /// Failed event count in this category
+    pub failures: i64,
+    /// Failure rate: failures / attempts (0.0 to 1.0)
+    pub rate: f64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FailureByNode {
+    /// Node identifier (Ed25519 public key hex)
+    pub node_id: String,
+    /// Total events from this node across all monitored types
+    pub total_events: i64,
+    /// Failed events from this node
+    pub failures: i64,
+    /// Per-node failure rate (0.0 to 1.0)
+    pub failure_rate: f64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RecentFailure {
+    /// JIP-3 event type code
+    pub event_type: i16,
+    /// Human-readable event name (e.g. "WorkPackageFailed")
+    pub event_name: String,
+    /// Node that reported this failure
+    pub node_id: String,
+    /// When the failure occurred
+    pub timestamp: DateTime<Utc>,
+    /// Failure reason extracted from event JSONB (may be null if not present)
+    pub reason: Option<String>,
+}
+
+// ── /api/grafana/sync-timeline ──────────────────────────────────────────
+
+/// Network sync status over time — how many nodes are synced vs behind.
+///
+/// **Data source:** `status_counts` table for BestBlockChanged events with
+/// `slot` dimension. Network slot = MAX(slot) per bucket across all nodes.
+/// A node is "synced" if its max slot is within 2 of the network max.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SyncTimelineRow {
+    /// Bucket start timestamp
+    pub ts: DateTime<Utc>,
+    /// Total distinct nodes that reported BestBlockChanged in this bucket
+    pub total_nodes: i64,
+    /// Nodes whose max slot is within 2 of the network max slot
+    pub synced_nodes: i64,
+    /// Nodes whose max slot is more than 2 behind the network max
+    pub behind_nodes: i64,
+    /// Sync percentage: synced_nodes / total_nodes * 100 (0.0 to 100.0)
+    pub sync_percentage: f64,
+    /// Highest slot reported by any node in this bucket
+    pub network_slot: i32,
+}
+
+// ── /api/grafana/connections-timeline ────────────────────────────────────
+
+/// Network connection activity over time.
+///
+/// **Data source:** `all_event_stats_30s` for types 23 (ConnectedIn),
+/// 26 (ConnectedOut), 27 (Disconnected). `nodes` table for per-node
+/// uptime and health stats (maintained by batch_writer).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ConnectionsTimelineResponse {
+    /// Time-bucketed connection counts
+    pub timeline: Vec<ConnectionsBucket>,
+    /// Overall connection health stats
+    pub health_stats: ConnectionHealthStats,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ConnectionsBucket {
+    /// Bucket start timestamp
+    pub ts: DateTime<Utc>,
+    /// ConnectedIn + ConnectedOut events in this bucket
+    pub connections: i64,
+    /// Disconnected events in this bucket
+    pub disconnections: i64,
+    /// Distinct nodes with any connection event in this bucket
+    pub active_nodes: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ConnectionHealthStats {
+    /// Total nodes ever seen in the `nodes` table
+    pub total_nodes_seen: i64,
+    /// Nodes currently connected (is_connected = true)
+    pub currently_connected: i64,
+}
+
+// ── /api/grafana/guarantees ─────────────────────────────────────────────
+
+/// Guarantee pipeline totals and success rates.
+///
+/// **Data source:** `all_event_stats_1m` UNION view for types 105-113.
+/// Count tables provide correct data for types 106-113 (which were
+/// previously returning 0 from raw events — this fixes a legacy bug).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct GuaranteesResponse {
+    /// Per-type event counts
+    pub totals: GuaranteeTotals,
+    /// Send and receive success rates
+    pub success_rates: GuaranteeSuccessRates,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct GuaranteeTotals {
+    /// GuaranteeBuilt — guarantor built a guarantee proof for a work report
+    pub built: i64,
+    /// SendingGuarantee — guarantor is sending the guarantee to peers
+    pub sending: i64,
+    /// GuaranteeSendFailed — guarantee send attempt failed
+    pub send_failed: i64,
+    /// GuaranteeSent — guarantee successfully sent to a peer
+    pub sent: i64,
+    /// GuaranteesDistributed — all guarantees for a WP distributed to all peers
+    pub distributed: i64,
+    /// ReceivingGuarantee — node receiving a guarantee from a peer
+    pub receiving: i64,
+    /// GuaranteeReceiveFailed — guarantee receive failed (invalid, etc.)
+    pub receive_failed: i64,
+    /// GuaranteeReceived — guarantee received and validated
+    pub received: i64,
+    /// GuaranteeDiscarded — guarantee removed from local pool (various reasons)
+    pub discarded: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct GuaranteeSuccessRates {
+    /// Sent / (Sending + SendFailed + Sent). 1.0 when no sending activity.
+    pub send_success_rate: f64,
+    /// Received / (Receiving + ReceiveFailed + Received). 1.0 when no receiving activity.
+    pub receive_success_rate: f64,
+}
+
+// ── /api/grafana/guarantees/by-guarantor ────────────────────────────────
+
+/// Per-guarantor breakdown with node→core mapping.
+///
+/// **Data source:** `guarantee_convergence` table for observed node→core
+/// mapping (builder_node_id + core, 90d retention). `all_event_stats_1m`
+/// for per-node success rates (types 105, 107, 109).
+///
+/// **Caveat:** Node→core mapping reflects observed guarantee behavior, not
+/// protocol-level validator→core assignment. Telemetry does not transmit
+/// `validator_index`. See deep-dive Section 5.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct GuarantorBreakdownResponse {
+    pub guarantors: Vec<GuarantorRow>,
+    pub total_guarantors: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct GuarantorRow {
+    /// Node identifier (Ed25519 public key hex)
+    pub node_id: String,
+    /// Core this node most frequently guarantees for (by count)
+    pub primary_core: Option<i16>,
+    /// Total guarantees built by this node in the time range
+    pub guarantee_count: i64,
+    /// Timestamp of this node's most recent guarantee
+    pub last_guarantee: Option<DateTime<Utc>>,
+    /// All cores this node has guaranteed for (sorted, deduplicated)
+    pub cores_active: Vec<i16>,
+}
+
+// ── /api/grafana/wp-stats ───────────────────────────────────────────────
+
+/// Work package pipeline summary — counts per stage, by core.
+///
+/// **Data source:** `wp_tracking` table for pipeline stage counts
+/// (received → distributed/failed) + by-core breakdown. `all_event_stats_1m`
+/// for pre-pipeline event counts (types 90 submissions, 91 being_shared,
+/// 93 duplicates).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WpStatsResponse {
+    pub totals: WpStageTotals,
+    pub by_core: Vec<WpCoreCount>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WpStageTotals {
+    /// WorkPackageSubmission events (pre-pipeline, from aggregates)
+    pub submissions: i64,
+    /// WorkPackageBeingShared events (pre-pipeline, from aggregates)
+    pub being_shared: i64,
+    /// DuplicateWorkPackage events (pre-pipeline, from aggregates)
+    pub duplicates: i64,
+    /// WPs that reached "received" stage (WorkPackageReceived, from wp_tracking)
+    pub received: i64,
+    /// WPs that reached "authorized" stage (Authorized, from wp_tracking)
+    pub authorized: i64,
+    /// WPs that reached "refined" stage (Refined, from wp_tracking)
+    pub refined: i64,
+    /// WPs that reached "report_built" stage (WorkReportBuilt, from wp_tracking)
+    pub report_built: i64,
+    /// WPs that reached "guarantee_built" stage (GuaranteeBuilt, from wp_tracking)
+    pub guarantee_built: i64,
+    /// WPs that completed pipeline (GuaranteesDistributed, from wp_tracking)
+    pub distributed: i64,
+    /// WPs that failed at any stage (WorkPackageFailed, from wp_tracking)
+    pub failed: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WpCoreCount {
+    /// Core index
+    pub core: i16,
+    /// Total WPs on this core in the time range
+    pub count: i64,
+}
+
+// ── /api/grafana/validators/cores ───────────────────────────────────────
+
+/// Node→core mapping based on observed guarantee behavior.
+///
+/// **Data source:** `guarantee_convergence` table (builder_node_id + core).
+/// Shares `node_core_mapping()` helper with `/guarantees/by-guarantor`.
+///
+/// **Caveat:** This mapping reflects observed guarantee behavior, not
+/// protocol-level validator→core assignment. Telemetry does not transmit
+/// `validator_index` — there is no way to map node_id → validator_index
+/// without upstream JIP-3 changes.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ValidatorCoreRow {
+    /// Node identifier (Ed25519 public key hex)
+    pub node_id: String,
+    /// Core this node most frequently guarantees for (by count). NULL if no core data.
+    pub primary_core: Option<i16>,
+    /// Total guarantees built by this node in the time range
+    pub guarantee_count: i64,
+}
+
+// ── /api/grafana/network-health ─────────────────────────────────────────
+
+/// Multi-signal network health score with per-component breakdown.
+///
+/// **Data source:** `all_event_stats_1m` UNION view for 5-component health
+/// scoring (connectivity, block production, DA, work packages, throughput).
+/// LiveCounters for real-time throughput overlay. `node_stats` for peer counts.
+/// Scoring logic (~200 LOC) ported from legacy `store.rs`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct NetworkHealthResponse {
+    pub health_score: f64,
+    pub overall_health: String,
+    pub components: Vec<HealthComponent>,
+    pub alerts: Vec<HealthAlert>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct HealthComponent {
+    /// Component name: block_production, work_packages, data_availability, connectivity, event_throughput
+    pub name: String,
+    /// Component health score (0.0 to 100.0)
+    pub score: f64,
+    /// Component status: healthy (>= 95/90%), degraded (>= 80/70%), unhealthy (below)
+    pub status: String,
+    /// Specific issues detected (empty when healthy)
+    pub issues: Vec<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct HealthAlert {
+    /// Alert severity: "warning" or "error"
+    pub severity: String,
+    /// Human-readable alert message
+    pub message: String,
+    /// Which health component generated this alert
+    pub component: String,
+}
+
+// ── Shared: node_core_mapping helper row ────────────────────────────────
+
+/// Row from the node→core mapping query on guarantee_convergence.
+/// Used by /guarantees/by-guarantor and /validators/cores.
+#[derive(Debug)]
+pub struct NodeCoreRow {
+    pub node_id: String,
+    pub core: i16,
+    pub guarantee_count: i64,
+    pub last_guarantee: DateTime<Utc>,
+}

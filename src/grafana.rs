@@ -47,6 +47,15 @@ use crate::onchain_types::*;
         event_types,
         events,
         guarantee_discards,
+        // Phase 3
+        failure_rates,
+        sync_timeline,
+        connections_timeline,
+        guarantees,
+        guarantees_by_guarantor,
+        wp_stats,
+        validators_cores,
+        network_health,
         onchain_cores_summary,
         onchain_cores_timeseries,
         onchain_core_detail,
@@ -136,6 +145,15 @@ pub fn router() -> Router<ApiState> {
         .route("/event-types", get(event_types))
         .route("/events", get(events))
         .route("/guarantee-discards", get(guarantee_discards))
+        // Phase 3: new endpoints
+        .route("/failure-rates", get(failure_rates))
+        .route("/sync-timeline", get(sync_timeline))
+        .route("/connections-timeline", get(connections_timeline))
+        .route("/guarantees", get(guarantees))
+        .route("/guarantees/by-guarantor", get(guarantees_by_guarantor))
+        .route("/wp-stats", get(wp_stats))
+        .route("/validators/cores", get(validators_cores))
+        .route("/network-health", get(network_health))
         .nest("/onchain", onchain_router())
 }
 
@@ -1180,6 +1198,297 @@ async fn guarantee_discards(
         .await
         .map(Json)
         .map_err(|e| map_sqlx_error("grafana/guarantee-discards", e))
+}
+
+// ── Phase 3: New grafana endpoints ───────────────────────────────────────
+
+/// Network failure rates with per-category, per-node breakdown and recent failures.
+///
+/// **Question answered:** "What's failing across the network, how badly, and where?"
+///
+/// **Data source:** `all_event_stats_1m` UNION view for aggregate counts.
+/// `ingested_raw_events` (1h retention) for recent failure details with reason
+/// text extracted from JSONB.
+///
+/// **Categories and their failure event types (JIP-3):**
+/// - block_authoring: AuthoringFailed, BlockVerificationFailed, BlockExecutionFailed
+/// - tickets: TicketGenerationFailed, TicketTransferFailed
+/// - work_packages: WorkPackageFailed, WorkPackageSharingFailed
+/// - guarantees: GuaranteeSendFailed, GuaranteeReceiveFailed, GuaranteeDiscarded
+/// - shards: ShardRequestFailed
+/// - assurances: AssuranceSendFailed
+///
+/// Each category's rate = failures / (successes + failures). Overall rate spans
+/// all categories. `by_node` returns the top 20 nodes by failure count.
+/// `recent_failures` returns the last 20 failure events from the past 5 minutes
+/// with reason text from JSONB and human-readable event name.
+#[utoipa::path(
+    get,
+    path = "/api/grafana/failure-rates",
+    params(TimeRangeQuery),
+    responses(
+        (status = 200, description = "Failure rates with breakdown", body = FailureRatesResponse),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn failure_rates(
+    Query(q): Query<TimeRangeQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    state
+        .store
+        .grafana_failure_rates(q.start, q.end)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/failure-rates", e))
+}
+
+/// Network sync status over time — how many nodes are synced vs behind.
+///
+/// **Question answered:** "Is the network in sync? Which nodes are falling behind?"
+///
+/// **Data source:** `status_counts` table for BestBlockChanged events with
+/// `slot` dimension preserved in pre-aggregation.
+///
+/// **Algorithm:** For each time bucket, finds the network max slot (highest slot
+/// reported by any node). Nodes whose max slot is within 2 of the network max
+/// are considered "synced"; the rest are "behind." Returns per-bucket:
+/// total_nodes, synced_nodes, behind_nodes, sync_percentage, network_slot.
+#[utoipa::path(
+    get,
+    path = "/api/grafana/sync-timeline",
+    params(TimeseriesQuery),
+    responses(
+        (status = 200, description = "Sync status timeline", body = [SyncTimelineRow]),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn sync_timeline(
+    Query(q): Query<TimeseriesQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let interval = q.interval.as_deref().unwrap_or("5m");
+    state
+        .store
+        .grafana_sync_timeline(q.start, q.end, interval)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/sync-timeline", e))
+}
+
+/// Network connection activity over time.
+///
+/// **Question answered:** "How are node connections changing over time?"
+///
+/// **Data source:** `all_event_stats_30s` for ConnectedIn, ConnectedOut, and
+/// Disconnected events. `nodes` table for overall health stats (maintained by
+/// batch_writer on connect/disconnect).
+///
+/// Timeline shows per-bucket: connections (ConnectedIn + ConnectedOut),
+/// disconnections (Disconnected), and active_nodes (distinct node_ids).
+/// Health stats show total_nodes_seen and currently_connected from the nodes table.
+#[utoipa::path(
+    get,
+    path = "/api/grafana/connections-timeline",
+    params(TimeseriesQuery),
+    responses(
+        (status = 200, description = "Connection activity timeline", body = ConnectionsTimelineResponse),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn connections_timeline(
+    Query(q): Query<TimeseriesQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let interval = q.interval.as_deref().unwrap_or("5m");
+    state
+        .store
+        .grafana_connections_timeline(q.start, q.end, interval)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/connections-timeline", e))
+}
+
+/// Guarantee pipeline totals and success rates.
+///
+/// **Question answered:** "How many guarantees are being built, sent, received,
+/// and discarded across the network?"
+///
+/// **Data source:** `all_event_stats_1m` UNION view for all guarantee event types:
+/// GuaranteeBuilt, SendingGuarantee, GuaranteeSendFailed, GuaranteeSent,
+/// GuaranteesDistributed, ReceivingGuarantee, GuaranteeReceiveFailed,
+/// GuaranteeReceived, GuaranteeDiscarded.
+///
+/// Success rates: send = GuaranteeSent / (Sending + SendFailed + Sent),
+/// receive = GuaranteeReceived / (Receiving + ReceiveFailed + Received).
+#[utoipa::path(
+    get,
+    path = "/api/grafana/guarantees",
+    params(TimeRangeQuery),
+    responses(
+        (status = 200, description = "Guarantee totals and success rates", body = GuaranteesResponse),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn guarantees(
+    Query(q): Query<TimeRangeQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    state
+        .store
+        .grafana_guarantees(q.start, q.end)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/guarantees", e))
+}
+
+/// Per-guarantor breakdown with observed node→core mapping.
+///
+/// **Question answered:** "Which validators are building guarantees, for which cores,
+/// and how actively?"
+///
+/// **Data source:** `guarantee_convergence` table for observed node→core mapping
+/// (builder_node_id + core, 90d retention). Groups by node_id, returns primary
+/// core (most guaranteed), all active cores, guarantee count, and last guarantee
+/// timestamp.
+///
+/// **Caveat:** Node→core mapping reflects observed guarantee behavior, not
+/// protocol-level validator→core assignment. JAM rotates assignments every 10 slots
+/// and reshuffles per epoch. Telemetry does not transmit `validator_index` —
+/// there is no way to map node_id → validator_index without upstream JIP-3 changes.
+#[utoipa::path(
+    get,
+    path = "/api/grafana/guarantees/by-guarantor",
+    params(TimeRangeQuery),
+    responses(
+        (status = 200, description = "Per-guarantor breakdown", body = GuarantorBreakdownResponse),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn guarantees_by_guarantor(
+    Query(q): Query<TimeRangeQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    state
+        .store
+        .grafana_guarantees_by_guarantor(q.start, q.end)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/guarantees/by-guarantor", e))
+}
+
+/// Work package pipeline summary — counts per stage, by core.
+///
+/// **Question answered:** "How many work packages are at each pipeline stage?"
+///
+/// **Data source:** Two sources combined:
+/// - `wp_tracking` table for pipeline stage counts: received (WorkPackageReceived),
+///   authorized (Authorized), refined (Refined), report_built (WorkReportBuilt),
+///   guarantee_built (GuaranteeBuilt), distributed (GuaranteesDistributed),
+///   failed (WorkPackageFailed). Plus by-core breakdown.
+/// - `all_event_stats_1m` for pre-pipeline event counts: WorkPackageSubmission,
+///   WorkPackageBeingShared, DuplicateWorkPackage — these occur before the WP
+///   enters wp_tracking.
+#[utoipa::path(
+    get,
+    path = "/api/grafana/wp-stats",
+    params(TimeRangeQuery),
+    responses(
+        (status = 200, description = "WP pipeline summary", body = WpStatsResponse),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn wp_stats(
+    Query(q): Query<TimeRangeQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    state
+        .store
+        .grafana_wp_stats(q.start, q.end)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/wp-stats", e))
+}
+
+/// Node→core mapping based on observed guarantee behavior.
+///
+/// **Question answered:** "Which node is active on which core?"
+///
+/// **Data source:** `guarantee_convergence` table (builder_node_id + core, 90d
+/// retention). Returns primary core (most guarantees built) per node, plus total
+/// guarantee count. Shares `node_core_mapping()` helper with
+/// `/guarantees/by-guarantor`.
+///
+/// **Caveat:** Reflects observed guarantee behavior, not protocol-level
+/// validator→core assignment. Nodes that haven't built any guarantees in the
+/// time range won't appear. See `/guarantees/by-guarantor` for the same caveat.
+#[utoipa::path(
+    get,
+    path = "/api/grafana/validators/cores",
+    params(TimeRangeQuery),
+    responses(
+        (status = 200, description = "Node to core mapping", body = [ValidatorCoreRow]),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn validators_cores(
+    Query(q): Query<TimeRangeQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    state
+        .store
+        .grafana_validators_cores(q.start, q.end)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/validators/cores", e))
+}
+
+/// Multi-signal network health score with per-component breakdown.
+///
+/// **Question answered:** "Is the network healthy? Which subsystems are degraded?"
+///
+/// **Data source:** `all_event_stats_1m` for event counts. `nodes` table for
+/// connectivity. Each component scored 0-100:
+///
+/// - **block_production:** Authored / (Authored + AuthoringFailed +
+///   BlockVerificationFailed + BlockExecutionFailed). Healthy >= 95%.
+/// - **work_packages:** WorkPackageReceived / (Received + WorkPackageFailed +
+///   WorkPackageSharingFailed). Healthy >= 95%.
+/// - **data_availability:** ShardsTransferred / (Transferred + ShardRequestFailed).
+///   Healthy >= 95%.
+/// - **connectivity:** connected_nodes / total_nodes from `nodes` table.
+///   Healthy >= 90%.
+/// - **event_throughput:** non-zero total events = 100, zero = 0.
+///
+/// Overall health_score = average of 5 component scores. Status: healthy >= 90,
+/// degraded >= 70, unhealthy < 70.
+#[utoipa::path(
+    get,
+    path = "/api/grafana/network-health",
+    params(TimeRangeQuery),
+    responses(
+        (status = 200, description = "Network health score and breakdown", body = NetworkHealthResponse),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn network_health(
+    Query(q): Query<TimeRangeQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    state
+        .store
+        .grafana_network_health(q.start, q.end)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/network-health", e))
 }
 
 // ── On-chain statistics query params ─────────────────────────────────────

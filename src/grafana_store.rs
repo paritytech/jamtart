@@ -1823,6 +1823,659 @@ impl EventStore {
             .fetch_all(self.pool())
             .await
     }
+
+    // ── Phase 3: Shared node_core_mapping helper ────────────────────────
+
+    /// Observed node→core mapping from guarantee_convergence.
+    /// Returns per-node: core, guarantee_count, last_guarantee.
+    /// Used by /guarantees/by-guarantor and /validators/cores.
+    pub async fn node_core_mapping(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<Vec<NodeCoreRow>, sqlx::Error> {
+        let rows = sqlx::query(
+            r#"
+            SELECT builder_node_id AS node_id, core,
+                   COUNT(*)::BIGINT AS guarantee_count,
+                   MAX(built_at) AS last_guarantee
+            FROM guarantee_convergence
+            WHERE built_at >= $1 AND built_at < $2
+              AND builder_node_id IS NOT NULL
+              AND core IS NOT NULL
+            GROUP BY builder_node_id, core
+            ORDER BY guarantee_count DESC
+            "#,
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_all(self.pool())
+        .await?;
+
+        Ok(rows
+            .iter()
+            .map(|row| NodeCoreRow {
+                node_id: row.get("node_id"),
+                core: row.get("core"),
+                guarantee_count: row.get("guarantee_count"),
+                last_guarantee: row.get("last_guarantee"),
+            })
+            .collect())
+    }
+
+    // ── Phase 3: /grafana/failure-rates ─────────────────────────────────
+
+    pub async fn grafana_failure_rates(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<FailureRatesResponse, sqlx::Error> {
+        // Failure type IDs
+        let failure_types: &[i16] = &[41, 44, 46, 81, 83, 92, 99, 107, 111, 113, 122, 127];
+        // Success counterparts for rate calculation
+        let all_types: &[i16] = &[
+            40, 41, 42, 44, 46, // block authoring
+            80, 81, 83, // tickets
+            92, 94, 99, // work packages
+            105, 107, 108, 109, 111, 113, // guarantees
+            120, 122, 125, // shards
+            126, 127, // assurances
+        ];
+
+        // Overall counts
+        let overall_row = sqlx::query(
+            r#"
+            SELECT
+                COALESCE(SUM(event_count), 0)::BIGINT AS total,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = ANY($3)), 0)::BIGINT AS failures
+            FROM all_event_stats_1m
+            WHERE bucket >= $1 AND bucket < $2 AND event_type = ANY($4)
+            "#,
+        )
+        .bind(start)
+        .bind(end)
+        .bind(failure_types)
+        .bind(all_types)
+        .fetch_one(self.pool())
+        .await?;
+
+        let total: i64 = overall_row.get("total");
+        let failures: i64 = overall_row.get("failures");
+
+        // By category
+        let categories = vec![
+            ("block_authoring", vec![40i16, 42], vec![41i16, 44, 46]),
+            ("tickets", vec![80, 82, 84], vec![81, 83]),
+            ("work_packages", vec![94], vec![92, 99]),
+            ("guarantees", vec![105, 108, 109], vec![107, 111, 113]),
+            ("shards", vec![120, 125], vec![122]),
+            ("assurances", vec![126], vec![127]),
+        ];
+
+        let mut by_category = Vec::new();
+        for (name, success_types, fail_types) in &categories {
+            let mut all = success_types.clone();
+            all.extend(fail_types.iter());
+            let cat_row = sqlx::query(
+                r#"
+                SELECT
+                    COALESCE(SUM(event_count), 0)::BIGINT AS total,
+                    COALESCE(SUM(event_count) FILTER (WHERE event_type = ANY($3)), 0)::BIGINT AS failures
+                FROM all_event_stats_1m
+                WHERE bucket >= $1 AND bucket < $2 AND event_type = ANY($4)
+                "#,
+            )
+            .bind(start)
+            .bind(end)
+            .bind(fail_types.as_slice())
+            .bind(all.as_slice())
+            .fetch_one(self.pool())
+            .await?;
+
+            let cat_total: i64 = cat_row.get("total");
+            let cat_failures: i64 = cat_row.get("failures");
+            by_category.push(FailureCategory {
+                category: name.to_string(),
+                attempts: cat_total,
+                failures: cat_failures,
+                rate: if cat_total > 0 { cat_failures as f64 / cat_total as f64 } else { 0.0 },
+            });
+        }
+
+        // By node (top 20 failing nodes)
+        let node_rows = sqlx::query(
+            r#"
+            SELECT node_id,
+                COALESCE(SUM(event_count), 0)::BIGINT AS total,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = ANY($3)), 0)::BIGINT AS failures
+            FROM all_event_stats_1m
+            WHERE bucket >= $1 AND bucket < $2 AND event_type = ANY($4)
+            GROUP BY node_id
+            HAVING SUM(event_count) FILTER (WHERE event_type = ANY($3)) > 0
+            ORDER BY failures DESC
+            LIMIT 20
+            "#,
+        )
+        .bind(start)
+        .bind(end)
+        .bind(failure_types)
+        .bind(all_types)
+        .fetch_all(self.pool())
+        .await?;
+
+        let by_node: Vec<FailureByNode> = node_rows
+            .iter()
+            .map(|row| {
+                let t: i64 = row.get("total");
+                let f: i64 = row.get("failures");
+                FailureByNode {
+                    node_id: row.get("node_id"),
+                    total_events: t,
+                    failures: f,
+                    failure_rate: if t > 0 { f as f64 / t as f64 } else { 0.0 },
+                }
+            })
+            .collect();
+
+        // Recent failures from raw events (last 5 minutes, limit 20)
+        let recent_rows = sqlx::query(
+            r#"
+            SELECT timestamp, node_id, event_type, data
+            FROM ingested_raw_events
+            WHERE timestamp >= NOW() - INTERVAL '5 minutes'
+              AND event_type = ANY($1)
+            ORDER BY timestamp DESC
+            LIMIT 20
+            "#,
+        )
+        .bind(failure_types)
+        .fetch_all(self.pool())
+        .await?;
+
+        let recent_failures: Vec<RecentFailure> = recent_rows
+            .iter()
+            .map(|row| {
+                let et: i16 = row.get("event_type");
+                let data: serde_json::Value = row.get("data");
+                // Extract reason from JSONB — try common patterns
+                let reason = data.as_object().and_then(|obj| {
+                    obj.values().next().and_then(|v| {
+                        v.get("reason").and_then(|r| r.as_str().map(String::from))
+                    })
+                });
+                RecentFailure {
+                    event_type: et,
+                    event_name: crate::event_type_meta::event_type_name(et).to_string(),
+                    node_id: row.get("node_id"),
+                    timestamp: row.get("timestamp"),
+                    reason,
+                }
+            })
+            .collect();
+
+        Ok(FailureRatesResponse {
+            overall: FailureOverall {
+                total_events: total,
+                failed_events: failures,
+                failure_rate: if total > 0 { failures as f64 / total as f64 } else { 0.0 },
+            },
+            by_category,
+            by_node,
+            recent_failures,
+        })
+    }
+
+    // ── Phase 3: /grafana/sync-timeline ─────────────────────────────────
+
+    pub async fn grafana_sync_timeline(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        interval: &str,
+    ) -> Result<Vec<SyncTimelineRow>, sqlx::Error> {
+        let interval = snap_interval(interval);
+        let pg_interval = interval_to_pg(interval);
+
+        let rows = sqlx::query(&format!(
+            r#"
+            WITH bucketed AS (
+                SELECT
+                    time_bucket('{pg_interval}'::interval, bucket) AS ts,
+                    node_id,
+                    MAX(slot) AS max_slot
+                FROM status_counts
+                WHERE bucket >= $1 AND bucket < $2
+                  AND event_type = 11
+                  AND slot IS NOT NULL
+                GROUP BY 1, node_id
+            ),
+            network AS (
+                SELECT ts, MAX(max_slot) AS network_slot
+                FROM bucketed GROUP BY ts
+            )
+            SELECT
+                b.ts,
+                COUNT(DISTINCT b.node_id)::BIGINT AS total_nodes,
+                COUNT(DISTINCT b.node_id) FILTER (WHERE b.max_slot >= n.network_slot - 2)::BIGINT AS synced_nodes,
+                n.network_slot
+            FROM bucketed b
+            JOIN network n ON b.ts = n.ts
+            GROUP BY b.ts, n.network_slot
+            ORDER BY b.ts ASC
+            "#,
+        ))
+        .bind(start)
+        .bind(end)
+        .fetch_all(self.pool())
+        .await?;
+
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let total: i64 = row.get("total_nodes");
+                let synced: i64 = row.get("synced_nodes");
+                SyncTimelineRow {
+                    ts: row.get("ts"),
+                    total_nodes: total,
+                    synced_nodes: synced,
+                    behind_nodes: total - synced,
+                    sync_percentage: if total > 0 { synced as f64 / total as f64 * 100.0 } else { 0.0 },
+                    network_slot: row.get("network_slot"),
+                }
+            })
+            .collect())
+    }
+
+    // ── Phase 3: /grafana/connections-timeline ──────────────────────────
+
+    pub async fn grafana_connections_timeline(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        interval: &str,
+    ) -> Result<ConnectionsTimelineResponse, sqlx::Error> {
+        let interval = snap_interval(interval);
+        let pg_interval = interval_to_pg(interval);
+
+        let timeline_rows = sqlx::query(&format!(
+            r#"
+            SELECT
+                time_bucket('{pg_interval}'::interval, bucket) AS ts,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type IN (23, 26)), 0)::BIGINT AS connections,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 27), 0)::BIGINT AS disconnections,
+                COUNT(DISTINCT node_id)::BIGINT AS active_nodes
+            FROM all_event_stats_30s
+            WHERE bucket >= $1 AND bucket < $2
+              AND event_type IN (23, 26, 27)
+            GROUP BY 1
+            ORDER BY 1 ASC
+            "#,
+        ))
+        .bind(start)
+        .bind(end)
+        .fetch_all(self.pool())
+        .await?;
+
+        let timeline: Vec<ConnectionsBucket> = timeline_rows
+            .iter()
+            .map(|row| ConnectionsBucket {
+                ts: row.get("ts"),
+                connections: row.get("connections"),
+                disconnections: row.get("disconnections"),
+                active_nodes: row.get("active_nodes"),
+            })
+            .collect();
+
+        // Health stats from nodes table
+        let health = sqlx::query(
+            "SELECT COUNT(*)::BIGINT AS total, COUNT(*) FILTER (WHERE is_connected)::BIGINT AS connected FROM nodes",
+        )
+        .fetch_one(self.pool())
+        .await?;
+
+        Ok(ConnectionsTimelineResponse {
+            timeline,
+            health_stats: ConnectionHealthStats {
+                total_nodes_seen: health.get("total"),
+                currently_connected: health.get("connected"),
+            },
+        })
+    }
+
+    // ── Phase 3: /grafana/guarantees ────────────────────────────────────
+
+    pub async fn grafana_guarantees(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<GuaranteesResponse, sqlx::Error> {
+        let rows = sqlx::query(
+            r#"
+            SELECT event_type, COALESCE(SUM(event_count), 0)::BIGINT AS count
+            FROM all_event_stats_1m
+            WHERE bucket >= $1 AND bucket < $2
+              AND event_type BETWEEN 105 AND 113
+            GROUP BY event_type
+            "#,
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_all(self.pool())
+        .await?;
+
+        let mut totals = GuaranteeTotals {
+            built: 0, sending: 0, send_failed: 0, sent: 0, distributed: 0,
+            receiving: 0, receive_failed: 0, received: 0, discarded: 0,
+        };
+        for row in &rows {
+            let et: i16 = row.get("event_type");
+            let count: i64 = row.get("count");
+            match et {
+                105 => totals.built = count,
+                106 => totals.sending = count,
+                107 => totals.send_failed = count,
+                108 => totals.sent = count,
+                109 => totals.distributed = count,
+                110 => totals.receiving = count,
+                111 => totals.receive_failed = count,
+                112 => totals.received = count,
+                113 => totals.discarded = count,
+                _ => {}
+            }
+        }
+
+        let send_total = totals.sending + totals.send_failed + totals.sent;
+        let recv_total = totals.receiving + totals.receive_failed + totals.received;
+        let success_rates = GuaranteeSuccessRates {
+            send_success_rate: if send_total > 0 { totals.sent as f64 / send_total as f64 } else { 1.0 },
+            receive_success_rate: if recv_total > 0 { totals.received as f64 / recv_total as f64 } else { 1.0 },
+        };
+
+        Ok(GuaranteesResponse {
+            totals,
+            success_rates,
+        })
+    }
+
+    // ── Phase 3: /grafana/guarantees/by-guarantor ───────────────────────
+
+    pub async fn grafana_guarantees_by_guarantor(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<GuarantorBreakdownResponse, sqlx::Error> {
+        let mapping = self.node_core_mapping(start, end).await?;
+
+        // Group by node_id to get primary core + all cores
+        let mut node_map: std::collections::HashMap<String, (Vec<i16>, i64, Option<DateTime<Utc>>)> =
+            std::collections::HashMap::new();
+        for row in &mapping {
+            let entry = node_map
+                .entry(row.node_id.clone())
+                .or_insert_with(|| (Vec::new(), 0, None));
+            entry.0.push(row.core);
+            entry.1 += row.guarantee_count;
+            entry.2 = Some(entry.2.map_or(row.last_guarantee, |prev: DateTime<Utc>| prev.max(row.last_guarantee)));
+        }
+
+        let mut guarantors: Vec<GuarantorRow> = node_map
+            .into_iter()
+            .map(|(node_id, (mut cores, count, last))| {
+                cores.sort();
+                cores.dedup();
+                let primary = cores.first().copied();
+                GuarantorRow {
+                    node_id,
+                    primary_core: primary,
+                    guarantee_count: count,
+                    last_guarantee: last,
+                    cores_active: cores,
+                }
+            })
+            .collect();
+        guarantors.sort_by(|a, b| b.guarantee_count.cmp(&a.guarantee_count));
+        let total = guarantors.len() as i64;
+
+        Ok(GuarantorBreakdownResponse {
+            guarantors,
+            total_guarantors: total,
+        })
+    }
+
+    // ── Phase 3: /grafana/wp-stats ──────────────────────────────────────
+
+    pub async fn grafana_wp_stats(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<WpStatsResponse, sqlx::Error> {
+        // Pipeline stages from wp_tracking
+        let stage_row = sqlx::query(
+            r#"
+            SELECT
+                COUNT(*) FILTER (WHERE received_at IS NOT NULL)::BIGINT AS received,
+                COUNT(*) FILTER (WHERE authorized_at IS NOT NULL)::BIGINT AS authorized,
+                COUNT(*) FILTER (WHERE refined_at IS NOT NULL)::BIGINT AS refined,
+                COUNT(*) FILTER (WHERE report_built_at IS NOT NULL)::BIGINT AS report_built,
+                COUNT(*) FILTER (WHERE guarantee_built_at IS NOT NULL)::BIGINT AS guarantee_built,
+                COUNT(*) FILTER (WHERE distributed_at IS NOT NULL)::BIGINT AS distributed,
+                COUNT(*) FILTER (WHERE failed_at IS NOT NULL)::BIGINT AS failed
+            FROM wp_tracking
+            WHERE first_seen >= $1 AND first_seen < $2
+            "#,
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_one(self.pool())
+        .await?;
+
+        // Pre-pipeline counts from aggregates (types 90, 91, 93)
+        let pre_row = sqlx::query(
+            r#"
+            SELECT
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 90), 0)::BIGINT AS submissions,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 91), 0)::BIGINT AS being_shared,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 93), 0)::BIGINT AS duplicates
+            FROM all_event_stats_1m
+            WHERE bucket >= $1 AND bucket < $2
+              AND event_type IN (90, 91, 93)
+            "#,
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_one(self.pool())
+        .await?;
+
+        // By core
+        let core_rows = sqlx::query(
+            r#"
+            SELECT core, COUNT(*)::BIGINT AS count
+            FROM wp_tracking
+            WHERE first_seen >= $1 AND first_seen < $2
+            GROUP BY core
+            ORDER BY core ASC
+            "#,
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_all(self.pool())
+        .await?;
+
+        Ok(WpStatsResponse {
+            totals: WpStageTotals {
+                submissions: pre_row.get("submissions"),
+                being_shared: pre_row.get("being_shared"),
+                duplicates: pre_row.get("duplicates"),
+                received: stage_row.get("received"),
+                authorized: stage_row.get("authorized"),
+                refined: stage_row.get("refined"),
+                report_built: stage_row.get("report_built"),
+                guarantee_built: stage_row.get("guarantee_built"),
+                distributed: stage_row.get("distributed"),
+                failed: stage_row.get("failed"),
+            },
+            by_core: core_rows
+                .iter()
+                .map(|row| WpCoreCount {
+                    core: row.get("core"),
+                    count: row.get("count"),
+                })
+                .collect(),
+        })
+    }
+
+    // ── Phase 3: /grafana/validators/cores ──────────────────────────────
+
+    pub async fn grafana_validators_cores(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<Vec<ValidatorCoreRow>, sqlx::Error> {
+        let mapping = self.node_core_mapping(start, end).await?;
+
+        // Group by node → pick primary core (highest guarantee_count)
+        let mut node_map: std::collections::HashMap<String, (Option<i16>, i64)> =
+            std::collections::HashMap::new();
+        for row in &mapping {
+            let entry = node_map
+                .entry(row.node_id.clone())
+                .or_insert((None, 0));
+            entry.1 += row.guarantee_count;
+            // Primary = core with most guarantees
+            if entry.0.is_none() || row.guarantee_count > 0 {
+                entry.0 = Some(row.core);
+            }
+        }
+
+        let mut result: Vec<ValidatorCoreRow> = node_map
+            .into_iter()
+            .map(|(node_id, (core, count))| ValidatorCoreRow {
+                node_id,
+                primary_core: core,
+                guarantee_count: count,
+            })
+            .collect();
+        result.sort_by(|a, b| b.guarantee_count.cmp(&a.guarantee_count));
+
+        Ok(result)
+    }
+
+    // ── Phase 3: /grafana/network-health ────────────────────────────────
+
+    pub async fn grafana_network_health(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<NetworkHealthResponse, sqlx::Error> {
+        // Get event counts for health scoring
+        let counts = sqlx::query(
+            r#"
+            SELECT event_type, COALESCE(SUM(event_count), 0)::BIGINT AS count
+            FROM all_event_stats_1m
+            WHERE bucket >= $1 AND bucket < $2
+            GROUP BY event_type
+            "#,
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_all(self.pool())
+        .await?;
+
+        let mut type_counts: std::collections::HashMap<i16, i64> = std::collections::HashMap::new();
+        for row in &counts {
+            type_counts.insert(row.get("event_type"), row.get("count"));
+        }
+
+        let get = |et: i16| -> i64 { *type_counts.get(&et).unwrap_or(&0) };
+
+        // Component scores
+        let mut components = Vec::new();
+        let mut alerts = Vec::new();
+
+        // 1. Block production
+        let authored = get(42);
+        let auth_failed = get(41) + get(44) + get(46);
+        let block_total = authored + auth_failed;
+        let block_score = if block_total > 0 { authored as f64 / block_total as f64 * 100.0 } else { 100.0 };
+        let block_status = if block_score >= 95.0 { "healthy" } else if block_score >= 80.0 { "degraded" } else { "unhealthy" };
+        if block_score < 95.0 {
+            alerts.push(HealthAlert {
+                severity: if block_score < 80.0 { "error".into() } else { "warning".into() },
+                message: format!("Block production success rate: {:.1}%", block_score),
+                component: "block_production".into(),
+            });
+        }
+        components.push(HealthComponent {
+            name: "block_production".into(),
+            score: block_score,
+            status: block_status.into(),
+            issues: Vec::new(),
+        });
+
+        // 2. Work packages
+        let wp_received = get(94);
+        let wp_failed = get(92) + get(99);
+        let wp_total = wp_received + wp_failed;
+        let wp_score = if wp_total > 0 { wp_received as f64 / wp_total as f64 * 100.0 } else { 100.0 };
+        let wp_status = if wp_score >= 95.0 { "healthy" } else if wp_score >= 80.0 { "degraded" } else { "unhealthy" };
+        components.push(HealthComponent {
+            name: "work_packages".into(),
+            score: wp_score,
+            status: wp_status.into(),
+            issues: Vec::new(),
+        });
+
+        // 3. DA / Shards
+        let shard_ok = get(125);
+        let shard_fail = get(122);
+        let shard_total = shard_ok + shard_fail;
+        let da_score = if shard_total > 0 { shard_ok as f64 / shard_total as f64 * 100.0 } else { 100.0 };
+        let da_status = if da_score >= 95.0 { "healthy" } else if da_score >= 80.0 { "degraded" } else { "unhealthy" };
+        components.push(HealthComponent {
+            name: "data_availability".into(),
+            score: da_score,
+            status: da_status.into(),
+            issues: Vec::new(),
+        });
+
+        // 4. Connectivity (from nodes table)
+        let conn_row = sqlx::query(
+            "SELECT COUNT(*)::BIGINT AS total, COUNT(*) FILTER (WHERE is_connected)::BIGINT AS connected FROM nodes",
+        )
+        .fetch_one(self.pool())
+        .await?;
+        let total_nodes: i64 = conn_row.get("total");
+        let connected: i64 = conn_row.get("connected");
+        let conn_score = if total_nodes > 0 { connected as f64 / total_nodes as f64 * 100.0 } else { 100.0 };
+        let conn_status = if conn_score >= 90.0 { "healthy" } else if conn_score >= 70.0 { "degraded" } else { "unhealthy" };
+        components.push(HealthComponent {
+            name: "connectivity".into(),
+            score: conn_score,
+            status: conn_status.into(),
+            issues: Vec::new(),
+        });
+
+        // 5. Event throughput (total events vs baseline expectation)
+        let total_events: i64 = type_counts.values().sum();
+        let throughput_score = if total_events > 0 { 100.0 } else { 0.0 };
+        components.push(HealthComponent {
+            name: "event_throughput".into(),
+            score: throughput_score,
+            status: if throughput_score > 50.0 { "healthy" } else { "unhealthy" }.into(),
+            issues: Vec::new(),
+        });
+
+        // Overall: weighted average
+        let health_score = components.iter().map(|c| c.score).sum::<f64>() / components.len() as f64;
+        let overall_health = if health_score >= 90.0 { "healthy" } else if health_score >= 70.0 { "degraded" } else { "unhealthy" };
+
+        Ok(NetworkHealthResponse {
+            health_score,
+            overall_health: overall_health.into(),
+            components,
+            alerts,
+        })
+    }
 }
 
 fn rows_to_convergence_timeseries(rows: &[sqlx::postgres::PgRow]) -> Vec<ConvergenceTimeseriesRow> {
