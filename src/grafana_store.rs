@@ -2476,6 +2476,415 @@ impl EventStore {
             alerts,
         })
     }
+
+    // ── Phase 4: /grafana/wp-active ─────────────────────────────────────
+
+    /// Active (in-flight) work packages with pipeline health summary.
+    pub async fn grafana_wp_active(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<WpActiveResponse, sqlx::Error> {
+        // WP list
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                encode(wp_hash, 'hex') AS wp_hash,
+                core, node_id, service_ids, stage,
+                refine_gas_used, failure_reason,
+                first_seen, last_updated,
+                received_at, authorized_at, refined_at,
+                report_built_at, guarantee_built_at, distributed_at, failed_at,
+                received_by, guaranteed_by,
+                (EXTRACT(EPOCH FROM (last_updated - first_seen)) * 1000)::FLOAT8 AS elapsed_ms
+            FROM wp_tracking
+            WHERE distributed_at IS NULL AND failed_at IS NULL
+              AND first_seen >= $1 AND first_seen < $2
+            ORDER BY first_seen DESC
+            LIMIT 200
+            "#,
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_all(self.pool())
+        .await?;
+
+        let work_packages: Vec<WpActiveRow> = rows
+            .iter()
+            .map(|row| WpActiveRow {
+                wp_hash: row.get("wp_hash"),
+                core: row.get("core"),
+                node_id: row.get("node_id"),
+                service_ids: row.get::<Vec<i32>, _>("service_ids").into_iter().map(DbServiceId).collect(),
+                stage: row.get("stage"),
+                refine_gas_used: row.get("refine_gas_used"),
+                failure_reason: row.get("failure_reason"),
+                first_seen: row.get("first_seen"),
+                last_updated: row.get("last_updated"),
+                received_at: row.get("received_at"),
+                authorized_at: row.get("authorized_at"),
+                refined_at: row.get("refined_at"),
+                report_built_at: row.get("report_built_at"),
+                guarantee_built_at: row.get("guarantee_built_at"),
+                distributed_at: row.get("distributed_at"),
+                failed_at: row.get("failed_at"),
+                received_by: row.get("received_by"),
+                guaranteed_by: row.get("guaranteed_by"),
+                elapsed_ms: row.get::<Option<f64>, _>("elapsed_ms").unwrap_or(0.0),
+            })
+            .collect();
+
+        // Aggregates from same filtered set
+        let agg = sqlx::query(
+            r#"
+            SELECT
+                COUNT(*)::BIGINT AS total,
+                COUNT(*) FILTER (WHERE stage = 0)::BIGINT AS at_received,
+                COUNT(*) FILTER (WHERE stage = 1)::BIGINT AS at_authorized,
+                COUNT(*) FILTER (WHERE stage = 2)::BIGINT AS at_refined,
+                COUNT(*) FILTER (WHERE stage = 3)::BIGINT AS at_report_built,
+                COUNT(*) FILTER (WHERE stage = 4)::BIGINT AS at_guarantee_built,
+                COUNT(*) FILTER (WHERE received_at IS NOT NULL)::BIGINT AS reached_received,
+                COUNT(*) FILTER (WHERE authorized_at IS NOT NULL)::BIGINT AS reached_authorized,
+                COUNT(*) FILTER (WHERE refined_at IS NOT NULL)::BIGINT AS reached_refined,
+                COUNT(*) FILTER (WHERE report_built_at IS NOT NULL)::BIGINT AS reached_report_built,
+                COUNT(*) FILTER (WHERE guarantee_built_at IS NOT NULL)::BIGINT AS reached_guarantee_built,
+                percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (authorized_at - received_at)) * 1000)
+                    FILTER (WHERE authorized_at IS NOT NULL AND received_at IS NOT NULL) AS auth_p50,
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (authorized_at - received_at)) * 1000)
+                    FILTER (WHERE authorized_at IS NOT NULL AND received_at IS NOT NULL) AS auth_p95,
+                percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (refined_at - authorized_at)) * 1000)
+                    FILTER (WHERE refined_at IS NOT NULL AND authorized_at IS NOT NULL) AS refine_p50,
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (refined_at - authorized_at)) * 1000)
+                    FILTER (WHERE refined_at IS NOT NULL AND authorized_at IS NOT NULL) AS refine_p95,
+                percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (report_built_at - refined_at)) * 1000)
+                    FILTER (WHERE report_built_at IS NOT NULL AND refined_at IS NOT NULL) AS report_p50,
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (report_built_at - refined_at)) * 1000)
+                    FILTER (WHERE report_built_at IS NOT NULL AND refined_at IS NOT NULL) AS report_p95,
+                percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (guarantee_built_at - report_built_at)) * 1000)
+                    FILTER (WHERE guarantee_built_at IS NOT NULL AND report_built_at IS NOT NULL) AS guarantee_p50,
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (guarantee_built_at - report_built_at)) * 1000)
+                    FILTER (WHERE guarantee_built_at IS NOT NULL AND report_built_at IS NOT NULL) AS guarantee_p95
+            FROM wp_tracking
+            WHERE distributed_at IS NULL AND failed_at IS NULL
+              AND first_seen >= $1 AND first_seen < $2
+            "#,
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_one(self.pool())
+        .await?;
+
+        // Failure breakdown
+        let failure_rows = sqlx::query(
+            r#"
+            SELECT failure_reason AS reason, COUNT(*)::BIGINT AS count
+            FROM wp_tracking
+            WHERE failed_at IS NOT NULL
+              AND failure_reason IS NOT NULL
+              AND first_seen >= $1 AND first_seen < $2
+            GROUP BY failure_reason
+            ORDER BY count DESC
+            "#,
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_all(self.pool())
+        .await?;
+
+        Ok(WpActiveResponse {
+            work_packages,
+            summary: WpActiveSummary {
+                total: agg.get("total"),
+                at_received: agg.get("at_received"),
+                at_authorized: agg.get("at_authorized"),
+                at_refined: agg.get("at_refined"),
+                at_report_built: agg.get("at_report_built"),
+                at_guarantee_built: agg.get("at_guarantee_built"),
+            },
+            reached: WpReachedCounts {
+                received: agg.get("reached_received"),
+                authorized: agg.get("reached_authorized"),
+                refined: agg.get("reached_refined"),
+                report_built: agg.get("reached_report_built"),
+                guarantee_built: agg.get("reached_guarantee_built"),
+            },
+            stage_duration_percentiles: WpStageDurations {
+                authorize_p50_ms: agg.get("auth_p50"),
+                authorize_p95_ms: agg.get("auth_p95"),
+                refine_p50_ms: agg.get("refine_p50"),
+                refine_p95_ms: agg.get("refine_p95"),
+                report_p50_ms: agg.get("report_p50"),
+                report_p95_ms: agg.get("report_p95"),
+                guarantee_p50_ms: agg.get("guarantee_p50"),
+                guarantee_p95_ms: agg.get("guarantee_p95"),
+            },
+            failure_breakdown: failure_rows
+                .iter()
+                .map(|row| FailureBreakdownEntry {
+                    reason: row.get("reason"),
+                    count: row.get("count"),
+                })
+                .collect(),
+        })
+    }
+
+    // ── Phase 4: /grafana/wp/{hash} ─────────────────────────────────────
+
+    /// Work package detail: summary + raw events.
+    pub async fn grafana_wp_detail(
+        &self,
+        wp_hash_bytes: &[u8],
+    ) -> Result<WpDetailResponse, sqlx::Error> {
+        // Summary from wp_tracking
+        let summary_row = sqlx::query(
+            r#"
+            SELECT
+                encode(wp_hash, 'hex') AS wp_hash,
+                first_seen, last_updated, stage,
+                received_by, guaranteed_by,
+                service_ids,
+                received_at, authorized_at, refined_at,
+                report_built_at, guarantee_built_at, distributed_at, failed_at
+            FROM wp_tracking
+            WHERE wp_hash = $1
+            "#,
+        )
+        .bind(wp_hash_bytes)
+        .fetch_optional(self.pool())
+        .await?;
+
+        let summary = summary_row.map(|row| WpTrackingRow {
+            wp_hash: row.get("wp_hash"),
+            first_seen: row.get("first_seen"),
+            last_updated: row.get("last_updated"),
+            stage: row.get("stage"),
+            received_by: row.get("received_by"),
+            guaranteed_by: row.get("guaranteed_by"),
+            service_ids: row.get::<Vec<i32>, _>("service_ids").into_iter().map(DbServiceId).collect(),
+            received_at: row.get("received_at"),
+            authorized_at: row.get("authorized_at"),
+            refined_at: row.get("refined_at"),
+            report_built_at: row.get("report_built_at"),
+            guarantee_built_at: row.get("guarantee_built_at"),
+            distributed_at: row.get("distributed_at"),
+            failed_at: row.get("failed_at"),
+        });
+
+        // Raw events from ingested_raw_events (1h retention, wp_hash hot column)
+        let event_rows = sqlx::query(
+            r#"
+            SELECT timestamp, node_id, event_type, data, created_at
+            FROM ingested_raw_events
+            WHERE wp_hash = $1
+            ORDER BY timestamp ASC
+            "#,
+        )
+        .bind(wp_hash_bytes)
+        .fetch_all(self.pool())
+        .await?;
+
+        let events: Vec<EventRow> = event_rows
+            .iter()
+            .map(|row| EventRow {
+                ts: row.get("timestamp"),
+                node_id: row.get("node_id"),
+                event_type: row.get("event_type"),
+                data: row.get("data"),
+                created_at: row.get("created_at"),
+            })
+            .collect();
+
+        Ok(WpDetailResponse { summary, events })
+    }
+
+    // ── Phase 4: /grafana/wp/batch ──────────────────────────────────────
+
+    /// Batch WP summary lookup by multiple hashes.
+    pub async fn grafana_wp_batch(
+        &self,
+        wp_hashes: &[Vec<u8>],
+    ) -> Result<Vec<WpTrackingRow>, sqlx::Error> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                encode(wp_hash, 'hex') AS wp_hash,
+                first_seen, last_updated, stage,
+                received_by, guaranteed_by,
+                service_ids,
+                received_at, authorized_at, refined_at,
+                report_built_at, guarantee_built_at, distributed_at, failed_at
+            FROM wp_tracking
+            WHERE wp_hash = ANY($1)
+            ORDER BY first_seen DESC
+            "#,
+        )
+        .bind(wp_hashes)
+        .fetch_all(self.pool())
+        .await?;
+
+        Ok(rows
+            .iter()
+            .map(|row| WpTrackingRow {
+                wp_hash: row.get("wp_hash"),
+                first_seen: row.get("first_seen"),
+                last_updated: row.get("last_updated"),
+                stage: row.get("stage"),
+                received_by: row.get("received_by"),
+                guaranteed_by: row.get("guaranteed_by"),
+                service_ids: row.get::<Vec<i32>, _>("service_ids").into_iter().map(DbServiceId).collect(),
+                received_at: row.get("received_at"),
+                authorized_at: row.get("authorized_at"),
+                refined_at: row.get("refined_at"),
+                report_built_at: row.get("report_built_at"),
+                guarantee_built_at: row.get("guarantee_built_at"),
+                distributed_at: row.get("distributed_at"),
+                failed_at: row.get("failed_at"),
+            })
+            .collect())
+    }
+
+    // ── Phase 4: /grafana/blocks/summary ────────────────────────────────
+
+    /// Block production overview.
+    pub async fn grafana_blocks_summary(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<BlocksSummaryResponse, sqlx::Error> {
+        // Totals from aggregates
+        let totals_row = sqlx::query(
+            r#"
+            SELECT
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 40), 0)::BIGINT AS authoring_started,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 41), 0)::BIGINT AS authoring_failed,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 42), 0)::BIGINT AS authored,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 43), 0)::BIGINT AS importing,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 44), 0)::BIGINT AS verification_failed,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 45), 0)::BIGINT AS verified,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 46), 0)::BIGINT AS execution_failed,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 47), 0)::BIGINT AS executed,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 11), 0)::BIGINT AS best_block_changes,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 12), 0)::BIGINT AS finalized_block_changes
+            FROM all_event_stats_1m
+            WHERE bucket >= $1 AND bucket < $2
+              AND event_type IN (40, 41, 42, 43, 44, 45, 46, 47, 11, 12)
+            "#,
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_one(self.pool())
+        .await?;
+
+        // Authoring by node
+        let node_rows = sqlx::query(
+            r#"
+            SELECT node_id, SUM(event_count)::BIGINT AS blocks_authored
+            FROM all_event_stats_1m
+            WHERE bucket >= $1 AND bucket < $2 AND event_type = 42
+            GROUP BY node_id
+            ORDER BY blocks_authored DESC
+            LIMIT 50
+            "#,
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_all(self.pool())
+        .await?;
+
+        Ok(BlocksSummaryResponse {
+            totals: BlockTotals {
+                authoring_started: totals_row.get("authoring_started"),
+                authoring_failed: totals_row.get("authoring_failed"),
+                authored: totals_row.get("authored"),
+                importing: totals_row.get("importing"),
+                verification_failed: totals_row.get("verification_failed"),
+                verified: totals_row.get("verified"),
+                execution_failed: totals_row.get("execution_failed"),
+                executed: totals_row.get("executed"),
+                best_block_changes: totals_row.get("best_block_changes"),
+                finalized_block_changes: totals_row.get("finalized_block_changes"),
+            },
+            chain: ChainState {
+                best_slot: None,  // Overlaid by handler from LiveCounters
+                finalized_slot: None,
+            },
+            authoring_by_node: node_rows
+                .iter()
+                .map(|row| AuthoringByNode {
+                    node_id: row.get("node_id"),
+                    blocks_authored: row.get("blocks_authored"),
+                })
+                .collect(),
+        })
+    }
+
+    // ── Phase 4: /grafana/cores/{id}/metrics ────────────────────────────
+
+    /// Core performance metrics.
+    pub async fn grafana_core_metrics(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        core: i16,
+    ) -> Result<CoreMetricsResponse, sqlx::Error> {
+        // Event counts from core_stats
+        let counts = sqlx::query(
+            r#"
+            SELECT
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 94), 0)::BIGINT AS wp_received,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 101), 0)::BIGINT AS refined,
+                COALESCE(SUM(event_count) FILTER (WHERE event_type = 92), 0)::BIGINT AS failed
+            FROM all_core_stats_1m
+            WHERE bucket >= $1 AND bucket < $2 AND core = $3
+            "#,
+        )
+        .bind(start)
+        .bind(end)
+        .bind(core)
+        .fetch_one(self.pool())
+        .await?;
+
+        let refined: i64 = counts.get("refined");
+        let failed: i64 = counts.get("failed");
+        let wp_received: i64 = counts.get("wp_received");
+        let total_processed = refined + failed;
+
+        // Latency percentiles from wp_tracking
+        let latency = sqlx::query(
+            r#"
+            SELECT
+                percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (COALESCE(distributed_at, last_updated) - received_at)) * 1000)
+                    FILTER (WHERE received_at IS NOT NULL) AS p50_ms,
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (COALESCE(distributed_at, last_updated) - received_at)) * 1000)
+                    FILTER (WHERE received_at IS NOT NULL) AS p95_ms,
+                (AVG(EXTRACT(EPOCH FROM (COALESCE(distributed_at, last_updated) - received_at)) * 1000)
+                    FILTER (WHERE distributed_at IS NOT NULL AND received_at IS NOT NULL))::FLOAT8 AS avg_completion_ms,
+                COALESCE(SUM(refine_gas_used), 0)::BIGINT AS total_gas
+            FROM wp_tracking
+            WHERE core = $1 AND first_seen >= $2 AND first_seen < $3
+            "#,
+        )
+        .bind(core)
+        .bind(start)
+        .bind(end)
+        .fetch_one(self.pool())
+        .await?;
+
+        Ok(CoreMetricsResponse {
+            core,
+            processing_efficiency_pct: if total_processed > 0 {
+                refined as f64 / total_processed as f64 * 100.0
+            } else {
+                100.0
+            },
+            p50_latency_ms: latency.get("p50_ms"),
+            p95_latency_ms: latency.get("p95_ms"),
+            average_completion_time_ms: latency.get("avg_completion_ms"),
+            total_gas_used: latency.get("total_gas"),
+            work_packages_processed: wp_received,
+        })
+    }
 }
 
 fn rows_to_convergence_timeseries(rows: &[sqlx::postgres::PgRow]) -> Vec<ConvergenceTimeseriesRow> {

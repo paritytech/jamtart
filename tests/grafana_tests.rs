@@ -2988,3 +2988,149 @@ async fn test_grafana_network_health() {
         assert!(comp["status"].is_string(), "component should have status");
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 4: Moderate endpoint tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_grafana_wp_active() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    // 2 active WPs (received but not distributed), 1 completed
+    let events = vec![
+        common::wp_received_event(ts, 9700, 0),
+        common::authorized_event(ts + 1000, 9700),
+        common::wp_received_event(ts + 2000, 9701, 1),
+        common::wp_received_event(ts + 3000, 9702, 2),
+        common::authorized_event(ts + 4000, 9702),
+        common::refined_event(ts + 5000, 9702),
+        common::work_report_built_event(ts + 6000, 9702),
+        common::guarantee_built_event(ts + 7000, 9702),
+        common::guarantees_distributed_event(ts + 8000, 9702), // completed
+    ];
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+
+    let path = format!("/api/grafana/wp-active?{}", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let wps = json["work_packages"].as_array().expect("should have work_packages");
+    // Only active (not distributed, not failed) — should be 2
+    assert!(wps.len() >= 2, "expected >= 2 active WPs, got {}", wps.len());
+
+    // Summary
+    assert!(json["summary"]["total"].as_i64().unwrap() >= 2);
+
+    // Reached
+    assert!(json["reached"]["received"].as_i64().unwrap() >= 2);
+
+    // Stage durations (may be null if not enough data — just check structure)
+    assert!(json["stage_duration_percentiles"].is_object());
+}
+
+#[tokio::test]
+async fn test_grafana_wp_detail() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    let events = vec![
+        common::wp_received_event(ts, 9800, 5),
+        common::authorized_event(ts + 1000, 9800),
+        common::refined_event(ts + 2000, 9800),
+    ];
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+
+    // We need the wp_hash — get it from wp-active
+    let active_path = format!("/api/grafana/wp-active?{}", time_range_params());
+    let active_response = server.get(&active_path).await;
+    let active_json: Value = active_response.json();
+    let wps = active_json["work_packages"].as_array().unwrap();
+
+    if let Some(wp) = wps.first() {
+        let hash = wp["wp_hash"].as_str().unwrap();
+        let detail_path = format!("/api/grafana/wp/{}", hash);
+        let response = server.get(&detail_path).await;
+        assert_eq!(response.status_code(), StatusCode::OK);
+
+        let json: Value = response.json();
+        // Summary should exist
+        assert!(json["summary"].is_object(), "should have summary");
+        assert!(json["summary"]["wp_hash"].is_string(), "summary should have wp_hash");
+        // Events array (from raw events within 1h)
+        assert!(json["events"].is_array(), "should have events array");
+    }
+}
+
+#[tokio::test]
+async fn test_grafana_blocks_summary() {
+    let (server, telemetry, port, store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    let events = vec![
+        common::authoring_event(ts, 90),
+        common::authored_event(ts + 1000, 1),
+        common::best_block_event(ts + 2000, 90),
+        common::finalized_block_event(ts + 3000, 89),
+    ];
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+    common::refresh_aggregates(store.pool()).await;
+
+    let path = format!("/api/grafana/blocks/summary?{}", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let totals = &json["totals"];
+    assert!(totals["authoring_started"].as_i64().unwrap() >= 1, "should have authoring");
+    assert!(totals["authored"].as_i64().unwrap() >= 1, "should have authored");
+    assert!(totals["best_block_changes"].as_i64().unwrap() >= 1, "should have BestBlockChanged");
+
+    // Chain state
+    assert!(json["chain"].is_object(), "should have chain state");
+
+    // Authoring by node
+    let by_node = json["authoring_by_node"].as_array().expect("should have authoring_by_node");
+    assert!(!by_node.is_empty(), "should have per-node authoring data");
+}
+
+#[tokio::test]
+async fn test_grafana_core_metrics() {
+    let (server, telemetry, port, store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    // WP lifecycle on core 3
+    let events = vec![
+        common::wp_received_event(ts, 9900, 3),
+        common::authorized_event(ts + 1000, 9900),
+        common::refined_event(ts + 2000, 9900),
+        common::work_report_built_event(ts + 3000, 9900),
+        common::guarantee_built_event(ts + 4000, 9900),
+        common::guarantees_distributed_event(ts + 5000, 9900),
+    ];
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+    common::refresh_aggregates(store.pool()).await;
+
+    let path = format!("/api/grafana/cores/3/metrics?{}", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    assert_eq!(json["core"].as_i64().unwrap(), 3);
+    assert!(json["processing_efficiency_pct"].as_f64().is_some());
+    assert!(json["work_packages_processed"].as_i64().unwrap() >= 1);
+}

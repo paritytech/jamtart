@@ -887,7 +887,7 @@ async fn handle_connection_optimized(
                                                 })
                                                 .or_insert_with(|| {
                                                     let mut received_nodes = std::collections::HashSet::new();
-                                                    received_nodes.insert(nid);
+                                                    received_nodes.insert(nid.clone());
                                                     crate::wp_tracker::WpState {
                                                         first_seen: evt_ts,
                                                         last_updated: evt_ts,
@@ -898,6 +898,7 @@ async fn handle_connection_optimized(
                                                         stage: 0,
                                                         received_at: Some(evt_ts),
                                                         dirty: true,
+                                                        node_id: Some(nid),
                                                         ..Default::default()
                                                     }
                                                 });
@@ -905,8 +906,17 @@ async fn handle_connection_optimized(
                                     }
                                     92 => { // WorkPackageFailed
                                         if let Some(hash) = enriched.wp_hash {
+                                            // Extract failure reason from event
+                                            let reason = if let crate::events::Event::WorkPackageFailed { ref reason, .. } = *event {
+                                                reason.as_str().ok().map(|s| s.to_string())
+                                            } else {
+                                                None
+                                            };
                                             wp_tracker.entry(hash).and_modify(|s| {
                                                 s.mark_failed(evt_ts);
+                                                if s.failure_reason.is_none() {
+                                                    s.failure_reason = reason;
+                                                }
                                             });
                                         }
                                     }
@@ -920,7 +930,23 @@ async fn handle_connection_optimized(
                                             });
                                         }
                                     }
-                                    95 | 101 | 102 | 109 => {
+                                    101 => { // Refined — extract gas_used
+                                        if let Some(hash) = enriched.wp_hash {
+                                            let gas = if let crate::events::Event::Refined { ref costs, .. } = *event {
+                                                let total: u64 = costs.iter().map(|c| c.total.gas_used).sum();
+                                                if total > 0 { Some(total as i64) } else { None }
+                                            } else {
+                                                None
+                                            };
+                                            wp_tracker.entry(hash).and_modify(|s| {
+                                                s.update_stage(2, evt_ts);
+                                                if s.refine_gas_used.is_none() {
+                                                    s.refine_gas_used = gas;
+                                                }
+                                            });
+                                        }
+                                    }
+                                    95 | 102 | 109 => {
                                         if let Some(hash) = enriched.wp_hash {
                                             let ordinal = crate::wp_tracker::event_type_to_ordinal(et_raw);
                                             wp_tracker.entry(hash).and_modify(|s| {

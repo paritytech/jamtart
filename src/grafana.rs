@@ -8,7 +8,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use chrono::{DateTime, Utc};
@@ -56,6 +56,12 @@ use crate::onchain_types::*;
         wp_stats,
         validators_cores,
         network_health,
+        // Phase 4
+        wp_active,
+        wp_detail,
+        wp_batch,
+        blocks_summary,
+        core_metrics,
         onchain_cores_summary,
         onchain_cores_timeseries,
         onchain_core_detail,
@@ -154,6 +160,12 @@ pub fn router() -> Router<ApiState> {
         .route("/wp-stats", get(wp_stats))
         .route("/validators/cores", get(validators_cores))
         .route("/network-health", get(network_health))
+        // Phase 4: moderate endpoints
+        .route("/wp-active", get(wp_active))
+        .route("/wp/:wp_hash", get(wp_detail))
+        .route("/wp/batch", post(wp_batch))
+        .route("/blocks/summary", get(blocks_summary))
+        .route("/cores/:core_id/metrics", get(core_metrics))
         .nest("/onchain", onchain_router())
 }
 
@@ -1489,6 +1501,179 @@ async fn network_health(
         .await
         .map(Json)
         .map_err(|e| map_sqlx_error("grafana/network-health", e))
+}
+
+// ── Phase 4: Moderate endpoints ──────────────────────────────────────────
+
+/// Active (in-flight) work packages with pipeline health summary.
+///
+/// **Question answered:** "What WPs are currently in-flight, and what's the pipeline health?"
+///
+/// **Data source:** `wp_tracking WHERE distributed_at IS NULL AND failed_at IS NULL`.
+/// Returns WP list (max 200) plus aggregates: summary (per-stage counts), reached
+/// (cumulative funnel), stage_duration_percentiles (p50/p95 for each inter-stage
+/// transition), failure_breakdown (count per distinct failure_reason).
+///
+/// **Deliberately dropped stages:** included, available, superseded from legacy
+/// are not real pipeline stages — see migration plan deep-dive Section 8.
+#[utoipa::path(
+    get,
+    path = "/api/grafana/wp-active",
+    params(TimeRangeQuery),
+    responses(
+        (status = 200, description = "Active work packages with pipeline health", body = WpActiveResponse),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn wp_active(
+    Query(q): Query<TimeRangeQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    state
+        .store
+        .grafana_wp_active(q.start, q.end)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/wp-active", e))
+}
+
+/// Work package detail — pipeline summary + raw event drilldown.
+///
+/// **Question answered:** "Full lifecycle detail for a specific work package."
+///
+/// **Data source:** `wp_tracking` for pipeline summary (always available).
+/// `ingested_raw_events` via `wp_hash` hot column for full event list (1h
+/// retention — if WP is older than 1h, events array is empty but summary persists).
+#[utoipa::path(
+    get,
+    path = "/api/grafana/wp/{wp_hash}",
+    params(
+        ("wp_hash" = String, Path, description = "Work package hash (hex-encoded)")
+    ),
+    responses(
+        (status = 200, description = "WP detail with events", body = WpDetailResponse),
+        (status = 400, description = "Invalid hash"),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn wp_detail(
+    Path(wp_hash): Path<String>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let hash_str = wp_hash.strip_prefix("0x").unwrap_or(&wp_hash);
+    let hash_bytes = hex::decode(hash_str).map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    state
+        .store
+        .grafana_wp_detail(&hash_bytes)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/wp/{hash}", e))
+}
+
+/// Batch WP summary lookup by multiple hashes.
+///
+/// **Data source:** `wp_tracking WHERE wp_hash = ANY($1)`.
+/// Returns pipeline summary for each requested WP.
+#[utoipa::path(
+    post,
+    path = "/api/grafana/wp/batch",
+    request_body = Vec<String>,
+    responses(
+        (status = 200, description = "Batch WP summaries", body = [WpTrackingRow]),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn wp_batch(
+    State(state): State<ApiState>,
+    Json(hashes): Json<Vec<String>>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let hash_bytes: Vec<Vec<u8>> = hashes
+        .iter()
+        .filter_map(|h| {
+            let h = h.strip_prefix("0x").unwrap_or(h);
+            hex::decode(h).ok()
+        })
+        .collect();
+
+    state
+        .store
+        .grafana_wp_batch(&hash_bytes)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/wp/batch", e))
+}
+
+/// Block production overview — totals, authoring by node.
+///
+/// **Question answered:** "What's the block production health?"
+///
+/// **Data source:** `all_event_stats_1m` for block event totals (Authoring through
+/// BlockExecuted, BestBlockChanged, FinalizedBlockChanged). Per-node authoring
+/// counts from the same aggregate. Best/finalized slot from LiveCounters overlay.
+#[utoipa::path(
+    get,
+    path = "/api/grafana/blocks/summary",
+    params(TimeRangeQuery),
+    responses(
+        (status = 200, description = "Block production summary", body = BlocksSummaryResponse),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn blocks_summary(
+    Query(q): Query<TimeRangeQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let mut result = state
+        .store
+        .grafana_blocks_summary(q.start, q.end)
+        .await
+        .map_err(|e| map_sqlx_error("grafana/blocks/summary", e))?;
+
+    // Overlay LiveCounters for current slot numbers
+    if let Some(ref tracker) = state.metrics_tracker {
+        let lc = tracker.live_counters();
+        result.chain.best_slot = Some(lc.latest_slot() as i32);
+        result.chain.finalized_slot = Some(lc.finalized_slot() as i32);
+    }
+
+    Ok(Json(result))
+}
+
+/// Core performance metrics — efficiency, latency, throughput, gas.
+///
+/// **Question answered:** "How is this core performing?"
+///
+/// **Data source:** `all_core_stats_1m` for event counts (processing efficiency).
+/// `wp_tracking` for pipeline latency percentiles and gas totals.
+#[utoipa::path(
+    get,
+    path = "/api/grafana/cores/{core_id}/metrics",
+    params(
+        ("core_id" = i16, Path, description = "Core index (0–340)"),
+        TimeRangeQuery,
+    ),
+    responses(
+        (status = 200, description = "Core performance metrics", body = CoreMetricsResponse),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn core_metrics(
+    Path(core_id): Path<i16>,
+    Query(q): Query<TimeRangeQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    state
+        .store
+        .grafana_core_metrics(q.start, q.end, core_id)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/cores/{id}/metrics", e))
 }
 
 // ── On-chain statistics query params ─────────────────────────────────────

@@ -50,6 +50,13 @@ pub struct WpState {
     pub failed_at: Option<u64>,
     pub dirty: bool,
     pub last_activity: Instant,
+    // Phase 4 additions
+    /// Node that first received this WP (from WorkPackageReceived event)
+    pub node_id: Option<Arc<str>>,
+    /// Total gas from Refined event: SUM(costs[].total.gas_used)
+    pub refine_gas_used: Option<i64>,
+    /// Failure reason from WorkPackageFailed event
+    pub failure_reason: Option<String>,
 }
 
 impl Default for WpState {
@@ -73,6 +80,9 @@ impl Default for WpState {
             failed_at: None,
             dirty: false,
             last_activity: Instant::now(),
+            node_id: None,
+            refine_gas_used: None,
+            failure_reason: None,
         }
     }
 }
@@ -210,13 +220,16 @@ pub async fn flush_wp_tracker(tracker: &WpTracker, pool: &PgPool) {
 
         let service_ids: Vec<i32> = snap.service_ids.iter().map(|&s| s as i32).collect();
 
+        let node_id_str = snap.node_id.as_deref().map(|s| s.to_string());
+
         let res = sqlx::query(
             r#"
 INSERT INTO wp_tracking (wp_hash, first_seen, last_updated, core, service_ids,
     received_at, authorized_at, refined_at, report_built_at,
     guarantee_built_at, distributed_at, failed_at,
-    received_by, guaranteed_by, stage)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+    received_by, guaranteed_by, stage,
+    node_id, refine_gas_used, failure_reason)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 ON CONFLICT (wp_hash)
 DO UPDATE SET
     last_updated = EXCLUDED.last_updated,
@@ -229,7 +242,10 @@ DO UPDATE SET
     failed_at = COALESCE(wp_tracking.failed_at, EXCLUDED.failed_at),
     received_by = GREATEST(wp_tracking.received_by, EXCLUDED.received_by),
     guaranteed_by = GREATEST(wp_tracking.guaranteed_by, EXCLUDED.guaranteed_by),
-    stage = GREATEST(wp_tracking.stage, EXCLUDED.stage)
+    stage = GREATEST(wp_tracking.stage, EXCLUDED.stage),
+    node_id = COALESCE(wp_tracking.node_id, EXCLUDED.node_id),
+    refine_gas_used = COALESCE(EXCLUDED.refine_gas_used, wp_tracking.refine_gas_used),
+    failure_reason = COALESCE(EXCLUDED.failure_reason, wp_tracking.failure_reason)
 "#,
         )
         .bind(hash.as_slice())
@@ -247,6 +263,9 @@ DO UPDATE SET
         .bind(snap.received_by as i16)
         .bind(snap.guaranteed_by as i16)
         .bind(snap.stage as i16)
+        .bind(&node_id_str)
+        .bind(snap.refine_gas_used)
+        .bind(&snap.failure_reason)
         .execute(pool)
         .await;
 
@@ -297,6 +316,9 @@ struct WpStateSnapshot {
     guarantee_built_at: Option<u64>,
     distributed_at: Option<u64>,
     failed_at: Option<u64>,
+    node_id: Option<Arc<str>>,
+    refine_gas_used: Option<i64>,
+    failure_reason: Option<String>,
 }
 
 impl From<&WpState> for WpStateSnapshot {
@@ -316,6 +338,9 @@ impl From<&WpState> for WpStateSnapshot {
             guarantee_built_at: s.guarantee_built_at,
             distributed_at: s.distributed_at,
             failed_at: s.failed_at,
+            node_id: s.node_id.clone(),
+            refine_gas_used: s.refine_gas_used,
+            failure_reason: s.failure_reason.clone(),
         }
     }
 }

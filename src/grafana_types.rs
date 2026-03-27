@@ -1320,3 +1320,225 @@ pub struct NodeCoreRow {
     pub guarantee_count: i64,
     pub last_guarantee: DateTime<Utc>,
 }
+
+// ── Phase 4 response types ──────────────────────────────────────────────
+
+// ── /api/grafana/wp-active ──────────────────────────────────────────────
+
+/// Active (in-flight) work packages with pipeline health summary.
+///
+/// **Question answered:** "What WPs are currently in-flight and what's the pipeline health?"
+///
+/// **Data source:** `wp_tracking WHERE distributed_at IS NULL AND failed_at IS NULL`.
+/// Returns the WP list plus aggregate summaries (stage counts, cumulative funnel,
+/// stage duration percentiles, failure breakdown) all computed from the same
+/// filtered set.
+///
+/// **Deliberately dropped legacy stages:** The telemetry-visible pipeline ends at
+/// `distributed_at`. Legacy "included" (GuaranteeDiscarded with PackageReportedOnChain),
+/// "available" (shard events), and "superseded" stages were pool cleanup events,
+/// not real pipeline stages — they are not included.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WpActiveResponse {
+    /// Individual in-flight work packages (max 200, ordered by first_seen DESC)
+    pub work_packages: Vec<WpActiveRow>,
+    /// Per-stage counts of in-flight WPs
+    pub summary: WpActiveSummary,
+    /// Cumulative funnel: how many WPs reached each stage
+    pub reached: WpReachedCounts,
+    /// Pipeline stage latency percentiles (p50, p95) for in-flight WPs
+    pub stage_duration_percentiles: WpStageDurations,
+    /// Failure reason breakdown (count per distinct reason)
+    pub failure_breakdown: Vec<FailureBreakdownEntry>,
+}
+
+/// Single in-flight work package row.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WpActiveRow {
+    /// Hex-encoded work package hash
+    pub wp_hash: String,
+    /// Core index
+    pub core: i16,
+    /// Node that first received this WP
+    pub node_id: Option<String>,
+    /// Service IDs involved
+    pub service_ids: Vec<DbServiceId>,
+    /// Current pipeline stage ordinal (0=received through 5=distributed)
+    pub stage: i16,
+    /// Total gas used during refinement
+    pub refine_gas_used: Option<i64>,
+    /// Failure reason (if failed)
+    pub failure_reason: Option<String>,
+    /// When the WP was first seen
+    pub first_seen: DateTime<Utc>,
+    /// Last stage update time
+    pub last_updated: DateTime<Utc>,
+    /// Pipeline stage timestamps (null = not reached yet)
+    pub received_at: Option<DateTime<Utc>>,
+    pub authorized_at: Option<DateTime<Utc>>,
+    pub refined_at: Option<DateTime<Utc>>,
+    pub report_built_at: Option<DateTime<Utc>>,
+    pub guarantee_built_at: Option<DateTime<Utc>>,
+    pub distributed_at: Option<DateTime<Utc>>,
+    pub failed_at: Option<DateTime<Utc>>,
+    /// How many distinct nodes received this WP
+    pub received_by: i16,
+    /// How many distinct nodes guaranteed this WP
+    pub guaranteed_by: i16,
+    /// Elapsed time from first_seen to last_updated (milliseconds)
+    pub elapsed_ms: f64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WpActiveSummary {
+    /// Total in-flight WPs
+    pub total: i64,
+    /// Count per stage
+    pub at_received: i64,
+    pub at_authorized: i64,
+    pub at_refined: i64,
+    pub at_report_built: i64,
+    pub at_guarantee_built: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WpReachedCounts {
+    /// WPs that reached each stage (cumulative, not exclusive)
+    pub received: i64,
+    pub authorized: i64,
+    pub refined: i64,
+    pub report_built: i64,
+    pub guarantee_built: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WpStageDurations {
+    /// authorize: received_at → authorized_at (milliseconds)
+    pub authorize_p50_ms: Option<f64>,
+    pub authorize_p95_ms: Option<f64>,
+    /// refine: authorized_at → refined_at
+    pub refine_p50_ms: Option<f64>,
+    pub refine_p95_ms: Option<f64>,
+    /// report: refined_at → report_built_at
+    pub report_p50_ms: Option<f64>,
+    pub report_p95_ms: Option<f64>,
+    /// guarantee: report_built_at → guarantee_built_at
+    pub guarantee_p50_ms: Option<f64>,
+    pub guarantee_p95_ms: Option<f64>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FailureBreakdownEntry {
+    /// Failure reason text
+    pub reason: String,
+    /// Number of WPs with this reason
+    pub count: i64,
+}
+
+// ── /api/grafana/wp/{hash} ──────────────────────────────────────────────
+
+/// Work package detail — summary from wp_tracking + raw event drilldown.
+///
+/// **Question answered:** "Full lifecycle detail for a specific work package."
+///
+/// **Data source:** Two queries:
+/// 1. `wp_tracking WHERE wp_hash = $1` → pipeline summary (always available)
+/// 2. `ingested_raw_events WHERE wp_hash = $1` → full event list (1h retention,
+///    uses wp_hash hot column from migration 020)
+///
+/// If the WP is older than 1h, only the summary is available — the raw event
+/// timeline is empty. This is acceptable for real-time investigation.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WpDetailResponse {
+    /// Pipeline summary from wp_tracking (always available)
+    pub summary: Option<WpTrackingRow>,
+    /// Raw events for this WP (empty if WP older than 1h retention)
+    pub events: Vec<EventRow>,
+}
+
+// ── /api/grafana/blocks/summary ─────────────────────────────────────────
+
+/// Block production overview — totals, recent blocks, propagation.
+///
+/// **Question answered:** "What's the block production health?"
+///
+/// **Data source:** `all_event_stats_1m` for block event totals (Authoring through
+/// BlockExecuted, BestBlockChanged, FinalizedBlockChanged). LiveCounters for
+/// current best/finalized slot. Raw events (1h) for recent block hashes.
+/// `slot_convergence` for propagation percentiles.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BlocksSummaryResponse {
+    /// Per-event-type counts for block-related events
+    pub totals: BlockTotals,
+    /// Current chain state
+    pub chain: ChainState,
+    /// Per-node block authoring counts
+    pub authoring_by_node: Vec<AuthoringByNode>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BlockTotals {
+    /// Authoring events started
+    pub authoring_started: i64,
+    /// AuthoringFailed events
+    pub authoring_failed: i64,
+    /// Successfully authored blocks (Authored)
+    pub authored: i64,
+    /// Blocks being imported (Importing)
+    pub importing: i64,
+    /// Block verification failures (BlockVerificationFailed)
+    pub verification_failed: i64,
+    /// Blocks verified (BlockVerified)
+    pub verified: i64,
+    /// Block execution failures (BlockExecutionFailed)
+    pub execution_failed: i64,
+    /// Blocks executed (BlockExecuted)
+    pub executed: i64,
+    /// BestBlockChanged events
+    pub best_block_changes: i64,
+    /// FinalizedBlockChanged events
+    pub finalized_block_changes: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ChainState {
+    /// Current best (highest) slot number
+    pub best_slot: Option<i32>,
+    /// Current finalized slot number
+    pub finalized_slot: Option<i32>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AuthoringByNode {
+    /// Node identifier
+    pub node_id: String,
+    /// Number of blocks authored by this node
+    pub blocks_authored: i64,
+}
+
+// ── /api/grafana/cores/{id}/metrics ─────────────────────────────────────
+
+/// Core performance metrics — efficiency, latency, throughput, gas.
+///
+/// **Question answered:** "How is this core performing?"
+///
+/// **Data source:** `all_core_stats_1m` for event counts (efficiency ratios).
+/// `wp_tracking` for pipeline latency percentiles (same approach as `/bottlenecks`).
+/// `refine_gas_used` from wp_tracking for gas utilization.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CoreMetricsResponse {
+    /// Core index
+    pub core: i16,
+    /// Refined / (Refined + Failed) as percentage
+    pub processing_efficiency_pct: f64,
+    /// Pipeline p50 latency (received → distributed) in milliseconds
+    pub p50_latency_ms: Option<f64>,
+    /// Pipeline p95 latency in milliseconds
+    pub p95_latency_ms: Option<f64>,
+    /// Average completion time (received → distributed) in milliseconds
+    pub average_completion_time_ms: Option<f64>,
+    /// Total gas used by refined WPs on this core
+    pub total_gas_used: i64,
+    /// Work packages processed in the time range
+    pub work_packages_processed: i64,
+}
