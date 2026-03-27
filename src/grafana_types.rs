@@ -171,10 +171,11 @@ pub struct TimeseriesRow {
 
 /// Per-core activity summary.
 ///
-/// **Data source:** `core_stats_1m` continuous aggregate. Counts filtered by
-/// event type: 94 (WorkPackageReceived), 105 (GuaranteeBuilt),
-/// 92 (WorkPackageFailed).
-#[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
+/// **Data source:** `all_core_stats_1m` UNION view (backed by count tables after
+/// migration 020). Counts filtered by event type: 94 (WorkPackageReceived),
+/// 105 (GuaranteeBuilt), 92 (WorkPackageFailed). `last_activity` from correlated
+/// subquery on `wp_tracking` table.
+#[derive(Debug, Serialize, ToSchema)]
 pub struct CoreSummary {
     /// Core index
     pub core: i16,
@@ -184,6 +185,10 @@ pub struct CoreSummary {
     pub guarantees: i64,
     /// WorkPackageFailed events (type 92 as defined in JIP-3)
     pub failures: i64,
+    /// When the last work package was seen on this core (from wp_tracking.first_seen).
+    /// NULL for cores with no WP activity in the queried time range.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_activity: Option<DateTime<Utc>>,
 }
 
 /// Single core detail with recent work packages.
@@ -949,15 +954,16 @@ pub struct GuaranteeDiscardRow {
 
 // ── /api/grafana/events ─────────────────────────────────────────────────
 
-/// Raw event record from the events hypertable.
+/// Raw event record from `ingested_raw_events` (1h retention browsing store).
 ///
-/// **Data source:** `events` hypertable directly (not aggregated). This is
-/// the raw telemetry data as received from nodes via the TCP binary protocol
-/// (JIP-3). The `data` field contains the full event-specific JSONB payload
-/// which varies by event type.
+/// **Data source:** `ingested_raw_events` hypertable. All 115 event types are
+/// written to this table at ingestion time (after migration 020). The `data`
+/// field contains the full event-specific JSONB payload which varies by type.
+/// Hot columns (`slot`, `core`, `submission_id`, `wp_hash`) enable fast filtered
+/// queries without JSONB extraction.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct EventRow {
-    /// Event timestamp
+    /// Event timestamp (when the event occurred on the node)
     pub ts: DateTime<Utc>,
     /// Node that reported this event
     pub node_id: String,
@@ -965,4 +971,32 @@ pub struct EventRow {
     pub event_type: i16,
     /// Full event payload (structure varies by event type)
     pub data: serde_json::Value,
+    /// When the event was ingested into the database
+    pub created_at: DateTime<Utc>,
+}
+
+/// Paginated event search response.
+///
+/// **Data source:** `ingested_raw_events` hypertable (1h retention). Supports
+/// filtering by event type, node, core, and wp_hash. All 115 event types are
+/// browsable after migration 020.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct EventsSearchResponse {
+    /// Event records matching the query
+    pub events: Vec<EventRow>,
+    /// Pagination metadata
+    pub pagination: PaginationMeta,
+}
+
+/// Pagination metadata for paginated endpoints.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PaginationMeta {
+    /// Current offset (0-based)
+    pub offset: i64,
+    /// Number of results requested
+    pub limit: i64,
+    /// Total number of matching records
+    pub total: i64,
+    /// Whether more records exist beyond offset + limit
+    pub has_more: bool,
 }

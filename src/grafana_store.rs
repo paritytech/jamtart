@@ -319,7 +319,10 @@ impl EventStore {
 
     // ── 3. grafana_cores_summary ────────────────────────────────────────
 
-    /// Per-core activity summary from core_stats_1m.
+    /// Per-core activity summary from `all_core_stats_1m` UNION view.
+    ///
+    /// Counts: WorkPackageReceived (94), GuaranteeBuilt (105), WorkPackageFailed (92).
+    /// `last_activity`: correlated subquery on `wp_tracking` — MAX(first_seen) per core.
     pub async fn grafana_cores_summary(
         &self,
         start: DateTime<Utc>,
@@ -329,15 +332,16 @@ impl EventStore {
         let rows = sqlx::query(
             r#"
             SELECT
-                core,
-                COALESCE(SUM(event_count) FILTER (WHERE event_type = 94), 0)::BIGINT  AS work_packages,
-                COALESCE(SUM(event_count) FILTER (WHERE event_type = 105), 0)::BIGINT AS guarantees,
-                COALESCE(SUM(event_count) FILTER (WHERE event_type = 92), 0)::BIGINT  AS failures
-            FROM all_core_stats_1m
-            WHERE bucket >= $1 AND bucket < $2
-              AND ($3::SMALLINT IS NULL OR core = $3)
-            GROUP BY core
-            ORDER BY core ASC
+                cs.core,
+                COALESCE(SUM(cs.event_count) FILTER (WHERE cs.event_type = 94), 0)::BIGINT  AS work_packages,
+                COALESCE(SUM(cs.event_count) FILTER (WHERE cs.event_type = 105), 0)::BIGINT AS guarantees,
+                COALESCE(SUM(cs.event_count) FILTER (WHERE cs.event_type = 92), 0)::BIGINT  AS failures,
+                (SELECT MAX(first_seen) FROM wp_tracking wt WHERE wt.core = cs.core AND wt.first_seen >= $1) AS last_activity
+            FROM all_core_stats_1m cs
+            WHERE cs.bucket >= $1 AND cs.bucket < $2
+              AND ($3::SMALLINT IS NULL OR cs.core = $3)
+            GROUP BY cs.core
+            ORDER BY cs.core ASC
             "#,
         )
         .bind(start)
@@ -353,6 +357,7 @@ impl EventStore {
                 work_packages: row.get("work_packages"),
                 guarantees: row.get("guarantees"),
                 failures: row.get("failures"),
+                last_activity: row.get("last_activity"),
             })
             .collect();
 
@@ -375,6 +380,7 @@ impl EventStore {
             work_packages: 0,
             guarantees: 0,
             failures: 0,
+            last_activity: None,
         });
 
         // Recent work packages
@@ -1101,54 +1107,106 @@ impl EventStore {
 
     // ── 12. grafana_events ────────────────────────────────────────────
 
-    /// Generic raw event query from the events hypertable.
-    /// Returns individual events as-is with their JSONB data.
-    /// NOTE: This queries the raw events table (not a continuous aggregate),
-    /// so it can be slow for large time ranges or high-volume event types.
+    /// Search raw events with optional filtering and pagination.
+    ///
+    /// Queries `ingested_raw_events` (1h retention, all 115 event types).
+    /// Filters: event_types (optional), node_id, core (hot column), wp_hash (hot column).
+    /// Returns paginated response with total count for UI pagination controls.
     pub async fn grafana_events(
         &self,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
         event_types: &[i16],
         limit: i64,
-    ) -> Result<Vec<EventRow>, sqlx::Error> {
-        if event_types.is_empty() {
-            return Err(sqlx::Error::Protocol(
-                "event_types parameter is required".into(),
-            ));
-        }
-        // All 115 event types now write to ingested_raw_events (1h retention).
-        // No pre-aggregated type rejection — all types are browsable.
+        offset: i64,
+        node: Option<&str>,
+        core: Option<i16>,
+        wp_hash: Option<&[u8]>,
+    ) -> Result<EventsSearchResponse, sqlx::Error> {
         let limit = limit.min(2000);
 
-        let rows = sqlx::query(
-            r#"
-            SELECT timestamp, node_id, event_type, data
-            FROM ingested_raw_events
-            WHERE timestamp >= $1 AND timestamp < $2
-              AND event_type = ANY($3)
-            ORDER BY timestamp DESC
-            LIMIT $4
-            "#,
-        )
-        .bind(start)
-        .bind(end)
-        .bind(event_types)
-        .bind(limit)
-        .fetch_all(self.pool())
-        .await?;
+        // Build WHERE clause dynamically based on provided filters
+        let mut conditions = vec![
+            "timestamp >= $1".to_string(),
+            "timestamp < $2".to_string(),
+        ];
+        let mut param_idx = 3;
 
-        let results = rows
+        if !event_types.is_empty() {
+            conditions.push(format!("event_type = ANY(${})", param_idx));
+            param_idx += 1;
+        }
+        if node.is_some() {
+            conditions.push(format!("node_id = ${}", param_idx));
+            param_idx += 1;
+        }
+        if core.is_some() {
+            conditions.push(format!("core = ${}", param_idx));
+            param_idx += 1;
+        }
+        if wp_hash.is_some() {
+            conditions.push(format!("wp_hash = ${}", param_idx));
+            param_idx += 1;
+        }
+
+        let where_clause = conditions.join(" AND ");
+        let data_sql = format!(
+            "SELECT timestamp, node_id, event_type, data, created_at \
+             FROM ingested_raw_events WHERE {} \
+             ORDER BY timestamp DESC LIMIT {} OFFSET {}",
+            where_clause, limit, offset
+        );
+        let count_sql = format!(
+            "SELECT COUNT(*)::BIGINT FROM ingested_raw_events WHERE {}",
+            where_clause
+        );
+
+        // Build query with dynamic bindings
+        let mut data_query = sqlx::query(&data_sql).bind(start).bind(end);
+        let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql).bind(start).bind(end);
+
+        if !event_types.is_empty() {
+            data_query = data_query.bind(event_types);
+            count_query = count_query.bind(event_types);
+        }
+        if let Some(n) = node {
+            data_query = data_query.bind(n);
+            count_query = count_query.bind(n);
+        }
+        if let Some(c) = core {
+            data_query = data_query.bind(c);
+            count_query = count_query.bind(c);
+        }
+        if let Some(wh) = wp_hash {
+            data_query = data_query.bind(wh);
+            count_query = count_query.bind(wh);
+        }
+
+        let (rows, total) = tokio::try_join!(
+            data_query.fetch_all(self.pool()),
+            count_query.fetch_one(self.pool()),
+        )?;
+
+        let events: Vec<EventRow> = rows
             .iter()
             .map(|row| EventRow {
                 ts: row.get("timestamp"),
                 node_id: row.get("node_id"),
                 event_type: row.get("event_type"),
                 data: row.get("data"),
+                created_at: row.get("created_at"),
             })
             .collect();
 
-        Ok(results)
+        Ok(EventsSearchResponse {
+            pagination: PaginationMeta {
+                offset,
+                limit,
+                total,
+                has_more: offset + limit < total,
+            },
+            events,
+        })
     }
 
     // ── 13. grafana_wp_funnel ──────────────────────────────────────────

@@ -231,17 +231,25 @@ pub struct EventTypesParams {
     pub group: Option<String>,
 }
 
-/// Parameters for raw events query.
+/// Parameters for raw events query with optional filtering and pagination.
 #[derive(Deserialize, IntoParams)]
 pub struct EventsQuery {
     /// Start of time range (ISO 8601)
     pub start: DateTime<Utc>,
     /// End of time range (ISO 8601)
     pub end: DateTime<Utc>,
-    /// Comma-separated event type codes, group names, or event names (required)
-    pub event_types: String,
+    /// Comma-separated event type codes, group names, or event names. Optional — if omitted, returns all types.
+    pub event_types: Option<String>,
     /// Maximum number of events to return (default: 500, max: 2000)
     pub limit: Option<i64>,
+    /// Offset for pagination (default: 0)
+    pub offset: Option<i64>,
+    /// Filter to a single node_id
+    pub node: Option<String>,
+    /// Filter to a single core index (uses hot column)
+    pub core: Option<i16>,
+    /// Filter to a single work package hash (hex-encoded, uses hot column)
+    pub wp_hash: Option<String>,
 }
 
 /// Parameters for convergence endpoints that support both per-slot and histogram modes.
@@ -1088,21 +1096,23 @@ async fn event_types(Query(params): Query<EventTypesParams>) -> impl IntoRespons
     }
 }
 
-/// Raw events from the `events` hypertable, filtered by event type.
+/// Search raw events from `ingested_raw_events` with filtering and pagination.
 ///
-/// Returns the most recent events matching the given event types, ordered by
-/// timestamp DESC. The `event_types` parameter is required and accepts numeric
-/// IDs (as defined in JIP-3), group names (e.g. `wp_pipeline`, `failures`),
-/// or event names (e.g. `Authored`), expanded server-side via
-/// `expand_event_types()`. Default limit is 500, capped at 2000. The `data`
-/// field contains the full event-specific JSONB payload which varies by type.
+/// Returns events matching the given filters, ordered by timestamp DESC. All 115
+/// event types are browsable (1h retention after migration 020). Supports filtering
+/// by event type, node, core (hot column), and wp_hash (hot column). Returns
+/// paginated response with total count for UI pagination controls.
+///
+/// The `event_types` parameter is optional — if omitted, returns all types. When
+/// provided, accepts numeric IDs (as defined in JIP-3), group names (e.g.
+/// `wp_pipeline`, `failures`), or event names (e.g. `Authored`), expanded
+/// server-side via `expand_event_types()`.
 #[utoipa::path(
     get,
     path = "/api/grafana/events",
     params(EventsQuery),
     responses(
-        (status = 200, description = "Raw event records", body = [EventRow]),
-        (status = 400, description = "Missing event_types parameter"),
+        (status = 200, description = "Paginated event records with total count", body = EventsSearchResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1111,12 +1121,32 @@ async fn events(
     Query(q): Query<EventsQuery>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let event_types = crate::event_type_meta::expand_event_types(&q.event_types);
+    let event_types = q
+        .event_types
+        .as_deref()
+        .map(crate::event_type_meta::expand_event_types)
+        .unwrap_or_default();
     let limit = q.limit.unwrap_or(500);
+    let offset = q.offset.unwrap_or(0);
+
+    // Parse wp_hash from hex string to bytes
+    let wp_hash_bytes = q.wp_hash.as_deref().and_then(|h| {
+        let h = h.strip_prefix("0x").unwrap_or(h);
+        hex::decode(h).ok()
+    });
 
     state
         .store
-        .grafana_events(q.start, q.end, &event_types, limit)
+        .grafana_events(
+            q.start,
+            q.end,
+            &event_types,
+            limit,
+            offset,
+            q.node.as_deref(),
+            q.core,
+            wp_hash_bytes.as_deref(),
+        )
         .await
         .map(Json)
         .map_err(|e| map_sqlx_error("grafana/events", e))

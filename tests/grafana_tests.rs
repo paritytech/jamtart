@@ -1438,15 +1438,21 @@ async fn test_grafana_events_raw() {
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
-    let arr = json.as_array().expect("should return array");
+    // Response is now EventsSearchResponse {events: [...], pagination: {...}}
+    let arr = json["events"].as_array().expect("should have events array");
     assert!(arr.len() >= 3, "expected at least 3 events, got {}", arr.len());
 
-    // Each entry should have ts, node_id, event_type, data
+    // Pagination metadata
+    assert!(json["pagination"]["total"].as_i64().unwrap() >= 3);
+    assert!(json["pagination"]["offset"].as_i64() == Some(0));
+
+    // Each entry should have ts, node_id, event_type, data, created_at
     for entry in arr {
         assert!(entry["ts"].is_string(), "ts should be present");
         assert!(entry["node_id"].is_string(), "node_id should be present");
         assert_eq!(entry["event_type"].as_i64().unwrap(), 92);
         assert!(entry["data"].is_object(), "data should be a JSON object");
+        assert!(entry["created_at"].is_string(), "created_at should be present");
 
         // The data should contain WorkPackageFailed with a reason field
         let wp_data = &entry["data"]["WorkPackageFailed"];
@@ -1475,16 +1481,29 @@ async fn test_grafana_events_raw() {
 
 #[tokio::test]
 async fn test_grafana_events_missing_event_types() {
-    let (server, _telemetry, _port, _store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
 
-    // Missing event_types should fail (400 from query parsing, since it's required)
+    let ts = common::now_jce_micros();
+    let events = vec![
+        common::wp_received_event(ts, 7000, 0),
+        common::best_block_event(ts + 1000, 200),
+    ];
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+
+    // Missing event_types is now OK — returns all types
     let path = format!("/api/grafana/events?{}", time_range_params());
     let response = server.get(&path).await;
-    assert_ne!(
+    assert_eq!(
         response.status_code(),
         StatusCode::OK,
-        "should fail without event_types"
+        "should succeed without event_types (returns all types)"
     );
+
+    let json: Value = response.json();
+    let arr = json["events"].as_array().expect("should have events array");
+    assert!(arr.len() >= 2, "should return events of multiple types");
 }
 
 #[tokio::test]
@@ -1512,8 +1531,11 @@ async fn test_grafana_events_with_limit() {
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
-    let arr = json.as_array().expect("should return array");
+    let arr = json["events"].as_array().expect("should have events array");
     assert_eq!(arr.len(), 2, "should respect limit=2");
+    // Pagination should indicate more results exist
+    assert!(json["pagination"]["has_more"].as_bool().unwrap(), "should have more events");
+    assert!(json["pagination"]["total"].as_i64().unwrap() >= 5, "total should be >= 5");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1890,7 +1912,7 @@ async fn test_events_endpoint_returns_pre_aggregated_types() {
         "all event types should now be browsable (unified architecture)"
     );
     let json: Value = response.json();
-    let arr = json.as_array().expect("should return array");
+    let arr = json["events"].as_array().expect("should have events array");
     assert_eq!(arr.len(), 3, "expected 3 assurance events");
 }
 
