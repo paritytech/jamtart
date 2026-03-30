@@ -2552,8 +2552,7 @@ impl EventStore {
                 received_by, guaranteed_by,
                 (EXTRACT(EPOCH FROM (last_updated - first_seen)) * 1000)::FLOAT8 AS elapsed_ms
             FROM wp_tracking
-            WHERE distributed_at IS NULL AND failed_at IS NULL
-              AND first_seen >= $1 AND first_seen < $2
+            WHERE first_seen >= $1 AND first_seen < $2
             ORDER BY first_seen DESC
             LIMIT 200
             "#,
@@ -2603,6 +2602,8 @@ impl EventStore {
                 COUNT(*) FILTER (WHERE refined_at IS NOT NULL)::BIGINT AS reached_refined,
                 COUNT(*) FILTER (WHERE report_built_at IS NOT NULL)::BIGINT AS reached_report_built,
                 COUNT(*) FILTER (WHERE guarantee_built_at IS NOT NULL)::BIGINT AS reached_guarantee_built,
+                COUNT(*) FILTER (WHERE distributed_at IS NOT NULL)::BIGINT AS reached_distributed,
+                COUNT(*) FILTER (WHERE failed_at IS NOT NULL)::BIGINT AS reached_failed,
                 percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (authorized_at - received_at)) * 1000)
                     FILTER (WHERE authorized_at IS NOT NULL AND received_at IS NOT NULL) AS auth_p50,
                 percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (authorized_at - received_at)) * 1000)
@@ -2620,8 +2621,7 @@ impl EventStore {
                 percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (guarantee_built_at - report_built_at)) * 1000)
                     FILTER (WHERE guarantee_built_at IS NOT NULL AND report_built_at IS NOT NULL) AS guarantee_p95
             FROM wp_tracking
-            WHERE distributed_at IS NULL AND failed_at IS NULL
-              AND first_seen >= $1 AND first_seen < $2
+            WHERE first_seen >= $1 AND first_seen < $2
             "#,
         )
         .bind(start)
@@ -2662,6 +2662,8 @@ impl EventStore {
                 refined: agg.get("reached_refined"),
                 report_built: agg.get("reached_report_built"),
                 guarantee_built: agg.get("reached_guarantee_built"),
+                distributed: agg.get("reached_distributed"),
+                failed: agg.get("reached_failed"),
             },
             stage_duration_percentiles: WpStageDurations {
                 authorize_p50_ms: agg.get("auth_p50"),

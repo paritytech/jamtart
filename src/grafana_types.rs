@@ -1449,6 +1449,8 @@ pub struct WpReachedCounts {
     pub refined: i64,
     pub report_built: i64,
     pub guarantee_built: i64,
+    pub distributed: i64,
+    pub failed: i64,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

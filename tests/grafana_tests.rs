@@ -3021,14 +3021,14 @@ async fn test_grafana_wp_active() {
 
     let json: Value = response.json();
     let wps = json["work_packages"].as_array().expect("should have work_packages");
-    // Only active (not distributed, not failed) — should be 2
-    assert!(wps.len() >= 2, "expected >= 2 active WPs, got {}", wps.len());
+    // All 3 WPs should appear (no filter on distributed/failed — matches legacy behavior)
+    assert!(wps.len() >= 3, "expected >= 3 WPs (all recent, not just in-flight), got {}", wps.len());
 
-    // Summary
-    assert!(json["summary"]["total"].as_i64().unwrap() >= 2);
+    // Summary should count all WPs
+    assert!(json["summary"]["total"].as_i64().unwrap() >= 3);
 
-    // Reached
-    assert!(json["reached"]["received"].as_i64().unwrap() >= 2);
+    // Reached — all 3 received, but only the completed one reached distributed
+    assert!(json["reached"]["received"].as_i64().unwrap() >= 3);
 
     // Stage durations (may be null if not enough data — just check structure)
     assert!(json["stage_duration_percentiles"].is_object());

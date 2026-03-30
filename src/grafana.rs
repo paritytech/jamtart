@@ -1547,14 +1547,15 @@ async fn network_health(
 
 // ── Phase 4: Moderate endpoints ──────────────────────────────────────────
 
-/// Active (in-flight) work packages with pipeline health summary.
+/// Recent work packages with pipeline health summary.
 ///
-/// **Question answered:** "What WPs are currently in-flight, and what's the pipeline health?"
+/// **Question answered:** "What WPs have been processed recently, and what's the pipeline health?"
 ///
-/// **Data source:** `wp_tracking WHERE distributed_at IS NULL AND failed_at IS NULL`.
-/// Returns WP list (max 200) plus aggregates: summary (per-stage counts), reached
-/// (cumulative funnel), stage_duration_percentiles (p50/p95 for each inter-stage
-/// transition), failure_breakdown (count per distinct failure_reason).
+/// **Data source:** `wp_tracking` for the given time range (all WPs, not just
+/// in-flight — matches legacy `/api/workpackages/active` behavior). Returns WP list
+/// (max 200, ordered by first_seen DESC) plus aggregates: summary (per-stage counts),
+/// reached (cumulative funnel), stage_duration_percentiles (p50/p95 for each
+/// inter-stage transition), failure_breakdown (count per distinct failure_reason).
 ///
 /// **Deliberately dropped stages:** included, available, superseded from legacy
 /// are not real pipeline stages — see migration plan deep-dive Section 8.
