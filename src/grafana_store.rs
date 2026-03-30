@@ -2421,17 +2421,25 @@ impl EventStore {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Result<NetworkHealthResponse, sqlx::Error> {
-        // Get event counts for health scoring
+        // Get event counts for health scoring — only the types we actually use.
+        // Restricting event_type lets the planner prune UNION view branches.
+        let health_types: &[i16] = &[
+            41, 42, 44, 46, // block production (authored, importing-failed, imported-failed, executed-failed)
+            92, 94, 99,     // work packages (failed, received, duplicate)
+            122, 125,       // DA shards (failed, transferred)
+        ];
         let counts = sqlx::query(
             r#"
             SELECT event_type, COALESCE(SUM(event_count), 0)::BIGINT AS count
             FROM all_event_stats_1m
             WHERE bucket >= $1 AND bucket < $2
+              AND event_type = ANY($3)
             GROUP BY event_type
             "#,
         )
         .bind(start)
         .bind(end)
+        .bind(health_types)
         .fetch_all(self.pool())
         .await?;
 
@@ -2509,7 +2517,7 @@ impl EventStore {
             issues: Vec::new(),
         });
 
-        // 5. Event throughput (total events vs baseline expectation)
+        // 5. Event throughput (sum of health-relevant types as alive/dead proxy)
         let total_events: i64 = type_counts.values().sum();
         let throughput_score = if total_events > 0 { 100.0 } else { 0.0 };
         components.push(HealthComponent {
