@@ -3297,3 +3297,44 @@ async fn test_grafana_core_validators() {
     assert!(json["validators"].is_array(), "should have validators array");
     assert!(json["total_active"].is_number(), "should have total_active");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 5: Execution metrics
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_grafana_execution_metrics() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    // Inject WP lifecycle that includes Authorized (95) and Refined (101)
+    let events = vec![
+        common::wp_received_event(ts, 11000, 0),
+        common::authorized_event(ts + 1000, 11000),
+        common::refined_event(ts + 2000, 11000),
+        // BlockExecuted (47) with service accumulation
+        common::block_executed_event(ts + 3000, 1, &[(10, 5000), (20, 3000)]),
+    ];
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+
+    let path = format!("/api/grafana/execution?{}", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+
+    // Authorization phase
+    assert!(json["authorization"]["count"].as_i64().unwrap() >= 1, "should have authorization events");
+
+    // Refinement phase
+    assert!(json["refinement"]["count"].as_i64().unwrap() >= 1, "should have refinement events");
+
+    // Accumulation phase
+    assert!(json["accumulation"]["count"].as_i64().unwrap() >= 1, "should have accumulation events");
+
+    // Per-service breakdown
+    assert!(json["by_service"].is_array(), "should have by_service array");
+}

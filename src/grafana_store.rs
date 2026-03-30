@@ -2941,6 +2941,112 @@ impl EventStore {
             work_packages_processed: wp_received,
         })
     }
+
+    // ── Phase 5: /grafana/execution ─────────────────────────────────────
+
+    /// Execution performance: gas + timing per phase from raw events.
+    pub async fn grafana_execution(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<ExecutionMetricsResponse, sqlx::Error> {
+        // Refinement (type 101) — jsonb_array_elements on costs array
+        let refinement = sqlx::query(
+            r#"
+            SELECT
+                COUNT(*)::BIGINT AS count,
+                COALESCE(SUM(CAST(c->'total'->>'gas_used' AS BIGINT)), 0)::BIGINT AS total_gas,
+                COALESCE(AVG(CAST(c->'total'->>'gas_used' AS BIGINT)), 0)::FLOAT8 AS avg_gas,
+                COALESCE(AVG(CAST(c->'total'->>'elapsed_ns' AS BIGINT)), 0)::FLOAT8 AS avg_time_ns
+            FROM ingested_raw_events e, jsonb_array_elements(e.data->'Refined'->'costs') c
+            WHERE e.event_type = 101
+              AND e.timestamp >= $1 AND e.timestamp < $2
+            "#,
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_one(self.pool())
+        .await?;
+
+        // Authorization (type 95) — single cost object
+        let authorization = sqlx::query(
+            r#"
+            SELECT
+                COUNT(*)::BIGINT AS count,
+                COALESCE(SUM(CAST(data->'Authorized'->'cost'->'total'->>'gas_used' AS BIGINT)), 0)::BIGINT AS total_gas,
+                COALESCE(AVG(CAST(data->'Authorized'->'cost'->'total'->>'gas_used' AS BIGINT)), 0)::FLOAT8 AS avg_gas,
+                COALESCE(AVG(CAST(data->'Authorized'->'cost'->'total'->>'elapsed_ns' AS BIGINT)), 0)::FLOAT8 AS avg_time_ns
+            FROM ingested_raw_events
+            WHERE event_type = 95
+              AND timestamp >= $1 AND timestamp < $2
+            "#,
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_one(self.pool())
+        .await?;
+
+        // Accumulation (type 47) — array of [service_id, cost] pairs
+        let accumulation = sqlx::query(
+            r#"
+            SELECT
+                COUNT(*)::BIGINT AS count,
+                COALESCE(SUM(CAST(pair->1->'total'->>'gas_used' AS BIGINT)), 0)::BIGINT AS total_gas,
+                COALESCE(AVG(CAST(pair->1->'total'->>'gas_used' AS BIGINT)), 0)::FLOAT8 AS avg_gas,
+                COALESCE(AVG(CAST(pair->1->'total'->>'elapsed_ns' AS BIGINT)), 0)::FLOAT8 AS avg_time_ns
+            FROM ingested_raw_events e, jsonb_array_elements(e.data->'BlockExecuted'->'accumulate_costs') pair
+            WHERE e.event_type = 47
+              AND e.timestamp >= $1 AND e.timestamp < $2
+            "#,
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_one(self.pool())
+        .await?;
+
+        // Per-service gas from accumulation
+        let by_service = sqlx::query(
+            r#"
+            SELECT
+                CAST(pair->0 AS INT) AS service_id,
+                COALESCE(SUM(CAST(pair->1->'total'->>'gas_used' AS BIGINT)), 0)::BIGINT AS total_gas,
+                COUNT(*)::BIGINT AS count
+            FROM ingested_raw_events e, jsonb_array_elements(e.data->'BlockExecuted'->'accumulate_costs') pair
+            WHERE e.event_type = 47
+              AND e.timestamp >= $1 AND e.timestamp < $2
+            GROUP BY pair->0
+            ORDER BY total_gas DESC
+            LIMIT 50
+            "#,
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_all(self.pool())
+        .await?;
+
+        fn to_phase(row: &sqlx::postgres::PgRow) -> ExecutionPhaseStats {
+            ExecutionPhaseStats {
+                count: row.get("count"),
+                total_gas: row.get("total_gas"),
+                avg_gas: row.get("avg_gas"),
+                avg_time_ns: row.get("avg_time_ns"),
+            }
+        }
+
+        Ok(ExecutionMetricsResponse {
+            authorization: to_phase(&authorization),
+            refinement: to_phase(&refinement),
+            accumulation: to_phase(&accumulation),
+            by_service: by_service
+                .iter()
+                .map(|row| ServiceExecutionRow {
+                    service_id: row.get("service_id"),
+                    total_gas: row.get("total_gas"),
+                    count: row.get("count"),
+                })
+                .collect(),
+        })
+    }
 }
 
 fn rows_to_convergence_timeseries(rows: &[sqlx::postgres::PgRow]) -> Vec<ConvergenceTimeseriesRow> {

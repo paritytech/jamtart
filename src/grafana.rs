@@ -63,6 +63,8 @@ use crate::onchain_types::*;
         blocks_summary,
         core_metrics,
         core_validators,
+        // Phase 5
+        execution_metrics,
         onchain_cores_summary,
         onchain_cores_timeseries,
         onchain_core_detail,
@@ -157,6 +159,10 @@ use crate::onchain_types::*;
         CoreMetricsResponse,
         CoreValidatorsResponse,
         CoreValidatorRow,
+        // Phase 5
+        ExecutionMetricsResponse,
+        ExecutionPhaseStats,
+        ServiceExecutionRow,
     )),
     tags(
         (name = "grafana", description = "Grafana dashboard API — time-series, aggregates, and metadata"),
@@ -208,6 +214,8 @@ pub fn router() -> Router<ApiState> {
         .route("/blocks/summary", get(blocks_summary))
         .route("/cores/:core_id/metrics", get(core_metrics))
         .route("/cores/:core_id/validators", get(core_validators))
+        // Phase 5
+        .route("/execution", get(execution_metrics))
         .nest("/onchain", onchain_router())
 }
 
@@ -1754,6 +1762,42 @@ async fn core_validators(
         .await
         .map(Json)
         .map_err(|e| map_sqlx_error("grafana/cores/{id}/validators", e))
+}
+
+// ── Phase 5: Hard rewrites ──────────────────────────────────────────────
+
+/// Execution performance metrics — gas and timing per processing phase.
+///
+/// **Question answered:** "How much gas and time does each execution phase use?"
+///
+/// **Data source:** `ingested_raw_events` (1h retention) with JSONB extraction for
+/// gas and timing from three event types:
+/// - Authorized (type 95): `is_authorized` PVM call cost
+/// - Refined (type 101): per-item `refine` PVM call costs (array)
+/// - BlockExecuted (type 47): per-service `accumulate` PVM call costs (array of [service_id, cost] pairs)
+///
+/// Per-service gas breakdown available from accumulation phase only (BlockExecuted
+/// has service-keyed costs natively).
+#[utoipa::path(
+    get,
+    path = "/api/grafana/execution",
+    params(TimeRangeQuery),
+    responses(
+        (status = 200, description = "Execution performance by phase", body = ExecutionMetricsResponse),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn execution_metrics(
+    Query(q): Query<TimeRangeQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    state
+        .store
+        .grafana_execution(q.start, q.end)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/execution", e))
 }
 
 // ── On-chain statistics query params ─────────────────────────────────────

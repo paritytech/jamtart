@@ -1584,3 +1584,55 @@ pub struct CoreMetricsResponse {
     /// Work packages processed in the time range
     pub work_packages_processed: i64,
 }
+
+// ── Phase 5 response types ──────────────────────────────────────────────
+
+// ── /api/grafana/execution ──────────────────────────────────────────────
+
+/// Execution performance metrics — gas and timing per processing phase.
+///
+/// **Question answered:** "How much gas and time does each execution phase use?"
+///
+/// **Data source:** `ingested_raw_events` (1h retention) for per-event timing
+/// data extracted from JSONB. Three phases measured:
+/// - Authorization (Authorized event, type 95): `is_authorized` PVM call
+/// - Refinement (Refined event, type 101): `refine` PVM call per work item
+/// - Accumulation (BlockExecuted event, type 47): `accumulate` PVM call per service
+///
+/// Gas data comes from JSONB extraction (same as legacy). Per-service breakdown
+/// only available for accumulation (type 47 has service-keyed costs).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ExecutionMetricsResponse {
+    /// Authorization phase (Authorized event)
+    pub authorization: ExecutionPhaseStats,
+    /// Refinement phase (Refined event)
+    pub refinement: ExecutionPhaseStats,
+    /// Accumulation phase (BlockExecuted event)
+    pub accumulation: ExecutionPhaseStats,
+    /// Per-service gas breakdown (from accumulation phase only)
+    pub by_service: Vec<ServiceExecutionRow>,
+}
+
+/// Stats for a single execution phase.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ExecutionPhaseStats {
+    /// Number of events in this phase
+    pub count: i64,
+    /// Total gas consumed
+    pub total_gas: i64,
+    /// Average gas per event
+    pub avg_gas: f64,
+    /// Average execution time in nanoseconds
+    pub avg_time_ns: f64,
+}
+
+/// Per-service execution stats (from BlockExecuted accumulate_costs).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ServiceExecutionRow {
+    /// Service ID
+    pub service_id: i32,
+    /// Total gas used by this service
+    pub total_gas: i64,
+    /// Number of accumulations
+    pub count: i64,
+}
