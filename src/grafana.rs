@@ -62,6 +62,7 @@ use crate::onchain_types::*;
         wp_batch,
         blocks_summary,
         core_metrics,
+        core_validators,
         onchain_cores_summary,
         onchain_cores_timeseries,
         onchain_core_detail,
@@ -116,6 +117,46 @@ use crate::onchain_types::*;
         OnchainValidatorTimeseries,
         OnchainValidatorTimeseriesAgg,
         OnchainValidatorDetail,
+        // Phase 0
+        EventsSearchResponse,
+        PaginationMeta,
+        // Phase 3
+        FailureRatesResponse,
+        FailureOverall,
+        FailureCategory,
+        FailureByNode,
+        RecentFailure,
+        SyncTimelineRow,
+        ConnectionsTimelineResponse,
+        ConnectionsBucket,
+        ConnectionHealthStats,
+        GuaranteesResponse,
+        GuaranteeTotals,
+        GuaranteeSuccessRates,
+        GuarantorBreakdownResponse,
+        GuarantorRow,
+        WpStatsResponse,
+        WpStageTotals,
+        WpCoreCount,
+        ValidatorCoreRow,
+        NetworkHealthResponse,
+        HealthComponent,
+        HealthAlert,
+        // Phase 4
+        WpActiveResponse,
+        WpActiveRow,
+        WpActiveSummary,
+        WpReachedCounts,
+        WpStageDurations,
+        FailureBreakdownEntry,
+        WpDetailResponse,
+        BlocksSummaryResponse,
+        BlockTotals,
+        ChainState,
+        AuthoringByNode,
+        CoreMetricsResponse,
+        CoreValidatorsResponse,
+        CoreValidatorRow,
     )),
     tags(
         (name = "grafana", description = "Grafana dashboard API — time-series, aggregates, and metadata"),
@@ -166,6 +207,7 @@ pub fn router() -> Router<ApiState> {
         .route("/wp/batch", post(wp_batch))
         .route("/blocks/summary", get(blocks_summary))
         .route("/cores/:core_id/metrics", get(core_metrics))
+        .route("/cores/:core_id/validators", get(core_validators))
         .nest("/onchain", onchain_router())
 }
 
@@ -1674,6 +1716,43 @@ async fn core_metrics(
         .await
         .map(Json)
         .map_err(|e| map_sqlx_error("grafana/cores/{id}/metrics", e))
+}
+
+/// Per-core validator (guarantor) list with node metadata.
+///
+/// **Question answered:** "Which validators are active guarantors for this core?"
+///
+/// **Data source:** `guarantee_convergence` table filtered by core, JOINed with
+/// `nodes` table for implementation details. Only includes validators who actually
+/// built guarantees — inactive validators don't appear. Shares `node_core_mapping()`
+/// infrastructure.
+///
+/// Also replaces legacy `/api/cores/{id}/guarantors` and `/guarantors/enhanced`.
+/// DA metrics per guarantor available separately from `/api/grafana/da-stats?node=X`.
+#[utoipa::path(
+    get,
+    path = "/api/grafana/cores/{core_id}/validators",
+    params(
+        ("core_id" = i16, Path, description = "Core index (0–340)"),
+        TimeRangeQuery,
+    ),
+    responses(
+        (status = 200, description = "Validators active on this core", body = CoreValidatorsResponse),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn core_validators(
+    Path(core_id): Path<i16>,
+    Query(q): Query<TimeRangeQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    state
+        .store
+        .grafana_core_validators(q.start, q.end, core_id)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/cores/{id}/validators", e))
 }
 
 // ── On-chain statistics query params ─────────────────────────────────────

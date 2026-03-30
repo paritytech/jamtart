@@ -3134,3 +3134,166 @@ async fn test_grafana_core_metrics() {
     assert!(json["processing_efficiency_pct"].as_f64().is_some());
     assert!(json["work_packages_processed"].as_i64().unwrap() >= 1);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step 0: Gap-filling tests (from ui-migration-review-02.txt)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_grafana_events_filter_by_node() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+    let mut stream1 = connect_test_node(port, 1, &telemetry).await;
+    let mut stream2 = connect_test_node(port, 2, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+    send_events(&mut stream1, &[common::wp_received_event(ts, 10100, 0)]).await;
+    send_events(&mut stream2, &[common::wp_received_event(ts + 1000, 10101, 1)]).await;
+    common::flush_all(&telemetry).await;
+
+    let node1_hex = common::node_id_hex(1);
+    let path = format!(
+        "/api/grafana/events?{}&event_types=94&node={}",
+        time_range_params(), node1_hex
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let events = json["events"].as_array().expect("should have events");
+    assert!(!events.is_empty(), "should have events for node 1");
+    for e in events {
+        assert_eq!(e["node_id"].as_str().unwrap(), node1_hex, "all events should be from node 1");
+    }
+}
+
+#[tokio::test]
+async fn test_grafana_events_filter_by_core() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+    send_events(&mut stream, &[
+        common::wp_received_event(ts, 10200, 5),
+        common::wp_received_event(ts + 1000, 10201, 7),
+    ]).await;
+    common::flush_all(&telemetry).await;
+
+    let path = format!(
+        "/api/grafana/events?{}&event_types=94&core=5",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let events = json["events"].as_array().expect("should have events");
+    assert!(!events.is_empty(), "should have events for core 5");
+}
+
+#[tokio::test]
+async fn test_grafana_events_no_event_types_returns_all() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+    send_events(&mut stream, &[
+        common::wp_received_event(ts, 10300, 0),
+        common::best_block_event(ts + 1000, 300),
+    ]).await;
+    common::flush_all(&telemetry).await;
+
+    // No event_types param — should return all types
+    let path = format!("/api/grafana/events?{}", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let events = json["events"].as_array().expect("should have events");
+    // Should have events of multiple types
+    let types: std::collections::HashSet<i64> = events.iter()
+        .filter_map(|e| e["event_type"].as_i64())
+        .collect();
+    assert!(types.len() >= 2, "expected multiple event types, got {:?}", types);
+}
+
+#[tokio::test]
+async fn test_grafana_cores_last_activity() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+    // WP on core 3 — should produce last_activity
+    send_events(&mut stream, &[common::wp_received_event(ts, 10400, 3)]).await;
+    common::flush_all(&telemetry).await;
+
+    let path = format!("/api/grafana/cores?{}", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return array");
+    // Find core 3
+    let core3 = arr.iter().find(|c| c["core"].as_i64() == Some(3));
+    assert!(core3.is_some(), "core 3 should exist");
+    assert!(core3.unwrap()["last_activity"].is_string(), "core 3 should have last_activity");
+}
+
+#[tokio::test]
+async fn test_grafana_wp_batch() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+    send_events(&mut stream, &[
+        common::wp_received_event(ts, 10500, 0),
+        common::wp_received_event(ts + 1000, 10501, 1),
+        common::wp_received_event(ts + 2000, 10502, 2),
+    ]).await;
+    common::flush_all(&telemetry).await;
+
+    // Get WP hashes from wp-active
+    let active_path = format!("/api/grafana/wp-active?{}", time_range_params());
+    let active_response = server.get(&active_path).await;
+    let active_json: Value = active_response.json();
+    let wps = active_json["work_packages"].as_array().unwrap();
+
+    if wps.len() >= 2 {
+        let hashes: Vec<String> = wps.iter().take(2)
+            .map(|wp| wp["wp_hash"].as_str().unwrap().to_string())
+            .collect();
+
+        let batch_response = server
+            .post("/api/grafana/wp/batch")
+            .json(&hashes)
+            .await;
+        assert_eq!(batch_response.status_code(), StatusCode::OK);
+
+        let batch_json: Value = batch_response.json();
+        let results = batch_json.as_array().expect("should return array");
+        assert_eq!(results.len(), 2, "should return 2 WPs");
+    }
+}
+
+#[tokio::test]
+async fn test_grafana_core_validators() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+    // Create guarantee activity on core 5 to populate guarantee_convergence
+    send_events(&mut stream, &[
+        common::wp_received_event(ts, 10600, 5),
+        common::guarantee_built_event_with_hash(ts + 1000, 10600, [0xAB; 32], 70),
+        common::guarantee_received_event(ts + 2000, 70, [0xAB; 32]),
+    ]).await;
+    common::flush_all(&telemetry).await;
+
+    let path = format!("/api/grafana/cores/5/validators?{}", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    assert_eq!(json["core"].as_i64().unwrap(), 5);
+    assert!(json["validators"].is_array(), "should have validators array");
+    assert!(json["total_active"].is_number(), "should have total_active");
+}

@@ -2360,6 +2360,60 @@ impl EventStore {
         Ok(result)
     }
 
+    // ── Phase 4: /grafana/cores/{id}/validators ─────────────────────────
+
+    /// Per-core validator list from guarantee_convergence + nodes.
+    pub async fn grafana_core_validators(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        core: i16,
+    ) -> Result<CoreValidatorsResponse, sqlx::Error> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                gc.builder_node_id AS node_id,
+                COUNT(*)::BIGINT AS guarantee_count,
+                MAX(gc.built_at) AS last_guarantee,
+                n.implementation_name,
+                n.implementation_version,
+                n.is_connected
+            FROM guarantee_convergence gc
+            LEFT JOIN nodes n ON gc.builder_node_id = n.node_id
+            WHERE gc.built_at >= $1 AND gc.built_at < $2
+              AND gc.core = $3
+              AND gc.builder_node_id IS NOT NULL
+            GROUP BY gc.builder_node_id, n.implementation_name, n.implementation_version, n.is_connected
+            ORDER BY guarantee_count DESC
+            "#,
+        )
+        .bind(start)
+        .bind(end)
+        .bind(core)
+        .fetch_all(self.pool())
+        .await?;
+
+        let validators: Vec<CoreValidatorRow> = rows
+            .iter()
+            .map(|row| CoreValidatorRow {
+                node_id: row.get("node_id"),
+                guarantee_count: row.get("guarantee_count"),
+                last_guarantee: row.get("last_guarantee"),
+                implementation_name: row.get("implementation_name"),
+                implementation_version: row.get("implementation_version"),
+                is_connected: row.get("is_connected"),
+            })
+            .collect();
+
+        let total_active = validators.len() as i64;
+
+        Ok(CoreValidatorsResponse {
+            core,
+            validators,
+            total_active,
+        })
+    }
+
     // ── Phase 3: /grafana/network-health ────────────────────────────────
 
     pub async fn grafana_network_health(

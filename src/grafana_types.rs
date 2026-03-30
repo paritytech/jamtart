@@ -1271,6 +1271,46 @@ pub struct ValidatorCoreRow {
     pub guarantee_count: i64,
 }
 
+// ── /api/grafana/cores/{id}/validators ───────────────────────────────────
+
+/// Per-core validator (guarantor) list with node metadata.
+///
+/// **Question answered:** "Which validators are active guarantors for this core?"
+///
+/// **Data source:** `guarantee_convergence` table (builder_node_id + core, 90d
+/// retention) filtered by core. JOINed with `nodes` table for implementation
+/// details (name, version). Shares `node_core_mapping()` helper.
+///
+/// **Limitation:** Only includes validators who actually built guarantees.
+/// Validators assigned to a core but inactive (no guarantees built) won't appear.
+/// Telemetry does not transmit `validator_index`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CoreValidatorsResponse {
+    /// Core index
+    pub core: i16,
+    /// Active validators on this core
+    pub validators: Vec<CoreValidatorRow>,
+    /// Number of active validators
+    pub total_active: i64,
+}
+
+/// A validator active on a specific core.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CoreValidatorRow {
+    /// Node identifier (Ed25519 public key hex)
+    pub node_id: String,
+    /// Number of guarantees built for this core
+    pub guarantee_count: i64,
+    /// When this node last guaranteed on this core
+    pub last_guarantee: Option<DateTime<Utc>>,
+    /// Node implementation name (from nodes table, e.g. "polkajam")
+    pub implementation_name: Option<String>,
+    /// Node implementation version
+    pub implementation_version: Option<String>,
+    /// Whether the node is currently connected
+    pub is_connected: Option<bool>,
+}
+
 // ── /api/grafana/network-health ─────────────────────────────────────────
 
 /// Multi-signal network health score with per-component breakdown.
