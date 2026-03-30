@@ -576,7 +576,7 @@ async fn flush_events(store: &Arc<EventStore>, event_batch: &mut Vec<EventRecord
     trace!("Flushing {} events", event_count);
 
     // Collect event_services rows and node_stats rows before consuming the batch
-    let mut service_rows: Vec<(i64, String, i16, i32, Option<i64>)> = Vec::new();
+    let mut service_rows: Vec<(i64, String, i16, i32, Option<i64>, Option<i64>, Option<i64>)> = Vec::new();
     let mut stats_rows: Vec<(i64, String, i32, i32, i32, i32, i64, i32, i32, i16, i16, f32, i16)> =
         Vec::new();
 
@@ -588,13 +588,17 @@ async fn flush_events(store: &Arc<EventStore>, event_batch: &mut Vec<EventRecord
         if SERVICE_EVENT_TYPES.contains(&et) && et != 47 {
             if let Some(ref sids) = record.enriched.service_ids {
                 let gas = record.event.gas_per_service_item(sids.len());
+                let timing = record.event.timing_per_service_item(sids.len());
                 for (i, sid) in sids.iter().enumerate() {
+                    let (elapsed, load) = timing.get(i).copied().unwrap_or((None, None));
                     service_rows.push((
                         unix_micros,
                         record.node_id.to_string(),
                         et as i16,
                         *sid as i32,
                         gas.get(i).copied().flatten(),
+                        elapsed,
+                        load,
                     ));
                 }
             }
@@ -613,6 +617,8 @@ async fn flush_events(store: &Arc<EventStore>, event_batch: &mut Vec<EventRecord
                         47i16,
                         *service_id as i32,
                         Some(cost.total.gas_used as i64),
+                        Some(cost.total.elapsed_ns as i64),
+                        Some(cost.load_ns as i64),
                     ));
                 }
             }
@@ -671,9 +677,9 @@ async fn flush_events(store: &Arc<EventStore>, event_batch: &mut Vec<EventRecord
 
     // Flush event_services (independent, failure doesn't roll back events)
     if !service_rows.is_empty() {
-        let refs: Vec<(i64, &str, i16, i32, Option<i64>)> = service_rows
+        let refs: Vec<(i64, &str, i16, i32, Option<i64>, Option<i64>, Option<i64>)> = service_rows
             .iter()
-            .map(|(ts, nid, et, sid, g)| (*ts, nid.as_str(), *et, *sid, *g))
+            .map(|(ts, nid, et, sid, g, elapsed, load)| (*ts, nid.as_str(), *et, *sid, *g, *elapsed, *load))
             .collect();
         if let Err(e) = store.store_event_services_batch(&refs).await {
             warn!("Failed to flush event_services: {}", e);
@@ -782,6 +788,95 @@ mod tests {
         assert_eq!(gas[0], Some(999));
         assert_eq!(gas[1], None);
         assert_eq!(gas[2], None);
+    }
+
+    /// Test: timing_per_service_item extracts elapsed_ns and load_ns correctly
+    #[test]
+    fn test_timing_per_service_item() {
+        // Authorized: WP-level timing to first service only
+        let auth = Event::Authorized {
+            timestamp: 1000,
+            submission_or_share_id: 100,
+            cost: IsAuthorizedCost {
+                total: ExecCost { gas_used: 999, elapsed_ns: 50 },
+                load_ns: 10,
+                host_call: ExecCost { gas_used: 100, elapsed_ns: 20 },
+            },
+        };
+        let timing = auth.timing_per_service_item(3);
+        assert_eq!(timing.len(), 3);
+        assert_eq!(timing[0], (Some(50), Some(10)));
+        assert_eq!(timing[1], (None, None));
+        assert_eq!(timing[2], (None, None));
+
+        // Refined: per-work-item timing
+        let refined = Event::Refined {
+            timestamp: 2000,
+            submission_or_share_id: 200,
+            costs: vec![
+                RefineCost {
+                    total: ExecCost { gas_used: 500, elapsed_ns: 1000 },
+                    load_ns: 100,
+                    host_call: zero_refine_host(),
+                },
+                RefineCost {
+                    total: ExecCost { gas_used: 300, elapsed_ns: 600 },
+                    load_ns: 80,
+                    host_call: zero_refine_host(),
+                },
+            ],
+        };
+        let timing = refined.timing_per_service_item(2);
+        assert_eq!(timing.len(), 2);
+        assert_eq!(timing[0], (Some(1000), Some(100)));
+        assert_eq!(timing[1], (Some(600), Some(80)));
+
+        // Other event type: empty
+        let other = Event::BestBlockChanged {
+            timestamp: 3000,
+            slot: 42,
+            hash: [0u8; 32],
+        };
+        let timing = other.timing_per_service_item(1);
+        assert!(timing.is_empty());
+    }
+
+    /// Test: BlockExecuted timing extraction produces correct values
+    #[test]
+    fn test_block_executed_timing_extraction() {
+        let event = Event::BlockExecuted {
+            timestamp: 1000,
+            authoring_or_importing_id: 1,
+            accumulate_costs: vec![
+                (10, AccumulateCost {
+                    num_calls: 1, num_transfers: 0, num_items: 1,
+                    total: ExecCost { gas_used: 500, elapsed_ns: 100 },
+                    load_ns: 50, host_call: zero_accum_host(),
+                }),
+                (20, AccumulateCost {
+                    num_calls: 2, num_transfers: 1, num_items: 3,
+                    total: ExecCost { gas_used: 1200, elapsed_ns: 200 },
+                    load_ns: 60, host_call: zero_accum_host(),
+                }),
+            ],
+        };
+
+        // Simulate the extraction pattern from flush_events
+        let mut rows: Vec<(i32, Option<i64>, Option<i64>, Option<i64>)> = Vec::new();
+        if let Event::BlockExecuted { accumulate_costs, .. } = &event {
+            for (service_id, cost) in accumulate_costs {
+                rows.push((
+                    *service_id as i32,
+                    Some(cost.total.gas_used as i64),
+                    Some(cost.total.elapsed_ns as i64),
+                    Some(cost.load_ns as i64),
+                ));
+            }
+        }
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], (10, Some(500), Some(100), Some(50)));
+        assert_eq!(rows[1], (20, Some(1200), Some(200), Some(60)));
     }
 
     /// Test: Status event fields are correctly extracted for node_stats rows

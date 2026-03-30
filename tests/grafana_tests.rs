@@ -3309,12 +3309,15 @@ async fn test_grafana_execution_metrics() {
 
     let ts = common::now_jce_micros();
 
-    // Inject WP lifecycle that includes Authorized (95) and Refined (101)
+    // Inject WP lifecycle: WPReceived → Authorized → Refined → BlockExecuted
+    // Test helpers have known values:
+    //   authorized_event: gas=100_000, elapsed_ns=200_000, load_ns=50_000
+    //   refined_event: 1 work item, gas=500_000, elapsed_ns=1_000_000, load_ns=100_000
+    //   block_executed_event([(10, 5000), (20, 3000)]): elapsed_ns=gas*2, load_ns=1000
     let events = vec![
         common::wp_received_event(ts, 11000, 0),
         common::authorized_event(ts + 1000, 11000),
         common::refined_event(ts + 2000, 11000),
-        // BlockExecuted (47) with service accumulation
         common::block_executed_event(ts + 3000, 1, &[(10, 5000), (20, 3000)]),
     ];
     send_events(&mut stream, &events).await;
@@ -3326,15 +3329,41 @@ async fn test_grafana_execution_metrics() {
 
     let json: Value = response.json();
 
-    // Authorization phase
-    assert!(json["authorization"]["count"].as_i64().unwrap() >= 1, "should have authorization events");
+    // Authorization phase (type 95): enricher maps to first service only
+    let auth = &json["authorization"];
+    assert!(auth["count"].as_i64().unwrap() >= 1, "should have authorization events");
+    assert!(auth["avg_time_ns"].as_f64().unwrap() > 0.0, "auth should have avg_time_ns");
+    assert!(auth["avg_load_ns"].as_f64().unwrap() > 0.0, "auth should have avg_load_ns");
 
-    // Refinement phase
-    assert!(json["refinement"]["count"].as_i64().unwrap() >= 1, "should have refinement events");
+    // Refinement phase (type 101): per-work-item timing
+    let refine = &json["refinement"];
+    assert!(refine["count"].as_i64().unwrap() >= 1, "should have refinement events");
+    assert!(refine["avg_time_ns"].as_f64().unwrap() > 0.0, "refine should have avg_time_ns");
+    assert!(refine["avg_load_ns"].as_f64().unwrap() > 0.0, "refine should have avg_load_ns");
 
-    // Accumulation phase
-    assert!(json["accumulation"]["count"].as_i64().unwrap() >= 1, "should have accumulation events");
+    // Accumulation phase (type 47): 2 services
+    let accum = &json["accumulation"];
+    assert!(accum["count"].as_i64().unwrap() >= 2, "should have 2+ accumulation entries (services 10, 20)");
+    assert!(accum["avg_time_ns"].as_f64().unwrap() > 0.0, "accum should have avg_time_ns");
+    assert!(accum["avg_load_ns"].as_f64().unwrap() > 0.0, "accum should have avg_load_ns");
 
-    // Per-service breakdown
-    assert!(json["by_service"].is_array(), "should have by_service array");
+    // Per-service breakdown: services 10 and 20 with timing
+    let by_service = json["by_service"].as_array().expect("should have by_service array");
+    assert!(by_service.len() >= 2, "should have at least 2 services");
+
+    // Find service 10 — block_executed_event sets gas=5000, elapsed_ns=10000, load_ns=1000
+    let svc10 = by_service.iter().find(|s| s["service_id"].as_i64() == Some(10));
+    assert!(svc10.is_some(), "should have service 10");
+    let svc10 = svc10.unwrap();
+    assert_eq!(svc10["total_gas"].as_i64().unwrap(), 5000, "service 10 total_gas");
+    assert!((svc10["avg_time_ns"].as_f64().unwrap() - 10000.0).abs() < 1.0, "service 10 avg_time_ns");
+    assert!((svc10["avg_load_ns"].as_f64().unwrap() - 1000.0).abs() < 1.0, "service 10 avg_load_ns");
+
+    // Find service 20 — gas=3000, elapsed_ns=6000, load_ns=1000
+    let svc20 = by_service.iter().find(|s| s["service_id"].as_i64() == Some(20));
+    assert!(svc20.is_some(), "should have service 20");
+    let svc20 = svc20.unwrap();
+    assert_eq!(svc20["total_gas"].as_i64().unwrap(), 3000, "service 20 total_gas");
+    assert!((svc20["avg_time_ns"].as_f64().unwrap() - 6000.0).abs() < 1.0, "service 20 avg_time_ns");
+    assert!((svc20["avg_load_ns"].as_f64().unwrap() - 1000.0).abs() < 1.0, "service 20 avg_load_ns");
 }

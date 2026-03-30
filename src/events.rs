@@ -1261,6 +1261,28 @@ impl Event {
             _ => vec![],
         }
     }
+
+    /// Returns (elapsed_ns, load_ns) per work item (indexed same as service_ids).
+    /// For Refined: per-work-item timing from costs array.
+    /// For Authorized: WP-level timing to first service only (prevents SUM overcounting).
+    pub fn timing_per_service_item(&self, service_count: usize) -> Vec<(Option<i64>, Option<i64>)> {
+        match self {
+            Event::Refined { costs, .. } => {
+                costs.iter().map(|c| (Some(c.total.elapsed_ns as i64), Some(c.load_ns as i64))).collect()
+            }
+            Event::Authorized { cost, .. } => {
+                let mut result = Vec::with_capacity(service_count);
+                if service_count > 0 {
+                    result.push((Some(cost.total.elapsed_ns as i64), Some(cost.load_ns as i64)));
+                    for _ in 1..service_count {
+                        result.push((None, None));
+                    }
+                }
+                result
+            }
+            _ => vec![],
+        }
+    }
 }
 
 impl Encode for (ServiceId, AccumulateCost) {

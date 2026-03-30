@@ -620,21 +620,21 @@ impl EventStore {
     /// Only called for the 21 low-volume pipeline event types + BlockExecuted.
     pub async fn store_event_services_batch(
         &self,
-        rows: &[(i64, &str, i16, i32, Option<i64>)], // (unix_micros, node_id, event_type, service_id, gas_used)
+        rows: &[(i64, &str, i16, i32, Option<i64>, Option<i64>, Option<i64>)], // (unix_micros, node_id, event_type, service_id, gas_used, elapsed_ns, load_ns)
     ) -> Result<(), sqlx::Error> {
         if rows.is_empty() {
             return Ok(());
         }
 
         const PG_EPOCH_UNIX_MICROS: i64 = 946_684_800_000_000;
-        const FIELD_COUNT: i16 = 5;
+        const FIELD_COUNT: i16 = 7;
 
-        let mut buf: Vec<u8> = Vec::with_capacity(19 + rows.len() * 60 + 2);
+        let mut buf: Vec<u8> = Vec::with_capacity(19 + rows.len() * 80 + 2);
         buf.extend_from_slice(b"PGCOPY\n\xff\r\n\0");
         buf.extend_from_slice(&0i32.to_be_bytes());
         buf.extend_from_slice(&0i32.to_be_bytes());
 
-        for (unix_micros, node_id, event_type, service_id, gas_used) in rows {
+        for (unix_micros, node_id, event_type, service_id, gas_used, elapsed_ns, load_ns) in rows {
             buf.extend_from_slice(&FIELD_COUNT.to_be_bytes());
 
             // timestamp (TIMESTAMPTZ)
@@ -663,6 +663,24 @@ impl EventStore {
                 }
                 None => buf.extend_from_slice(&(-1i32).to_be_bytes()),
             }
+
+            // elapsed_ns (BIGINT, nullable)
+            match elapsed_ns {
+                Some(e) => {
+                    buf.extend_from_slice(&8i32.to_be_bytes());
+                    buf.extend_from_slice(&e.to_be_bytes());
+                }
+                None => buf.extend_from_slice(&(-1i32).to_be_bytes()),
+            }
+
+            // load_ns (BIGINT, nullable)
+            match load_ns {
+                Some(l) => {
+                    buf.extend_from_slice(&8i32.to_be_bytes());
+                    buf.extend_from_slice(&l.to_be_bytes());
+                }
+                None => buf.extend_from_slice(&(-1i32).to_be_bytes()),
+            }
         }
 
         buf.extend_from_slice(&(-1i16).to_be_bytes());
@@ -670,7 +688,7 @@ impl EventStore {
         let mut conn = self.write_pool.acquire().await?;
         let mut copy_in = conn
             .copy_in_raw(
-                "COPY event_services (timestamp, node_id, event_type, service_id, gas_used) FROM STDIN WITH (FORMAT binary)",
+                "COPY event_services (timestamp, node_id, event_type, service_id, gas_used, elapsed_ns, load_ns) FROM STDIN WITH (FORMAT binary)",
             )
             .await?;
         copy_in.send(buf.as_slice()).await?;

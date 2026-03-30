@@ -2952,77 +2952,46 @@ impl EventStore {
 
     // ── Phase 5: /grafana/execution ─────────────────────────────────────
 
-    /// Execution performance: gas + timing per phase from raw events.
+    /// Execution performance: gas + timing per phase from event_services (7-day retention).
     pub async fn grafana_execution(
         &self,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Result<ExecutionMetricsResponse, sqlx::Error> {
-        // Refinement (type 101) — jsonb_array_elements on costs array
-        let refinement = sqlx::query(
+        // Per-phase stats from pre-extracted columns (types 47, 95, 101)
+        let phase_rows = sqlx::query(
             r#"
             SELECT
+                event_type,
                 COUNT(*)::BIGINT AS count,
-                COALESCE(SUM(CAST(c->'total'->>'gas_used' AS BIGINT)), 0)::BIGINT AS total_gas,
-                COALESCE(AVG(CAST(c->'total'->>'gas_used' AS BIGINT)), 0)::FLOAT8 AS avg_gas,
-                COALESCE(AVG(CAST(c->'total'->>'elapsed_ns' AS BIGINT)), 0)::FLOAT8 AS avg_time_ns
-            FROM ingested_raw_events e, jsonb_array_elements(e.data->'Refined'->'costs') c
-            WHERE e.event_type = 101
-              AND e.timestamp >= $1 AND e.timestamp < $2
-            "#,
-        )
-        .bind(start)
-        .bind(end)
-        .fetch_one(self.pool())
-        .await?;
-
-        // Authorization (type 95) — single cost object
-        let authorization = sqlx::query(
-            r#"
-            SELECT
-                COUNT(*)::BIGINT AS count,
-                COALESCE(SUM(CAST(data->'Authorized'->'cost'->'total'->>'gas_used' AS BIGINT)), 0)::BIGINT AS total_gas,
-                COALESCE(AVG(CAST(data->'Authorized'->'cost'->'total'->>'gas_used' AS BIGINT)), 0)::FLOAT8 AS avg_gas,
-                COALESCE(AVG(CAST(data->'Authorized'->'cost'->'total'->>'elapsed_ns' AS BIGINT)), 0)::FLOAT8 AS avg_time_ns
-            FROM ingested_raw_events
-            WHERE event_type = 95
+                COALESCE(SUM(gas_used), 0)::BIGINT AS total_gas,
+                COALESCE(AVG(gas_used), 0)::FLOAT8 AS avg_gas,
+                COALESCE(AVG(elapsed_ns), 0)::FLOAT8 AS avg_time_ns,
+                COALESCE(AVG(load_ns), 0)::FLOAT8 AS avg_load_ns
+            FROM event_services
+            WHERE event_type IN (47, 95, 101)
               AND timestamp >= $1 AND timestamp < $2
+            GROUP BY event_type
             "#,
         )
         .bind(start)
         .bind(end)
-        .fetch_one(self.pool())
+        .fetch_all(self.pool())
         .await?;
 
-        // Accumulation (type 47) — array of [service_id, cost] pairs
-        let accumulation = sqlx::query(
+        // Per-service breakdown (type 47 only)
+        let by_service_rows = sqlx::query(
             r#"
             SELECT
+                service_id,
+                COALESCE(SUM(gas_used), 0)::BIGINT AS total_gas,
                 COUNT(*)::BIGINT AS count,
-                COALESCE(SUM(CAST(pair->1->'total'->>'gas_used' AS BIGINT)), 0)::BIGINT AS total_gas,
-                COALESCE(AVG(CAST(pair->1->'total'->>'gas_used' AS BIGINT)), 0)::FLOAT8 AS avg_gas,
-                COALESCE(AVG(CAST(pair->1->'total'->>'elapsed_ns' AS BIGINT)), 0)::FLOAT8 AS avg_time_ns
-            FROM ingested_raw_events e, jsonb_array_elements(e.data->'BlockExecuted'->'accumulate_costs') pair
-            WHERE e.event_type = 47
-              AND e.timestamp >= $1 AND e.timestamp < $2
-            "#,
-        )
-        .bind(start)
-        .bind(end)
-        .fetch_one(self.pool())
-        .await?;
-
-        // Per-service gas from accumulation
-        let by_service = sqlx::query(
-            r#"
-            SELECT
-                CAST(pair->0 AS INT) AS service_id,
-                COALESCE(SUM(CAST(pair->1->'total'->>'gas_used' AS BIGINT)), 0)::BIGINT AS total_gas,
-                COUNT(*)::BIGINT AS count
-            FROM ingested_raw_events e, jsonb_array_elements(e.data->'BlockExecuted'->'accumulate_costs') pair
-            WHERE e.event_type = 47
-              AND e.timestamp >= $1 AND e.timestamp < $2
-            GROUP BY pair->0
+                COALESCE(AVG(elapsed_ns), 0)::FLOAT8 AS avg_time_ns,
+                COALESCE(AVG(load_ns), 0)::FLOAT8 AS avg_load_ns
+            FROM event_services
+            WHERE event_type = 47
+              AND timestamp >= $1 AND timestamp < $2
+            GROUP BY service_id
             ORDER BY total_gas DESC
             LIMIT 50
             "#,
@@ -3032,25 +3001,50 @@ impl EventStore {
         .fetch_all(self.pool())
         .await?;
 
+        let empty_phase = ExecutionPhaseStats {
+            count: 0,
+            total_gas: 0,
+            avg_gas: 0.0,
+            avg_time_ns: 0.0,
+            avg_load_ns: 0.0,
+        };
+
         fn to_phase(row: &sqlx::postgres::PgRow) -> ExecutionPhaseStats {
             ExecutionPhaseStats {
                 count: row.get("count"),
                 total_gas: row.get("total_gas"),
                 avg_gas: row.get("avg_gas"),
                 avg_time_ns: row.get("avg_time_ns"),
+                avg_load_ns: row.get("avg_load_ns"),
+            }
+        }
+
+        let mut authorization = empty_phase.clone();
+        let mut refinement = empty_phase.clone();
+        let mut accumulation = empty_phase;
+
+        for row in &phase_rows {
+            let et: i16 = row.get("event_type");
+            match et {
+                95 => authorization = to_phase(row),
+                101 => refinement = to_phase(row),
+                47 => accumulation = to_phase(row),
+                _ => {}
             }
         }
 
         Ok(ExecutionMetricsResponse {
-            authorization: to_phase(&authorization),
-            refinement: to_phase(&refinement),
-            accumulation: to_phase(&accumulation),
-            by_service: by_service
+            authorization,
+            refinement,
+            accumulation,
+            by_service: by_service_rows
                 .iter()
                 .map(|row| ServiceExecutionRow {
                     service_id: row.get("service_id"),
                     total_gas: row.get("total_gas"),
                     count: row.get("count"),
+                    avg_time_ns: row.get("avg_time_ns"),
+                    avg_load_ns: row.get("avg_load_ns"),
                 })
                 .collect(),
         })

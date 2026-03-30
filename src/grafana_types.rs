@@ -1593,14 +1593,13 @@ pub struct CoreMetricsResponse {
 ///
 /// **Question answered:** "How much gas and time does each execution phase use?"
 ///
-/// **Data source:** `ingested_raw_events` (1h retention) for per-event timing
-/// data extracted from JSONB. Three phases measured:
+/// **Data source:** `event_services` table (7-day retention) with pre-extracted
+/// timing columns. Three phases measured:
 /// - Authorization (Authorized event, type 95): `is_authorized` PVM call
 /// - Refinement (Refined event, type 101): `refine` PVM call per work item
 /// - Accumulation (BlockExecuted event, type 47): `accumulate` PVM call per service
 ///
-/// Gas data comes from JSONB extraction (same as legacy). Per-service breakdown
-/// only available for accumulation (type 47 has service-keyed costs).
+/// Per-service breakdown only available for accumulation (type 47 has service-keyed costs).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ExecutionMetricsResponse {
     /// Authorization phase (Authorized event)
@@ -1614,7 +1613,7 @@ pub struct ExecutionMetricsResponse {
 }
 
 /// Stats for a single execution phase.
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ExecutionPhaseStats {
     /// Number of events in this phase
     pub count: i64,
@@ -1624,6 +1623,8 @@ pub struct ExecutionPhaseStats {
     pub avg_gas: f64,
     /// Average execution time in nanoseconds
     pub avg_time_ns: f64,
+    /// Average PVM code load/compile time in nanoseconds
+    pub avg_load_ns: f64,
 }
 
 /// Per-service execution stats (from BlockExecuted accumulate_costs).
@@ -1635,4 +1636,8 @@ pub struct ServiceExecutionRow {
     pub total_gas: i64,
     /// Number of accumulations
     pub count: i64,
+    /// Average execution time in nanoseconds
+    pub avg_time_ns: f64,
+    /// Average PVM code load/compile time in nanoseconds
+    pub avg_load_ns: f64,
 }
