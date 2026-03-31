@@ -3347,23 +3347,54 @@ async fn test_grafana_execution_metrics() {
     assert!(accum["avg_time_ns"].as_f64().unwrap() > 0.0, "accum should have avg_time_ns");
     assert!(accum["avg_load_ns"].as_f64().unwrap() > 0.0, "accum should have avg_load_ns");
 
-    // Per-service breakdown: services 10 and 20 with timing
+    // Per-service breakdown: now includes all phases
     let by_service = json["by_service"].as_array().expect("should have by_service array");
-    assert!(by_service.len() >= 2, "should have at least 2 services");
 
-    // Find service 10 — block_executed_event sets gas=5000, elapsed_ns=10000, load_ns=1000
-    let svc10 = by_service.iter().find(|s| s["service_id"].as_i64() == Some(10));
-    assert!(svc10.is_some(), "should have service 10");
-    let svc10 = svc10.unwrap();
-    assert_eq!(svc10["total_gas"].as_i64().unwrap(), 5000, "service 10 total_gas");
-    assert!((svc10["avg_time_ns"].as_f64().unwrap() - 10000.0).abs() < 1.0, "service 10 avg_time_ns");
-    assert!((svc10["avg_load_ns"].as_f64().unwrap() - 1000.0).abs() < 1.0, "service 10 avg_load_ns");
+    // Every entry should have a phase field
+    for entry in by_service {
+        let phase = entry["phase"].as_str().expect("entry missing phase");
+        assert!(
+            ["authorization", "refinement", "accumulation"].contains(&phase),
+            "unexpected phase: {}", phase
+        );
+    }
 
-    // Find service 20 — gas=3000, elapsed_ns=6000, load_ns=1000
-    let svc20 = by_service.iter().find(|s| s["service_id"].as_i64() == Some(20));
-    assert!(svc20.is_some(), "should have service 20");
-    let svc20 = svc20.unwrap();
-    assert_eq!(svc20["total_gas"].as_i64().unwrap(), 3000, "service 20 total_gas");
-    assert!((svc20["avg_time_ns"].as_f64().unwrap() - 6000.0).abs() < 1.0, "service 20 avg_time_ns");
-    assert!((svc20["avg_load_ns"].as_f64().unwrap() - 1000.0).abs() < 1.0, "service 20 avg_load_ns");
+    // Accumulation: service 10 — gas=5000, elapsed_ns=10000, load_ns=1000
+    let accum_svc10 = by_service.iter().find(|s|
+        s["service_id"].as_i64() == Some(10) && s["phase"].as_str() == Some("accumulation")
+    );
+    assert!(accum_svc10.is_some(), "should have accumulation for service 10");
+    let accum_svc10 = accum_svc10.unwrap();
+    assert_eq!(accum_svc10["total_gas"].as_i64().unwrap(), 5000);
+    assert!((accum_svc10["avg_time_ns"].as_f64().unwrap() - 10000.0).abs() < 1.0);
+    assert!((accum_svc10["avg_load_ns"].as_f64().unwrap() - 1000.0).abs() < 1.0);
+
+    // Accumulation: service 20 — gas=3000, elapsed_ns=6000, load_ns=1000
+    let accum_svc20 = by_service.iter().find(|s|
+        s["service_id"].as_i64() == Some(20) && s["phase"].as_str() == Some("accumulation")
+    );
+    assert!(accum_svc20.is_some(), "should have accumulation for service 20");
+    let accum_svc20 = accum_svc20.unwrap();
+    assert_eq!(accum_svc20["total_gas"].as_i64().unwrap(), 3000);
+    assert!((accum_svc20["avg_time_ns"].as_f64().unwrap() - 6000.0).abs() < 1.0);
+
+    // Refinement and authorization should appear for enriched services
+    // (enricher maps WPReceived service_ids [10, 20] to Authorized and Refined)
+    let refine_entries: Vec<_> = by_service.iter()
+        .filter(|s| s["phase"].as_str() == Some("refinement"))
+        .collect();
+    assert!(!refine_entries.is_empty(), "should have refinement entries in by_service");
+    // First service (aligned with the single work item) should have timing
+    let refine_with_timing = refine_entries.iter()
+        .any(|e| e["avg_time_ns"].as_f64().unwrap() > 0.0);
+    assert!(refine_with_timing, "at least one refinement entry should have timing");
+
+    let auth_entries: Vec<_> = by_service.iter()
+        .filter(|s| s["phase"].as_str() == Some("authorization"))
+        .collect();
+    assert!(!auth_entries.is_empty(), "should have authorization entries in by_service");
+    // First service gets WP-level auth timing
+    let auth_with_timing = auth_entries.iter()
+        .any(|e| e["avg_time_ns"].as_f64().unwrap() > 0.0);
+    assert!(auth_with_timing, "at least one authorization entry should have timing");
 }

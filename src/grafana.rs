@@ -1776,8 +1776,8 @@ async fn core_validators(
 /// - Refined (type 101): per-item `refine` PVM call costs
 /// - BlockExecuted (type 47): per-service `accumulate` PVM call costs
 ///
-/// Per-service gas/timing breakdown available from accumulation phase only
-/// (BlockExecuted has service-keyed costs natively).
+/// Per-service gas/timing breakdown available for all three phases.
+/// Each `by_service` entry includes a `phase` field.
 #[utoipa::path(
     get,
     path = "/api/grafana/execution",

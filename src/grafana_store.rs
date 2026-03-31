@@ -2979,19 +2979,20 @@ impl EventStore {
         .fetch_all(self.pool())
         .await?;
 
-        // Per-service breakdown (type 47 only)
+        // Per-service breakdown across all execution phases
         let by_service_rows = sqlx::query(
             r#"
             SELECT
+                event_type,
                 service_id,
                 COALESCE(SUM(gas_used), 0)::BIGINT AS total_gas,
                 COUNT(*)::BIGINT AS count,
                 COALESCE(AVG(elapsed_ns), 0)::FLOAT8 AS avg_time_ns,
                 COALESCE(AVG(load_ns), 0)::FLOAT8 AS avg_load_ns
             FROM event_services
-            WHERE event_type = 47
+            WHERE event_type IN (47, 95, 101)
               AND timestamp >= $1 AND timestamp < $2
-            GROUP BY service_id
+            GROUP BY event_type, service_id
             ORDER BY total_gas DESC
             LIMIT 50
             "#,
@@ -3039,12 +3040,22 @@ impl EventStore {
             accumulation,
             by_service: by_service_rows
                 .iter()
-                .map(|row| ServiceExecutionRow {
-                    service_id: row.get("service_id"),
-                    total_gas: row.get("total_gas"),
-                    count: row.get("count"),
-                    avg_time_ns: row.get("avg_time_ns"),
-                    avg_load_ns: row.get("avg_load_ns"),
+                .map(|row| {
+                    let et: i16 = row.get("event_type");
+                    let phase = match et {
+                        95 => "authorization",
+                        101 => "refinement",
+                        47 => "accumulation",
+                        _ => "unknown",
+                    };
+                    ServiceExecutionRow {
+                        service_id: row.get("service_id"),
+                        phase: phase.to_string(),
+                        total_gas: row.get("total_gas"),
+                        count: row.get("count"),
+                        avg_time_ns: row.get("avg_time_ns"),
+                        avg_load_ns: row.get("avg_load_ns"),
+                    }
                 })
                 .collect(),
         })

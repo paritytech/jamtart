@@ -1599,7 +1599,7 @@ pub struct CoreMetricsResponse {
 /// - Refinement (Refined event, type 101): `refine` PVM call per work item
 /// - Accumulation (BlockExecuted event, type 47): `accumulate` PVM call per service
 ///
-/// Per-service breakdown only available for accumulation (type 47 has service-keyed costs).
+/// Per-service breakdown includes all three phases (each row has a `phase` field).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ExecutionMetricsResponse {
     /// Authorization phase (Authorized event)
@@ -1608,7 +1608,7 @@ pub struct ExecutionMetricsResponse {
     pub refinement: ExecutionPhaseStats,
     /// Accumulation phase (BlockExecuted event)
     pub accumulation: ExecutionPhaseStats,
-    /// Per-service gas breakdown (from accumulation phase only)
+    /// Per-service gas and timing breakdown across all phases
     pub by_service: Vec<ServiceExecutionRow>,
 }
 
@@ -1627,14 +1627,16 @@ pub struct ExecutionPhaseStats {
     pub avg_load_ns: f64,
 }
 
-/// Per-service execution stats (from BlockExecuted accumulate_costs).
+/// Per-service execution stats for a single phase.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ServiceExecutionRow {
     /// Service ID
     pub service_id: i32,
-    /// Total gas used by this service
+    /// Execution phase: "authorization", "refinement", or "accumulation"
+    pub phase: String,
+    /// Total gas used by this service in this phase
     pub total_gas: i64,
-    /// Number of accumulations
+    /// Number of events
     pub count: i64,
     /// Average execution time in nanoseconds
     pub avg_time_ns: f64,
