@@ -1824,6 +1824,178 @@ impl EventStore {
             .await
     }
 
+    // ── 16. grafana_validator_profiling ──────────────────────────────────
+
+    /// Per-validator pipeline performance: avg stage latencies grouped by node_id.
+    pub async fn grafana_validator_profiling(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        core_filter: Option<i16>,
+    ) -> Result<Vec<ValidatorProfilingRow>, sqlx::Error> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                node_id,
+                COUNT(*)::BIGINT AS wp_count,
+                COUNT(*) FILTER (WHERE failed_at IS NOT NULL)::BIGINT AS failures,
+                AVG(EXTRACT(EPOCH FROM (authorized_at - received_at)) * 1000)::DOUBLE PRECISION AS avg_authorize_ms,
+                AVG(EXTRACT(EPOCH FROM (refined_at - authorized_at)) * 1000)::DOUBLE PRECISION AS avg_refine_ms,
+                AVG(EXTRACT(EPOCH FROM (report_built_at - refined_at)) * 1000)::DOUBLE PRECISION AS avg_report_ms,
+                AVG(EXTRACT(EPOCH FROM (guarantee_built_at - report_built_at)) * 1000)::DOUBLE PRECISION AS avg_guarantee_ms,
+                AVG(EXTRACT(EPOCH FROM (distributed_at - guarantee_built_at)) * 1000)::DOUBLE PRECISION AS avg_distribute_ms,
+                AVG(EXTRACT(EPOCH FROM (COALESCE(distributed_at, failed_at) - received_at)) * 1000)::DOUBLE PRECISION AS avg_total_ms
+            FROM wp_tracking
+            WHERE first_seen >= $1 AND first_seen < $2
+              AND ($3::SMALLINT IS NULL OR core = $3)
+              AND node_id IS NOT NULL
+            GROUP BY node_id
+            "#,
+        )
+        .bind(start)
+        .bind(end)
+        .bind(core_filter)
+        .fetch_all(self.pool())
+        .await?;
+
+        // Compute network average for slowdown_factor
+        let network_avg: f64 = {
+            let mut sum = 0.0_f64;
+            let mut count = 0u32;
+            for row in &rows {
+                if let Some(t) = row.get::<Option<f64>, _>("avg_total_ms") {
+                    sum += t;
+                    count += 1;
+                }
+            }
+            if count > 0 { sum / count as f64 } else { 0.0 }
+        };
+
+        let mut result: Vec<ValidatorProfilingRow> = rows
+            .iter()
+            .map(|row| {
+                let wp_count: i64 = row.get("wp_count");
+                let failures: i64 = row.get("failures");
+                let avg_total_ms: Option<f64> = row.get("avg_total_ms");
+                let slowdown_factor = if network_avg > 0.0 {
+                    avg_total_ms.map(|t| (t / network_avg * 100.0).round() / 100.0)
+                } else {
+                    None
+                };
+                ValidatorProfilingRow {
+                    node_id: row.get("node_id"),
+                    wp_count,
+                    failures,
+                    failure_rate: if wp_count > 0 {
+                        failures as f64 / wp_count as f64
+                    } else {
+                        0.0
+                    },
+                    avg_authorize_ms: row.get("avg_authorize_ms"),
+                    avg_refine_ms: row.get("avg_refine_ms"),
+                    avg_report_ms: row.get("avg_report_ms"),
+                    avg_guarantee_ms: row.get("avg_guarantee_ms"),
+                    avg_distribute_ms: row.get("avg_distribute_ms"),
+                    avg_total_ms,
+                    slowdown_factor,
+                }
+            })
+            .collect();
+
+        // Sort by avg_total_ms DESC (slowest first), NULLs last
+        result.sort_by(|a, b| {
+            b.avg_total_ms
+                .partial_cmp(&a.avg_total_ms)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        Ok(result)
+    }
+
+    // ── 17. grafana_validator_profiling_timeseries ─────────────────────────
+
+    /// Per-validator pipeline performance bucketed over time.
+    pub async fn grafana_validator_profiling_timeseries(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        interval: &str,
+        core_filter: Option<i16>,
+        node_filter: Option<&str>,
+    ) -> Result<Vec<ValidatorProfilingTimeseriesRow>, sqlx::Error> {
+        let interval = snap_interval(interval);
+        let pg_interval = interval_to_pg(interval);
+
+        // When no node filter, use a subquery to limit to top-20 slowest nodes
+        let node_clause = if node_filter.is_some() {
+            "AND node_id = $4".to_string()
+        } else {
+            format!(
+                "AND node_id IN (
+                    SELECT node_id FROM wp_tracking
+                    WHERE first_seen >= $1 AND first_seen < $2
+                      AND ($3::SMALLINT IS NULL OR core = $3)
+                      AND node_id IS NOT NULL
+                    GROUP BY node_id
+                    ORDER BY AVG(EXTRACT(EPOCH FROM (COALESCE(distributed_at, failed_at) - received_at)) * 1000) DESC NULLS LAST
+                    LIMIT 20
+                )"
+            )
+        };
+
+        let sql = format!(
+            r#"
+            SELECT
+                time_bucket('{pg_interval}'::interval, first_seen) AS ts,
+                node_id,
+                COUNT(*)::BIGINT AS wp_count,
+                COUNT(*) FILTER (WHERE failed_at IS NOT NULL)::BIGINT AS failures,
+                AVG(EXTRACT(EPOCH FROM (authorized_at - received_at)) * 1000)::DOUBLE PRECISION AS avg_authorize_ms,
+                AVG(EXTRACT(EPOCH FROM (refined_at - authorized_at)) * 1000)::DOUBLE PRECISION AS avg_refine_ms,
+                AVG(EXTRACT(EPOCH FROM (report_built_at - refined_at)) * 1000)::DOUBLE PRECISION AS avg_report_ms,
+                AVG(EXTRACT(EPOCH FROM (guarantee_built_at - report_built_at)) * 1000)::DOUBLE PRECISION AS avg_guarantee_ms,
+                AVG(EXTRACT(EPOCH FROM (distributed_at - guarantee_built_at)) * 1000)::DOUBLE PRECISION AS avg_distribute_ms,
+                AVG(EXTRACT(EPOCH FROM (COALESCE(distributed_at, failed_at) - received_at)) * 1000)::DOUBLE PRECISION AS avg_total_ms
+            FROM wp_tracking
+            WHERE first_seen >= $1 AND first_seen < $2
+              AND ($3::SMALLINT IS NULL OR core = $3)
+              AND node_id IS NOT NULL
+              {node_clause}
+            GROUP BY 1, node_id
+            ORDER BY 1, node_id
+            "#,
+        );
+
+        let query = sqlx::query(&sql)
+            .bind(start)
+            .bind(end)
+            .bind(core_filter);
+
+        let query = if let Some(node) = node_filter {
+            query.bind(node)
+        } else {
+            query
+        };
+
+        let rows = query.fetch_all(self.pool()).await?;
+
+        Ok(rows
+            .iter()
+            .map(|row| ValidatorProfilingTimeseriesRow {
+                ts: row.get("ts"),
+                node_id: row.get("node_id"),
+                wp_count: row.get("wp_count"),
+                failures: row.get("failures"),
+                avg_authorize_ms: row.get("avg_authorize_ms"),
+                avg_refine_ms: row.get("avg_refine_ms"),
+                avg_report_ms: row.get("avg_report_ms"),
+                avg_guarantee_ms: row.get("avg_guarantee_ms"),
+                avg_distribute_ms: row.get("avg_distribute_ms"),
+                avg_total_ms: row.get("avg_total_ms"),
+            })
+            .collect())
+    }
+
     // ── Phase 3: Shared node_core_mapping helper ────────────────────────
 
     /// Observed node→core mapping from guarantee_convergence.

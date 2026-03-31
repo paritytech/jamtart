@@ -3398,3 +3398,183 @@ async fn test_grafana_execution_metrics() {
         .any(|e| e["avg_time_ns"].as_f64().unwrap() > 0.0);
     assert!(auth_with_timing, "at least one authorization entry should have timing");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Group 15: Validator profiling
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_grafana_validator_profiling_slow_vs_fast_node() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+    let mut stream_fast = connect_test_node(port, 1, &telemetry).await;
+    let mut stream_slow = connect_test_node(port, 2, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    // Send 3 WPs from each node with different timing profiles.
+    // Fast node: ~100ms between stages. Slow node: ~500ms between stages.
+    for i in 0u64..3 {
+        let sid_fast = 9000 + i * 2;
+        let sid_slow = 9001 + i * 2;
+        let base_fast = ts + i * 1_000_000;
+        let base_slow = ts + i * 5_000_000;
+
+        // Fast node — 100ms (100_000 µs) per stage
+        let fast_events = vec![
+            common::wp_received_event(base_fast, sid_fast, 3),
+            common::authorized_event(base_fast + 100_000, sid_fast),
+            common::refined_event(base_fast + 200_000, sid_fast),
+            common::work_report_built_event(base_fast + 300_000, sid_fast),
+            common::guarantee_built_event(base_fast + 400_000, sid_fast),
+            common::guarantees_distributed_event(base_fast + 500_000, sid_fast),
+        ];
+        send_events(&mut stream_fast, &fast_events).await;
+
+        // Slow node — 500ms (500_000 µs) per stage
+        let slow_events = vec![
+            common::wp_received_event(base_slow, sid_slow, 3),
+            common::authorized_event(base_slow + 500_000, sid_slow),
+            common::refined_event(base_slow + 1_000_000, sid_slow),
+            common::work_report_built_event(base_slow + 1_500_000, sid_slow),
+            common::guarantee_built_event(base_slow + 2_000_000, sid_slow),
+            common::guarantees_distributed_event(base_slow + 2_500_000, sid_slow),
+        ];
+        send_events(&mut stream_slow, &slow_events).await;
+    }
+
+    common::flush_all(&telemetry).await;
+
+    let path = format!("/api/grafana/validator-profiling?{}", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return an array");
+    assert_eq!(arr.len(), 2, "expected 2 nodes");
+
+    // First entry should be the slow node (sorted by avg_total_ms DESC)
+    let slow = &arr[0];
+    let fast = &arr[1];
+
+    // Verify all fields are present
+    for entry in [slow, fast] {
+        assert!(entry.get("node_id").is_some(), "missing node_id");
+        assert!(entry.get("wp_count").is_some(), "missing wp_count");
+        assert!(entry.get("failures").is_some(), "missing failures");
+        assert!(entry.get("failure_rate").is_some(), "missing failure_rate");
+        assert!(entry.get("avg_authorize_ms").is_some(), "missing avg_authorize_ms");
+        assert!(entry.get("avg_refine_ms").is_some(), "missing avg_refine_ms");
+        assert!(entry.get("avg_report_ms").is_some(), "missing avg_report_ms");
+        assert!(entry.get("avg_guarantee_ms").is_some(), "missing avg_guarantee_ms");
+        assert!(entry.get("avg_distribute_ms").is_some(), "missing avg_distribute_ms");
+        assert!(entry.get("avg_total_ms").is_some(), "missing avg_total_ms");
+        assert!(entry.get("slowdown_factor").is_some(), "missing slowdown_factor");
+    }
+
+    // Both should have 3 WPs, 0 failures
+    assert_eq!(slow["wp_count"].as_i64().unwrap(), 3);
+    assert_eq!(fast["wp_count"].as_i64().unwrap(), 3);
+    assert_eq!(slow["failures"].as_i64().unwrap(), 0);
+    assert_eq!(fast["failures"].as_i64().unwrap(), 0);
+    assert_eq!(slow["failure_rate"].as_f64().unwrap(), 0.0);
+
+    // Slow node should have higher avg_total_ms
+    let slow_total = slow["avg_total_ms"].as_f64().unwrap();
+    let fast_total = fast["avg_total_ms"].as_f64().unwrap();
+    assert!(slow_total > fast_total, "slow node should have higher avg_total_ms: {} vs {}", slow_total, fast_total);
+
+    // Slow node slowdown_factor > 1.0, fast node < 1.0
+    let slow_factor = slow["slowdown_factor"].as_f64().unwrap();
+    let fast_factor = fast["slowdown_factor"].as_f64().unwrap();
+    assert!(slow_factor > 1.0, "slow node slowdown_factor should be > 1.0: {}", slow_factor);
+    assert!(fast_factor < 1.0, "fast node slowdown_factor should be < 1.0: {}", fast_factor);
+}
+
+#[tokio::test]
+async fn test_grafana_validator_profiling_with_failures() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    // 2 successful pipelines
+    for i in 0u64..2 {
+        let sid = 9100 + i;
+        let base = ts + i * 1_000_000;
+        let events = vec![
+            common::wp_received_event(base, sid, 5),
+            common::authorized_event(base + 100_000, sid),
+            common::refined_event(base + 200_000, sid),
+            common::work_report_built_event(base + 300_000, sid),
+            common::guarantee_built_event(base + 400_000, sid),
+            common::guarantees_distributed_event(base + 500_000, sid),
+        ];
+        send_events(&mut stream, &events).await;
+    }
+
+    // 1 failed pipeline
+    let sid_fail = 9102;
+    let events = vec![
+        common::wp_received_event(ts + 3_000_000, sid_fail, 5),
+        common::wp_failed_event(ts + 3_100_000, sid_fail),
+    ];
+    send_events(&mut stream, &events).await;
+
+    common::flush_all(&telemetry).await;
+
+    let path = format!("/api/grafana/validator-profiling?{}", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return an array");
+    assert_eq!(arr.len(), 1, "expected 1 node");
+
+    let entry = &arr[0];
+    assert_eq!(entry["wp_count"].as_i64().unwrap(), 3);
+    assert_eq!(entry["failures"].as_i64().unwrap(), 1);
+    let failure_rate = entry["failure_rate"].as_f64().unwrap();
+    assert!((failure_rate - 1.0 / 3.0).abs() < 0.01, "failure_rate should be ~0.333: {}", failure_rate);
+}
+
+#[tokio::test]
+async fn test_grafana_validator_profiling_timeseries() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+    let sid: u64 = 9200;
+
+    let events = vec![
+        common::wp_received_event(ts, sid, 3),
+        common::authorized_event(ts + 100_000, sid),
+        common::refined_event(ts + 200_000, sid),
+        common::work_report_built_event(ts + 300_000, sid),
+        common::guarantee_built_event(ts + 400_000, sid),
+        common::guarantees_distributed_event(ts + 500_000, sid),
+    ];
+    send_events(&mut stream, &events).await;
+    common::flush_all(&telemetry).await;
+
+    // Node ID for test node 1 = [1; 32] hex-encoded
+    let node_id_hex = "01".repeat(32);
+    let path = format!(
+        "/api/grafana/validator-profiling-timeseries?{}&interval=1m&node={}",
+        time_range_params(),
+        node_id_hex,
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("should return an array");
+    assert!(!arr.is_empty(), "should have at least 1 bucket");
+
+    let bucket = &arr[0];
+    assert!(bucket.get("ts").is_some(), "missing ts");
+    assert!(bucket.get("node_id").is_some(), "missing node_id");
+    assert!(bucket.get("wp_count").is_some(), "missing wp_count");
+    assert!(bucket.get("avg_authorize_ms").is_some(), "missing avg_authorize_ms");
+    assert!(bucket.get("avg_total_ms").is_some(), "missing avg_total_ms");
+    assert_eq!(bucket["wp_count"].as_i64().unwrap(), 1);
+}

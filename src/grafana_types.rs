@@ -935,6 +935,84 @@ pub struct BottlenecksTimeseriesRow {
     pub failed_wps: i64,
 }
 
+// ── /api/grafana/validator-profiling ────────────────────────────────────
+
+/// Per-validator pipeline performance profiling row.
+///
+/// **Data source pipeline:** JIP-3 telemetry events flow through the in-memory
+/// `WpTracker` into the `wp_tracking` table. Each work package is identified by
+/// its `wp_hash` (primary key) and tracked through 6 pipeline stages:
+///
+/// | Stage          | Source event              | Type ID | Column             |
+/// |----------------|---------------------------|---------|--------------------|
+/// | Received       | WorkPackageReceived       | 94      | `received_at`      |
+/// | Authorized     | WorkPackageAuthorized     | 95      | `authorized_at`    |
+/// | Refined        | Refined                   | 101     | `refined_at`       |
+/// | Report built   | WorkReportBuilt           | 102     | `report_built_at`  |
+/// | Guarantee built| GuaranteeBuilt            | 105     | `guarantee_built_at`|
+/// | Distributed    | GuaranteesDistributed     | 109     | `distributed_at`   |
+///
+/// `node_id` is set from the WorkPackageReceived (94) event — the node that
+/// first received the WP. All subsequent stages execute on the same node.
+///
+/// The query computes `AVG(stage_n+1 - stage_n)` in milliseconds per node via
+/// `GROUP BY node_id`. `slowdown_factor` is computed in Rust as
+/// `node_avg_total_ms / network_avg_total_ms`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ValidatorProfilingRow {
+    /// Node identifier (hex-encoded 32-byte public key)
+    pub node_id: String,
+    /// Total work packages processed by this node in the time range
+    pub wp_count: i64,
+    /// Number of WPs that failed (failed_at IS NOT NULL)
+    pub failures: i64,
+    /// Failure rate: failures / wp_count (0.0–1.0)
+    pub failure_rate: f64,
+    /// Average received → authorized latency (ms)
+    pub avg_authorize_ms: Option<f64>,
+    /// Average authorized → refined latency (ms)
+    pub avg_refine_ms: Option<f64>,
+    /// Average refined → report_built latency (ms)
+    pub avg_report_ms: Option<f64>,
+    /// Average report_built → guarantee_built latency (ms)
+    pub avg_guarantee_ms: Option<f64>,
+    /// Average guarantee_built → distributed latency (ms)
+    pub avg_distribute_ms: Option<f64>,
+    /// Average total pipeline latency: received → COALESCE(distributed, failed) (ms)
+    pub avg_total_ms: Option<f64>,
+    /// Node's avg_total_ms / network avg_total_ms. Values > 1.5 indicate underperformers.
+    pub slowdown_factor: Option<f64>,
+}
+
+/// Per-validator pipeline performance over time.
+///
+/// Time-bucketed variant of [`ValidatorProfilingRow`]. Same source events and
+/// processing pipeline — results are grouped by `time_bucket(interval, first_seen)`
+/// and `node_id`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ValidatorProfilingTimeseriesRow {
+    /// Bucket start timestamp
+    pub ts: DateTime<Utc>,
+    /// Node identifier
+    pub node_id: String,
+    /// Work packages in this bucket for this node
+    pub wp_count: i64,
+    /// Failed WPs in this bucket for this node
+    pub failures: i64,
+    /// Average received → authorized latency (ms)
+    pub avg_authorize_ms: Option<f64>,
+    /// Average authorized → refined latency (ms)
+    pub avg_refine_ms: Option<f64>,
+    /// Average refined → report_built latency (ms)
+    pub avg_report_ms: Option<f64>,
+    /// Average report_built → guarantee_built latency (ms)
+    pub avg_guarantee_ms: Option<f64>,
+    /// Average guarantee_built → distributed latency (ms)
+    pub avg_distribute_ms: Option<f64>,
+    /// Average total pipeline latency (ms)
+    pub avg_total_ms: Option<f64>,
+}
+
 // ── /api/grafana/guarantee-discards ──────────────────────────────────────
 
 /// Time-bucketed guarantee discard counts grouped by reason.

@@ -74,6 +74,9 @@ use crate::onchain_types::*;
         onchain_validators_summary,
         onchain_validators_timeseries,
         onchain_validator_detail,
+        // Validator profiling
+        validator_profiling,
+        validator_profiling_timeseries,
     ),
     components(schemas(
         TimeseriesRow,
@@ -163,6 +166,9 @@ use crate::onchain_types::*;
         ExecutionMetricsResponse,
         ExecutionPhaseStats,
         ServiceExecutionRow,
+        // Validator profiling
+        ValidatorProfilingRow,
+        ValidatorProfilingTimeseriesRow,
     )),
     tags(
         (name = "grafana", description = "Grafana dashboard API — time-series, aggregates, and metadata"),
@@ -214,6 +220,9 @@ pub fn router() -> Router<ApiState> {
         .route("/blocks/summary", get(blocks_summary))
         .route("/cores/:core_id/metrics", get(core_metrics))
         .route("/cores/:core_id/validators", get(core_validators))
+        // Validator profiling
+        .route("/validator-profiling", get(validator_profiling))
+        .route("/validator-profiling-timeseries", get(validator_profiling_timeseries))
         // Phase 5
         .route("/execution", get(execution_metrics))
         .nest("/onchain", onchain_router())
@@ -393,6 +402,23 @@ pub struct GuaranteeDiscardsQuery {
     pub end: DateTime<Utc>,
     /// Bucket width (same values as /timeseries)
     pub interval: Option<String>,
+}
+
+/// Parameters for validator profiling timeseries query.
+#[derive(Deserialize, IntoParams)]
+pub struct ValidatorProfilingTimeseriesQuery {
+    /// Start of time range (ISO 8601)
+    pub start: DateTime<Utc>,
+    /// End of time range (ISO 8601)
+    pub end: DateTime<Utc>,
+    /// Bucket width. Supported: 6s–1d. Unsupported values are snapped to nearest valid.
+    pub interval: Option<String>,
+    /// Filter to a single core index
+    pub core: Option<i16>,
+    /// Filter to a single node (hex-encoded 32-byte public key). When provided,
+    /// returns per-bucket timeseries for that node only. When omitted, returns
+    /// top ~20 slowest nodes.
+    pub node: Option<String>,
 }
 
 // ── Helper functions ───────────────────────────────────────────────────
@@ -1147,6 +1173,96 @@ async fn bottlenecks_timeseries(
         .await
         .map(Json)
         .map_err(|e| map_sqlx_error("grafana/bottlenecks-timeseries", e))
+}
+
+/// Per-validator pipeline performance profiling.
+///
+/// Answers "which nodes are slow or failing?" by computing per-node average
+/// latency at each work-package pipeline stage. Data flows from JIP-3
+/// telemetry events into the `wp_tracking` table via the in-memory
+/// `WpTracker`:
+///
+/// | Pipeline stage  | Source event              | Type ID | Ordinal | wp_tracking column    |
+/// |-----------------|---------------------------|---------|---------|-----------------------|
+/// | Received        | WorkPackageReceived       | 94      | 0       | `received_at`         |
+/// | Authorized      | WorkPackageAuthorized     | 95      | 1       | `authorized_at`       |
+/// | Refined         | Refined                   | 101     | 2       | `refined_at`          |
+/// | Report built    | WorkReportBuilt           | 102     | 3       | `report_built_at`     |
+/// | Guarantee built | GuaranteeBuilt            | 105     | 4       | `guarantee_built_at`  |
+/// | Distributed     | GuaranteesDistributed     | 109     | 5       | `distributed_at`      |
+/// | Failed          | WorkPackageFailed         | 92      | —       | `failed_at`           |
+///
+/// `node_id` is set from the WorkPackageReceived (94) event — it identifies
+/// the node that first received the work package. All subsequent pipeline
+/// stages (authorize, refine, report, guarantee, distribute) happen on the
+/// same node, so per-node stage timings are accurate.
+///
+/// The query computes `AVG(stage_n+1 - stage_n)` in milliseconds per node,
+/// grouped by `node_id`. `slowdown_factor` is computed in Rust as
+/// `node_avg_total_ms / network_avg_total_ms` — values > 1.5 indicate
+/// underperforming nodes. `failure_rate` is `failures / wp_count`.
+///
+/// Core is intentionally not the primary dimension because validators rotate
+/// across cores; use the optional `core` filter for drill-down only.
+#[utoipa::path(
+    get,
+    path = "/api/grafana/validator-profiling",
+    params(TimeRangeQuery),
+    responses(
+        (status = 200, description = "Per-validator pipeline performance (one row per node, sorted by avg_total_ms DESC). Includes per-stage AVG latency, failure rate, and slowdown_factor vs network average.", body = [ValidatorProfilingRow]),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn validator_profiling(
+    Query(q): Query<TimeRangeQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    state
+        .store
+        .grafana_validator_profiling(q.start, q.end, q.core)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/validator-profiling", e))
+}
+
+/// Per-validator pipeline performance over time.
+///
+/// Time-bucketed variant of `/api/grafana/validator-profiling`. Same source
+/// events and processing (see that endpoint's docs for the full event→column
+/// mapping). Results are grouped by `time_bucket(interval, first_seen)` and
+/// `node_id`.
+///
+/// When `node` is provided, returns per-bucket averages for that single node
+/// (suitable for sparklines / per-node detail charts). When omitted, returns
+/// only the top ~20 slowest nodes per bucket to avoid 1024×N result explosion.
+#[utoipa::path(
+    get,
+    path = "/api/grafana/validator-profiling-timeseries",
+    params(ValidatorProfilingTimeseriesQuery),
+    responses(
+        (status = 200, description = "Per-validator pipeline performance per time bucket. When node is provided: one row per bucket for that node. When omitted: top ~20 slowest nodes per bucket.", body = [ValidatorProfilingTimeseriesRow]),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn validator_profiling_timeseries(
+    Query(q): Query<ValidatorProfilingTimeseriesQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let interval = q.interval.as_deref().unwrap_or("1m");
+    state
+        .store
+        .grafana_validator_profiling_timeseries(
+            q.start,
+            q.end,
+            interval,
+            q.core,
+            q.node.as_deref(),
+        )
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/validator-profiling-timeseries", e))
 }
 
 /// Static metadata for all telemetry event types (as defined in JIP-3).
