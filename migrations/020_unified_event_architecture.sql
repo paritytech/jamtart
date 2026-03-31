@@ -388,7 +388,8 @@ CREATE VIEW all_core_stats_1m AS
 -- 10. Set 1h retention on ingested_raw_events
 --     Table is now a pure browsing store — no aggregation depends on it.
 -- ============================================================
-SELECT add_retention_policy('ingested_raw_events', INTERVAL '1 hour', if_not_exists => TRUE);
+SELECT remove_retention_policy('ingested_raw_events', if_exists => TRUE);
+SELECT add_retention_policy('ingested_raw_events', INTERVAL '1 hour');
 
 -- ============================================================
 -- 11. Drop the backward-compatibility VIEW alias for 'events'
