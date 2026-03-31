@@ -50,7 +50,7 @@ async fn setup_ws_test() -> (String, Arc<TelemetryServer>, u16) {
         metrics_tracker: None,
     };
 
-    let app = create_api_router(api_state, false);
+    let app = create_api_router(api_state);
 
     // Bind to random port for the HTTP server
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

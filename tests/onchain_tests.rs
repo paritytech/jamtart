@@ -40,7 +40,7 @@ async fn setup_test_api() -> (TestServer, Arc<EventStore>) {
         metrics_tracker: None,
     };
 
-    let app = create_api_router(api_state, false);
+    let app = create_api_router(api_state);
     let test_server = TestServer::new(app).unwrap();
 
     (test_server, store)

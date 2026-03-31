@@ -49,10 +49,6 @@ struct Cli {
     #[arg(long, env = "INGESTION_THREADS", default_value_t = 8)]
     ingestion_threads: usize,
 
-    /// Disable all non-Grafana API endpoints (legacy REST, WebSocket, analytics).
-    /// Only /api/health, /api/health/detailed, /api/grafana/*, and /api/docs/openapi.json remain.
-    #[arg(long)]
-    disable_legacy_endpoints: bool,
 }
 
 /// Configure TCP socket buffer sizes for better performance.
@@ -396,8 +392,8 @@ async fn main() -> anyhow::Result<()> {
             std::time::Duration::from_secs(3),
         ));
 
-        // Spawn background cache warming task (only needed for legacy endpoints)
-        if !args.disable_legacy_endpoints {
+        // Spawn background cache warming task
+        {
             let cache_clone = Arc::clone(&cache);
             let store_clone = Arc::clone(store);
             let tracker_clone = Arc::clone(&metrics_tracker);
@@ -409,57 +405,6 @@ async fn main() -> anyhow::Result<()> {
                 loop {
                     warm_interval.tick().await;
                     let first = evict_counter == 0;
-
-                    if first {
-                        info!(
-                            "Warming cache with all aggregation endpoints (independent spawns)..."
-                        );
-                    }
-
-                    macro_rules! spawn_warm {
-                        ($key:expr, $($method:tt)+) => {{
-                            let cache = Arc::clone(&cache_clone);
-                            let store = Arc::clone(&store_clone);
-                            let first = first;
-                            tokio::spawn(async move {
-                                match store.$($method)+.await {
-                                    Ok(value) => {
-                                        cache.insert($key.to_string(), value);
-                                        if first {
-                                            info!("Cache warmed: {}", $key);
-                                        }
-                                    }
-                                    Err(e) => warn!("Cache warm failed for {}: {}", $key, e),
-                                }
-                            })
-                        }};
-                    }
-
-                    let handles: Vec<tokio::task::JoinHandle<()>> = vec![
-                        spawn_warm!("stats", get_stats("1 hour", "24 hours")),
-                        spawn_warm!("workpackage_stats", get_workpackage_stats("24 hours")),
-                        spawn_warm!("block_stats", get_block_stats("1 hour")),
-                        spawn_warm!("guarantee_stats", get_guarantee_stats("1 hour", "24 hours")),
-                        spawn_warm!("da_stats", get_da_stats()),
-                        spawn_warm!("failure_rates", get_failure_rates("1 hour")),
-                        // block_propagation served from in-memory MetricsTracker (Fix 5)
-                        spawn_warm!("network_health", get_network_health("1 hour", "24 hours")),
-                        spawn_warm!(
-                            "guarantees_by_guarantor",
-                            get_guarantees_by_guarantor("1 hour", "24 hours")
-                        ),
-                        // DISABLED: da_stats_enhanced kills DB CPU (~20k slow queries/day)
-                        // See docs/issue-00--get_da_stats_enhanced.txt
-                        // spawn_warm!(
-                        //     "da_stats_enhanced",
-                        //     get_da_stats_enhanced("1 hour", "24 hours")
-                        // ),
-                        spawn_warm!("execution_metrics", get_execution_metrics("1 hour")),
-                        spawn_warm!(
-                            "timeseries_throughput_5_1",
-                            get_timeseries_metrics("throughput", 5, 1)
-                        ),
-                    ];
 
                     // Warm live_counters and realtime_60 from in-memory LiveCounters (instant, no SQL)
                     {
@@ -497,17 +442,12 @@ async fn main() -> anyhow::Result<()> {
                         })
                     };
 
-                    for handle in handles {
-                        if let Err(e) = handle.await {
-                            warn!("Cache warm task panicked: {}", e);
-                        }
-                    }
                     if let Err(e) = anomaly_handle.await {
                         warn!("Cache warm task panicked: {}", e);
                     }
 
                     if first {
-                        info!("Initial cache warming complete (15 endpoints, independent spawns)");
+                        info!("Initial cache warming complete");
                     }
 
                     evict_counter += 1;
@@ -528,10 +468,7 @@ async fn main() -> anyhow::Result<()> {
             metrics_tracker: Some(Arc::clone(&metrics_tracker)),
         };
 
-        if args.disable_legacy_endpoints {
-            info!("Legacy API endpoints disabled — only /api/health, /api/ws, /api/grafana/*, and /api/docs available");
-        }
-        create_api_router(api_state, args.disable_legacy_endpoints)
+        create_api_router(api_state)
     } else {
         // No-database mode: minimal router with WebSocket + health only
         let minimal_state = MinimalApiState {
