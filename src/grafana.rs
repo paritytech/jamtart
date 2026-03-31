@@ -1770,14 +1770,14 @@ async fn core_validators(
 ///
 /// **Question answered:** "How much gas and time does each execution phase use?"
 ///
-/// **Data source:** `ingested_raw_events` (1h retention) with JSONB extraction for
-/// gas and timing from three event types:
+/// **Data source:** `event_services` table (7-day retention) with pre-extracted
+/// gas and timing columns from three event types:
 /// - Authorized (type 95): `is_authorized` PVM call cost
-/// - Refined (type 101): per-item `refine` PVM call costs (array)
-/// - BlockExecuted (type 47): per-service `accumulate` PVM call costs (array of [service_id, cost] pairs)
+/// - Refined (type 101): per-item `refine` PVM call costs
+/// - BlockExecuted (type 47): per-service `accumulate` PVM call costs
 ///
-/// Per-service gas breakdown available from accumulation phase only (BlockExecuted
-/// has service-keyed costs natively).
+/// Per-service gas/timing breakdown available from accumulation phase only
+/// (BlockExecuted has service-keyed costs natively).
 #[utoipa::path(
     get,
     path = "/api/grafana/execution",
