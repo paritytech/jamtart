@@ -1735,3 +1735,111 @@ pub struct ServiceExecutionRow {
     /// Average PVM code load/compile time in nanoseconds
     pub avg_load_ns: f64,
 }
+
+// ── /api/grafana/bundle-latency ─────────────────────────────────────────
+
+/// Bundle reconstruction latency percentiles per time bucket.
+///
+/// Tracks audit data recovery: auditors fetch erasure-coded shards from assurers
+/// to reconstruct the original bundle. Six measurement sides:
+/// - **shard_req** (side=0): Requestor round-trip: SendingBundleShardRequest(140) → BundleShardTransferred(145)
+/// - **shard_resp** (side=1): Responder local work: ReceivingBundleShardRequest(141) → BundleShardTransferred(145)
+/// - **full_req** (side=2): Requestor round-trip for full bundle: SendingBundleRequest(148) → BundleTransferred(153)
+/// - **full_resp** (side=3): Responder local work for full bundle: ReceivingBundleRequest(149) → BundleTransferred(153)
+/// - **reconstruct** (side=4): Pure CPU reconstruction: ReconstructingBundle(146) → BundleReconstructed(147)
+/// - **e2e** (side=5): End-to-end recovery: first SendingBundleShardRequest(140) → BundleReconstructed(147) per audit_id
+///
+/// **Data source:** `bundle_latency_hist` hypertable. Histograms (23-bucket CONVERGENCE_BOUNDS)
+/// are summed across nodes per time bucket, then percentiles are interpolated in Rust.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BundleLatencyRow {
+    pub ts: DateTime<Utc>,
+    pub shard_req_p50: Option<i32>,
+    pub shard_req_p95: Option<i32>,
+    pub shard_req_p99: Option<i32>,
+    pub shard_req_samples: i32,
+    pub shard_resp_p50: Option<i32>,
+    pub shard_resp_p95: Option<i32>,
+    pub shard_resp_p99: Option<i32>,
+    pub shard_resp_samples: i32,
+    pub full_req_p50: Option<i32>,
+    pub full_req_p95: Option<i32>,
+    pub full_req_p99: Option<i32>,
+    pub full_req_samples: i32,
+    pub full_resp_p50: Option<i32>,
+    pub full_resp_p95: Option<i32>,
+    pub full_resp_p99: Option<i32>,
+    pub full_resp_samples: i32,
+    pub reconstruct_p50: Option<i32>,
+    pub reconstruct_p95: Option<i32>,
+    pub reconstruct_p99: Option<i32>,
+    pub reconstruct_samples: i32,
+    pub e2e_p50: Option<i32>,
+    pub e2e_p95: Option<i32>,
+    pub e2e_p99: Option<i32>,
+    pub e2e_p100: Option<i32>,
+    pub e2e_samples: i32,
+    pub failed_count: i32,
+}
+
+// ── /api/grafana/segment-latency ────────────────────────────────────────
+
+/// Segment fetching latency percentiles per time bucket.
+///
+/// Tracks import segment fetching during WP processing (before refinement).
+/// Five measurement sides:
+/// - **shard_req** (side=0): Requestor round-trip: SendingSegmentShardRequest(162) → SegmentShardsTransferred(167)
+/// - **shard_resp** (side=1): Responder local work: ReceivingSegmentShardRequest(163) → SegmentShardsTransferred(167)
+/// - **full_req** (side=2): Requestor round-trip: SendingSegmentRequest(173) → SegmentsTransferred(178)
+/// - **full_resp** (side=3): Responder local work: ReceivingSegmentRequest(174) → SegmentsTransferred(178)
+/// - **reconstruct** (side=4): Pure CPU reconstruction: ReconstructingSegments(168) → SegmentsReconstructed(170)
+///
+/// **Data source:** `segment_latency_hist` hypertable.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SegmentLatencyRow {
+    pub ts: DateTime<Utc>,
+    pub shard_req_p50: Option<i32>,
+    pub shard_req_p95: Option<i32>,
+    pub shard_req_p99: Option<i32>,
+    pub shard_req_samples: i32,
+    pub shard_resp_p50: Option<i32>,
+    pub shard_resp_p95: Option<i32>,
+    pub shard_resp_p99: Option<i32>,
+    pub shard_resp_samples: i32,
+    pub full_req_p50: Option<i32>,
+    pub full_req_p95: Option<i32>,
+    pub full_req_p99: Option<i32>,
+    pub full_req_samples: i32,
+    pub full_resp_p50: Option<i32>,
+    pub full_resp_p95: Option<i32>,
+    pub full_resp_p99: Option<i32>,
+    pub full_resp_samples: i32,
+    pub reconstruct_p50: Option<i32>,
+    pub reconstruct_p95: Option<i32>,
+    pub reconstruct_p99: Option<i32>,
+    pub reconstruct_samples: i32,
+    pub failed_count: i32,
+}
+
+// ── /api/grafana/preimage-latency ───────────────────────────────────────
+
+/// Preimage transfer latency percentiles per time bucket.
+///
+/// Tracks preimage (service blob) fetching. Two measurement sides:
+/// - **req** (side=0): Requestor round-trip: SendingPreimageRequest(193) → PreimageTransferred(198)
+/// - **resp** (side=1): Responder local work: ReceivingPreimageRequest(194) → PreimageTransferred(198)
+///
+/// **Data source:** `preimage_latency_hist` hypertable.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PreimageLatencyRow {
+    pub ts: DateTime<Utc>,
+    pub req_p50: Option<i32>,
+    pub req_p95: Option<i32>,
+    pub req_p99: Option<i32>,
+    pub req_samples: i32,
+    pub resp_p50: Option<i32>,
+    pub resp_p95: Option<i32>,
+    pub resp_p99: Option<i32>,
+    pub resp_samples: i32,
+    pub failed_count: i32,
+}

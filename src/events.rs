@@ -1750,6 +1750,182 @@ impl Encode for Event {
                 work_package_hash.encode(buf)?;
                 segments_root.encode(buf)?;
             }
+            Event::SegmentsRootMapped { submission_id, segments_root, erasure_root, .. } => {
+                submission_id.encode(buf)?;
+                segments_root.encode(buf)?;
+                erasure_root.encode(buf)?;
+            }
+            // Bundle reconstruction (140-153)
+            Event::SendingBundleShardRequest { audit_id, assurer, shard, .. } => {
+                audit_id.encode(buf)?;
+                assurer.encode(buf)?;
+                shard.encode(buf)?;
+            }
+            Event::ReceivingBundleShardRequest { auditor, .. } => {
+                auditor.encode(buf)?;
+            }
+            Event::BundleShardRequestFailed { request_id, reason, .. } => {
+                request_id.encode(buf)?;
+                reason.encode(buf)?;
+            }
+            Event::BundleShardRequestSent { request_id, .. } => {
+                request_id.encode(buf)?;
+            }
+            Event::BundleShardRequestReceived { request_id, erasure_root, shard, .. } => {
+                request_id.encode(buf)?;
+                erasure_root.encode(buf)?;
+                shard.encode(buf)?;
+            }
+            Event::BundleShardTransferred { request_id, .. } => {
+                request_id.encode(buf)?;
+            }
+            Event::ReconstructingBundle { audit_id, kind, .. } => {
+                audit_id.encode(buf)?;
+                (*kind as u8).encode(buf)?;
+            }
+            Event::BundleReconstructed { audit_id, .. } => {
+                audit_id.encode(buf)?;
+            }
+            Event::SendingBundleRequest { audit_id, guarantor, .. } => {
+                audit_id.encode(buf)?;
+                guarantor.encode(buf)?;
+            }
+            Event::ReceivingBundleRequest { auditor, .. } => {
+                auditor.encode(buf)?;
+            }
+            Event::BundleRequestFailed { request_id, reason, .. } => {
+                request_id.encode(buf)?;
+                reason.encode(buf)?;
+            }
+            Event::BundleRequestSent { request_id, .. } => {
+                request_id.encode(buf)?;
+            }
+            Event::BundleRequestReceived { request_id, erasure_root, .. } => {
+                request_id.encode(buf)?;
+                erasure_root.encode(buf)?;
+            }
+            Event::BundleTransferred { request_id, .. } => {
+                request_id.encode(buf)?;
+            }
+            // Segment fetching (162-178)
+            Event::SendingSegmentShardRequest { submission_id, assurer, proofs, shards, .. } => {
+                submission_id.encode(buf)?;
+                assurer.encode(buf)?;
+                proofs.encode(buf)?;
+                // BoundedVec<(u16, u16)> — encode as length-prefixed pairs
+                (shards.len() as u32).encode(buf)?;
+                for (seg_id, shard_idx) in shards.iter() {
+                    seg_id.encode(buf)?;
+                    shard_idx.encode(buf)?;
+                }
+            }
+            Event::ReceivingSegmentShardRequest { sender, proofs, .. } => {
+                sender.encode(buf)?;
+                proofs.encode(buf)?;
+            }
+            Event::SegmentShardRequestFailed { request_id, reason, .. } => {
+                request_id.encode(buf)?;
+                reason.encode(buf)?;
+            }
+            Event::SegmentShardRequestSent { request_id, .. } => {
+                request_id.encode(buf)?;
+            }
+            Event::SegmentShardRequestReceived { request_id, num, .. } => {
+                request_id.encode(buf)?;
+                num.encode(buf)?;
+            }
+            Event::SegmentShardsTransferred { request_id, .. } => {
+                request_id.encode(buf)?;
+            }
+            Event::ReconstructingSegments { submission_id, segments, kind, .. } => {
+                submission_id.encode(buf)?;
+                segments.encode(buf)?;
+                (*kind as u8).encode(buf)?;
+            }
+            Event::SegmentReconstructionFailed { reconstructing_id, reason, .. } => {
+                reconstructing_id.encode(buf)?;
+                reason.encode(buf)?;
+            }
+            Event::SegmentsReconstructed { reconstructing_id, .. } => {
+                reconstructing_id.encode(buf)?;
+            }
+            Event::SegmentVerificationFailed { submission_id, segments, reason, .. } => {
+                submission_id.encode(buf)?;
+                segments.encode(buf)?;
+                reason.encode(buf)?;
+            }
+            Event::SegmentsVerified { submission_id, segments, .. } => {
+                submission_id.encode(buf)?;
+                segments.encode(buf)?;
+            }
+            Event::SendingSegmentRequest { submission_id, prev_guarantor, segments, .. } => {
+                submission_id.encode(buf)?;
+                prev_guarantor.encode(buf)?;
+                segments.encode(buf)?;
+            }
+            Event::ReceivingSegmentRequest { guarantor, .. } => {
+                guarantor.encode(buf)?;
+            }
+            Event::SegmentRequestFailed { request_id, reason, .. } => {
+                request_id.encode(buf)?;
+                reason.encode(buf)?;
+            }
+            Event::SegmentRequestSent { request_id, .. } => {
+                request_id.encode(buf)?;
+            }
+            Event::SegmentRequestReceived { request_id, num, .. } => {
+                request_id.encode(buf)?;
+                num.encode(buf)?;
+            }
+            Event::SegmentsTransferred { request_id, .. } => {
+                request_id.encode(buf)?;
+            }
+            // Preimage events (190-199)
+            Event::PreimageAnnouncementFailed { peer, announcer, reason, .. } => {
+                peer.encode(buf)?;
+                (*announcer as u8).encode(buf)?;
+                reason.encode(buf)?;
+            }
+            Event::PreimageAnnounced { peer, announcer, service, hash, length, .. } => {
+                peer.encode(buf)?;
+                (*announcer as u8).encode(buf)?;
+                service.encode(buf)?;
+                hash.encode(buf)?;
+                length.encode(buf)?;
+            }
+            Event::AnnouncedPreimageForgotten { service, hash, length, reason, .. } => {
+                service.encode(buf)?;
+                hash.encode(buf)?;
+                length.encode(buf)?;
+                (*reason as u8).encode(buf)?;
+            }
+            Event::SendingPreimageRequest { recipient, hash, .. } => {
+                recipient.encode(buf)?;
+                hash.encode(buf)?;
+            }
+            Event::ReceivingPreimageRequest { sender, .. } => {
+                sender.encode(buf)?;
+            }
+            Event::PreimageRequestFailed { request_id, reason, .. } => {
+                request_id.encode(buf)?;
+                reason.encode(buf)?;
+            }
+            Event::PreimageRequestSent { request_id, .. } => {
+                request_id.encode(buf)?;
+            }
+            Event::PreimageRequestReceived { request_id, hash, .. } => {
+                request_id.encode(buf)?;
+                hash.encode(buf)?;
+            }
+            Event::PreimageTransferred { request_id, length, .. } => {
+                request_id.encode(buf)?;
+                length.encode(buf)?;
+            }
+            Event::PreimageDiscarded { hash, length, reason, .. } => {
+                hash.encode(buf)?;
+                length.encode(buf)?;
+                (*reason as u8).encode(buf)?;
+            }
             _ => {
                 todo!("Event::Encode not implemented for {:?}", self.event_type())
             }
@@ -1838,6 +2014,51 @@ impl Encode for Event {
             Event::AssuranceReceived { .. } => 32 + 32, // sender + anchor
             // Work package hash mapping (160)
             Event::WorkPackageHashMapped { .. } => 8 + 32 + 32, // submission_id + wp_hash + segments_root
+            // Bundle reconstruction (140-153)
+            Event::SendingBundleShardRequest { .. } => 8 + 32 + 2, // audit_id + assurer + shard
+            Event::ReceivingBundleShardRequest { .. } => 32, // auditor
+            Event::BundleShardRequestFailed { reason, .. } => 8 + reason.encoded_size(),
+            Event::BundleShardRequestSent { .. } => 8,
+            Event::BundleShardRequestReceived { .. } => 8 + 32 + 2, // request_id + erasure_root + shard
+            Event::BundleShardTransferred { .. } => 8,
+            Event::ReconstructingBundle { .. } => 8 + 1, // audit_id + kind
+            Event::BundleReconstructed { .. } => 8,
+            Event::SendingBundleRequest { .. } => 8 + 32, // audit_id + guarantor
+            Event::ReceivingBundleRequest { .. } => 32, // auditor
+            Event::BundleRequestFailed { reason, .. } => 8 + reason.encoded_size(),
+            Event::BundleRequestSent { .. } => 8,
+            Event::BundleRequestReceived { .. } => 8 + 32, // request_id + erasure_root
+            Event::BundleTransferred { .. } => 8,
+            // Segment fetching (162-178) — SegmentsRootMapped handled elsewhere
+            Event::SegmentsRootMapped { .. } => 8 + 32 + 32, // submission_id + segments_root + erasure_root
+            Event::SendingSegmentShardRequest { shards, .. } => 8 + 32 + 1 + 4 + shards.len() * 4, // len prefix + (u16,u16) pairs
+            Event::ReceivingSegmentShardRequest { .. } => 32 + 1, // sender + proofs
+            Event::SegmentShardRequestFailed { reason, .. } => 8 + reason.encoded_size(),
+            Event::SegmentShardRequestSent { .. } => 8,
+            Event::SegmentShardRequestReceived { .. } => 8 + 2, // request_id + num
+            Event::SegmentShardsTransferred { .. } => 8,
+            Event::ReconstructingSegments { segments, .. } => 8 + segments.encoded_size() + 1,
+            Event::SegmentReconstructionFailed { reason, .. } => 8 + reason.encoded_size(),
+            Event::SegmentsReconstructed { .. } => 8,
+            Event::SegmentVerificationFailed { segments, reason, .. } => 8 + segments.encoded_size() + reason.encoded_size(),
+            Event::SegmentsVerified { segments, .. } => 8 + segments.encoded_size(),
+            Event::SendingSegmentRequest { segments, .. } => 8 + 32 + segments.encoded_size(),
+            Event::ReceivingSegmentRequest { .. } => 32,
+            Event::SegmentRequestFailed { reason, .. } => 8 + reason.encoded_size(),
+            Event::SegmentRequestSent { .. } => 8,
+            Event::SegmentRequestReceived { .. } => 8 + 2, // request_id + num
+            Event::SegmentsTransferred { .. } => 8,
+            // Preimage events (190-199)
+            Event::PreimageAnnouncementFailed { reason, .. } => 32 + 1 + reason.encoded_size(),
+            Event::PreimageAnnounced { .. } => 32 + 1 + 4 + 32 + 4, // peer + announcer + service + hash + length
+            Event::AnnouncedPreimageForgotten { .. } => 4 + 32 + 4 + 1, // service + hash + length + reason
+            Event::SendingPreimageRequest { .. } => 32 + 32, // recipient + hash
+            Event::ReceivingPreimageRequest { .. } => 32, // sender
+            Event::PreimageRequestFailed { reason, .. } => 8 + reason.encoded_size(),
+            Event::PreimageRequestSent { .. } => 8,
+            Event::PreimageRequestReceived { .. } => 8 + 32, // request_id + hash
+            Event::PreimageTransferred { .. } => 8 + 4, // request_id + length
+            Event::PreimageDiscarded { .. } => 32 + 4 + 1, // hash + length + reason
             _ => todo!(
                 "Event::encoded_size not implemented for {:?}",
                 self.event_type()

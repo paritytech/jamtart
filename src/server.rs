@@ -10,6 +10,7 @@ use crate::event_counter::{self, EventCounter};
 use crate::events::{Event, NodeInformation};
 use crate::rate_limiter::RateLimiter;
 use crate::convergence_tracker::{self, AssuranceConvergenceTracker, GuaranteeConvergenceTracker, HeaderHashLookup};
+use crate::da_latency_tracker::{self, DaLatencyTracker};
 use crate::da_tracker::{self, DaTracker};
 use crate::slot_tracker::{self, SlotTracker};
 use crate::store::EventStore;
@@ -147,6 +148,7 @@ pub struct TelemetryServer {
     assurance_convergence_tracker: AssuranceConvergenceTracker,
     header_hash_lookup: HeaderHashLookup,
     da_tracker: DaTracker,
+    da_latency_tracker: DaLatencyTracker,
     connection_watch: Arc<tokio::sync::watch::Sender<usize>>,
     /// Kept alive so the watch channel stays open (senders fail when all receivers drop)
     #[allow(dead_code)]
@@ -252,6 +254,7 @@ impl TelemetryServer {
             assurance_convergence_tracker: convergence_tracker::new_assurance_convergence_tracker(),
             header_hash_lookup: convergence_tracker::new_header_hash_lookup(),
             da_tracker: da_tracker::new_da_tracker(),
+            da_latency_tracker: da_latency_tracker::new_da_latency_tracker(),
             connection_watch: Arc::new(connection_watch),
             _connection_watch_rx: connection_watch_rx,
         })
@@ -332,6 +335,7 @@ impl TelemetryServer {
             let assurance_convergence_tracker = Arc::clone(&self.assurance_convergence_tracker);
             let header_hash_lookup = Arc::clone(&self.header_hash_lookup);
             let da_tracker = Arc::clone(&self.da_tracker);
+            let da_latency_tracker = Arc::clone(&self.da_latency_tracker);
             let connection_watch = Arc::clone(&self.connection_watch);
 
             let handle = std::thread::Builder::new()
@@ -389,6 +393,7 @@ impl TelemetryServer {
                                                 assurance_convergence_tracker: Arc::clone(&assurance_convergence_tracker),
                                                 header_hash_lookup: Arc::clone(&header_hash_lookup),
                                                 da_tracker: Arc::clone(&da_tracker),
+                                                da_latency_tracker: Arc::clone(&da_latency_tracker),
                                                 connection_watch: Arc::clone(&connection_watch),
                                             };
 
@@ -451,6 +456,7 @@ impl TelemetryServer {
             assurance_convergence_tracker: Arc::clone(&self.assurance_convergence_tracker),
             header_hash_lookup: Arc::clone(&self.header_hash_lookup),
             da_tracker: Arc::clone(&self.da_tracker),
+            da_latency_tracker: Arc::clone(&self.da_latency_tracker),
             connection_watch: Arc::clone(&self.connection_watch),
         };
 
@@ -538,6 +544,10 @@ impl TelemetryServer {
         Arc::clone(&self.da_tracker)
     }
 
+    pub fn get_da_latency_tracker(&self) -> DaLatencyTracker {
+        Arc::clone(&self.da_latency_tracker)
+    }
+
     /// Flush slot_tracker, wp_tracker, and event_counter to database on-demand.
     /// For testing only — in production these flush every 5s via the periodic task.
     pub async fn flush_trackers(&self) {
@@ -565,6 +575,7 @@ impl TelemetryServer {
             )
             .await;
             da_tracker::flush_da_tracker(&self.da_tracker, store.pool()).await;
+            da_latency_tracker::flush_da_latency_tracker(&self.da_latency_tracker, store.pool()).await;
             event_counter::flush_event_counter(&self.event_counter, store.pool()).await;
         }
     }
@@ -595,6 +606,7 @@ impl TelemetryServer {
             )
             .await;
             da_tracker::flush_da_tracker(&self.da_tracker, store.pool()).await;
+            da_latency_tracker::flush_da_latency_tracker(&self.da_latency_tracker, store.pool()).await;
             event_counter::flush_event_counter(&self.event_counter, store.pool()).await;
         }
     }
@@ -646,6 +658,7 @@ struct ConnectionContext {
     assurance_convergence_tracker: AssuranceConvergenceTracker,
     header_hash_lookup: HeaderHashLookup,
     da_tracker: DaTracker,
+    da_latency_tracker: DaLatencyTracker,
     connection_watch: Arc<tokio::sync::watch::Sender<usize>>,
 }
 
@@ -668,6 +681,7 @@ async fn handle_connection_optimized(
         assurance_convergence_tracker,
         header_hash_lookup,
         da_tracker,
+        da_latency_tracker,
         connection_watch,
     } = ctx;
     // Set TCP nodelay for lower latency
@@ -1290,6 +1304,324 @@ async fn handle_connection_optimized(
                                                 s.dirty = true;
                                                 s
                                             });
+                                    }
+                                    _ => {}
+                                }
+                            }
+
+                            // Update DaLatencyTracker for bundle/segment/preimage latency
+                            {
+                                let et_raw = event.event_type() as u16;
+                                let evt_ts = event.timestamp();
+                                match et_raw {
+                                    // -- Bundle shard path (140-145) --
+                                    140 => { // SendingBundleShardRequest — requestor start
+                                        if let Event::SendingBundleShardRequest { audit_id, .. } = &*event {
+                                            da_latency_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                                s.bundle_shard_req.start(this_event_id, evt_ts);
+                                                s.bundle_e2e.start_if_absent(*audit_id, evt_ts);
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            }).or_insert_with(|| {
+                                                let mut s = da_latency_tracker::DaLatencyNodeState::default();
+                                                s.bundle_shard_req.start(this_event_id, evt_ts);
+                                                s.bundle_e2e.start_if_absent(*audit_id, evt_ts);
+                                                s.dirty = true;
+                                                s
+                                            });
+                                        }
+                                    }
+                                    141 => { // ReceivingBundleShardRequest — responder start
+                                        da_latency_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                            s.bundle_shard_resp.start(this_event_id, evt_ts);
+                                            s.dirty = true;
+                                            s.last_activity = std::time::Instant::now();
+                                        }).or_insert_with(|| {
+                                            let mut s = da_latency_tracker::DaLatencyNodeState::default();
+                                            s.bundle_shard_resp.start(this_event_id, evt_ts);
+                                            s.dirty = true;
+                                            s
+                                        });
+                                    }
+                                    142 => { // BundleShardRequestFailed — resolve from req or resp
+                                        if let Event::BundleShardRequestFailed { request_id, .. } = &*event {
+                                            da_latency_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                                s.bundle_shard_req.fail(*request_id, evt_ts)
+                                                    .or_else(|| s.bundle_shard_resp.fail(*request_id, evt_ts));
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            });
+                                        }
+                                    }
+                                    145 => { // BundleShardTransferred — resolve from req or resp
+                                        if let Event::BundleShardTransferred { request_id, .. } = &*event {
+                                            da_latency_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                                s.bundle_shard_req.complete(*request_id, evt_ts)
+                                                    .or_else(|| s.bundle_shard_resp.complete(*request_id, evt_ts));
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            });
+                                        }
+                                    }
+                                    146 => { // ReconstructingBundle — reconstruction start + kind
+                                        if let Event::ReconstructingBundle { audit_id, kind, .. } = &*event {
+                                            da_latency_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                                s.bundle_reconstruct.start(*audit_id, evt_ts);
+                                                match kind {
+                                                    crate::types::ReconstructionKind::Trivial => s.bundle_trivial += 1,
+                                                    crate::types::ReconstructionKind::NonTrivial => s.bundle_nontrivial += 1,
+                                                }
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            }).or_insert_with(|| {
+                                                let mut s = da_latency_tracker::DaLatencyNodeState::default();
+                                                s.bundle_reconstruct.start(*audit_id, evt_ts);
+                                                match kind {
+                                                    crate::types::ReconstructionKind::Trivial => s.bundle_trivial = 1,
+                                                    crate::types::ReconstructionKind::NonTrivial => s.bundle_nontrivial = 1,
+                                                }
+                                                s.dirty = true;
+                                                s
+                                            });
+                                        }
+                                    }
+                                    147 => { // BundleReconstructed — reconstruction + e2e complete
+                                        if let Event::BundleReconstructed { audit_id, .. } = &*event {
+                                            da_latency_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                                s.bundle_reconstruct.complete(*audit_id, evt_ts);
+                                                s.bundle_e2e.complete(*audit_id, evt_ts);
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            });
+                                        }
+                                    }
+                                    // -- Bundle full path (148-153) --
+                                    148 => { // SendingBundleRequest — requestor start
+                                        da_latency_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                            s.bundle_full_req.start(this_event_id, evt_ts);
+                                            s.dirty = true;
+                                            s.last_activity = std::time::Instant::now();
+                                        }).or_insert_with(|| {
+                                            let mut s = da_latency_tracker::DaLatencyNodeState::default();
+                                            s.bundle_full_req.start(this_event_id, evt_ts);
+                                            s.dirty = true;
+                                            s
+                                        });
+                                    }
+                                    149 => { // ReceivingBundleRequest — responder start
+                                        da_latency_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                            s.bundle_full_resp.start(this_event_id, evt_ts);
+                                            s.dirty = true;
+                                            s.last_activity = std::time::Instant::now();
+                                        }).or_insert_with(|| {
+                                            let mut s = da_latency_tracker::DaLatencyNodeState::default();
+                                            s.bundle_full_resp.start(this_event_id, evt_ts);
+                                            s.dirty = true;
+                                            s
+                                        });
+                                    }
+                                    150 => { // BundleRequestFailed
+                                        if let Event::BundleRequestFailed { request_id, .. } = &*event {
+                                            da_latency_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                                s.bundle_full_req.fail(*request_id, evt_ts)
+                                                    .or_else(|| s.bundle_full_resp.fail(*request_id, evt_ts));
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            });
+                                        }
+                                    }
+                                    153 => { // BundleTransferred
+                                        if let Event::BundleTransferred { request_id, .. } = &*event {
+                                            da_latency_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                                s.bundle_full_req.complete(*request_id, evt_ts)
+                                                    .or_else(|| s.bundle_full_resp.complete(*request_id, evt_ts));
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            });
+                                        }
+                                    }
+                                    // -- Segment shard path (162-167) --
+                                    162 => { // SendingSegmentShardRequest — requestor start
+                                        da_latency_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                            s.seg_shard_req.start(this_event_id, evt_ts);
+                                            s.dirty = true;
+                                            s.last_activity = std::time::Instant::now();
+                                        }).or_insert_with(|| {
+                                            let mut s = da_latency_tracker::DaLatencyNodeState::default();
+                                            s.seg_shard_req.start(this_event_id, evt_ts);
+                                            s.dirty = true;
+                                            s
+                                        });
+                                    }
+                                    163 => { // ReceivingSegmentShardRequest — responder start
+                                        da_latency_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                            s.seg_shard_resp.start(this_event_id, evt_ts);
+                                            s.dirty = true;
+                                            s.last_activity = std::time::Instant::now();
+                                        }).or_insert_with(|| {
+                                            let mut s = da_latency_tracker::DaLatencyNodeState::default();
+                                            s.seg_shard_resp.start(this_event_id, evt_ts);
+                                            s.dirty = true;
+                                            s
+                                        });
+                                    }
+                                    164 => { // SegmentShardRequestFailed
+                                        if let Event::SegmentShardRequestFailed { request_id, .. } = &*event {
+                                            da_latency_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                                s.seg_shard_req.fail(*request_id, evt_ts)
+                                                    .or_else(|| s.seg_shard_resp.fail(*request_id, evt_ts));
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            });
+                                        }
+                                    }
+                                    167 => { // SegmentShardsTransferred
+                                        if let Event::SegmentShardsTransferred { request_id, .. } = &*event {
+                                            da_latency_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                                s.seg_shard_req.complete(*request_id, evt_ts)
+                                                    .or_else(|| s.seg_shard_resp.complete(*request_id, evt_ts));
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            });
+                                        }
+                                    }
+                                    // -- Segment reconstruction (168-172) --
+                                    168 => { // ReconstructingSegments — reconstruction start + kind
+                                        if let Event::ReconstructingSegments { kind, .. } = &*event {
+                                            da_latency_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                                s.seg_reconstruct.start(this_event_id, evt_ts);
+                                                match kind {
+                                                    crate::types::ReconstructionKind::Trivial => s.seg_trivial += 1,
+                                                    crate::types::ReconstructionKind::NonTrivial => s.seg_nontrivial += 1,
+                                                }
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            }).or_insert_with(|| {
+                                                let mut s = da_latency_tracker::DaLatencyNodeState::default();
+                                                s.seg_reconstruct.start(this_event_id, evt_ts);
+                                                match kind {
+                                                    crate::types::ReconstructionKind::Trivial => s.seg_trivial = 1,
+                                                    crate::types::ReconstructionKind::NonTrivial => s.seg_nontrivial = 1,
+                                                }
+                                                s.dirty = true;
+                                                s
+                                            });
+                                        }
+                                    }
+                                    169 => { // SegmentReconstructionFailed
+                                        if let Event::SegmentReconstructionFailed { reconstructing_id, .. } = &*event {
+                                            da_latency_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                                s.seg_reconstruct.fail(*reconstructing_id, evt_ts);
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            });
+                                        }
+                                    }
+                                    170 => { // SegmentsReconstructed
+                                        if let Event::SegmentsReconstructed { reconstructing_id, .. } = &*event {
+                                            da_latency_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                                s.seg_reconstruct.complete(*reconstructing_id, evt_ts);
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            });
+                                        }
+                                    }
+                                    171 => { // SegmentVerificationFailed — counter only
+                                        da_latency_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                            s.seg_verification_failures += 1;
+                                            s.dirty = true;
+                                            s.last_activity = std::time::Instant::now();
+                                        });
+                                    }
+                                    // -- Segment full path (173-178) --
+                                    173 => { // SendingSegmentRequest — requestor start
+                                        da_latency_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                            s.seg_full_req.start(this_event_id, evt_ts);
+                                            s.dirty = true;
+                                            s.last_activity = std::time::Instant::now();
+                                        }).or_insert_with(|| {
+                                            let mut s = da_latency_tracker::DaLatencyNodeState::default();
+                                            s.seg_full_req.start(this_event_id, evt_ts);
+                                            s.dirty = true;
+                                            s
+                                        });
+                                    }
+                                    174 => { // ReceivingSegmentRequest — responder start
+                                        da_latency_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                            s.seg_full_resp.start(this_event_id, evt_ts);
+                                            s.dirty = true;
+                                            s.last_activity = std::time::Instant::now();
+                                        }).or_insert_with(|| {
+                                            let mut s = da_latency_tracker::DaLatencyNodeState::default();
+                                            s.seg_full_resp.start(this_event_id, evt_ts);
+                                            s.dirty = true;
+                                            s
+                                        });
+                                    }
+                                    175 => { // SegmentRequestFailed
+                                        if let Event::SegmentRequestFailed { request_id, .. } = &*event {
+                                            da_latency_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                                s.seg_full_req.fail(*request_id, evt_ts)
+                                                    .or_else(|| s.seg_full_resp.fail(*request_id, evt_ts));
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            });
+                                        }
+                                    }
+                                    178 => { // SegmentsTransferred
+                                        if let Event::SegmentsTransferred { request_id, .. } = &*event {
+                                            da_latency_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                                s.seg_full_req.complete(*request_id, evt_ts)
+                                                    .or_else(|| s.seg_full_resp.complete(*request_id, evt_ts));
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            });
+                                        }
+                                    }
+                                    // -- Preimage transfers (193-198) --
+                                    193 => { // SendingPreimageRequest — requestor start
+                                        da_latency_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                            s.preimage_req.start(this_event_id, evt_ts);
+                                            s.dirty = true;
+                                            s.last_activity = std::time::Instant::now();
+                                        }).or_insert_with(|| {
+                                            let mut s = da_latency_tracker::DaLatencyNodeState::default();
+                                            s.preimage_req.start(this_event_id, evt_ts);
+                                            s.dirty = true;
+                                            s
+                                        });
+                                    }
+                                    194 => { // ReceivingPreimageRequest — responder start
+                                        da_latency_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                            s.preimage_resp.start(this_event_id, evt_ts);
+                                            s.dirty = true;
+                                            s.last_activity = std::time::Instant::now();
+                                        }).or_insert_with(|| {
+                                            let mut s = da_latency_tracker::DaLatencyNodeState::default();
+                                            s.preimage_resp.start(this_event_id, evt_ts);
+                                            s.dirty = true;
+                                            s
+                                        });
+                                    }
+                                    195 => { // PreimageRequestFailed
+                                        if let Event::PreimageRequestFailed { request_id, .. } = &*event {
+                                            da_latency_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                                s.preimage_req.fail(*request_id, evt_ts)
+                                                    .or_else(|| s.preimage_resp.fail(*request_id, evt_ts));
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            });
+                                        }
+                                    }
+                                    198 => { // PreimageTransferred
+                                        if let Event::PreimageTransferred { request_id, .. } = &*event {
+                                            da_latency_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                                s.preimage_req.complete(*request_id, evt_ts)
+                                                    .or_else(|| s.preimage_resp.complete(*request_id, evt_ts));
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            });
+                                        }
                                     }
                                     _ => {}
                                 }

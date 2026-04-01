@@ -3254,6 +3254,166 @@ impl EventStore {
                 .collect(),
         })
     }
+
+    // ── DA latency histogram queries ─────────────────────────────────────
+
+    /// Generic query for CONVERGENCE_BOUNDS histogram tables (bundle/segment/preimage).
+    /// Returns (ts, side, hist[23], total, failed) tuples.
+    async fn query_latency_hist(
+        &self,
+        table: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        interval: &str,
+    ) -> Result<Vec<(DateTime<Utc>, i16, [u32; 23], i32, i32)>, sqlx::Error> {
+        use crate::histogram::CONVERGENCE_HIST_COLUMNS;
+        let interval = snap_interval(interval);
+        let pg_interval = interval_to_pg(interval);
+        let sum_cols: String = CONVERGENCE_HIST_COLUMNS.iter()
+            .map(|c| format!("SUM({c})::INT AS {c}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT time_bucket('{pg_interval}'::interval, ts) AS bucket, side, \
+             {sum_cols}, \
+             SUM(total_count)::INT AS total_count, \
+             SUM(failed_count)::INT AS failed_count \
+             FROM {table} \
+             WHERE ts >= $1 AND ts < $2 \
+             GROUP BY 1, 2 ORDER BY 1, 2"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(start)
+            .bind(end)
+            .fetch_all(self.pool())
+            .await?;
+
+        Ok(rows.iter().map(|row| {
+            let ts: DateTime<Utc> = row.get("bucket");
+            let side: i16 = row.get("side");
+            let hist = [
+                row.get::<i32, _>("h_0_2") as u32, row.get::<i32, _>("h_2_5") as u32,
+                row.get::<i32, _>("h_5_10") as u32, row.get::<i32, _>("h_10_15") as u32,
+                row.get::<i32, _>("h_15_20") as u32, row.get::<i32, _>("h_20_30") as u32,
+                row.get::<i32, _>("h_30_50") as u32, row.get::<i32, _>("h_50_75") as u32,
+                row.get::<i32, _>("h_75_100") as u32, row.get::<i32, _>("h_100_150") as u32,
+                row.get::<i32, _>("h_150_250") as u32, row.get::<i32, _>("h_250_500") as u32,
+                row.get::<i32, _>("h_500_1000") as u32, row.get::<i32, _>("h_1000_2000") as u32,
+                row.get::<i32, _>("h_2000_5000") as u32, row.get::<i32, _>("h_5000_10000") as u32,
+                row.get::<i32, _>("h_10000_15000") as u32, row.get::<i32, _>("h_15000_20000") as u32,
+                row.get::<i32, _>("h_20000_25000") as u32, row.get::<i32, _>("h_25000_30000") as u32,
+                row.get::<i32, _>("h_30000_60000") as u32, row.get::<i32, _>("h_60000_120000") as u32,
+                row.get::<i32, _>("h_120000_plus") as u32,
+            ];
+            let total: i32 = row.get("total_count");
+            let failed: i32 = row.get("failed_count");
+            (ts, side, hist, total, failed)
+        }).collect())
+    }
+
+    pub async fn grafana_bundle_latency(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        interval: &str,
+    ) -> Result<Vec<BundleLatencyRow>, sqlx::Error> {
+        use crate::histogram::{percentiles_from_histogram as pfh, CONVERGENCE_BOUNDS};
+        let data = self.query_latency_hist("bundle_latency_hist", start, end, interval).await?;
+
+        let mut buckets: std::collections::BTreeMap<DateTime<Utc>, BundleLatencyRow> = std::collections::BTreeMap::new();
+        for (ts, side, hist, total, failed) in &data {
+            let p = pfh(&hist[..], *total as u32, &CONVERGENCE_BOUNDS);
+            let entry = buckets.entry(*ts).or_insert_with(|| BundleLatencyRow {
+                ts: *ts,
+                shard_req_p50: None, shard_req_p95: None, shard_req_p99: None, shard_req_samples: 0,
+                shard_resp_p50: None, shard_resp_p95: None, shard_resp_p99: None, shard_resp_samples: 0,
+                full_req_p50: None, full_req_p95: None, full_req_p99: None, full_req_samples: 0,
+                full_resp_p50: None, full_resp_p95: None, full_resp_p99: None, full_resp_samples: 0,
+                reconstruct_p50: None, reconstruct_p95: None, reconstruct_p99: None, reconstruct_samples: 0,
+                e2e_p50: None, e2e_p95: None, e2e_p99: None, e2e_p100: None, e2e_samples: 0,
+                failed_count: 0,
+            });
+            entry.failed_count += failed;
+            if let Some((p50, _p75, p95, p99, p100)) = p {
+                match side {
+                    0 => { entry.shard_req_p50 = Some(p50); entry.shard_req_p95 = Some(p95); entry.shard_req_p99 = Some(p99); entry.shard_req_samples = *total; }
+                    1 => { entry.shard_resp_p50 = Some(p50); entry.shard_resp_p95 = Some(p95); entry.shard_resp_p99 = Some(p99); entry.shard_resp_samples = *total; }
+                    2 => { entry.full_req_p50 = Some(p50); entry.full_req_p95 = Some(p95); entry.full_req_p99 = Some(p99); entry.full_req_samples = *total; }
+                    3 => { entry.full_resp_p50 = Some(p50); entry.full_resp_p95 = Some(p95); entry.full_resp_p99 = Some(p99); entry.full_resp_samples = *total; }
+                    4 => { entry.reconstruct_p50 = Some(p50); entry.reconstruct_p95 = Some(p95); entry.reconstruct_p99 = Some(p99); entry.reconstruct_samples = *total; }
+                    5 => { entry.e2e_p50 = Some(p50); entry.e2e_p95 = Some(p95); entry.e2e_p99 = Some(p99); entry.e2e_p100 = Some(p100); entry.e2e_samples = *total; }
+                    _ => {}
+                }
+            }
+        }
+        Ok(buckets.into_values().collect())
+    }
+
+    pub async fn grafana_segment_latency(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        interval: &str,
+    ) -> Result<Vec<SegmentLatencyRow>, sqlx::Error> {
+        use crate::histogram::{percentiles_from_histogram as pfh, CONVERGENCE_BOUNDS};
+        let data = self.query_latency_hist("segment_latency_hist", start, end, interval).await?;
+
+        let mut buckets: std::collections::BTreeMap<DateTime<Utc>, SegmentLatencyRow> = std::collections::BTreeMap::new();
+        for (ts, side, hist, total, failed) in &data {
+            let p = pfh(&hist[..], *total as u32, &CONVERGENCE_BOUNDS);
+            let entry = buckets.entry(*ts).or_insert_with(|| SegmentLatencyRow {
+                ts: *ts,
+                shard_req_p50: None, shard_req_p95: None, shard_req_p99: None, shard_req_samples: 0,
+                shard_resp_p50: None, shard_resp_p95: None, shard_resp_p99: None, shard_resp_samples: 0,
+                full_req_p50: None, full_req_p95: None, full_req_p99: None, full_req_samples: 0,
+                full_resp_p50: None, full_resp_p95: None, full_resp_p99: None, full_resp_samples: 0,
+                reconstruct_p50: None, reconstruct_p95: None, reconstruct_p99: None, reconstruct_samples: 0,
+                failed_count: 0,
+            });
+            entry.failed_count += failed;
+            if let Some((p50, _p75, p95, p99, _p100)) = p {
+                match side {
+                    0 => { entry.shard_req_p50 = Some(p50); entry.shard_req_p95 = Some(p95); entry.shard_req_p99 = Some(p99); entry.shard_req_samples = *total; }
+                    1 => { entry.shard_resp_p50 = Some(p50); entry.shard_resp_p95 = Some(p95); entry.shard_resp_p99 = Some(p99); entry.shard_resp_samples = *total; }
+                    2 => { entry.full_req_p50 = Some(p50); entry.full_req_p95 = Some(p95); entry.full_req_p99 = Some(p99); entry.full_req_samples = *total; }
+                    3 => { entry.full_resp_p50 = Some(p50); entry.full_resp_p95 = Some(p95); entry.full_resp_p99 = Some(p99); entry.full_resp_samples = *total; }
+                    4 => { entry.reconstruct_p50 = Some(p50); entry.reconstruct_p95 = Some(p95); entry.reconstruct_p99 = Some(p99); entry.reconstruct_samples = *total; }
+                    _ => {}
+                }
+            }
+        }
+        Ok(buckets.into_values().collect())
+    }
+
+    pub async fn grafana_preimage_latency(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        interval: &str,
+    ) -> Result<Vec<PreimageLatencyRow>, sqlx::Error> {
+        use crate::histogram::{percentiles_from_histogram as pfh, CONVERGENCE_BOUNDS};
+        let data = self.query_latency_hist("preimage_latency_hist", start, end, interval).await?;
+
+        let mut buckets: std::collections::BTreeMap<DateTime<Utc>, PreimageLatencyRow> = std::collections::BTreeMap::new();
+        for (ts, side, hist, total, failed) in &data {
+            let p = pfh(&hist[..], *total as u32, &CONVERGENCE_BOUNDS);
+            let entry = buckets.entry(*ts).or_insert_with(|| PreimageLatencyRow {
+                ts: *ts,
+                req_p50: None, req_p95: None, req_p99: None, req_samples: 0,
+                resp_p50: None, resp_p95: None, resp_p99: None, resp_samples: 0,
+                failed_count: 0,
+            });
+            entry.failed_count += failed;
+            if let Some((p50, _p75, p95, p99, _p100)) = p {
+                match side {
+                    0 => { entry.req_p50 = Some(p50); entry.req_p95 = Some(p95); entry.req_p99 = Some(p99); entry.req_samples = *total; }
+                    1 => { entry.resp_p50 = Some(p50); entry.resp_p95 = Some(p95); entry.resp_p99 = Some(p99); entry.resp_samples = *total; }
+                    _ => {}
+                }
+            }
+        }
+        Ok(buckets.into_values().collect())
+    }
 }
 
 fn rows_to_convergence_timeseries(rows: &[sqlx::postgres::PgRow]) -> Vec<ConvergenceTimeseriesRow> {

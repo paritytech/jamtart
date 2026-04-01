@@ -7,6 +7,7 @@ pub mod circuit_breaker;
 pub mod decoder;
 pub mod encoding;
 pub mod convergence_tracker;
+pub mod da_latency_tracker;
 pub mod da_tracker;
 pub mod enricher;
 pub mod event_counter;

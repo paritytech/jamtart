@@ -77,6 +77,10 @@ use crate::onchain_types::*;
         // Validator profiling
         validator_profiling,
         validator_profiling_timeseries,
+        // DA latency
+        bundle_latency,
+        segment_latency,
+        preimage_latency,
     ),
     components(schemas(
         TimeseriesRow,
@@ -170,6 +174,10 @@ use crate::onchain_types::*;
         ValidatorProfilingResponse,
         ValidatorProfilingRow,
         ValidatorProfilingTimeseriesRow,
+        // DA latency
+        BundleLatencyRow,
+        SegmentLatencyRow,
+        PreimageLatencyRow,
     )),
     tags(
         (name = "grafana", description = "Grafana dashboard API — time-series, aggregates, and metadata"),
@@ -200,6 +208,9 @@ pub fn router() -> Router<ApiState> {
         .route("/assurance-convergence/senders", get(assurance_convergence_senders))
         .route("/da-stats", get(da_stats))
         .route("/shard-latency", get(shard_latency))
+        .route("/bundle-latency", get(bundle_latency))
+        .route("/segment-latency", get(segment_latency))
+        .route("/preimage-latency", get(preimage_latency))
         .route("/wp-funnel-timeseries", get(wp_funnel_timeseries))
         .route("/bottlenecks-timeseries", get(bottlenecks_timeseries))
         .route("/event-types", get(event_types))
@@ -1133,6 +1144,86 @@ async fn shard_latency(
         .await
         .map(Json)
         .map_err(|e| map_sqlx_error("grafana/shard-latency", e))
+}
+
+/// Bundle reconstruction latency percentiles over time.
+///
+/// Tracks audit data recovery across six measurement sides — see BundleLatencyRow for details.
+/// Histograms (23-bucket CONVERGENCE_BOUNDS, 0–120s) merged across nodes per time bucket.
+#[utoipa::path(
+    get,
+    path = "/api/grafana/bundle-latency",
+    params(WpTimeseriesQuery),
+    responses(
+        (status = 200, description = "Bundle reconstruction latency timeseries. Shard req/resp, full req/resp, reconstruction CPU, and e2e recovery percentiles.", body = [BundleLatencyRow]),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn bundle_latency(
+    Query(q): Query<WpTimeseriesQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let interval = q.interval.as_deref().unwrap_or("1m");
+    state
+        .store
+        .grafana_bundle_latency(q.start, q.end, interval)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/bundle-latency", e))
+}
+
+/// Segment fetching latency percentiles over time.
+///
+/// Tracks import segment fetching during WP processing — see SegmentLatencyRow for details.
+/// Slow segments directly delay the WP pipeline (fetched before refinement).
+#[utoipa::path(
+    get,
+    path = "/api/grafana/segment-latency",
+    params(WpTimeseriesQuery),
+    responses(
+        (status = 200, description = "Segment fetching latency timeseries. Shard req/resp, full req/resp, and reconstruction CPU percentiles.", body = [SegmentLatencyRow]),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn segment_latency(
+    Query(q): Query<WpTimeseriesQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let interval = q.interval.as_deref().unwrap_or("1m");
+    state
+        .store
+        .grafana_segment_latency(q.start, q.end, interval)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/segment-latency", e))
+}
+
+/// Preimage transfer latency percentiles over time.
+///
+/// Tracks preimage (service blob) fetching — see PreimageLatencyRow for details.
+#[utoipa::path(
+    get,
+    path = "/api/grafana/preimage-latency",
+    params(WpTimeseriesQuery),
+    responses(
+        (status = 200, description = "Preimage transfer latency timeseries. Requestor and responder percentiles.", body = [PreimageLatencyRow]),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn preimage_latency(
+    Query(q): Query<WpTimeseriesQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let interval = q.interval.as_deref().unwrap_or("1m");
+    state
+        .store
+        .grafana_preimage_latency(q.start, q.end, interval)
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/preimage-latency", e))
 }
 
 /// Work package pipeline funnel bucketed over time.

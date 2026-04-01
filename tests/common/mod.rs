@@ -766,3 +766,77 @@ pub fn guarantee_send_failed_event(ts: u64, sending_id: u64, reason: &str) -> Ev
         reason: BoundedString::new(reason).unwrap(),
     }
 }
+
+// DA latency tracker test helpers
+
+#[allow(dead_code)]
+pub fn sending_bundle_shard_request_event(ts: u64, audit_id: u64, assurer: [u8; 32], shard: u16) -> Event {
+    Event::SendingBundleShardRequest {
+        timestamp: ts,
+        audit_id,
+        assurer,
+        shard,
+    }
+}
+
+#[allow(dead_code)]
+pub fn bundle_shard_transferred_event(ts: u64, request_id: u64) -> Event {
+    Event::BundleShardTransferred {
+        timestamp: ts,
+        request_id,
+    }
+}
+
+#[allow(dead_code)]
+pub fn reconstructing_bundle_event(ts: u64, audit_id: u64, kind: ReconstructionKind) -> Event {
+    Event::ReconstructingBundle {
+        timestamp: ts,
+        audit_id,
+        kind,
+    }
+}
+
+#[allow(dead_code)]
+pub fn bundle_reconstructed_event(ts: u64, audit_id: u64) -> Event {
+    Event::BundleReconstructed {
+        timestamp: ts,
+        audit_id,
+    }
+}
+
+#[allow(dead_code)]
+pub fn sending_segment_shard_request_event(ts: u64, submission_id: u64, assurer: [u8; 32]) -> Event {
+    Event::SendingSegmentShardRequest {
+        timestamp: ts,
+        submission_id,
+        assurer,
+        proofs: false,
+        shards: BoundedVec::new(),
+    }
+}
+
+#[allow(dead_code)]
+pub fn segment_shards_transferred_event(ts: u64, request_id: u64) -> Event {
+    Event::SegmentShardsTransferred {
+        timestamp: ts,
+        request_id,
+    }
+}
+
+#[allow(dead_code)]
+pub fn sending_preimage_request_event(ts: u64, recipient: [u8; 32], hash: [u8; 32]) -> Event {
+    Event::SendingPreimageRequest {
+        timestamp: ts,
+        recipient,
+        hash,
+    }
+}
+
+#[allow(dead_code)]
+pub fn preimage_transferred_event(ts: u64, request_id: u64, length: u32) -> Event {
+    Event::PreimageTransferred {
+        timestamp: ts,
+        request_id,
+        length,
+    }
+}

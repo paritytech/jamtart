@@ -170,6 +170,18 @@ async fn test_grafana_all_endpoints_empty_200() {
             "/api/grafana/events?{}&event_types=92",
             time_range_params()
         ),
+        format!(
+            "/api/grafana/bundle-latency?{}&interval=1m",
+            time_range_params()
+        ),
+        format!(
+            "/api/grafana/segment-latency?{}&interval=1m",
+            time_range_params()
+        ),
+        format!(
+            "/api/grafana/preimage-latency?{}&interval=1m",
+            time_range_params()
+        ),
     ];
 
     for path in &paths {
@@ -3597,4 +3609,192 @@ async fn test_grafana_validator_profiling_timeseries() {
     assert!(bucket.get("avg_authorize_ms").is_some(), "missing avg_authorize_ms");
     assert!(bucket.get("avg_total_ms").is_some(), "missing avg_total_ms");
     assert_eq!(bucket["wp_count"].as_i64().unwrap(), 1);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DA Latency: Bundle Reconstruction
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_grafana_bundle_latency() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+
+    let now = common::now_jce_micros();
+    let assurer_peer = [0x55; 32];
+    let audit_id = 42u64;
+
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    // Shard request 1: 10ms delay
+    send_events(&mut stream, &[
+        common::sending_bundle_shard_request_event(now, audit_id, assurer_peer, 0),  // event_id=0
+    ]).await;
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    send_events(&mut stream, &[
+        common::bundle_shard_transferred_event(now + 10_000, 0),  // +10ms
+    ]).await;
+
+    // Shard request 2: 50ms delay
+    send_events(&mut stream, &[
+        common::sending_bundle_shard_request_event(now + 100_000, audit_id, assurer_peer, 1),  // event_id=2
+    ]).await;
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    send_events(&mut stream, &[
+        common::bundle_shard_transferred_event(now + 150_000, 2),  // +50ms
+    ]).await;
+
+    // Reconstruction: 5ms CPU
+    send_events(&mut stream, &[
+        common::reconstructing_bundle_event(now + 200_000, audit_id, ReconstructionKind::NonTrivial),  // event_id=4
+    ]).await;
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    send_events(&mut stream, &[
+        common::bundle_reconstructed_event(now + 205_000, audit_id),  // +5ms reconstruction, completes e2e too
+    ]).await;
+
+    common::flush_all(&telemetry).await;
+
+    let path = format!(
+        "/api/grafana/bundle-latency?{}&interval=1m",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("bundle-latency should return an array");
+    assert!(!arr.is_empty(), "should have at least one time bucket");
+
+    // Check shard requestor samples >= 2
+    let total_shard_req: i64 = arr
+        .iter()
+        .map(|r| r["shard_req_samples"].as_i64().unwrap_or(0))
+        .sum();
+    assert!(
+        total_shard_req >= 2,
+        "expected shard_req_samples >= 2, got {}",
+        total_shard_req
+    );
+
+    // Check reconstruction samples >= 1
+    let total_reconstruct: i64 = arr
+        .iter()
+        .map(|r| r["reconstruct_samples"].as_i64().unwrap_or(0))
+        .sum();
+    assert!(
+        total_reconstruct >= 1,
+        "expected reconstruct_samples >= 1, got {}",
+        total_reconstruct
+    );
+
+    // Check e2e samples >= 1
+    let total_e2e: i64 = arr
+        .iter()
+        .map(|r| r["e2e_samples"].as_i64().unwrap_or(0))
+        .sum();
+    assert!(
+        total_e2e >= 1,
+        "expected e2e_samples >= 1, got {}",
+        total_e2e
+    );
+
+    // p50 should be a reasonable number
+    let row = &arr[0];
+    if let Some(p50) = row["shard_req_p50"].as_i64() {
+        assert!(p50 > 0 && p50 < 1000, "expected shard_req_p50 in range (0-1000ms), got {}", p50);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DA Latency: Segment Fetching
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_grafana_segment_latency() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+
+    let now = common::now_jce_micros();
+    let assurer_peer = [0x66; 32];
+    let submission_id = 99u64;
+
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    // Segment shard request: 20ms delay
+    send_events(&mut stream, &[
+        common::sending_segment_shard_request_event(now, submission_id, assurer_peer),  // event_id=0
+    ]).await;
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    send_events(&mut stream, &[
+        common::segment_shards_transferred_event(now + 20_000, 0),  // +20ms
+    ]).await;
+
+    common::flush_all(&telemetry).await;
+
+    let path = format!(
+        "/api/grafana/segment-latency?{}&interval=1m",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("segment-latency should return an array");
+    assert!(!arr.is_empty(), "should have at least one time bucket");
+
+    let total_shard_req: i64 = arr
+        .iter()
+        .map(|r| r["shard_req_samples"].as_i64().unwrap_or(0))
+        .sum();
+    assert!(
+        total_shard_req >= 1,
+        "expected shard_req_samples >= 1, got {}",
+        total_shard_req
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DA Latency: Preimage Transfer
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_grafana_preimage_latency() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+
+    let now = common::now_jce_micros();
+    let recipient = [0x77; 32];
+    let hash = [0xAA; 32];
+
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    // Preimage request: 15ms delay
+    send_events(&mut stream, &[
+        common::sending_preimage_request_event(now, recipient, hash),  // event_id=0
+    ]).await;
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    send_events(&mut stream, &[
+        common::preimage_transferred_event(now + 15_000, 0, 4096),  // +15ms
+    ]).await;
+
+    common::flush_all(&telemetry).await;
+
+    let path = format!(
+        "/api/grafana/preimage-latency?{}&interval=1m",
+        time_range_params()
+    );
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json.as_array().expect("preimage-latency should return an array");
+    assert!(!arr.is_empty(), "should have at least one time bucket");
+
+    let total_req: i64 = arr
+        .iter()
+        .map(|r| r["req_samples"].as_i64().unwrap_or(0))
+        .sum();
+    assert!(
+        total_req >= 1,
+        "expected req_samples >= 1, got {}",
+        total_req
+    );
 }
