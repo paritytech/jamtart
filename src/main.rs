@@ -255,33 +255,63 @@ async fn main() -> anyhow::Result<()> {
             let mut tick_count: u64 = 0;
             loop {
                 interval.tick().await;
+                let cycle_t0 = std::time::Instant::now();
+
+                let t0 = std::time::Instant::now();
                 tart_backend::slot_tracker::flush_slot_tracker(
                     &slot_tracker,
                     &pool,
                     std::time::Duration::from_secs(10),
                     std::time::Duration::from_secs(60),
                 ).await;
+                let slot_ms = t0.elapsed().as_millis();
+
+                let t0 = std::time::Instant::now();
                 tart_backend::wp_tracker::flush_wp_tracker(&wp_tracker, &pool).await;
+                let wp_ms = t0.elapsed().as_millis();
+
+                let t0 = std::time::Instant::now();
                 tart_backend::convergence_tracker::flush_guarantee_convergence(
                     &guarantee_convergence_tracker,
                     &pool,
                     std::time::Duration::from_secs(10),
                     std::time::Duration::from_secs(60),
                 ).await;
+                let guar_ms = t0.elapsed().as_millis();
+
+                let t0 = std::time::Instant::now();
                 tart_backend::convergence_tracker::flush_assurance_convergence(
                     &assurance_convergence_tracker,
                     &pool,
                     std::time::Duration::from_secs(10),
                     std::time::Duration::from_secs(60),
                 ).await;
+                let assur_ms = t0.elapsed().as_millis();
+
+                let t0 = std::time::Instant::now();
                 tart_backend::event_counter::flush_event_counter(&event_counter, &pool).await;
+                let counter_ms = t0.elapsed().as_millis();
+
                 tick_count += 1;
                 // Flush DA tracker every 2 ticks (10s)
-                if tick_count % 2 == 0 {
+                let (da_ms, da_lat_ms) = if tick_count % 2 == 0 {
+                    let t0 = std::time::Instant::now();
                     tart_backend::da_tracker::flush_da_tracker(&da_tracker, &pool).await;
+                    let da = t0.elapsed().as_millis();
+                    let t0 = std::time::Instant::now();
                     tart_backend::da_latency_tracker::flush_da_latency_tracker(&da_latency_tracker, &pool).await;
+                    let da_lat = t0.elapsed().as_millis();
                     tart_backend::enricher::log_enricher_diagnostics(&enricher_map, 10.0);
-                }
+                    (da, da_lat)
+                } else {
+                    (0, 0)
+                };
+
+                tracing::debug!(
+                    "periodic_flush cycle={}ms slot={}ms wp={}ms guar={}ms assur={}ms counter={}ms da={}ms da_lat={}ms",
+                    cycle_t0.elapsed().as_millis(),
+                    slot_ms, wp_ms, guar_ms, assur_ms, counter_ms, da_ms, da_lat_ms,
+                );
                 // Evict stale header_hash_lookup entries every 6 ticks (30s)
                 if tick_count % 6 == 0 {
                     tart_backend::convergence_tracker::evict_header_hash_lookup(&header_hash_lookup, 50000);

@@ -670,23 +670,34 @@ async fn flush_events(store: &Arc<EventStore>, event_batch: &mut Vec<EventRecord
     // Flush ALL events to DB — all types write to ingested_raw_events (1h browsing store)
     // AND to count tables (long-term aggregation via event_counter). No filtering.
     let batch: Vec<_> = std::mem::take(event_batch);
+    let batch_len = batch.len();
+    let t0 = std::time::Instant::now();
     store.store_events_batch(batch).await.map_err(|e| {
         error!("Failed to store event batch: {}", e);
         anyhow::anyhow!("Event batch storage failed: {}", e)
     })?;
+    let raw_ms = t0.elapsed().as_millis();
 
     // Flush event_services (independent, failure doesn't roll back events)
+    let svc_count = service_rows.len();
+    let svc_ms;
     if !service_rows.is_empty() {
         let refs: Vec<(i64, &str, i16, i32, Option<i64>, Option<i64>, Option<i64>)> = service_rows
             .iter()
             .map(|(ts, nid, et, sid, g, elapsed, load)| (*ts, nid.as_str(), *et, *sid, *g, *elapsed, *load))
             .collect();
+        let t0 = std::time::Instant::now();
         if let Err(e) = store.store_event_services_batch(&refs).await {
             warn!("Failed to flush event_services: {}", e);
         }
+        svc_ms = t0.elapsed().as_millis();
+    } else {
+        svc_ms = 0;
     }
 
     // Flush node_stats (independent)
+    let stats_count = stats_rows.len();
+    let stats_ms;
     if !stats_rows.is_empty() {
         let refs: Vec<(i64, &str, i32, i32, i32, i32, i64, i32, i32, i16, i16, f32, i16)> =
             stats_rows
@@ -695,18 +706,21 @@ async fn flush_events(store: &Arc<EventStore>, event_batch: &mut Vec<EventRecord
                     (*ts, nid.as_str(), *a, *b, *c, *d, *e, *f, *g, *h, *i, *j, *k)
                 })
                 .collect();
+        let t0 = std::time::Instant::now();
         if let Err(e) = store.store_node_stats_batch(&refs).await {
             warn!("Failed to flush node_stats: {}", e);
         }
+        stats_ms = t0.elapsed().as_millis();
+    } else {
+        stats_ms = 0;
     }
 
     // Update metrics
     metrics::counter!("telemetry_events_flushed").increment(event_count as u64);
 
-    trace!(
-        "Flush completed: {} events in {:?}",
-        event_count,
-        start.elapsed()
+    debug!(
+        "flush_events: total={:?} raw={}ms({} rows) svc={}ms({} rows) stats={}ms({} rows)",
+        start.elapsed(), raw_ms, batch_len, svc_ms, svc_count, stats_ms, stats_count,
     );
     Ok(())
 }
