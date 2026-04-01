@@ -3611,6 +3611,43 @@ async fn test_grafana_validator_profiling_timeseries() {
     assert_eq!(bucket["wp_count"].as_i64().unwrap(), 1);
 }
 
+#[tokio::test]
+async fn test_grafana_validator_profiling_failures_only_node() {
+    let (server, telemetry, port, _store) = setup_test_api().await;
+    let mut stream = connect_test_node(port, 1, &telemetry).await;
+
+    let ts = common::now_jce_micros();
+
+    // Send only failed pipelines — no distributed WPs
+    for i in 0u64..3 {
+        let sid = 9300 + i;
+        let events = vec![
+            common::wp_received_event(ts + i * 1_000_000, sid, 5),
+            common::wp_failed_event(ts + i * 1_000_000 + 50_000, sid),
+        ];
+        send_events(&mut stream, &events).await;
+    }
+
+    common::flush_all(&telemetry).await;
+
+    let path = format!("/api/grafana/validator-profiling?{}", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+
+    let json: Value = response.json();
+    let arr = json["nodes"].as_array().expect("nodes should be an array");
+    assert_eq!(arr.len(), 1, "expected 1 node (failures-only)");
+
+    let entry = &arr[0];
+    assert_eq!(entry["wp_count"].as_i64().unwrap(), 3);
+    assert_eq!(entry["failures"].as_i64().unwrap(), 3);
+    assert_eq!(entry["failure_rate"].as_f64().unwrap(), 1.0);
+    // No distributed WPs → all timing AVGs should be null
+    assert!(entry["avg_total_ms"].is_null(), "avg_total_ms should be null for failures-only node");
+    assert!(entry["avg_authorize_ms"].is_null(), "avg_authorize_ms should be null");
+    assert!(entry["slowdown_factor"].is_null(), "slowdown_factor should be null");
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // DA Latency: Bundle Reconstruction
 // ─────────────────────────────────────────────────────────────────────────────

@@ -1841,12 +1841,19 @@ impl EventStore {
                 node_id,
                 COUNT(*)::BIGINT AS wp_count,
                 COUNT(*) FILTER (WHERE failed_at IS NOT NULL)::BIGINT AS failures,
-                AVG(EXTRACT(EPOCH FROM (authorized_at - received_at)) * 1000)::DOUBLE PRECISION AS avg_authorize_ms,
-                AVG(EXTRACT(EPOCH FROM (refined_at - authorized_at)) * 1000)::DOUBLE PRECISION AS avg_refine_ms,
-                AVG(EXTRACT(EPOCH FROM (report_built_at - refined_at)) * 1000)::DOUBLE PRECISION AS avg_report_ms,
-                AVG(EXTRACT(EPOCH FROM (guarantee_built_at - report_built_at)) * 1000)::DOUBLE PRECISION AS avg_guarantee_ms,
-                AVG(EXTRACT(EPOCH FROM (distributed_at - guarantee_built_at)) * 1000)::DOUBLE PRECISION AS avg_distribute_ms,
-                AVG(EXTRACT(EPOCH FROM (COALESCE(distributed_at, failed_at) - received_at)) * 1000)::DOUBLE PRECISION AS avg_total_ms
+                -- Stage AVGs from distributed WPs only (failed WPs have no meaningful timing)
+                AVG(EXTRACT(EPOCH FROM (authorized_at - received_at)) * 1000)
+                    FILTER (WHERE distributed_at IS NOT NULL)::DOUBLE PRECISION AS avg_authorize_ms,
+                AVG(EXTRACT(EPOCH FROM (refined_at - authorized_at)) * 1000)
+                    FILTER (WHERE distributed_at IS NOT NULL)::DOUBLE PRECISION AS avg_refine_ms,
+                AVG(EXTRACT(EPOCH FROM (report_built_at - refined_at)) * 1000)
+                    FILTER (WHERE distributed_at IS NOT NULL)::DOUBLE PRECISION AS avg_report_ms,
+                AVG(EXTRACT(EPOCH FROM (guarantee_built_at - report_built_at)) * 1000)
+                    FILTER (WHERE distributed_at IS NOT NULL)::DOUBLE PRECISION AS avg_guarantee_ms,
+                AVG(EXTRACT(EPOCH FROM (distributed_at - guarantee_built_at)) * 1000)
+                    FILTER (WHERE distributed_at IS NOT NULL)::DOUBLE PRECISION AS avg_distribute_ms,
+                AVG(EXTRACT(EPOCH FROM (distributed_at - received_at)) * 1000)
+                    FILTER (WHERE distributed_at IS NOT NULL)::DOUBLE PRECISION AS avg_total_ms
             FROM wp_tracking
             WHERE first_seen >= $1 AND first_seen < $2
               AND ($3::SMALLINT IS NULL OR core = $3)
@@ -1958,8 +1965,9 @@ impl EventStore {
                     WHERE first_seen >= $1 AND first_seen < $2
                       AND ($3::SMALLINT IS NULL OR core = $3)
                       AND node_id IS NOT NULL
+                      AND distributed_at IS NOT NULL
                     GROUP BY node_id
-                    ORDER BY AVG(EXTRACT(EPOCH FROM (COALESCE(distributed_at, failed_at) - received_at)) * 1000) DESC NULLS LAST
+                    ORDER BY AVG(EXTRACT(EPOCH FROM (distributed_at - received_at)) * 1000) DESC NULLS LAST
                     LIMIT 20
                 )"
             )
@@ -1972,12 +1980,18 @@ impl EventStore {
                 node_id,
                 COUNT(*)::BIGINT AS wp_count,
                 COUNT(*) FILTER (WHERE failed_at IS NOT NULL)::BIGINT AS failures,
-                AVG(EXTRACT(EPOCH FROM (authorized_at - received_at)) * 1000)::DOUBLE PRECISION AS avg_authorize_ms,
-                AVG(EXTRACT(EPOCH FROM (refined_at - authorized_at)) * 1000)::DOUBLE PRECISION AS avg_refine_ms,
-                AVG(EXTRACT(EPOCH FROM (report_built_at - refined_at)) * 1000)::DOUBLE PRECISION AS avg_report_ms,
-                AVG(EXTRACT(EPOCH FROM (guarantee_built_at - report_built_at)) * 1000)::DOUBLE PRECISION AS avg_guarantee_ms,
-                AVG(EXTRACT(EPOCH FROM (distributed_at - guarantee_built_at)) * 1000)::DOUBLE PRECISION AS avg_distribute_ms,
-                AVG(EXTRACT(EPOCH FROM (COALESCE(distributed_at, failed_at) - received_at)) * 1000)::DOUBLE PRECISION AS avg_total_ms
+                AVG(EXTRACT(EPOCH FROM (authorized_at - received_at)) * 1000)
+                    FILTER (WHERE distributed_at IS NOT NULL)::DOUBLE PRECISION AS avg_authorize_ms,
+                AVG(EXTRACT(EPOCH FROM (refined_at - authorized_at)) * 1000)
+                    FILTER (WHERE distributed_at IS NOT NULL)::DOUBLE PRECISION AS avg_refine_ms,
+                AVG(EXTRACT(EPOCH FROM (report_built_at - refined_at)) * 1000)
+                    FILTER (WHERE distributed_at IS NOT NULL)::DOUBLE PRECISION AS avg_report_ms,
+                AVG(EXTRACT(EPOCH FROM (guarantee_built_at - report_built_at)) * 1000)
+                    FILTER (WHERE distributed_at IS NOT NULL)::DOUBLE PRECISION AS avg_guarantee_ms,
+                AVG(EXTRACT(EPOCH FROM (distributed_at - guarantee_built_at)) * 1000)
+                    FILTER (WHERE distributed_at IS NOT NULL)::DOUBLE PRECISION AS avg_distribute_ms,
+                AVG(EXTRACT(EPOCH FROM (distributed_at - received_at)) * 1000)
+                    FILTER (WHERE distributed_at IS NOT NULL)::DOUBLE PRECISION AS avg_total_ms
             FROM wp_tracking
             WHERE first_seen >= $1 AND first_seen < $2
               AND ($3::SMALLINT IS NULL OR core = $3)
