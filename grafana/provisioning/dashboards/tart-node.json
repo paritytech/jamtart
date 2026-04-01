@@ -678,11 +678,6 @@
               "selector": "avg_total_ms",
               "text": "Avg Pipeline (ms)",
               "type": "number"
-            },
-            {
-              "selector": "slowdown_factor",
-              "text": "Relative to Network Avg",
-              "type": "number"
             }
           ],
           "datasource": {
@@ -802,11 +797,6 @@
             {
               "selector": "avg_total_ms",
               "text": "Avg Pipeline (ms)",
-              "type": "number"
-            },
-            {
-              "selector": "slowdown_factor",
-              "text": "Relative to Network Avg",
               "type": "number"
             }
           ],
