@@ -1970,7 +1970,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Requestor p50"
+              "options": "Shard Req p50"
             },
             "properties": [
               {
@@ -1985,7 +1985,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Requestor p95"
+              "options": "Shard Req p95"
             },
             "properties": [
               {
@@ -2000,7 +2000,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Responder p50"
+              "options": "Shard Resp p50"
             },
             "properties": [
               {
@@ -2015,13 +2015,73 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Responder p95"
+              "options": "Shard Resp p95"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
                   "fixedColor": "purple",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Full Req p50"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "light-green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Full Req p95"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "yellow",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Full Resp p50"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "light-blue",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Full Resp p95"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "light-purple",
                   "mode": "fixed"
                 }
               }
@@ -2035,7 +2095,7 @@
         "x": 0,
         "y": 72
       },
-      "description": "Shard request latency from both perspectives: Requestor (SendingBundleShardRequest(140) \u2192 BundleShardTransferred(145)) measures the auditor's full round-trip including network + remote processing. Responder (ReceivingBundleShardRequest(141) \u2192 BundleShardTransferred(145)) measures the assurer's local work: disk lookup, shard read, send. If requestor is high but responder is low, the bottleneck is network. Approximate percentiles from merged 23-bucket histograms. Source: bundle_latency_hist.",
+      "description": "Bundle data transfer latency from both perspectives, covering both paths (shard-based and full bundle). Requestor: auditor's round-trip (SendingBundleShardRequest(140)\u2192BundleShardTransferred(145) or SendingBundleRequest(148)\u2192BundleTransferred(153)). Responder: assurer/guarantor's local work. If requestor is high but responder is low, the bottleneck is network. Source: bundle_latency_hist.",
       "id": 20,
       "maxDataPoints": 300,
       "options": {
@@ -2063,22 +2123,42 @@
             },
             {
               "selector": "shard_req_p95",
-              "text": "Requestor p95",
+              "text": "Shard Req p95",
               "type": "number"
             },
             {
               "selector": "shard_req_p50",
-              "text": "Requestor p50",
+              "text": "Shard Req p50",
               "type": "number"
             },
             {
               "selector": "shard_resp_p95",
-              "text": "Responder p95",
+              "text": "Shard Resp p95",
               "type": "number"
             },
             {
               "selector": "shard_resp_p50",
-              "text": "Responder p50",
+              "text": "Shard Resp p50",
+              "type": "number"
+            },
+            {
+              "selector": "full_req_p95",
+              "text": "Full Req p95",
+              "type": "number"
+            },
+            {
+              "selector": "full_req_p50",
+              "text": "Full Req p50",
+              "type": "number"
+            },
+            {
+              "selector": "full_resp_p95",
+              "text": "Full Resp p95",
+              "type": "number"
+            },
+            {
+              "selector": "full_resp_p50",
+              "text": "Full Resp p50",
               "type": "number"
             }
           ],
@@ -2103,7 +2183,7 @@
           }
         }
       ],
-      "title": "Bundle Shard Transfer \u2014 Requestor vs Responder",
+      "title": "Bundle Transfer \u2014 Requestor vs Responder",
       "type": "timeseries"
     },
     {
@@ -2542,7 +2622,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Requestor p50"
+              "options": "Shard Req p50"
             },
             "properties": [
               {
@@ -2557,7 +2637,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Requestor p95"
+              "options": "Shard Req p95"
             },
             "properties": [
               {
@@ -2572,7 +2652,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Responder p50"
+              "options": "Shard Resp p50"
             },
             "properties": [
               {
@@ -2587,13 +2667,73 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Responder p95"
+              "options": "Shard Resp p95"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
                   "fixedColor": "purple",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Full Req p50"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "light-green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Full Req p95"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "yellow",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Full Resp p50"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "light-blue",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Full Resp p95"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "light-purple",
                   "mode": "fixed"
                 }
               }
@@ -2607,7 +2747,7 @@
         "x": 0,
         "y": 93
       },
-      "description": "Segment shard request latency from both perspectives: Requestor (SendingSegmentShardRequest(162) \u2192 SegmentShardsTransferred(167)) measures the guarantor's round-trip to fetch import segments. Responder (ReceivingSegmentShardRequest(163) \u2192 SegmentShardsTransferred(167)) measures the previous guarantor's local work. Slow segments directly delay the WP pipeline \u2014 fetched before refinement. Source: segment_latency_hist.",
+      "description": "Segment data transfer latency from both perspectives, covering both paths (shard-based and full segment). Requestor: guarantor's round-trip. Responder: previous guarantor's local work. Slow segments directly delay the WP pipeline \u2014 fetched before refinement. Source: segment_latency_hist.",
       "id": 24,
       "maxDataPoints": 300,
       "options": {
@@ -2635,22 +2775,42 @@
             },
             {
               "selector": "shard_req_p95",
-              "text": "Requestor p95",
+              "text": "Shard Req p95",
               "type": "number"
             },
             {
               "selector": "shard_req_p50",
-              "text": "Requestor p50",
+              "text": "Shard Req p50",
               "type": "number"
             },
             {
               "selector": "shard_resp_p95",
-              "text": "Responder p95",
+              "text": "Shard Resp p95",
               "type": "number"
             },
             {
               "selector": "shard_resp_p50",
-              "text": "Responder p50",
+              "text": "Shard Resp p50",
+              "type": "number"
+            },
+            {
+              "selector": "full_req_p95",
+              "text": "Full Req p95",
+              "type": "number"
+            },
+            {
+              "selector": "full_req_p50",
+              "text": "Full Req p50",
+              "type": "number"
+            },
+            {
+              "selector": "full_resp_p95",
+              "text": "Full Resp p95",
+              "type": "number"
+            },
+            {
+              "selector": "full_resp_p50",
+              "text": "Full Resp p50",
               "type": "number"
             }
           ],
@@ -2675,7 +2835,7 @@
           }
         }
       ],
-      "title": "Segment Shard Transfer \u2014 Requestor vs Responder",
+      "title": "Segment Transfer \u2014 Requestor vs Responder",
       "type": "timeseries"
     },
     {
