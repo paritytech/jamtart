@@ -581,7 +581,7 @@
       },
       "id": 20,
       "panels": [],
-      "title": "Validator Profiling",
+      "title": "Guarantor Pipeline Profiling",
       "type": "row"
     },
     {
@@ -589,7 +589,7 @@
         "type": "yesoreyeram-infinity-datasource",
         "uid": "jamtart-api"
       },
-      "description": "Top 10 slowest validators by average total pipeline latency: WorkPackageReceived (94) \u2192 WorkPackageAuthorized (95) \u2192 Refined (101) \u2192 WorkReportBuilt (102) \u2192 GuaranteeBuilt (105) \u2192 GuaranteesDistributed (109). Dashed line shows network average. Source: wp_tracking table, grouped by node_id.",
+      "description": "Top 10 slowest guarantors by average total guarantor pipeline latency: WorkPackageReceived (94) \u2192 WorkPackageAuthorized (95) \u2192 Refined (101) \u2192 WorkReportBuilt (102) \u2192 GuaranteeBuilt (105) \u2192 GuaranteesDistributed (109). Dashed line shows network average. Source: wp_tracking table, grouped by node_id.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -706,7 +706,7 @@
           }
         }
       ],
-      "title": "Top 10 Slowest Validators (avg pipeline ms)",
+      "title": "Top 10 Slowest Guarantors (avg pipeline ms)",
       "type": "barchart"
     },
     {
@@ -714,7 +714,7 @@
         "type": "yesoreyeram-infinity-datasource",
         "uid": "jamtart-api"
       },
-      "description": "Top 10 fastest validators by average total pipeline latency: WorkPackageReceived (94) \u2192 WorkPackageAuthorized (95) \u2192 Refined (101) \u2192 WorkReportBuilt (102) \u2192 GuaranteeBuilt (105) \u2192 GuaranteesDistributed (109). Dashed line shows network average. Source: wp_tracking table, grouped by node_id.",
+      "description": "Top 10 fastest guarantors by average total guarantor pipeline latency: WorkPackageReceived (94) \u2192 WorkPackageAuthorized (95) \u2192 Refined (101) \u2192 WorkReportBuilt (102) \u2192 GuaranteeBuilt (105) \u2192 GuaranteesDistributed (109). Dashed line shows network average. Source: wp_tracking table, grouped by node_id.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -831,7 +831,7 @@
           }
         }
       ],
-      "title": "Top 10 Fastest Validators (avg pipeline ms)",
+      "title": "Top 10 Fastest Guarantors (avg pipeline ms)",
       "type": "barchart"
     },
     {

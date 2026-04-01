@@ -1851,6 +1851,7 @@ impl EventStore {
             WHERE first_seen >= $1 AND first_seen < $2
               AND ($3::SMALLINT IS NULL OR core = $3)
               AND node_id IS NOT NULL
+              AND (distributed_at IS NOT NULL OR failed_at IS NOT NULL)
             GROUP BY node_id
             "#,
         )
@@ -1904,20 +1905,21 @@ impl EventStore {
             })
             .collect();
 
-        // Sort by avg_total_ms, NULLs last
-        if ascending {
-            result.sort_by(|a, b| {
-                a.avg_total_ms
-                    .partial_cmp(&b.avg_total_ms)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-        } else {
-            result.sort_by(|a, b| {
-                b.avg_total_ms
-                    .partial_cmp(&a.avg_total_ms)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-        }
+        // Sort by avg_total_ms, NULLs always last
+        result.sort_by(|a, b| {
+            match (a.avg_total_ms, b.avg_total_ms) {
+                (Some(va), Some(vb)) => {
+                    if ascending {
+                        va.partial_cmp(&vb).unwrap_or(std::cmp::Ordering::Equal)
+                    } else {
+                        vb.partial_cmp(&va).unwrap_or(std::cmp::Ordering::Equal)
+                    }
+                }
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+        });
 
         // Apply limit after sorting (network_avg already reflects all nodes)
         if let Some(n) = limit {

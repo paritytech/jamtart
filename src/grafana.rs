@@ -1192,12 +1192,13 @@ async fn bottlenecks_timeseries(
         .map_err(|e| map_sqlx_error("grafana/bottlenecks-timeseries", e))
 }
 
-/// Per-validator pipeline performance profiling.
+/// Per-guarantor pipeline performance — which guarantors are slow or failing?
 ///
-/// Answers "which nodes are slow or failing?" by computing per-node average
-/// latency at each work-package pipeline stage. Data flows from JIP-3
-/// telemetry events into the `wp_tracking` table via the in-memory
-/// `WpTracker`:
+/// Profiles the guarantor-side work-package pipeline: from receiving a WP
+/// through authorization, refinement, report building, guarantee building,
+/// to distribution. All stages execute on the same guarantor node. Only WPs
+/// that completed the pipeline (distributed or failed) are included —
+/// in-flight WPs are excluded.
 ///
 /// | Pipeline stage  | Source event              | Type ID | Ordinal | wp_tracking column    |
 /// |-----------------|---------------------------|---------|---------|-----------------------|
@@ -1209,24 +1210,17 @@ async fn bottlenecks_timeseries(
 /// | Distributed     | GuaranteesDistributed     | 109     | 5       | `distributed_at`      |
 /// | Failed          | WorkPackageFailed         | 92      | —       | `failed_at`           |
 ///
-/// `node_id` is set from the WorkPackageReceived (94) event — it identifies
-/// the node that first received the work package. All subsequent pipeline
-/// stages (authorize, refine, report, guarantee, distribute) happen on the
-/// same node, so per-node stage timings are accurate.
+/// `node_id` identifies the guarantor — set from WorkPackageReceived (94).
+/// All subsequent stages execute on the same node.
 ///
-/// The query computes `AVG(stage_n+1 - stage_n)` in milliseconds per node,
-/// grouped by `node_id`. `slowdown_factor` is computed in Rust as
-/// `node_avg_total_ms / network_avg_total_ms` — values > 1.5 indicate
-/// underperforming nodes. `failure_rate` is `failures / wp_count`.
-///
-/// Core is intentionally not the primary dimension because validators rotate
-/// across cores; use the optional `core` filter for drill-down only.
+/// `slowdown_factor` = `node_avg_total_ms / network_avg_total_ms` (>1.5 = underperformer).
+/// Guarantors rotate across cores, so `core` is an optional drill-down filter.
 #[utoipa::path(
     get,
     path = "/api/grafana/validator-profiling",
     params(ValidatorProfilingQuery),
     responses(
-        (status = 200, description = "Per-validator pipeline performance. `nodes` sorted by avg_total_ms DESC (slowest first). `network_avg_total_ms` reflects all nodes regardless of `limit`. Use `limit=10` for top-N outlier charts.", body = ValidatorProfilingResponse),
+        (status = 200, description = "Per-guarantor pipeline performance. `nodes` sorted by avg_total_ms (slowest first by default). Only guarantors with completed WPs (distributed or failed) are included. `network_avg_total_ms` reflects all completed guarantors regardless of `limit`.", body = ValidatorProfilingResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1244,22 +1238,21 @@ async fn validator_profiling(
         .map_err(|e| map_sqlx_error("grafana/validator-profiling", e))
 }
 
-/// Per-validator pipeline performance over time.
+/// Per-guarantor pipeline performance over time.
 ///
-/// Time-bucketed variant of `/api/grafana/validator-profiling`. Same source
-/// events and processing (see that endpoint's docs for the full event→column
-/// mapping). Results are grouped by `time_bucket(interval, first_seen)` and
-/// `node_id`.
+/// Time-bucketed variant of `/api/grafana/validator-profiling`. Same guarantor
+/// pipeline stages (see that endpoint's docs for the full event→column mapping).
+/// Results are grouped by `time_bucket(interval, first_seen)` and `node_id`.
 ///
-/// When `node` is provided, returns per-bucket averages for that single node
+/// When `node` is provided, returns per-bucket averages for that single guarantor
 /// (suitable for sparklines / per-node detail charts). When omitted, returns
-/// only the top ~20 slowest nodes per bucket to avoid 1024×N result explosion.
+/// only the top ~20 slowest guarantors per bucket to avoid 1024×N result explosion.
 #[utoipa::path(
     get,
     path = "/api/grafana/validator-profiling-timeseries",
     params(ValidatorProfilingTimeseriesQuery),
     responses(
-        (status = 200, description = "Per-validator pipeline performance per time bucket. When node is provided: one row per bucket for that node. When omitted: top ~20 slowest nodes per bucket.", body = [ValidatorProfilingTimeseriesRow]),
+        (status = 200, description = "Per-guarantor pipeline performance per time bucket. When node is provided: one row per bucket for that guarantor. When omitted: top ~20 slowest guarantors per bucket.", body = [ValidatorProfilingTimeseriesRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
