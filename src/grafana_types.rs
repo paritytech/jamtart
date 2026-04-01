@@ -958,6 +958,20 @@ pub struct BottlenecksTimeseriesRow {
 /// The query computes `AVG(stage_n+1 - stage_n)` in milliseconds per node via
 /// `GROUP BY node_id`. `slowdown_factor` is computed in Rust as
 /// `node_avg_total_ms / network_avg_total_ms`.
+///
+/// Returned inside [`ValidatorProfilingResponse`] which also carries
+/// `network_avg_total_ms` for threshold/baseline rendering.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ValidatorProfilingResponse {
+    /// Network-wide average total pipeline latency (ms) across all nodes.
+    /// Useful as a baseline/threshold line in outlier charts.
+    pub network_avg_total_ms: Option<f64>,
+    /// Per-node profiling rows, sorted by `avg_total_ms` DESC (slowest first).
+    /// When `limit` is specified, only the top-N slowest nodes are included;
+    /// `network_avg_total_ms` still reflects all nodes.
+    pub nodes: Vec<ValidatorProfilingRow>,
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ValidatorProfilingRow {
     /// Node identifier (hex-encoded 32-byte public key)

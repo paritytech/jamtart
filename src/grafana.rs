@@ -167,6 +167,7 @@ use crate::onchain_types::*;
         ExecutionPhaseStats,
         ServiceExecutionRow,
         // Validator profiling
+        ValidatorProfilingResponse,
         ValidatorProfilingRow,
         ValidatorProfilingTimeseriesRow,
     )),
@@ -402,6 +403,22 @@ pub struct GuaranteeDiscardsQuery {
     pub end: DateTime<Utc>,
     /// Bucket width (same values as /timeseries)
     pub interval: Option<String>,
+}
+
+/// Parameters for validator profiling summary query.
+#[derive(Deserialize, IntoParams)]
+pub struct ValidatorProfilingQuery {
+    /// Start of time range (ISO 8601)
+    pub start: DateTime<Utc>,
+    /// End of time range (ISO 8601)
+    pub end: DateTime<Utc>,
+    /// Filter to a single core index
+    pub core: Option<i16>,
+    /// Maximum number of nodes to return.
+    /// `network_avg_total_ms` still reflects all nodes regardless of limit.
+    pub limit: Option<u32>,
+    /// Sort order for `avg_total_ms`: `desc` (slowest first, default) or `asc` (fastest first).
+    pub sort: Option<String>,
 }
 
 /// Parameters for validator profiling timeseries query.
@@ -1207,20 +1224,21 @@ async fn bottlenecks_timeseries(
 #[utoipa::path(
     get,
     path = "/api/grafana/validator-profiling",
-    params(TimeRangeQuery),
+    params(ValidatorProfilingQuery),
     responses(
-        (status = 200, description = "Per-validator pipeline performance (one row per node, sorted by avg_total_ms DESC). Includes per-stage AVG latency, failure rate, and slowdown_factor vs network average.", body = [ValidatorProfilingRow]),
+        (status = 200, description = "Per-validator pipeline performance. `nodes` sorted by avg_total_ms DESC (slowest first). `network_avg_total_ms` reflects all nodes regardless of `limit`. Use `limit=10` for top-N outlier charts.", body = ValidatorProfilingResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
 )]
 async fn validator_profiling(
-    Query(q): Query<TimeRangeQuery>,
+    Query(q): Query<ValidatorProfilingQuery>,
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
+    let ascending = q.sort.as_deref() == Some("asc");
     state
         .store
-        .grafana_validator_profiling(q.start, q.end, q.core)
+        .grafana_validator_profiling(q.start, q.end, q.core, q.limit, ascending)
         .await
         .map(Json)
         .map_err(|e| map_sqlx_error("grafana/validator-profiling", e))

@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "[JIP-3] Per-node deep dive — status, events, timeline, and health",
+  "description": "[JIP-3] Per-node deep dive \u2014 status, events, timeline, and health",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -450,7 +450,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 36
+        "y": 16
       },
       "id": 11,
       "title": "Network Context",
@@ -499,7 +499,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 37
+        "y": 17
       },
       "id": 12,
       "options": {
@@ -577,10 +577,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 45
+        "y": 25
       },
-      "id": 14,
-      "title": "Ticket Activity",
+      "id": 20,
+      "panels": [],
+      "title": "Validator Profiling",
       "type": "row"
     },
     {
@@ -588,17 +589,34 @@
         "type": "yesoreyeram-infinity-datasource",
         "uid": "jamtart-api"
       },
+      "description": "Top 10 slowest validators by average total pipeline latency: WorkPackageReceived (94) \u2192 WorkPackageAuthorized (95) \u2192 Refined (101) \u2192 WorkReportBuilt (102) \u2192 GuaranteeBuilt (105) \u2192 GuaranteesDistributed (109). Dashed line shows network average. Source: wp_tracking table, grouped by node_id.",
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "fixed"
+            "mode": "fixed",
+            "fixedColor": "#55a6b3"
           },
           "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "auto"
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Avg Pipeline (ms)",
+            "axisPlacement": "auto",
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
             },
-            "inspect": false
+            "lineWidth": 1,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
           },
           "mappings": [],
           "thresholds": {
@@ -607,6 +625,14 @@
               {
                 "color": "green",
                 "value": null
+              },
+              {
+                "color": "#d8a400",
+                "value": 5
+              },
+              {
+                "color": "red",
+                "value": 20
               }
             ]
           }
@@ -615,39 +641,47 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 24,
+        "w": 12,
         "x": 0,
-        "y": 46
+        "y": 26
       },
-      "id": 15,
+      "id": 21,
       "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
+        "barRadius": 0,
+        "barWidth": 0.8,
+        "fullHighlight": false,
+        "groupWidth": 0.7,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
         },
-        "showHeader": true
+        "orientation": "horizontal",
+        "showValue": "auto",
+        "stacking": "none",
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        },
+        "xTickLabelRotation": 0
       },
       "targets": [
         {
           "columns": [
             {
-              "selector": "ts",
-              "text": "Time",
-              "type": "timestamp"
-            },
-            {
-              "selector": "event_type_name",
-              "text": "Event Type",
+              "selector": "node_id",
+              "text": "Node ID",
               "type": "string"
             },
             {
-              "selector": "count",
-              "text": "Count",
+              "selector": "avg_total_ms",
+              "text": "Avg Pipeline (ms)",
+              "type": "number"
+            },
+            {
+              "selector": "slowdown_factor",
+              "text": "Relative to Network Avg",
               "type": "number"
             }
           ],
@@ -655,13 +689,15 @@
             "type": "yesoreyeram-infinity-datasource",
             "uid": "jamtart-api"
           },
-          "format": "timeseries",
+          "filters": [],
+          "format": "table",
+          "global_query_id": "",
           "parser": "backend",
           "refId": "A",
-          "root_selector": "",
+          "root_selector": "nodes",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?node=${node_id}&group_by=event_type&event_types=tickets&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url": "http://tart-backend:8080/api/grafana/validator-profiling?limit=10&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -670,10 +706,133 @@
           }
         }
       ],
-      "title": "Ticket Activity",
-      "description": "Ticket lifecycle events for this node: GeneratingTickets, TicketGenerationFailed, TicketsGenerated, TicketTransferFailed, TicketTransferred. (Event IDs 80–84, 1-minute buckets)",
-      "type": "timeseries",
-      "maxDataPoints": 300
+      "title": "Top 10 Slowest Validators (avg pipeline ms)",
+      "type": "barchart"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
+      "description": "Top 10 fastest validators by average total pipeline latency: WorkPackageReceived (94) \u2192 WorkPackageAuthorized (95) \u2192 Refined (101) \u2192 WorkReportBuilt (102) \u2192 GuaranteeBuilt (105) \u2192 GuaranteesDistributed (109). Dashed line shows network average. Source: wp_tracking table, grouped by node_id.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#6da958"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Avg Pipeline (ms)",
+            "axisPlacement": "auto",
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 1,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "#d8a400",
+                "value": 5
+              },
+              {
+                "color": "red",
+                "value": 20
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 26
+      },
+      "id": 22,
+      "options": {
+        "barRadius": 0,
+        "barWidth": 0.8,
+        "fullHighlight": false,
+        "groupWidth": 0.7,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "orientation": "horizontal",
+        "showValue": "auto",
+        "stacking": "none",
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        },
+        "xTickLabelRotation": 0
+      },
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "node_id",
+              "text": "Node ID",
+              "type": "string"
+            },
+            {
+              "selector": "avg_total_ms",
+              "text": "Avg Pipeline (ms)",
+              "type": "number"
+            },
+            {
+              "selector": "slowdown_factor",
+              "text": "Relative to Network Avg",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "filters": [],
+          "format": "table",
+          "global_query_id": "",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "nodes",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/validator-profiling?limit=10&sort=asc&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          }
+        }
+      ],
+      "title": "Top 10 Fastest Validators (avg pipeline ms)",
+      "type": "barchart"
     },
     {
       "collapsed": false,
@@ -681,7 +840,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 54
+        "y": 34
       },
       "id": 16,
       "title": "Selected Events",
@@ -704,26 +863,21 @@
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
+            "drawStyle": "bars",
+            "fillOpacity": 80,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
               "tooltip": false,
               "viz": false
             },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 5,
+            "lineWidth": 0,
             "scaleDistribution": {
               "type": "linear"
             },
-            "showPoints": "auto",
-            "spanNulls": false,
             "stacking": {
               "group": "A",
-              "mode": "none"
+              "mode": "normal"
             },
             "thresholdsStyle": {
               "mode": "off"
@@ -746,7 +900,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 63
+        "y": 35
       },
       "id": 19,
       "maxDataPoints": 300,
@@ -866,7 +1020,7 @@
         "options": [],
         "includeAll": false,
         "multi": false,
-        "description": "Select a node ID — dynamically loaded from the API."
+        "description": "Select a node ID \u2014 dynamically loaded from the API."
       },
       {
         "name": "event_group",

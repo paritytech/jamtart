@@ -3449,7 +3449,10 @@ async fn test_grafana_validator_profiling_slow_vs_fast_node() {
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
-    let arr = json.as_array().expect("should return an array");
+
+    // Response is wrapped: { network_avg_total_ms, nodes: [...] }
+    let network_avg = json["network_avg_total_ms"].as_f64().expect("missing network_avg_total_ms");
+    let arr = json["nodes"].as_array().expect("nodes should be an array");
     assert_eq!(arr.len(), 2, "expected 2 nodes");
 
     // First entry should be the slow node (sorted by avg_total_ms DESC)
@@ -3483,11 +3486,27 @@ async fn test_grafana_validator_profiling_slow_vs_fast_node() {
     let fast_total = fast["avg_total_ms"].as_f64().unwrap();
     assert!(slow_total > fast_total, "slow node should have higher avg_total_ms: {} vs {}", slow_total, fast_total);
 
+    // Network average should be between fast and slow
+    assert!(network_avg > fast_total, "network_avg should be > fast: {} vs {}", network_avg, fast_total);
+    assert!(network_avg < slow_total, "network_avg should be < slow: {} vs {}", network_avg, slow_total);
+
     // Slow node slowdown_factor > 1.0, fast node < 1.0
     let slow_factor = slow["slowdown_factor"].as_f64().unwrap();
     let fast_factor = fast["slowdown_factor"].as_f64().unwrap();
     assert!(slow_factor > 1.0, "slow node slowdown_factor should be > 1.0: {}", slow_factor);
     assert!(fast_factor < 1.0, "fast node slowdown_factor should be < 1.0: {}", fast_factor);
+
+    // Test limit=1: should return only the slowest node, but network_avg reflects both
+    let path_limited = format!("/api/grafana/validator-profiling?{}&limit=1", time_range_params());
+    let response_limited = server.get(&path_limited).await;
+    assert_eq!(response_limited.status_code(), StatusCode::OK);
+    let json_limited: Value = response_limited.json();
+    let limited_avg = json_limited["network_avg_total_ms"].as_f64().expect("missing network_avg_total_ms");
+    let limited_nodes = json_limited["nodes"].as_array().expect("nodes should be an array");
+    assert_eq!(limited_nodes.len(), 1, "limit=1 should return 1 node");
+    assert_eq!(limited_avg, network_avg, "network_avg should be the same regardless of limit");
+    // The one returned should be the slow node
+    assert!(limited_nodes[0]["avg_total_ms"].as_f64().unwrap() > fast_total, "limit=1 should return the slowest node");
 }
 
 #[tokio::test]
@@ -3527,7 +3546,7 @@ async fn test_grafana_validator_profiling_with_failures() {
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
-    let arr = json.as_array().expect("should return an array");
+    let arr = json["nodes"].as_array().expect("nodes should be an array");
     assert_eq!(arr.len(), 1, "expected 1 node");
 
     let entry = &arr[0];
@@ -3535,6 +3554,7 @@ async fn test_grafana_validator_profiling_with_failures() {
     assert_eq!(entry["failures"].as_i64().unwrap(), 1);
     let failure_rate = entry["failure_rate"].as_f64().unwrap();
     assert!((failure_rate - 1.0 / 3.0).abs() < 0.01, "failure_rate should be ~0.333: {}", failure_rate);
+    assert!(json["network_avg_total_ms"].is_number(), "missing network_avg_total_ms");
 }
 
 #[tokio::test]

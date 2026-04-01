@@ -1832,7 +1832,9 @@ impl EventStore {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
         core_filter: Option<i16>,
-    ) -> Result<Vec<ValidatorProfilingRow>, sqlx::Error> {
+        limit: Option<u32>,
+        ascending: bool,
+    ) -> Result<ValidatorProfilingResponse, sqlx::Error> {
         let rows = sqlx::query(
             r#"
             SELECT
@@ -1902,14 +1904,32 @@ impl EventStore {
             })
             .collect();
 
-        // Sort by avg_total_ms DESC (slowest first), NULLs last
-        result.sort_by(|a, b| {
-            b.avg_total_ms
-                .partial_cmp(&a.avg_total_ms)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        // Sort by avg_total_ms, NULLs last
+        if ascending {
+            result.sort_by(|a, b| {
+                a.avg_total_ms
+                    .partial_cmp(&b.avg_total_ms)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        } else {
+            result.sort_by(|a, b| {
+                b.avg_total_ms
+                    .partial_cmp(&a.avg_total_ms)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
 
-        Ok(result)
+        // Apply limit after sorting (network_avg already reflects all nodes)
+        if let Some(n) = limit {
+            result.truncate(n as usize);
+        }
+
+        let network_avg_total_ms = if network_avg > 0.0 { Some(network_avg) } else { None };
+
+        Ok(ValidatorProfilingResponse {
+            network_avg_total_ms,
+            nodes: result,
+        })
     }
 
     // ── 17. grafana_validator_profiling_timeseries ─────────────────────────
