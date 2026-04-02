@@ -6,6 +6,7 @@ use crate::batch_writer::{BatchWriter, EventRecord};
 use crate::decoder::{decode_message_frame, Decode, DecodingError};
 use crate::enricher::EnricherMap;
 use crate::event_broadcaster::{build_ws_envelope, BroadcastRecord, EventBroadcaster};
+use crate::feature_flags::FeatureFlags;
 use crate::event_counter::{self, EventCounter};
 use crate::events::{Event, NodeInformation};
 use crate::rate_limiter::RateLimiter;
@@ -149,6 +150,7 @@ pub struct TelemetryServer {
     header_hash_lookup: HeaderHashLookup,
     da_tracker: DaTracker,
     da_latency_tracker: DaLatencyTracker,
+    feature_flags: FeatureFlags,
     connection_watch: Arc<tokio::sync::watch::Sender<usize>>,
     /// Kept alive so the watch channel stays open (senders fail when all receivers drop)
     #[allow(dead_code)]
@@ -174,7 +176,7 @@ impl TelemetryServer {
         no_rate_limit: bool,
         ingestion_threads: usize,
     ) -> Result<Self, std::io::Error> {
-        Self::with_options_and_metrics(bind_address, store, no_rate_limit, ingestion_threads, None)
+        Self::with_options_and_metrics(bind_address, store, no_rate_limit, ingestion_threads, None, FeatureFlags::default())
             .await
     }
 
@@ -184,6 +186,7 @@ impl TelemetryServer {
         no_rate_limit: bool,
         ingestion_threads: usize,
         metrics_tx: Option<tokio::sync::mpsc::Sender<crate::metrics_tracker::MetricsEvent>>,
+        feature_flags: FeatureFlags,
     ) -> Result<Self, std::io::Error> {
         let bind_addr: SocketAddr = bind_address.parse().map_err(|e| {
             std::io::Error::new(
@@ -226,8 +229,6 @@ impl TelemetryServer {
             "Number of events pending in write buffer"
         );
 
-        let batch_writer = BatchWriter::new(store.clone());
-
         if no_rate_limit {
             info!("Rate limiting DISABLED - nodes can send unlimited events");
         }
@@ -235,7 +236,20 @@ impl TelemetryServer {
         let (connection_watch, connection_watch_rx) = tokio::sync::watch::channel(0usize);
 
         let broadcaster = Arc::new(EventBroadcaster::with_metrics_tx(metrics_tx));
-        broadcaster.start_aggregator();
+        if !feature_flags.disable_ws_broadcast {
+            broadcaster.start_aggregator();
+        } else {
+            info!("WebSocket broadcast DISABLED — skipping aggregator");
+        }
+
+        // When db writes are disabled, use a no-store BatchWriter (no channel, no workers)
+        let effective_store = if feature_flags.disable_db_writes {
+            info!("DB writes DISABLED — batch writer will be no-op");
+            None
+        } else {
+            store.clone()
+        };
+        let batch_writer = BatchWriter::new(effective_store);
 
         Ok(Self {
             listener,
@@ -255,6 +269,7 @@ impl TelemetryServer {
             header_hash_lookup: convergence_tracker::new_header_hash_lookup(),
             da_tracker: da_tracker::new_da_tracker(),
             da_latency_tracker: da_latency_tracker::new_da_latency_tracker(),
+            feature_flags,
             connection_watch: Arc::new(connection_watch),
             _connection_watch_rx: connection_watch_rx,
         })
@@ -336,6 +351,7 @@ impl TelemetryServer {
             let header_hash_lookup = Arc::clone(&self.header_hash_lookup);
             let da_tracker = Arc::clone(&self.da_tracker);
             let da_latency_tracker = Arc::clone(&self.da_latency_tracker);
+            let feature_flags = self.feature_flags;
             let connection_watch = Arc::clone(&self.connection_watch);
 
             let handle = std::thread::Builder::new()
@@ -394,6 +410,7 @@ impl TelemetryServer {
                                                 header_hash_lookup: Arc::clone(&header_hash_lookup),
                                                 da_tracker: Arc::clone(&da_tracker),
                                                 da_latency_tracker: Arc::clone(&da_latency_tracker),
+                                                feature_flags,
                                                 connection_watch: Arc::clone(&connection_watch),
                                             };
 
@@ -457,6 +474,7 @@ impl TelemetryServer {
             header_hash_lookup: Arc::clone(&self.header_hash_lookup),
             da_tracker: Arc::clone(&self.da_tracker),
             da_latency_tracker: Arc::clone(&self.da_latency_tracker),
+            feature_flags: self.feature_flags,
             connection_watch: Arc::clone(&self.connection_watch),
         };
 
@@ -659,6 +677,7 @@ struct ConnectionContext {
     header_hash_lookup: HeaderHashLookup,
     da_tracker: DaTracker,
     da_latency_tracker: DaLatencyTracker,
+    feature_flags: FeatureFlags,
     connection_watch: Arc<tokio::sync::watch::Sender<usize>>,
 }
 
@@ -682,6 +701,7 @@ async fn handle_connection_optimized(
         header_hash_lookup,
         da_tracker,
         da_latency_tracker,
+        feature_flags: ff,
         connection_watch,
     } = ctx;
     // Set TCP nodelay for lower latency
@@ -837,15 +857,17 @@ async fn handle_connection_optimized(
                             );
 
                             // Enrich event with cross-event correlation (core, services, wp_hash)
-                            let enriched = {
+                            let enriched = if !ff.disable_enricher {
                                 let mut enricher = enricher_map
                                     .entry(node_id_str.clone())
                                     .or_default();
                                 enricher.process(&event, this_event_id)
+                            } else {
+                                crate::enricher::EnrichedFields::default()
                             };
 
                             // Update SlotTracker for block propagation convergence
-                            if let Some(slot) = enriched.slot {
+                            if let Some(slot) = enriched.slot.filter(|_| !ff.disable_slot_tracker) {
                                 let evt_ts = event.timestamp();
                                 let et_raw = event.event_type() as u16;
                                 match et_raw {
@@ -881,7 +903,7 @@ async fn handle_connection_optimized(
                             }
 
                             // Update WpTracker for work package pipeline tracking
-                            {
+                            if !ff.disable_wp_tracker {
                                 let et_raw = event.event_type() as u16;
                                 let evt_ts = event.timestamp();
                                 match et_raw {
@@ -973,7 +995,7 @@ async fn handle_connection_optimized(
                             }
 
                             // Update GuaranteeConvergenceTracker for guarantee propagation convergence
-                            {
+                            if !ff.disable_convergence {
                                 let et_raw = event.event_type() as u16;
                                 let evt_ts = event.timestamp();
                                 match et_raw {
@@ -1045,7 +1067,7 @@ async fn handle_connection_optimized(
                             }
 
                             // Update AssuranceConvergenceTracker for assurance propagation convergence
-                            {
+                            if !ff.disable_convergence {
                                 let et_raw = event.event_type() as u16;
                                 let evt_ts = event.timestamp();
                                 match et_raw {
@@ -1132,7 +1154,7 @@ async fn handle_connection_optimized(
                             }
 
                             // Update DaTracker for shard distribution and preimage events
-                            {
+                            if !ff.disable_da_tracker {
                                 let et_raw = event.event_type() as u16;
                                 let evt_ts = event.timestamp();
                                 match et_raw {
@@ -1310,7 +1332,7 @@ async fn handle_connection_optimized(
                             }
 
                             // Update DaLatencyTracker for bundle/segment/preimage latency
-                            {
+                            if !ff.disable_da_tracker {
                                 let et_raw = event.event_type() as u16;
                                 let evt_ts = event.timestamp();
                                 match et_raw {
@@ -1629,7 +1651,7 @@ async fn handle_connection_optimized(
 
                             // Pre-aggregate high-volume events into in-memory counters
                             let et_val = event.event_type() as u16;
-                            if event_counter::is_pre_aggregated(et_val) {
+                            if !ff.disable_event_counter && event_counter::is_pre_aggregated(et_val) {
                                 let unix_micros = crate::types::JCE_EPOCH_UNIX_MICROS
                                     + event.timestamp() as i64;
                                 event_counter::record_event(
@@ -1643,35 +1665,39 @@ async fn handle_connection_optimized(
                             }
 
                             // Build WS envelope in ingestion thread (parallelized across 8 runtimes)
-                            let id = broadcaster.next_event_id();
-                            let event_type = event.event_type() as u8;
-                            let timestamp = chrono::Utc::now();
-                            let ws_json = build_ws_envelope(
-                                id,
-                                &node_id_str,
-                                event_type,
-                                &event_json,
-                                timestamp,
-                                &mut ws_buf,
-                            );
+                            if !ff.disable_ws_broadcast {
+                                let id = broadcaster.next_event_id();
+                                let event_type = event.event_type() as u8;
+                                let timestamp = chrono::Utc::now();
+                                let ws_json = build_ws_envelope(
+                                    id,
+                                    &node_id_str,
+                                    event_type,
+                                    &event_json,
+                                    timestamp,
+                                    &mut ws_buf,
+                                );
 
-                            // Accumulate for batch send after inner loop
-                            broadcast_batch.push(BroadcastRecord {
-                                node_id: node_id_str.clone(),
-                                event: Arc::clone(&event),
-                                event_json: Arc::clone(&event_json),
-                                id,
-                                event_type,
-                                timestamp,
-                                ws_json,
-                            });
-                            db_batch.push(EventRecord {
-                                node_id: node_id_str.clone(),
-                                event_id: this_event_id,
-                                event,
-                                event_json,
-                                enriched,
-                            });
+                                // Accumulate for batch send after inner loop
+                                broadcast_batch.push(BroadcastRecord {
+                                    node_id: node_id_str.clone(),
+                                    event: Arc::clone(&event),
+                                    event_json: Arc::clone(&event_json),
+                                    id,
+                                    event_type,
+                                    timestamp,
+                                    ws_json,
+                                });
+                            }
+                            if !ff.disable_db_writes {
+                                db_batch.push(EventRecord {
+                                    node_id: node_id_str.clone(),
+                                    event_id: this_event_id,
+                                    event,
+                                    event_json,
+                                    enriched,
+                                });
+                            }
                             batch_received += 1;
 
                             buffer.advance(4 + size as usize);

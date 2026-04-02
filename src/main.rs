@@ -16,6 +16,7 @@ use std::sync::Arc;
 use tart_backend::api::{create_api_router, create_minimal_router, ApiState, MinimalApiState};
 use tart_backend::health::{checks, HealthMonitor};
 use tart_backend::jam_rpc::JamRpcClient;
+use tart_backend::feature_flags::FeatureFlags;
 use tart_backend::{EventStore, TelemetryServer};
 use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -49,6 +50,59 @@ struct Cli {
     #[arg(long, env = "INGESTION_THREADS", default_value_t = 8)]
     ingestion_threads: usize,
 
+    // --- Feature flags for disabling subsystems (memory debugging) ---
+
+    /// Disable enricher (cross-event correlation)
+    #[arg(long, env = "DISABLE_ENRICHER")]
+    disable_enricher: bool,
+
+    /// Disable slot tracker (block propagation convergence)
+    #[arg(long, env = "DISABLE_SLOT_TRACKER")]
+    disable_slot_tracker: bool,
+
+    /// Disable work package tracker
+    #[arg(long, env = "DISABLE_WP_TRACKER")]
+    disable_wp_tracker: bool,
+
+    /// Disable convergence tracking (guarantee + assurance)
+    #[arg(long, env = "DISABLE_CONVERGENCE")]
+    disable_convergence: bool,
+
+    /// Disable DA tracker + DA latency tracker
+    #[arg(long, env = "DISABLE_DA_TRACKER")]
+    disable_da_tracker: bool,
+
+    /// Disable pre-aggregated event counters
+    #[arg(long, env = "DISABLE_EVENT_COUNTER")]
+    disable_event_counter: bool,
+
+    /// Disable WebSocket broadcast (no real-time events to WS clients)
+    #[arg(long, env = "DISABLE_WS_BROADCAST")]
+    disable_ws_broadcast: bool,
+
+    /// Disable batch writer (no raw event persistence to ingested_raw_events)
+    #[arg(long, env = "DISABLE_DB_WRITES")]
+    disable_db_writes: bool,
+
+    /// Disable metrics tracker task
+    #[arg(long, env = "DISABLE_METRICS_TRACKER")]
+    disable_metrics_tracker: bool,
+
+    /// Disable on-chain stats ingestion
+    #[arg(long, env = "DISABLE_ONCHAIN")]
+    disable_onchain: bool,
+
+    /// Disable cache warming task
+    #[arg(long, env = "DISABLE_CACHE_WARMER")]
+    disable_cache_warmer: bool,
+
+    /// Disable all in-memory trackers (enricher, slot, wp, convergence, da, event-counter)
+    #[arg(long, env = "DISABLE_ALL_TRACKERS")]
+    disable_all_trackers: bool,
+
+    /// Decode-only mode: disable everything except TCP decode + rate limiting
+    #[arg(long, env = "INGEST_ONLY")]
+    ingest_only: bool,
 }
 
 /// Configure TCP socket buffer sizes for better performance.
@@ -161,6 +215,26 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Cli::parse();
 
+    // Build feature flags from CLI args (--disable-all-trackers and --ingest-only are convenience combos)
+    let feature_flags = {
+        let all_trackers = args.disable_all_trackers || args.ingest_only;
+        let ingest = args.ingest_only;
+        FeatureFlags {
+            disable_enricher: args.disable_enricher || all_trackers,
+            disable_slot_tracker: args.disable_slot_tracker || all_trackers,
+            disable_wp_tracker: args.disable_wp_tracker || all_trackers,
+            disable_convergence: args.disable_convergence || all_trackers,
+            disable_da_tracker: args.disable_da_tracker || all_trackers,
+            disable_event_counter: args.disable_event_counter || all_trackers,
+            disable_ws_broadcast: args.disable_ws_broadcast || ingest,
+            disable_db_writes: args.disable_db_writes || ingest,
+            disable_metrics_tracker: args.disable_metrics_tracker || ingest,
+            disable_onchain: args.disable_onchain || ingest,
+            disable_cache_warmer: args.disable_cache_warmer || ingest,
+        }
+    };
+    feature_flags.log_disabled();
+
     info!("Starting TART (Testing, Analytics and Research Telemetry) Backend");
     info!("Optimized for handling up to 1024 concurrent nodes");
 
@@ -194,14 +268,16 @@ async fn main() -> anyhow::Result<()> {
 
     // Create metrics tracker channel and shared handle
     let metrics_tracker = Arc::new(tart_backend::metrics_tracker::MetricsTracker::new());
-    let (metrics_tx, metrics_rx) =
-        tokio::sync::mpsc::channel::<tart_backend::metrics_tracker::MetricsEvent>(50_000);
-
-    // Spawn the metrics tracker task (separate from aggregator for isolation)
-    {
+    let metrics_tx = if !feature_flags.disable_metrics_tracker {
+        let (metrics_tx, metrics_rx) =
+            tokio::sync::mpsc::channel::<tart_backend::metrics_tracker::MetricsEvent>(50_000);
         let tracker = Arc::clone(&metrics_tracker);
         tokio::spawn(tart_backend::metrics_tracker::run(tracker, metrics_rx));
-    }
+        Some(metrics_tx)
+    } else {
+        info!("Metrics tracker DISABLED — skipping spawn");
+        None
+    };
 
     // Start telemetry server
     let ingestion_threads = args.ingestion_threads;
@@ -212,7 +288,8 @@ async fn main() -> anyhow::Result<()> {
             store.clone(),
             args.no_rate_limit,
             ingestion_threads,
-            Some(metrics_tx),
+            metrics_tx,
+            feature_flags,
         )
         .await?,
     );
@@ -250,6 +327,7 @@ async fn main() -> anyhow::Result<()> {
         let event_counter = telemetry_server.get_event_counter();
         let enricher_map = telemetry_server.get_enricher_map();
         let pool = store.pool().clone();
+        let ff = feature_flags;
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
             let mut tick_count: u64 = 0;
@@ -257,51 +335,67 @@ async fn main() -> anyhow::Result<()> {
                 interval.tick().await;
                 let cycle_t0 = std::time::Instant::now();
 
-                let t0 = std::time::Instant::now();
-                tart_backend::slot_tracker::flush_slot_tracker(
-                    &slot_tracker,
-                    &pool,
-                    std::time::Duration::from_secs(10),
-                    std::time::Duration::from_secs(60),
-                ).await;
-                let slot_ms = t0.elapsed().as_millis();
+                let slot_ms = if !ff.disable_slot_tracker {
+                    let t0 = std::time::Instant::now();
+                    tart_backend::slot_tracker::flush_slot_tracker(
+                        &slot_tracker,
+                        &pool,
+                        std::time::Duration::from_secs(10),
+                        std::time::Duration::from_secs(60),
+                    ).await;
+                    t0.elapsed().as_millis()
+                } else { 0 };
 
-                let t0 = std::time::Instant::now();
-                tart_backend::wp_tracker::flush_wp_tracker(&wp_tracker, &pool).await;
-                let wp_ms = t0.elapsed().as_millis();
+                let wp_ms = if !ff.disable_wp_tracker {
+                    let t0 = std::time::Instant::now();
+                    tart_backend::wp_tracker::flush_wp_tracker(&wp_tracker, &pool).await;
+                    t0.elapsed().as_millis()
+                } else { 0 };
 
-                let t0 = std::time::Instant::now();
-                tart_backend::convergence_tracker::flush_guarantee_convergence(
-                    &guarantee_convergence_tracker,
-                    &pool,
-                    std::time::Duration::from_secs(10),
-                    std::time::Duration::from_secs(60),
-                ).await;
-                let guar_ms = t0.elapsed().as_millis();
+                let guar_ms = if !ff.disable_convergence {
+                    let t0 = std::time::Instant::now();
+                    tart_backend::convergence_tracker::flush_guarantee_convergence(
+                        &guarantee_convergence_tracker,
+                        &pool,
+                        std::time::Duration::from_secs(10),
+                        std::time::Duration::from_secs(60),
+                    ).await;
+                    t0.elapsed().as_millis()
+                } else { 0 };
 
-                let t0 = std::time::Instant::now();
-                tart_backend::convergence_tracker::flush_assurance_convergence(
-                    &assurance_convergence_tracker,
-                    &pool,
-                    std::time::Duration::from_secs(10),
-                    std::time::Duration::from_secs(60),
-                ).await;
-                let assur_ms = t0.elapsed().as_millis();
+                let assur_ms = if !ff.disable_convergence {
+                    let t0 = std::time::Instant::now();
+                    tart_backend::convergence_tracker::flush_assurance_convergence(
+                        &assurance_convergence_tracker,
+                        &pool,
+                        std::time::Duration::from_secs(10),
+                        std::time::Duration::from_secs(60),
+                    ).await;
+                    t0.elapsed().as_millis()
+                } else { 0 };
 
-                let t0 = std::time::Instant::now();
-                tart_backend::event_counter::flush_event_counter(&event_counter, &pool).await;
-                let counter_ms = t0.elapsed().as_millis();
+                let counter_ms = if !ff.disable_event_counter {
+                    let t0 = std::time::Instant::now();
+                    tart_backend::event_counter::flush_event_counter(&event_counter, &pool).await;
+                    t0.elapsed().as_millis()
+                } else { 0 };
 
                 tick_count += 1;
                 // Flush DA tracker every 2 ticks (10s)
                 let (da_ms, da_lat_ms) = if tick_count % 2 == 0 {
-                    let t0 = std::time::Instant::now();
-                    tart_backend::da_tracker::flush_da_tracker(&da_tracker, &pool).await;
-                    let da = t0.elapsed().as_millis();
-                    let t0 = std::time::Instant::now();
-                    tart_backend::da_latency_tracker::flush_da_latency_tracker(&da_latency_tracker, &pool).await;
-                    let da_lat = t0.elapsed().as_millis();
-                    tart_backend::enricher::log_enricher_diagnostics(&enricher_map, 10.0);
+                    let da = if !ff.disable_da_tracker {
+                        let t0 = std::time::Instant::now();
+                        tart_backend::da_tracker::flush_da_tracker(&da_tracker, &pool).await;
+                        t0.elapsed().as_millis()
+                    } else { 0 };
+                    let da_lat = if !ff.disable_da_tracker {
+                        let t0 = std::time::Instant::now();
+                        tart_backend::da_latency_tracker::flush_da_latency_tracker(&da_latency_tracker, &pool).await;
+                        t0.elapsed().as_millis()
+                    } else { 0 };
+                    if !ff.disable_enricher {
+                        tart_backend::enricher::log_enricher_diagnostics(&enricher_map, 10.0);
+                    }
                     (da, da_lat)
                 } else {
                     (0, 0)
@@ -313,11 +407,11 @@ async fn main() -> anyhow::Result<()> {
                     slot_ms, wp_ms, guar_ms, assur_ms, counter_ms, da_ms, da_lat_ms,
                 );
                 // Evict stale header_hash_lookup entries every 6 ticks (30s)
-                if tick_count % 6 == 0 {
+                if tick_count % 6 == 0 && !ff.disable_convergence {
                     tart_backend::convergence_tracker::evict_header_hash_lookup(&header_hash_lookup, 50000);
                 }
                 // Sweep stale enrichers every 30 ticks (~2.5 min)
-                if tick_count % 30 == 0 {
+                if tick_count % 30 == 0 && !ff.disable_enricher {
                     enricher_map.retain(|_, e| !e.is_stale());
                 }
                 // Retention cleanup: delete convergence rows older than 7 days (every 60 ticks = 5 min)
@@ -382,6 +476,23 @@ async fn main() -> anyhow::Result<()> {
                 if urls.is_empty() {
                     info!("JAM_RPC_URL is empty - JAM RPC endpoints will be unavailable");
                     None
+                } else if feature_flags.disable_onchain {
+                    info!("On-chain stats ingestion DISABLED by feature flag");
+                    // Still connect JamRpcClient for /api/jam endpoints
+                    info!("Connecting to JAM node RPC at {} ({} URL(s))", urls[0], urls.len());
+                    let mut client = JamRpcClient::new(&urls[0]);
+                    match client.connect().await {
+                        Ok(()) => {
+                            let client = Arc::new(client);
+                            let _subscription_handle = client.clone().start_stats_subscription();
+                            info!("JAM RPC client connected (on-chain ingestion disabled)");
+                            Some(client)
+                        }
+                        Err(e) => {
+                            error!("Failed to connect to JAM RPC at {}: {}", urls[0], e);
+                            None
+                        }
+                    }
                 } else {
                     // Always spawn on-chain stats ingestion — it has its own reconnect loop
                     let _onchain_handles = tart_backend::onchain_stats::spawn_onchain_ingestion(
@@ -424,8 +535,8 @@ async fn main() -> anyhow::Result<()> {
             std::time::Duration::from_secs(3),
         ));
 
-        // Spawn background cache warming task
-        {
+        // Spawn background cache warming task (unless disabled)
+        if !feature_flags.disable_cache_warmer {
             let cache_clone = Arc::clone(&cache);
             let store_clone = Arc::clone(store);
             let tracker_clone = Arc::clone(&metrics_tracker);

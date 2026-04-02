@@ -10,6 +10,7 @@ pub mod convergence_tracker;
 pub mod da_latency_tracker;
 pub mod da_tracker;
 pub mod enricher;
+pub mod feature_flags;
 pub mod event_counter;
 pub mod event_broadcaster;
 pub mod event_type_meta;
