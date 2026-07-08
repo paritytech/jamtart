@@ -15,7 +15,7 @@ JAM nodes (×1024) ──binary TCP──▶ TART ──▶ TimescaleDB ──�
 
 This document is onboarding material: what the nodes send, what you can
 measure, and how events flow through the system. For endpoint-level detail see
-the [Swagger UI](swagger.html) (served live at `/api/docs/openapi.json`); for
+the [Swagger UI](https://michalkucharczyk.github.io/files/30-jamtart/swagger.html) (served live at `/api/docs/openapi.json`); for
 the ingestion internals see [pipeline-architecture.md](pipeline-architecture.md).
 
 ---
@@ -263,7 +263,7 @@ in `docs/optimizing-db-plan.*`, `docs/issue-00--get_da_stats_enhanced.txt` and
 
 | Resource | What it gives you |
 |---|---|
-| [Swagger UI](swagger.html) / `GET /api/docs/openapi.json` | Every `/api/grafana/*` endpoint, parameters and response schemas |
+| [Swagger UI](https://michalkucharczyk.github.io/files/30-jamtart/swagger.html) / `GET /api/docs/openapi.json` | Every `/api/grafana/*` endpoint, parameters and response schemas |
 | `playground/tart-cli.py` | Explore the API from the terminal: `list`, `events`, `scan`, `query <name> --since 1h` |
 | [grafana-guide.md](grafana-guide.md) | Endpoint specs and dashboard recipes |
 | [pipeline-architecture.md](pipeline-architecture.md) | "Life of an event" — the ingestion internals in detail |

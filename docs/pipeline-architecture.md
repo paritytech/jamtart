@@ -2,7 +2,9 @@
 
 ## The Problem
 
-TART (Testing, Analytics and Research Telemetry) ingests binary telemetry from up to 1,024 concurrent JAM blockchain nodes over TCP, enriches each event with cross-event correlation data, persists it to PostgreSQL, and simultaneously streams it to WebSocket clients in real time. The core challenge is doing all of this at 600K+ events/second without dropping data, starving any consumer, or creating lock contention between the ingestion and output paths.
+TART (Testing, Analytics and Research Telemetry) ingests binary telemetry from up to 1,024 concurrent JAM blockchain nodes over TCP, enriches each event with cross-event correlation data, aggregates it into TimescaleDB, and simultaneously streams it to WebSocket clients in real time. The core challenge is doing all of this at a design target of ~3M events/second without dropping data, starving any consumer, or creating lock contention between the ingestion and output paths.
+
+Storage follows one rule: **do the work at ingestion time**. Raw events are kept only for 1 hour (browsing/drilldown); everything long-lived is aggregated *as events arrive* — per-group count tables, lifecycle trackers, latency histograms — so read queries never scan raw events.
 
 ## Big Picture
 
@@ -20,55 +22,58 @@ TART (Testing, Analytics and Research Telemetry) ingests binary telemetry from u
      |  current) |    |  current) |    |  current) |          + SO_REUSEPORT listener
      +-----------+    +-----------+    +-----------+
             |                |                |
-            |  Per-connection: decode -> rate-limit -> enrich -> build WS JSON
-            |                |                |
+            |  Per-connection: decode -> rate-limit -> enrich
+            |    -> count + update trackers (in-memory) -> build WS JSON
             +-------+--------+--------+-------+
-                    |                  |
-       try_send (non-blocking)   try_send (non-blocking)
-                    |                  |
-                    v                  v
-     +---------------------------+  +---------------------------+
-     |  tokio mpsc (5M capacity) |  | tokio mpsc (500K capacity)|
-     |     BatchWriter chan      |  |   EventBroadcaster chan   |
-     +---------------------------+  +---------------------------+
-                    |                  |
-          (main tokio runtime)   (main tokio runtime)
-                    |                  |
-     +--------------+------+     +----v----+
-     |  8 writer workers   |     |Aggregator|  single tokio task
-     |  (tokio tasks,      |     | task     |  routes to:
-     |   work-stealing     |     +----+-----+   - broadcast channel (500K)
-     |   via Arc<Mutex<Rx>>)|          |        - per-node channels (10K each)
-     +---------+-----------+          |        - ring buffer (10K recent)
-               |                      |        - MetricsTracker (mpsc 50K)
-               v                      |
-     +-------------------+            v
-     |   PostgreSQL      |    +---------------+
-     |   (COPY batches)  |    | broadcast::Rx |  per WS client
-     +-------------------+    +-------+-------+
-                                      |
-                              +-------v-------+
-                              |  Axum WS      |
-                              |  handlers     |  HTTP port 8080
-                              +---------------+
+                    |                  |                    \
+       try_send (non-blocking)   try_send (non-blocking)    inline DashMap writes
+                    |                  |                          |
+                    v                  v                          v
+     +---------------------------+  +---------------------------+  +--------------------------+
+     |  tokio mpsc (5M capacity) |  | tokio mpsc (500K capacity)|  | event_counter DashMap    |
+     |     BatchWriter chan      |  |   EventBroadcaster chan   |  | slot / wp / convergence  |
+     +---------------------------+  +---------------------------+  | / DA trackers (DashMaps) |
+                    |                  |                           +------------+-------------+
+          (main tokio runtime)   (main tokio runtime)                           |
+                    |                  |                              periodic flush task
+     +--------------+------+     +----v----+                          (5s tick, COPY BINARY)
+     |  8 writer workers   |     |Aggregator|  single tokio task                 |
+     |  (tokio tasks,      |     | task     |  routes to:                        v
+     |   work-stealing     |     +----+-----+   - broadcast channel   +----------------------+
+     |   via Arc<Mutex<Rx>>)|          |        - per-node channels   | 14 count tables      |
+     +---------+-----------+          |        - ring buffer          | + tracker/histogram  |
+               |                      |        - MetricsTracker       |   tables             |
+               v                      v                               +----------------------+
+     +----------------------+  +---------------+
+     | ingested_raw_events  |  | broadcast::Rx |  per WS client
+     | (1h retention)       |  +-------+-------+
+     | + aux tables (COPY)  |          |
+     +----------------------+  +-------v-------+
+                               |  Axum WS      |
+                               |  handlers     |  HTTP port 8080
+                               +---------------+
 ```
 
-One paragraph to tie it together: each TCP connection is handled by a task on one of 8 dedicated ingestion runtimes. Inside that task, events are decoded, rate-limited, enriched with correlation context (core, services, wp_hash), and pre-serialized into JSON. The enriched event is then fanned out over two non-blocking channels: one to the `BatchWriter` for PostgreSQL persistence, and one to the `EventBroadcaster` for real-time WebSocket delivery. Both consumers run on the main tokio multi-thread runtime, completely decoupled from the ingestion hot path.
+One paragraph to tie it together: each TCP connection is handled by a task on one of 8 dedicated ingestion runtimes. Inside that task, events are decoded, rate-limited, enriched with correlation context (core, services, wp_hash), counted into in-memory aggregation state, and pre-serialized into JSON. The enriched event is then fanned out over two non-blocking channels: one to the `BatchWriter` for short-lived raw persistence, and one to the `EventBroadcaster` for real-time WebSocket delivery. The in-memory counters and trackers are drained to TimescaleDB by a periodic flush task every 5 seconds — that aggregated data, not the raw events, is what dashboards query. Every stage of the pipeline can be individually disabled with a `--disable-*` CLI flag (see `src/feature_flags.rs`) for memory/performance bisection.
 
 ## Meet the Characters
 
 | Component | Role | Source |
 |-----------|------|--------|
-| `TelemetryServer` | Owns the TCP listener(s), spawns per-connection tasks, holds shared state | [server.rs](https://github.com/paritytech/jamtart/blob/cee42d7b3323c87d24c0a47074f16b5eee7a685b/src/server.rs#L120) |
-| `ConnectionContext` | Per-connection bundle of cloned `Arc` handles to shared components | [server.rs#L531](https://github.com/paritytech/jamtart/blob/cee42d7b3323c87d24c0a47074f16b5eee7a685b/src/server.rs#L531) |
-| `NodeEventEnricher` | Per-node stateful enricher -- correlates submission IDs, cores, service IDs across events | [enricher.rs#L48](https://github.com/paritytech/jamtart/blob/cee42d7b3323c87d24c0a47074f16b5eee7a685b/src/enricher.rs#L48) |
-| `SlotTracker` | `DashMap<u32, SlotState>` -- tracks block propagation convergence per slot | [slot_tracker.rs#L12](https://github.com/paritytech/jamtart/blob/cee42d7b3323c87d24c0a47074f16b5eee7a685b/src/slot_tracker.rs#L12) |
-| `WpTracker` | `DashMap<[u8;32], WpState>` -- tracks work package pipeline stages by hash | [wp_tracker.rs#L15](https://github.com/paritytech/jamtart/blob/cee42d7b3323c87d24c0a47074f16b5eee7a685b/src/wp_tracker.rs#L15) |
-| `BatchWriter` | Channels events to 8 writer workers for batched PostgreSQL COPY writes | [batch_writer.rs#L51](https://github.com/paritytech/jamtart/blob/cee42d7b3323c87d24c0a47074f16b5eee7a685b/src/batch_writer.rs#L51) |
-| `EventBroadcaster` | Funnels events through an aggregator task to `broadcast` channels and a ring buffer | [event_broadcaster.rs#L168](https://github.com/paritytech/jamtart/blob/cee42d7b3323c87d24c0a47074f16b5eee7a685b/src/event_broadcaster.rs#L168) |
-| `MetricsTracker` | Single-writer task computing block propagation and WP pipeline snapshots in memory | [metrics_tracker.rs#L27](https://github.com/paritytech/jamtart/blob/cee42d7b3323c87d24c0a47074f16b5eee7a685b/src/metrics_tracker.rs#L27) |
-| `LiveCounters` | Lock-free atomic ring buffer of 60 per-second buckets for real-time counters | [live_counters.rs#L11](https://github.com/paritytech/jamtart/blob/cee42d7b3323c87d24c0a47074f16b5eee7a685b/src/live_counters.rs#L11) |
-| `RateLimiter` | Lock-free per-node token bucket using packed `AtomicU64` CAS | [rate_limiter.rs#L60](https://github.com/paritytech/jamtart/blob/cee42d7b3323c87d24c0a47074f16b5eee7a685b/src/rate_limiter.rs#L60) |
+| `TelemetryServer` | Owns the TCP listener(s), spawns per-connection tasks, holds shared state | `src/server.rs` |
+| `ConnectionContext` | Per-connection bundle of cloned `Arc` handles to shared components | `src/server.rs` |
+| `NodeEventEnricher` | Per-node stateful enricher -- correlates submission IDs, cores, service IDs across events | `src/enricher.rs` |
+| `EventCounter` | `DashMap<CountKey, i64>` -- counts every event into (30s bucket, node, type, dims) cells; the source of all long-term stats | `src/event_counter.rs` |
+| `SlotTracker` | `DashMap<u32, SlotState>` -- tracks block propagation convergence per slot | `src/slot_tracker.rs` |
+| `WpTracker` | `DashMap<[u8;32], WpState>` -- tracks work package pipeline stages by hash | `src/wp_tracker.rs` |
+| Convergence trackers | Guarantee/assurance propagation timing per slot/anchor, plus a `header_hash_lookup` map | `src/convergence_tracker.rs` |
+| `DaTracker` / DA latency tracker | Per-node DA stats and shard/bundle/segment/preimage latency histograms | `src/da_tracker.rs`, `src/da_latency_tracker.rs` |
+| `BatchWriter` | Channels events to 8 writer workers for batched COPY writes to the 1h raw store + aux tables | `src/batch_writer.rs` |
+| `EventBroadcaster` | Funnels events through an aggregator task to `broadcast` channels and a ring buffer | `src/event_broadcaster.rs` |
+| `MetricsTracker` | Single-writer task computing block propagation and WP pipeline snapshots in memory | `src/metrics_tracker.rs` |
+| `LiveCounters` | Lock-free atomic ring buffer of 60 per-second buckets for real-time counters | `src/live_counters.rs` |
+| `RateLimiter` | Lock-free per-node token bucket using packed `AtomicU64` CAS | `src/rate_limiter.rs` |
+| `FeatureFlags` | `--disable-*` switches gating each subsystem above | `src/feature_flags.rs` |
 
 ## The Story
 
@@ -89,7 +94,7 @@ let handle = std::thread::Builder::new()
         rt.block_on(async move { /* accept loop */ });
     })
 ```
-[Source: server.rs#L315-L321](https://github.com/paritytech/jamtart/blob/cee42d7b3323c87d24c0a47074f16b5eee7a685b/src/server.rs#L315-L321)
+[Source: `src/server.rs`, `spawn_ingestion_runtimes`]
 
 When a connection arrives, `handle_connection_optimized` spawns as a tokio task **on the same single-thread runtime**. It reads the first message (always `NodeInformation` -- the node's identity), then enters an event loop:
 
@@ -98,11 +103,12 @@ When a connection arrives, `handle_connection_optimized` spawns as a tokio task 
 3. **Rate-limit** via `RateLimiter::allow_event()` -- a lock-free CAS on a packed `AtomicU64` (count + window start in one 8-byte word)
 4. **Serialize** the event to JSON once (`serde_json::to_vec`), wrap in `Arc<[u8]>` for zero-copy sharing
 5. **Enrich** via the per-node `NodeEventEnricher` (more on this below)
-6. **Update trackers** -- `SlotTracker` and `WpTracker` are `DashMap`s written inline
-7. **Build WS envelope** -- pre-serializes the full WebSocket JSON using `serde_json::RawValue` to avoid double-serialization
-8. **Batch-send** -- accumulated events from a single TCP read are sent as one `Vec` to both channels
+6. **Update trackers** -- `SlotTracker`, `WpTracker`, guarantee/assurance convergence trackers, `DaTracker` and the DA latency tracker are all `DashMap`s written inline
+7. **Count** -- increment the event's `(30s bucket, node, type, dims)` cell in the `EventCounter` DashMap (all 115 event types)
+8. **Build WS envelope** -- pre-serializes the full WebSocket JSON using `serde_json::RawValue` to avoid double-serialization
+9. **Batch-send** -- accumulated events from a single TCP read are sent as one `Vec` to both channels
 
-Here is the tricky part: steps 4-7 happen **inside the ingestion thread**, parallelized across 8 runtimes. This moves the expensive serialization work off the main runtime. The channels receive pre-built payloads.
+Here is the tricky part: steps 4-8 happen **inside the ingestion thread**, parallelized across 8 runtimes. This moves the expensive serialization and aggregation work off the main runtime. The channels receive pre-built payloads. Each of steps 5-8 is individually gated by a feature flag (`--disable-enricher`, `--disable-slot-tracker`, `--disable-event-counter`, `--disable-ws-broadcast`, ...).
 
 ```
   TCP read wakeup (N events coalesced in one segment)
@@ -111,7 +117,8 @@ Here is the tricky part: steps 4-7 happen **inside the ingestion thread**, paral
   +--- inner decode loop (no I/O, no await) ---+
   | for each frame:                             |
   |   decode -> rate-limit -> serialize ->      |
-  |   enrich -> update trackers -> build WS     |
+  |   enrich -> update trackers -> count ->     |
+  |   build WS                                  |
   |   -> push to broadcast_batch + db_batch     |
   +---------------------------------------------+
        |
@@ -138,11 +145,13 @@ SendingGuarantee (built_id=N) --lookup--> sending_ids[event_id] = {core: 5}
 GuaranteeSent (sending_id=M) --lookup--> core=5
 ```
 
-Each map is capped at 10,000 entries (hard-cleared on overflow) and stale entries are evicted every 1,000 calls. The enricher itself is stored in an `EnricherMap` (`DashMap<NodeId, NodeEventEnricher>`) keyed by node ID. Stale enrichers (no activity for 60s) are swept every ~2.5 minutes from a periodic task in `main.rs`.
+Each map is capped at 50,000 entries (`MAX_MAP_ENTRIES`) and stale entries are evicted every 1,000 calls. The enricher itself is stored in an `EnricherMap` (`DashMap<NodeId, NodeEventEnricher>`) keyed by node ID. Stale enrichers (no activity for 60s) are swept every ~2.5 minutes from a periodic task in `main.rs`.
 
-[Source: enricher.rs#L91](https://github.com/paritytech/jamtart/blob/cee42d7b3323c87d24c0a47074f16b5eee7a685b/src/enricher.rs#L91)
+The enriched fields (`slot`, `core`, `submission_id`, `service_ids`, `wp_hash`) are written to the DB as hot columns and count-table dimensions -- they are **not** added to the WebSocket broadcast payload.
 
-### Act 3: Database Persistence -- The BatchWriter
+[Source: `src/enricher.rs`]
+
+### Act 3: Raw Persistence -- The BatchWriter
 
 The `BatchWriter` uses a **work-stealing pool** pattern: 8 writer workers share a single `mpsc::Receiver` wrapped in `Arc<Mutex<Receiver>>`.
 
@@ -165,16 +174,45 @@ The `BatchWriter` uses a **work-stealing pool** pattern: 8 writer workers share 
        | Phase 3: PostgreSQL COPY batch flush (milliseconds, no lock held)
        |
        v
-  PostgreSQL (events table, event_services, node_stats)
+  TimescaleDB (ingested_raw_events, event_services, node_stats)
 ```
 
 Each worker blocks on `rx.recv()` for the first event, then drains aggressively for up to 100ms or 16,000 events (whichever comes first). While one worker is blocked on a DB COPY, the other 7 pick up work. This is the "work-stealing" part -- no explicit scheduling, just mutex contention that naturally load-balances.
 
-Node stats (event counts per node) follow a different path: each worker accumulates local counts in a `HashMap`, then merges them into a shared `HashMap` every 5 seconds. A separate dedicated task flushes that aggregated map to the database, preventing deadlocks from concurrent UPDATE statements.
+**All event types are written raw -- but raw is not the store of record.** `ingested_raw_events` has a **1-hour retention policy** (migration 020) and exists purely for browsing and drilldown (`/api/grafana/events`, per-WP event views). Hot columns (`slot`, `core`, `submission_id`, `wp_hash`) are populated at write time so drilldowns never parse JSONB. Long-term data lives exclusively in the count tables (Act 4).
 
-[Source: batch_writer.rs#L242](https://github.com/paritytech/jamtart/blob/cee42d7b3323c87d24c0a47074f16b5eee7a685b/src/batch_writer.rs#L242)
+Node stats (extracted `Status` event fields) follow a different path: each worker accumulates local counts in a `HashMap`, then merges them into a shared `HashMap` every 5 seconds. A separate dedicated task flushes that aggregated map to the database, preventing deadlocks from concurrent UPDATE statements.
 
-### Act 4: WebSocket Output -- The EventBroadcaster
+[Source: `src/batch_writer.rs`]
+
+### Act 4: Count Tables -- The Long-Term Store
+
+This is the storage heart of the system, and the part that replaced the original "query raw events" design (which grew 8TB in 48 hours -- see `docs/optimizing-db-plan.00.md`).
+
+Step 7 of the ingestion loop increments a cell in the `EventCounter`:
+
+```
+CountKey { bucket,      // event timestamp aligned to 30s
+           node_id,
+           event_type,
+           slot / core / reason / kind / from_proxy / epoch / service_id }  // per-group dims
+      |
+      v
+DashMap<CountKey, i64>   +1 per event, lock-free, no I/O
+```
+
+Every 5 seconds the periodic flush task drains the map, partitions the cells by event-type range, and COPY-BINARYs them into **14 per-protocol-group count tables**: `status_counts`, `connection_counts`, `block_counts`, `block_distribution_counts`, `ticket_low_counts`, `ticket_counts`, `wp_pipeline_counts`, `guarantee_sending_counts`, `guarantee_receiving_counts`, `shard_counts`, `assurance_counts`, `bundle_counts`, `segment_counts`, `preimage_counts`. Rows are append-only `(bucket, node_id, event_type, event_count, ...dims)` -- queries always `SUM(event_count) GROUP BY`.
+
+Each count table is a TimescaleDB hypertable (3-day retention, compressed) with `_1m` (30-day) and `_1h` (365-day) continuous-aggregate rollups. UNION views (`all_event_stats_30s/1m/1h`, `all_core_stats_1m`) present the whole family as one logical table, and the Grafana endpoints (`src/grafana_store.rs`) auto-select the tier from the requested interval and time-range age.
+
+The same "aggregate at ingestion" pattern covers things counting can't express:
+
+- **Lifecycle trackers**: `SlotTracker` (block propagation percentiles per slot), `WpTracker` (WP pipeline funnel/stage timestamps), guarantee/assurance convergence trackers.
+- **Latency histograms**: the DA latency tracker matches request/response event pairs (shard 120→125, bundles, segments, preimages) and accumulates **additive log-scale histogram buckets** -- these merge correctly across nodes and any time window, unlike pre-computed percentiles.
+
+[Source: `src/event_counter.rs`, `src/convergence_tracker.rs`, `src/da_latency_tracker.rs`; migrations 016 + 020]
+
+### Act 5: WebSocket Output -- The EventBroadcaster
 
 The broadcaster uses an **aggregator pattern** to avoid lock contention: a single tokio task owns all mutable state (node channels, ring buffer) and communicates with the outside world through channels only.
 
@@ -204,9 +242,9 @@ WebSocket clients subscribe by sending an `AggregatorCommand` through a command 
 
 The aggregator drains up to 10,000 events per cycle before yielding to tokio, preventing WS loop starvation that was observed at 700ms stalls without this limit.
 
-[Source: event_broadcaster.rs#L346](https://github.com/paritytech/jamtart/blob/cee42d7b3323c87d24c0a47074f16b5eee7a685b/src/event_broadcaster.rs#L346)
+[Source: `src/event_broadcaster.rs`]
 
-### Act 5: In-Memory Analytics -- MetricsTracker and LiveCounters
+### Act 6: In-Memory Analytics -- MetricsTracker and LiveCounters
 
 The `MetricsTracker` receives every event through a filtered `mpsc` channel (50K capacity) from the aggregator. It runs as a **single tokio task** that owns all mutable state -- no locks for writes. It computes:
 
@@ -218,28 +256,24 @@ Snapshots are rebuilt every 2 seconds and published via `RwLock<Arc<Value>>` -- 
 
 `LiveCounters` takes a different approach: it is a ring buffer of 60 `SecondBucket` structs, each containing `AtomicU64` fields for events, blocks, finalized blocks, announcements, and tickets. The MetricsTracker task calls `record()` on every event (one atomic increment), and API handlers can `sum_last_n_seconds()` at any time without locking. This replaced two SQL queries that took 2.7s and 3.2s.
 
-### Act 6: Periodic Flush Tasks
+### Act 7: The Periodic Flush Task
 
-Two DashMap trackers (`SlotTracker` and `WpTracker`) accumulate state in the ingestion threads but flush to PostgreSQL from a **single periodic task** on the main runtime (every 5 seconds):
+All in-memory aggregation state is drained to TimescaleDB by a **single periodic task** on the main runtime (`main.rs`), ticking every 5 seconds:
 
-```rust
-tokio::spawn(async move {
-    let mut interval = tokio::time::interval(Duration::from_secs(5));
-    loop {
-        interval.tick().await;
-        flush_slot_tracker(&slot_tracker, &pool).await;
-        flush_wp_tracker(&wp_tracker, &pool).await;
-        // Sweep stale enrichers every ~2.5 min
-        tick_count += 1;
-        if tick_count % 30 == 0 {
-            enricher_map.retain(|_, e| !e.is_stale());
-        }
-    }
-});
 ```
-[Source: main.rs#L242-L256](https://github.com/paritytech/jamtart/blob/cee42d7b3323c87d24c0a47074f16b5eee7a685b/src/main.rs#L242-L256)
+every tick (5s):    flush SlotTracker, WpTracker,
+                    guarantee + assurance convergence trackers,
+                    EventCounter -> 14 count tables (COPY BINARY)
+every 2 ticks:      flush DaTracker + DA latency histograms (10s)
+every 6 ticks:      evict header_hash_lookup entries (30s, cap 50K)
+every 30 ticks:     sweep stale enrichers (~2.5 min, 60s idle TTL)
+every 60 ticks:     retention cleanup (5 min): DELETE convergence rows
+                    older than 7 days, drop_chunks on DA hypertables
+```
 
-Both flushers follow a three-phase pattern to avoid holding DashMap guards across `.await` points: (1) iterate and snapshot dirty entries, (2) write to DB without any guards, (3) clear dirty flags and evict stale entries.
+Each flusher follows a three-phase pattern to avoid holding DashMap guards across `.await` points: (1) iterate and snapshot dirty entries, (2) write to DB without any guards, (3) clear dirty flags and evict stale entries. Per-flusher timings are logged each cycle (`periodic_flush cycle=...`).
+
+Raw-event retention (`ingested_raw_events`, 1 hour) and count-table retention/compression are handled by TimescaleDB policies (migration 020), not by this task.
 
 ## Deep Dives
 
@@ -255,8 +289,9 @@ This is worth a dedicated breakdown, since the system uses three distinct thread
 | Node stats flusher | tokio task | 1 | Main runtime | Aggregates counts from all writers, prevents deadlocks |
 | Aggregator (broadcaster) | tokio task | 1 | Main runtime | Single-owner of node channels HashMap; routes events to broadcast channels |
 | MetricsTracker | tokio task | 1 | Main runtime | Single-writer for propagation/pipeline state; publishes snapshots via RwLock |
-| Tracker flush (slot+wp) | tokio task | 1 | Main runtime | Periodic 5s tick; DashMap snapshot -> DB write |
-| Cache warming | tokio task | 1 orchestrator + N spawned | Main runtime | Fires 15+ concurrent SQL queries every 2s, results stored in TtlCache |
+| Periodic flush | tokio task | 1 | Main runtime | 5s tick; drains all tracker DashMaps + EventCounter to DB (Act 7) |
+| On-chain ingestion | tokio tasks | 1 per RPC URL | Main runtime | Subscribes to JAM node RPC `statistics()`, writes `onchain_*` tables |
+| Cache warming | tokio task | 1 orchestrator + N spawned | Main runtime | Periodically refreshes hot query results into TtlCache (gated by `--disable-cache-warmer`) |
 | HTTP/WS server | Axum (tower) | Shared on main runtime | Main multi-thread runtime | `axum::serve` uses hyper under the hood |
 
 The main runtime is the default `#[tokio::main]` multi-thread runtime (number of worker threads = number of CPU cores).
@@ -279,7 +314,7 @@ The main runtime is the default `#[tokio::main]` multi-thread runtime (number of
   +---------------------------------------------------------+
 ```
 
-The ingestion side uses `try_send()` on both the BatchWriter and Broadcaster channels. If either is full, events are dropped with metrics counters incremented -- the system prioritizes liveness over completeness under extreme backpressure.
+The ingestion side uses `try_send()` on both the BatchWriter and Broadcaster channels. If either is full, events are dropped with metrics counters incremented -- the system prioritizes liveness over completeness under extreme backpressure. (The counter/tracker path has no channel at all: it writes DashMaps inline, so it cannot drop.)
 
 ### Drop Strategy (Why No Backpressure)
 
@@ -295,9 +330,13 @@ The large channel capacities (5M, 500K) aren't wasteful — they absorb transien
 
 In `--no-database` mode, the BatchWriter still drains its channel (to prevent OOM) but discards events instead of writing to PostgreSQL.
 
+### Feature Flags
+
+Every subsystem can be disabled independently for memory/performance bisection (`src/feature_flags.rs`): `--disable-enricher`, `--disable-slot-tracker`, `--disable-wp-tracker`, `--disable-convergence`, `--disable-da-tracker`, `--disable-event-counter`, `--disable-ws-broadcast`, `--disable-db-writes`, `--disable-metrics-tracker`, `--disable-onchain`, `--disable-cache-warmer`. All default to enabled; disabled subsystems are logged at startup.
+
 ### Why `Arc<str>` for Node IDs
 
-Node IDs appear in every event record, broadcast record, and DB write. Using `String` would mean a 64-byte heap allocation per clone. `Arc<str>` clone is a single atomic increment -- at 600K events/second across 1024 nodes, this saves millions of allocations per second.
+Node IDs appear in every event record, broadcast record, and DB write. Using `String` would mean a 64-byte heap allocation per clone. `Arc<str>` clone is a single atomic increment -- at hundreds of thousands of events per second across 1024 nodes, this saves millions of allocations per second.
 
 ## Quick Reference
 
@@ -305,6 +344,8 @@ Node IDs appear in every event record, broadcast record, and DB write. Using `St
 |------|---------|
 | Ingestion runtime | Dedicated OS thread + single-thread tokio runtime, one per `SO_REUSEPORT` listener |
 | EnricherMap | `DashMap<NodeId, NodeEventEnricher>` -- per-node cross-event correlation state |
+| EventCounter | `DashMap<CountKey, i64>` -- 30s-bucketed event counts, flushed every 5s to 14 count tables |
+| Count tables | Per-protocol-group hypertables; the long-term store (raw events keep only 1h) |
 | SlotTracker | `DashMap<u32, SlotState>` -- convergence timing for block propagation per slot |
 | WpTracker | `DashMap<[u8;32], WpState>` -- work package pipeline stage tracking by hash |
 | Writer worker | One of 8 tokio tasks sharing a single `mpsc::Receiver` for work-stealing DB writes |
@@ -316,16 +357,20 @@ Node IDs appear in every event record, broadcast record, and DB write. Using `St
 
 ## Source Files
 
-- [main.rs](https://github.com/paritytech/jamtart/blob/cee42d7b3323c87d24c0a47074f16b5eee7a685b/src/main.rs) - CLI parsing, component wiring, periodic tasks, HTTP server startup
-- [server.rs](https://github.com/paritytech/jamtart/blob/cee42d7b3323c87d24c0a47074f16b5eee7a685b/src/server.rs) - `TelemetryServer`, `SO_REUSEPORT` listener creation, connection handling, event decode/enrich loop
-- [batch_writer.rs](https://github.com/paritytech/jamtart/blob/cee42d7b3323c87d24c0a47074f16b5eee7a685b/src/batch_writer.rs) - Work-stealing writer pool, PostgreSQL COPY batch flush, node stats aggregation
-- [event_broadcaster.rs](https://github.com/paritytech/jamtart/blob/cee42d7b3323c87d24c0a47074f16b5eee7a685b/src/event_broadcaster.rs) - Aggregator task, broadcast/per-node channels, ring buffer, WS envelope construction
-- [enricher.rs](https://github.com/paritytech/jamtart/blob/cee42d7b3323c87d24c0a47074f16b5eee7a685b/src/enricher.rs) - `NodeEventEnricher` with submission/built/sending/request/reconstructing correlation maps
-- [slot_tracker.rs](https://github.com/paritytech/jamtart/blob/cee42d7b3323c87d24c0a47074f16b5eee7a685b/src/slot_tracker.rs) - Block convergence tracking and `slot_convergence` table flushing
-- [wp_tracker.rs](https://github.com/paritytech/jamtart/blob/cee42d7b3323c87d24c0a47074f16b5eee7a685b/src/wp_tracker.rs) - Work package pipeline stage tracking and `wp_tracking` table flushing
-- [metrics_tracker.rs](https://github.com/paritytech/jamtart/blob/cee42d7b3323c87d24c0a47074f16b5eee7a685b/src/metrics_tracker.rs) - In-memory block propagation and WP pipeline analytics, snapshot publishing
-- [live_counters.rs](https://github.com/paritytech/jamtart/blob/cee42d7b3323c87d24c0a47074f16b5eee7a685b/src/live_counters.rs) - Lock-free atomic per-second sliding window counters
-- [rate_limiter.rs](https://github.com/paritytech/jamtart/blob/cee42d7b3323c87d24c0a47074f16b5eee7a685b/src/rate_limiter.rs) - Lock-free per-node rate limiting with packed `AtomicU64` CAS
-- [decoder.rs](https://github.com/paritytech/jamtart/blob/cee42d7b3323c87d24c0a47074f16b5eee7a685b/src/decoder.rs) - Binary protocol decoding (length-prefix framing, JAM event types)
-- [store.rs](https://github.com/paritytech/jamtart/blob/cee42d7b3323c87d24c0a47074f16b5eee7a685b/src/store.rs) - PostgreSQL `EventStore` with COPY-based batch inserts and analytics queries
-- [api.rs](https://github.com/paritytech/jamtart/blob/cee42d7b3323c87d24c0a47074f16b5eee7a685b/src/api.rs) - Axum HTTP/WS router, REST endpoints, WebSocket upgrade handlers
+- `src/main.rs` - CLI parsing (incl. `--disable-*` flags), component wiring, the periodic flush task, HTTP server startup
+- `src/server.rs` - `TelemetryServer`, `SO_REUSEPORT` listener creation, connection handling, the decode/enrich/count loop
+- `src/feature_flags.rs` - per-subsystem disable switches
+- `src/event_counter.rs` - `EventCounter` DashMap, event-type→count-table mapping, COPY BINARY flush
+- `src/batch_writer.rs` - Work-stealing writer pool, COPY flush to `ingested_raw_events` + `event_services` + `node_stats`
+- `src/event_broadcaster.rs` - Aggregator task, broadcast/per-node channels, ring buffer, WS envelope construction
+- `src/enricher.rs` - `NodeEventEnricher` with submission/built/sending/request/reconstructing correlation maps
+- `src/slot_tracker.rs` / `src/wp_tracker.rs` - block convergence and WP pipeline tracking + table flushing
+- `src/convergence_tracker.rs` - guarantee/assurance convergence tracking, `header_hash_lookup`
+- `src/da_tracker.rs` / `src/da_latency_tracker.rs` - DA node stats and latency histogram accumulation
+- `src/histogram.rs` - additive log-scale histograms used by the latency trackers
+- `src/metrics_tracker.rs` - In-memory block propagation and WP pipeline analytics, snapshot publishing
+- `src/live_counters.rs` - Lock-free atomic per-second sliding window counters
+- `src/rate_limiter.rs` - Lock-free per-node rate limiting with packed `AtomicU64` CAS
+- `src/decoder.rs` - Binary protocol decoding (length-prefix framing, JAM event types)
+- `src/grafana.rs` / `src/grafana_store.rs` - the active query layer over count tables and tracker tables
+- `src/store.rs` / `src/api.rs` - legacy `EventStore` and REST routes (mostly superseded by `/api/grafana/*`)
