@@ -6,7 +6,7 @@ use crate::types::*;
 use bytes::BytesMut;
 use serde::{Deserialize, Serialize};
 
-pub const TELEMETRY_PROTOCOL_VERSION: u8 = 0;
+pub const TELEMETRY_PROTOCOL_VERSION: u8 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeInformation {
@@ -353,7 +353,7 @@ pub enum Event {
 
     BlockAnnouncementStreamClosed {
         timestamp: Timestamp,
-        peer: PeerId,
+        opened_id: EventId,
         closer: ConnectionSide,
         reason: Reason,
     },
@@ -1451,12 +1451,12 @@ impl Encode for Event {
                 opener.encode(buf)?;
             }
             Event::BlockAnnouncementStreamClosed {
-                peer,
+                opened_id,
                 closer,
                 reason,
                 ..
             } => {
-                peer.encode(buf)?;
+                opened_id.encode(buf)?;
                 closer.encode(buf)?;
                 reason.encode(buf)?;
             }
@@ -1967,7 +1967,7 @@ impl Encode for Event {
                 accumulate_costs, ..
             } => 8 + accumulate_costs.encoded_size(),
             Event::BlockAnnouncementStreamOpened { .. } => 32 + 1,
-            Event::BlockAnnouncementStreamClosed { reason, .. } => 32 + 1 + reason.encoded_size(),
+            Event::BlockAnnouncementStreamClosed { reason, .. } => 8 + 1 + reason.encoded_size(),
             Event::BlockAnnounced { .. } => 32 + 1 + 4 + 32,
             Event::SendingBlockRequest { .. } => 32 + 32 + 1 + 4,
             Event::ReceivingBlockRequest { .. } => 32,

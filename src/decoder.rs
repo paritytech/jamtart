@@ -746,7 +746,7 @@ impl Event {
             }),
             61 => Ok(Event::BlockAnnouncementStreamClosed {
                 timestamp,
-                peer: PeerId::decode(buf)?,
+                opened_id: EventId::decode(buf)?,
                 closer: ConnectionSide::decode(buf)?,
                 reason: Reason::decode(buf)?,
             }),
