@@ -29,42 +29,61 @@ use tokio_tungstenite::tungstenite::Message;
 // ---------------------------------------------------------------------------
 
 /// (path, poll_interval_ms)
+///
+/// Mirrors the Grafana dashboards' Infinity panel queries. `{start}`/`{end}`
+/// are replaced per-request with a 15-minute time window ending now.
 const DASHBOARD_ENDPOINTS: &[(&str, u64)] = &[
     ("/api/metrics/live", 1_000),
     ("/api/metrics/realtime?seconds=60", 1_000),
-    ("/api/stats", 5_000),
-    ("/api/workpackages/active", 5_000),
-    ("/api/blocks", 10_000),
-    ("/api/cores/status", 10_000),
+    ("/api/grafana/stats?start={start}&end={end}", 5_000),
+    ("/api/grafana/wp-active?start={start}&end={end}", 5_000),
     (
-        "/api/events/search?event_types=43,44,45,46,47,11,12&limit=500",
+        "/api/grafana/blocks/summary?start={start}&end={end}",
         10_000,
     ),
-    ("/api/analytics/failure-rates", 12_000),
-    ("/api/analytics/network-health", 12_000),
-    ("/api/metrics/timeseries", 12_000),
-    ("/api/analytics/block-propagation", 15_000),
-    ("/api/workpackages", 15_000),
-    ("/api/guarantees", 15_000),
-    ("/api/da/stats", 15_000),
-    ("/api/guarantees/by-guarantor", 30_000),
-    ("/api/nodes", 30_000),
+    ("/api/grafana/cores?start={start}&end={end}", 10_000),
+    (
+        "/api/grafana/events?start={start}&end={end}&event_types=43,44,45,46,47,11,12&limit=500",
+        10_000,
+    ),
+    ("/api/grafana/failure-rates?start={start}&end={end}", 12_000),
+    (
+        "/api/grafana/network-health?start={start}&end={end}",
+        12_000,
+    ),
+    (
+        "/api/grafana/timeseries?start={start}&end={end}&interval=30s",
+        12_000,
+    ),
+    (
+        "/api/grafana/blocks/convergence?start={start}&end={end}",
+        15_000,
+    ),
+    ("/api/grafana/wp-stats?start={start}&end={end}", 15_000),
+    ("/api/grafana/guarantees?start={start}&end={end}", 15_000),
+    ("/api/grafana/da-stats?start={start}&end={end}", 15_000),
+    (
+        "/api/grafana/guarantees/by-guarantor?start={start}&end={end}",
+        30_000,
+    ),
+    ("/api/grafana/nodes", 30_000),
 ];
 
 /// Additional endpoints when drilling into a core detail page
 const CORE_DETAIL_ENDPOINTS: &[(&str, u64)] = &[
-    ("/api/cores/{core}/validators", 15_000),
-    ("/api/cores/{core}/metrics", 15_000),
-    ("/api/cores/{core}/bottlenecks", 15_000),
-    ("/api/cores/{core}/guarantors/enhanced", 15_000),
-    ("/api/cores/{core}/work-packages", 15_000),
+    ("/api/grafana/cores/{core}?start={start}&end={end}", 15_000),
+    (
+        "/api/grafana/bottlenecks?start={start}&end={end}&core={core}",
+        15_000,
+    ),
+    (
+        "/api/grafana/guarantee-convergence?start={start}&end={end}",
+        15_000,
+    ),
 ];
 
 /// Additional endpoints when viewing a work package detail page
-const WP_DETAIL_ENDPOINTS: &[(&str, u64)] = &[
-    ("/api/workpackages/{hash}/journey/enhanced", 10_000),
-    ("/api/workpackages/{hash}/audit-progress", 10_000),
-];
+const WP_DETAIL_ENDPOINTS: &[(&str, u64)] = &[("/api/grafana/wp/{hash}", 10_000)];
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -460,12 +479,10 @@ fn build_endpoint_list(config: &BenchConfig) -> Vec<(String, u64)> {
                 endpoints.push((path, *interval));
             }
         }
-        Scenario::WpDetail => {
-            if !config.wp_hash.is_empty() {
-                for (path_template, interval) in WP_DETAIL_ENDPOINTS {
-                    let path = path_template.replace("{hash}", &config.wp_hash);
-                    endpoints.push((path, *interval));
-                }
+        Scenario::WpDetail if !config.wp_hash.is_empty() => {
+            for (path_template, interval) in WP_DETAIL_ENDPOINTS {
+                let path = path_template.replace("{hash}", &config.wp_hash);
+                endpoints.push((path, *interval));
             }
         }
         _ => {}
@@ -487,7 +504,7 @@ async fn run_poller(
     run_ends: Instant,
     tx: mpsc::UnboundedSender<Sample>,
 ) {
-    let url = format!("{}{}", base_url, path);
+    let url_template = format!("{}{}", base_url, path);
     let mut ticker = tokio::time::interval(interval);
     let run_ends_tokio = tokio::time::Instant::from_std(run_ends);
 
@@ -502,6 +519,20 @@ async fn run_poller(
         if Instant::now() >= run_ends {
             break;
         }
+
+        // Substitute the sliding 15-minute time window, like a Grafana refresh
+        let url = if url_template.contains("{start}") {
+            let now = chrono::Utc::now();
+            let window_start = now - chrono::Duration::minutes(15);
+            url_template
+                .replace(
+                    "{start}",
+                    &window_start.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                )
+                .replace("{end}", &now.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        } else {
+            url_template.clone()
+        };
 
         let start = Instant::now();
         let result = client.get(&url).send().await;

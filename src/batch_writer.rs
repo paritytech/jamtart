@@ -1,22 +1,35 @@
+//! Batched event writer. Receives event records via an mpsc channel, aggregates
+//! them in memory, and flushes to Postgres on a configurable interval. Also feeds
+//! the work-package tracker, slot tracker, and live counters.
+
 use anyhow::Result;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::Mutex;
 use tokio::time::interval;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
+use crate::enricher::EnrichedFields;
 use crate::events::{Event, NodeInformation};
 use crate::store::EventStore;
+use crate::types::JCE_EPOCH_UNIX_MICROS;
 
 /// Shared string type for node IDs in hot paths.
 /// Arc<str> clone is a single atomic increment vs 64-byte heap allocation for String.
 pub type NodeId = Arc<str>;
 
-/// Event record with pre-serialized JSON: (node_id, event_id, event, event_json).
+/// Event record with pre-serialized JSON and enriched fields.
 /// Used throughout the write pipeline (batch_writer → store).
-pub type EventRecord = (NodeId, u64, Arc<Event>, Arc<[u8]>);
+pub struct EventRecord {
+    pub node_id: NodeId,
+    pub event_id: u64,
+    pub event: Arc<Event>,
+    pub event_json: Arc<[u8]>,
+    pub enriched: EnrichedFields,
+}
 
 /// Number of parallel DB writer tasks (work-stealing pool).
 /// More workers = more concurrent COPY operations in flight while waiting on DB I/O.
@@ -39,6 +52,25 @@ const CHANNEL_SIZE: usize = 5_000_000;
 /// Replaces the per-row trigger which is catastrophic at 3M events/s.
 const NODE_STATS_INTERVAL: Duration = Duration::from_secs(5);
 
+/// Aggregate flush stats across all writer workers (lock-free).
+struct SharedFlushStats {
+    total_events: AtomicU64,
+    total_flushes: AtomicU32,
+    total_flush_us: AtomicU64,
+    max_flush_us: AtomicU64,
+}
+
+impl SharedFlushStats {
+    fn new() -> Self {
+        Self {
+            total_events: AtomicU64::new(0),
+            total_flushes: AtomicU32::new(0),
+            total_flush_us: AtomicU64::new(0),
+            max_flush_us: AtomicU64::new(0),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct BatchWriter {
     sender: Sender<WriterCommand>,
@@ -53,12 +85,7 @@ enum WriterCommand {
     NodeDisconnected {
         node_id: NodeId,
     },
-    Event {
-        node_id: NodeId,
-        event_id: u64,
-        event: Arc<Event>,
-        event_json: Arc<[u8]>,
-    },
+    Event(EventRecord),
     EventBatch {
         events: Vec<EventRecord>,
     },
@@ -108,13 +135,43 @@ impl BatchWriter {
             });
         }
 
+        // Shared flush stats across all writers + single aggregator log task.
+        let shared_flush_stats = Arc::new(SharedFlushStats::new());
+        {
+            let stats = shared_flush_stats.clone();
+            tokio::spawn(async move {
+                let mut tick = interval(Duration::from_secs(10));
+                tick.tick().await; // skip first immediate tick
+                loop {
+                    tick.tick().await;
+                    let events = stats.total_events.swap(0, Ordering::Relaxed);
+                    let flushes = stats.total_flushes.swap(0, Ordering::Relaxed);
+                    let total_us = stats.total_flush_us.swap(0, Ordering::Relaxed);
+                    let max_us = stats.max_flush_us.swap(0, Ordering::Relaxed);
+                    if flushes == 0 {
+                        continue;
+                    }
+                    let avg = Duration::from_micros(total_us / flushes as u64);
+                    let max = Duration::from_micros(max_us);
+                    debug!(
+                        "batch_writer: {:.0} events/s, flushes={}, avg_flush={:?}, max_flush={:?}",
+                        events as f64 / 10.0,
+                        flushes,
+                        avg,
+                        max,
+                    );
+                }
+            });
+        }
+
         for id in 0..NUM_WRITERS {
             let rx = shared_rx.clone();
             let store = store.clone();
             let node_counts = shared_node_counts.clone();
+            let flush_stats = shared_flush_stats.clone();
             tokio::spawn(async move {
                 info!("Writer worker {} started", id);
-                match writer_worker(id, rx, store, node_counts).await {
+                match writer_worker(id, rx, store, node_counts, flush_stats).await {
                     Ok(_) => {
                         info!("Writer worker {} completed normally", id);
                     }
@@ -163,20 +220,9 @@ impl BatchWriter {
     }
 
     /// Queue an event for writing (non-blocking)
-    pub fn write_event(
-        &self,
-        node_id: NodeId,
-        event_id: u64,
-        event: Arc<Event>,
-        event_json: Arc<[u8]>,
-    ) -> Result<()> {
+    pub fn write_event(&self, record: EventRecord) -> Result<()> {
         self.sender
-            .try_send(WriterCommand::Event {
-                node_id,
-                event_id,
-                event,
-                event_json,
-            })
+            .try_send(WriterCommand::Event(record))
             .map_err(|e| anyhow::anyhow!("Channel full: {}", e))?;
         Ok(())
     }
@@ -252,6 +298,7 @@ async fn writer_worker(
     receiver: Arc<Mutex<Receiver<WriterCommand>>>,
     store: Option<Arc<EventStore>>,
     shared_node_counts: Arc<Mutex<HashMap<NodeId, u64>>>,
+    flush_stats: Arc<SharedFlushStats>,
 ) -> Result<()> {
     let mut event_batch: Vec<EventRecord> = Vec::with_capacity(MAX_BATCH_SIZE);
     let mut node_connects: Vec<(NodeId, NodeInformation, String)> = Vec::new();
@@ -278,8 +325,21 @@ async fn writer_worker(
         // Phase 2: Flush EVENT batch to DB (slow, milliseconds — NO lock held)
         // In no-database mode, just discard the events (channel was drained to prevent OOM)
         if !event_batch.is_empty() {
+            let batch_len = event_batch.len() as u64;
             if let Some(ref store) = store {
+                let t0 = std::time::Instant::now();
                 let result = flush_events(store, &mut event_batch).await;
+                let elapsed_us = t0.elapsed().as_micros() as u64;
+                flush_stats
+                    .total_events
+                    .fetch_add(batch_len, Ordering::Relaxed);
+                flush_stats.total_flushes.fetch_add(1, Ordering::Relaxed);
+                flush_stats
+                    .total_flush_us
+                    .fetch_add(elapsed_us, Ordering::Relaxed);
+                flush_stats
+                    .max_flush_us
+                    .fetch_max(elapsed_us, Ordering::Relaxed);
                 if let Err(e) = result {
                     error!("Writer {} event flush error: {}", id, e);
                 }
@@ -452,20 +512,15 @@ fn handle_command(
     flush_response: &mut Option<tokio::sync::oneshot::Sender<Result<()>>>,
 ) -> CommandAction {
     match cmd {
-        WriterCommand::Event {
-            node_id,
-            event_id,
-            event,
-            event_json,
-        } => {
-            *node_counts.entry(node_id.clone()).or_default() += 1;
-            event_batch.push((node_id, event_id, event, event_json));
+        WriterCommand::Event(record) => {
+            *node_counts.entry(record.node_id.clone()).or_default() += 1;
+            event_batch.push(record);
             CommandAction::Continue
         }
         WriterCommand::EventBatch { events } => {
-            for (node_id, event_id, event, event_json) in events {
-                *node_counts.entry(node_id.clone()).or_default() += 1;
-                event_batch.push((node_id, event_id, event, event_json));
+            for record in events {
+                *node_counts.entry(record.node_id.clone()).or_default() += 1;
+                event_batch.push(record);
             }
             CommandAction::Continue
         }
@@ -489,6 +544,31 @@ fn handle_command(
     }
 }
 
+/// Event types that generate rows in event_services junction table.
+const SERVICE_EVENT_TYPES: &[u16] = &[
+    47,  // BlockExecuted (direct, not enriched)
+    92,  // WorkPackageFailed
+    93,  // DuplicateWorkPackage
+    94,  // WorkPackageReceived
+    95,  // Authorized
+    96,  // ExtrinsicDataReceived
+    97,  // ImportsReceived
+    98,  // SharingWorkPackage
+    99,  // WorkPackageSharingFailed
+    100, // BundleSent
+    101, // Refined
+    102, // WorkReportBuilt
+    103, // WorkReportSignatureSent
+    104, // WorkReportSignatureReceived
+    105, // GuaranteeBuilt
+    109, // GuaranteesDistributed
+    160, // WorkPackageHashMapped
+    161, // SegmentsRootMapped
+    168, // ReconstructingSegments
+    170, // SegmentsReconstructed
+    172, // SegmentsVerified
+];
+
 /// Flush only events to database (node updates are decoupled).
 async fn flush_events(store: &Arc<EventStore>, event_batch: &mut Vec<EventRecord>) -> Result<()> {
     let event_count = event_batch.len();
@@ -499,22 +579,483 @@ async fn flush_events(store: &Arc<EventStore>, event_batch: &mut Vec<EventRecord
 
     let start = std::time::Instant::now();
 
-    debug!("Flushing {} events", event_count);
+    trace!("Flushing {} events", event_count);
 
-    // Process events using batch insert
-    let batch = std::mem::take(event_batch);
+    // Collect event_services rows and node_stats rows before consuming the batch.
+    // Owned variants of store::EventServiceRow / store::NodeStatsRow.
+    type OwnedEventServiceRow = (i64, String, i16, i32, Option<i64>, Option<i64>, Option<i64>);
+    type OwnedNodeStatsRow = (
+        i64,
+        String,
+        i32,
+        i32,
+        i32,
+        i32,
+        i64,
+        i32,
+        i32,
+        i16,
+        i16,
+        f32,
+        i16,
+    );
+    let mut service_rows: Vec<OwnedEventServiceRow> = Vec::new();
+    let mut stats_rows: Vec<OwnedNodeStatsRow> = Vec::new();
+
+    for record in event_batch.iter() {
+        let et = record.event.event_type() as u16;
+        let unix_micros = JCE_EPOCH_UNIX_MICROS + record.event.timestamp() as i64;
+
+        // event_services: enriched events with service_ids
+        if SERVICE_EVENT_TYPES.contains(&et) && et != 47 {
+            if let Some(ref sids) = record.enriched.service_ids {
+                let gas = record.event.gas_per_service_item(sids.len());
+                let timing = record.event.timing_per_service_item(sids.len());
+                for (i, sid) in sids.iter().enumerate() {
+                    let (elapsed, load) = timing.get(i).copied().unwrap_or((None, None));
+                    service_rows.push((
+                        unix_micros,
+                        record.node_id.to_string(),
+                        et as i16,
+                        *sid as i32,
+                        gas.get(i).copied().flatten(),
+                        elapsed,
+                        load,
+                    ));
+                }
+            }
+        }
+
+        // event_services: BlockExecuted (direct, no enricher needed)
+        if et == 47 {
+            if let crate::events::Event::BlockExecuted {
+                accumulate_costs, ..
+            } = &*record.event
+            {
+                for (service_id, cost) in accumulate_costs {
+                    service_rows.push((
+                        unix_micros,
+                        record.node_id.to_string(),
+                        47i16,
+                        *service_id as i32,
+                        Some(cost.total.gas_used as i64),
+                        Some(cost.total.elapsed_ns as i64),
+                        Some(cost.load_ns as i64),
+                    ));
+                }
+            }
+        }
+
+        // node_stats: Status events
+        if et == 10 {
+            if let crate::events::Event::Status {
+                num_peers,
+                num_val_peers,
+                num_sync_peers,
+                num_guarantees,
+                num_shards,
+                shards_size,
+                num_preimages,
+                preimages_size,
+                ..
+            } = &*record.event
+            {
+                let min_g = num_guarantees.iter().copied().min().unwrap_or(0) as i16;
+                let max_g = num_guarantees.iter().copied().max().unwrap_or(0) as i16;
+                let avg_g = if num_guarantees.is_empty() {
+                    0.0
+                } else {
+                    num_guarantees.iter().map(|&v| v as f32).sum::<f32>()
+                        / num_guarantees.len() as f32
+                };
+                let zero_g = num_guarantees.iter().filter(|&&v| v == 0).count() as i16;
+
+                stats_rows.push((
+                    unix_micros,
+                    record.node_id.to_string(),
+                    *num_peers as i32,
+                    *num_val_peers as i32,
+                    *num_sync_peers as i32,
+                    *num_shards as i32,
+                    *shards_size as i64,
+                    *num_preimages as i32,
+                    *preimages_size as i32,
+                    min_g,
+                    max_g,
+                    avg_g,
+                    zero_g,
+                ));
+            }
+        }
+    }
+
+    // Flush ALL events to DB — all types write to ingested_raw_events (1h browsing store)
+    // AND to count tables (long-term aggregation via event_counter). No filtering.
+    let batch: Vec<_> = std::mem::take(event_batch);
+    let batch_len = batch.len();
+    let t0 = std::time::Instant::now();
     store.store_events_batch(batch).await.map_err(|e| {
         error!("Failed to store event batch: {}", e);
         anyhow::anyhow!("Event batch storage failed: {}", e)
     })?;
+    let raw_ms = t0.elapsed().as_millis();
+
+    // Flush event_services (independent, failure doesn't roll back events)
+    let svc_count = service_rows.len();
+    let svc_ms;
+    if !service_rows.is_empty() {
+        let refs: Vec<crate::store::EventServiceRow<'_>> = service_rows
+            .iter()
+            .map(|(ts, nid, et, sid, g, elapsed, load)| {
+                (*ts, nid.as_str(), *et, *sid, *g, *elapsed, *load)
+            })
+            .collect();
+        let t0 = std::time::Instant::now();
+        if let Err(e) = store.store_event_services_batch(&refs).await {
+            warn!("Failed to flush event_services: {}", e);
+        }
+        svc_ms = t0.elapsed().as_millis();
+    } else {
+        svc_ms = 0;
+    }
+
+    // Flush node_stats (independent)
+    let stats_count = stats_rows.len();
+    let stats_ms;
+    if !stats_rows.is_empty() {
+        let refs: Vec<crate::store::NodeStatsRow<'_>> = stats_rows
+            .iter()
+            .map(|(ts, nid, a, b, c, d, e, f, g, h, i, j, k)| {
+                (
+                    *ts,
+                    nid.as_str(),
+                    *a,
+                    *b,
+                    *c,
+                    *d,
+                    *e,
+                    *f,
+                    *g,
+                    *h,
+                    *i,
+                    *j,
+                    *k,
+                )
+            })
+            .collect();
+        let t0 = std::time::Instant::now();
+        if let Err(e) = store.store_node_stats_batch(&refs).await {
+            warn!("Failed to flush node_stats: {}", e);
+        }
+        stats_ms = t0.elapsed().as_millis();
+    } else {
+        stats_ms = 0;
+    }
 
     // Update metrics
     metrics::counter!("telemetry_events_flushed").increment(event_count as u64);
 
     debug!(
-        "Flush completed: {} events in {:?}",
-        event_count,
-        start.elapsed()
+        "flush_events: total={:?} raw={}ms({} rows) svc={}ms({} rows) stats={}ms({} rows)",
+        start.elapsed(),
+        raw_ms,
+        batch_len,
+        svc_ms,
+        svc_count,
+        stats_ms,
+        stats_count,
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+
+    use crate::events::Event;
+    use crate::types::*;
+
+    fn zero_exec() -> ExecCost {
+        ExecCost {
+            gas_used: 0,
+            elapsed_ns: 0,
+        }
+    }
+
+    fn zero_refine_host() -> RefineHostCallCost {
+        RefineHostCallCost {
+            lookup: zero_exec(),
+            vm: zero_exec(),
+            mem: zero_exec(),
+            invoke: zero_exec(),
+            other: zero_exec(),
+        }
+    }
+
+    fn zero_accum_host() -> AccumulateHostCallCost {
+        AccumulateHostCallCost {
+            state: zero_exec(),
+            lookup: zero_exec(),
+            preimage: zero_exec(),
+            service: zero_exec(),
+            transfer: zero_exec(),
+            transfer_dest_gas: 0,
+            other: zero_exec(),
+        }
+    }
+
+    /// Test: BlockExecuted gas extraction produces correct service_rows
+    #[test]
+    fn test_service_rows_from_block_executed() {
+        let event = Event::BlockExecuted {
+            timestamp: 1000,
+            authoring_or_importing_id: 1,
+            accumulate_costs: vec![
+                (
+                    10,
+                    AccumulateCost {
+                        num_calls: 1,
+                        num_transfers: 0,
+                        num_items: 1,
+                        total: ExecCost {
+                            gas_used: 500,
+                            elapsed_ns: 100,
+                        },
+                        load_ns: 50,
+                        host_call: zero_accum_host(),
+                    },
+                ),
+                (
+                    20,
+                    AccumulateCost {
+                        num_calls: 2,
+                        num_transfers: 1,
+                        num_items: 3,
+                        total: ExecCost {
+                            gas_used: 1200,
+                            elapsed_ns: 200,
+                        },
+                        load_ns: 60,
+                        host_call: zero_accum_host(),
+                    },
+                ),
+            ],
+        };
+
+        // Simulate the extraction pattern from flush_events
+        let mut service_rows: Vec<(i32, Option<i64>)> = Vec::new();
+        if let Event::BlockExecuted {
+            accumulate_costs, ..
+        } = &event
+        {
+            for (service_id, cost) in accumulate_costs {
+                service_rows.push((*service_id as i32, Some(cost.total.gas_used as i64)));
+            }
+        }
+
+        assert_eq!(service_rows.len(), 2);
+        assert_eq!(service_rows[0], (10, Some(500)));
+        assert_eq!(service_rows[1], (20, Some(1200)));
+    }
+
+    /// Test: Authorized gas assigns to first service only
+    #[test]
+    fn test_authorized_gas_first_only() {
+        let event = Event::Authorized {
+            timestamp: 1000,
+            submission_or_share_id: 100,
+            cost: IsAuthorizedCost {
+                total: ExecCost {
+                    gas_used: 999,
+                    elapsed_ns: 50,
+                },
+                load_ns: 10,
+                host_call: ExecCost {
+                    gas_used: 100,
+                    elapsed_ns: 20,
+                },
+            },
+        };
+
+        let gas = event.gas_per_service_item(3);
+        assert_eq!(gas.len(), 3);
+        assert_eq!(gas[0], Some(999));
+        assert_eq!(gas[1], None);
+        assert_eq!(gas[2], None);
+    }
+
+    /// Test: timing_per_service_item extracts elapsed_ns and load_ns correctly
+    #[test]
+    fn test_timing_per_service_item() {
+        // Authorized: WP-level timing to first service only
+        let auth = Event::Authorized {
+            timestamp: 1000,
+            submission_or_share_id: 100,
+            cost: IsAuthorizedCost {
+                total: ExecCost {
+                    gas_used: 999,
+                    elapsed_ns: 50,
+                },
+                load_ns: 10,
+                host_call: ExecCost {
+                    gas_used: 100,
+                    elapsed_ns: 20,
+                },
+            },
+        };
+        let timing = auth.timing_per_service_item(3);
+        assert_eq!(timing.len(), 3);
+        assert_eq!(timing[0], (Some(50), Some(10)));
+        assert_eq!(timing[1], (None, None));
+        assert_eq!(timing[2], (None, None));
+
+        // Refined: per-work-item timing
+        let refined = Event::Refined {
+            timestamp: 2000,
+            submission_or_share_id: 200,
+            costs: vec![
+                RefineCost {
+                    total: ExecCost {
+                        gas_used: 500,
+                        elapsed_ns: 1000,
+                    },
+                    load_ns: 100,
+                    host_call: zero_refine_host(),
+                },
+                RefineCost {
+                    total: ExecCost {
+                        gas_used: 300,
+                        elapsed_ns: 600,
+                    },
+                    load_ns: 80,
+                    host_call: zero_refine_host(),
+                },
+            ],
+        };
+        let timing = refined.timing_per_service_item(2);
+        assert_eq!(timing.len(), 2);
+        assert_eq!(timing[0], (Some(1000), Some(100)));
+        assert_eq!(timing[1], (Some(600), Some(80)));
+
+        // Other event type: empty
+        let other = Event::BestBlockChanged {
+            timestamp: 3000,
+            slot: 42,
+            hash: [0u8; 32],
+        };
+        let timing = other.timing_per_service_item(1);
+        assert!(timing.is_empty());
+    }
+
+    /// Test: BlockExecuted timing extraction produces correct values
+    #[test]
+    fn test_block_executed_timing_extraction() {
+        let event = Event::BlockExecuted {
+            timestamp: 1000,
+            authoring_or_importing_id: 1,
+            accumulate_costs: vec![
+                (
+                    10,
+                    AccumulateCost {
+                        num_calls: 1,
+                        num_transfers: 0,
+                        num_items: 1,
+                        total: ExecCost {
+                            gas_used: 500,
+                            elapsed_ns: 100,
+                        },
+                        load_ns: 50,
+                        host_call: zero_accum_host(),
+                    },
+                ),
+                (
+                    20,
+                    AccumulateCost {
+                        num_calls: 2,
+                        num_transfers: 1,
+                        num_items: 3,
+                        total: ExecCost {
+                            gas_used: 1200,
+                            elapsed_ns: 200,
+                        },
+                        load_ns: 60,
+                        host_call: zero_accum_host(),
+                    },
+                ),
+            ],
+        };
+
+        // Simulate the extraction pattern from flush_events
+        type CostRow = (i32, Option<i64>, Option<i64>, Option<i64>);
+        let mut rows: Vec<CostRow> = Vec::new();
+        if let Event::BlockExecuted {
+            accumulate_costs, ..
+        } = &event
+        {
+            for (service_id, cost) in accumulate_costs {
+                rows.push((
+                    *service_id as i32,
+                    Some(cost.total.gas_used as i64),
+                    Some(cost.total.elapsed_ns as i64),
+                    Some(cost.load_ns as i64),
+                ));
+            }
+        }
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], (10, Some(500), Some(100), Some(50)));
+        assert_eq!(rows[1], (20, Some(1200), Some(200), Some(60)));
+    }
+
+    /// Test: Status event fields are correctly extracted for node_stats rows
+    #[test]
+    fn test_node_stats_from_status() {
+        let event = Event::Status {
+            timestamp: 1000,
+            num_peers: 50,
+            num_val_peers: 30,
+            num_sync_peers: 10,
+            num_guarantees: vec![0, 3, 5, 0, 2],
+            num_shards: 100,
+            shards_size: 50000,
+            num_preimages: 20,
+            preimages_size: 1000,
+        };
+
+        // Simulate the extraction pattern from flush_events
+        if let Event::Status {
+            num_peers,
+            num_val_peers,
+            num_sync_peers,
+            num_guarantees,
+            num_shards,
+            shards_size,
+            num_preimages,
+            preimages_size,
+            ..
+        } = &event
+        {
+            let min_g = num_guarantees.iter().copied().min().unwrap_or(0) as i16;
+            let max_g = num_guarantees.iter().copied().max().unwrap_or(0) as i16;
+            let avg_g = if num_guarantees.is_empty() {
+                0.0
+            } else {
+                num_guarantees.iter().map(|&v| v as f32).sum::<f32>() / num_guarantees.len() as f32
+            };
+            let zero_g = num_guarantees.iter().filter(|&&v| v == 0).count() as i16;
+
+            assert_eq!(min_g, 0);
+            assert_eq!(max_g, 5);
+            assert!((avg_g - 2.0).abs() < f32::EPSILON);
+            assert_eq!(zero_g, 2);
+            assert_eq!(*num_peers, 50);
+            assert_eq!(*num_val_peers, 30);
+            assert_eq!(*num_sync_peers, 10);
+            assert_eq!(*num_shards, 100);
+            assert_eq!(*shards_size, 50000);
+            assert_eq!(*num_preimages, 20);
+            assert_eq!(*preimages_size, 1000);
+        } else {
+            panic!("Expected Status event");
+        }
+    }
 }

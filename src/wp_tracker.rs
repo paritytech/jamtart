@@ -1,0 +1,424 @@
+//! In-memory work-package pipeline tracker. Tracks each work-package through its
+//! processing stages (received → authorized → refined → report_built →
+//! guarantee_built → distributed) and periodically flushes state to Postgres.
+
+use std::collections::HashSet;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use chrono::{DateTime, TimeZone, Utc};
+use dashmap::DashMap;
+use sqlx::PgPool;
+use tracing::{debug, warn};
+
+use crate::types::JCE_EPOCH_UNIX_MICROS;
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+pub type WpTracker = Arc<DashMap<[u8; 32], WpState>>;
+
+pub fn new_wp_tracker() -> WpTracker {
+    Arc::new(DashMap::new())
+}
+
+// ---------------------------------------------------------------------------
+// WpState
+// ---------------------------------------------------------------------------
+
+pub struct WpState {
+    pub first_seen: u64,
+    pub last_updated: u64,
+    pub core: u16,
+    pub service_ids: Vec<u32>,
+    pub received_by: u16,
+    pub guaranteed_by: u16,
+    /// Nodes that contributed to received_by (in-memory dedup only).
+    pub received_nodes: HashSet<Arc<str>>,
+    /// Nodes that contributed to guaranteed_by (in-memory dedup only).
+    pub guaranteed_nodes: HashSet<Arc<str>>,
+    /// 0=received, 1=authorized, 2=refined, 3=report_built,
+    /// 4=guarantee_built, 5=distributed
+    pub stage: u8,
+    pub received_at: Option<u64>,
+    pub authorized_at: Option<u64>,
+    pub refined_at: Option<u64>,
+    pub report_built_at: Option<u64>,
+    pub guarantee_built_at: Option<u64>,
+    pub distributed_at: Option<u64>,
+    pub failed_at: Option<u64>,
+    pub dirty: bool,
+    pub last_activity: Instant,
+    // Phase 4 additions
+    /// Node that first received this WP (from WorkPackageReceived event)
+    pub node_id: Option<Arc<str>>,
+    /// Total gas from Refined event: SUM(costs[].total.gas_used)
+    pub refine_gas_used: Option<i64>,
+    /// Failure reason from WorkPackageFailed event
+    pub failure_reason: Option<String>,
+}
+
+impl Default for WpState {
+    fn default() -> Self {
+        Self {
+            first_seen: 0,
+            last_updated: 0,
+            core: 0,
+            service_ids: Vec::new(),
+            received_by: 0,
+            guaranteed_by: 0,
+            received_nodes: HashSet::new(),
+            guaranteed_nodes: HashSet::new(),
+            stage: 0,
+            received_at: None,
+            authorized_at: None,
+            refined_at: None,
+            report_built_at: None,
+            guarantee_built_at: None,
+            distributed_at: None,
+            failed_at: None,
+            dirty: false,
+            last_activity: Instant::now(),
+            node_id: None,
+            refine_gas_used: None,
+            failure_reason: None,
+        }
+    }
+}
+
+impl WpState {
+    /// Advance the work-package through its pipeline stage.
+    ///
+    /// `ordinal` is the numeric stage (0..=5).  For the special failure
+    /// event (event_type 92) the caller should set `failed_at` directly or
+    /// pass `ordinal` obtained from `event_type_to_ordinal` — but since 92
+    /// maps to 0 we handle failure separately via `mark_failed`.
+    pub fn update_stage(&mut self, ordinal: u8, timestamp: u64) {
+        match ordinal {
+            0 => {
+                if self.received_at.is_none() {
+                    self.received_at = Some(timestamp);
+                }
+            }
+            1 => {
+                if self.authorized_at.is_none() {
+                    self.authorized_at = Some(timestamp);
+                }
+            }
+            2 => {
+                if self.refined_at.is_none() {
+                    self.refined_at = Some(timestamp);
+                }
+            }
+            3 => {
+                if self.report_built_at.is_none() {
+                    self.report_built_at = Some(timestamp);
+                }
+            }
+            4 => {
+                if self.guarantee_built_at.is_none() {
+                    self.guarantee_built_at = Some(timestamp);
+                }
+            }
+            5 if self.distributed_at.is_none() => {
+                self.distributed_at = Some(timestamp);
+            }
+            _ => {}
+        }
+
+        if ordinal > self.stage {
+            self.stage = ordinal;
+        }
+
+        self.last_updated = timestamp;
+        self.dirty = true;
+        self.last_activity = Instant::now();
+    }
+
+    /// Mark the work-package as failed.
+    pub fn mark_failed(&mut self, timestamp: u64) {
+        if self.failed_at.is_none() {
+            self.failed_at = Some(timestamp);
+        }
+        self.last_updated = timestamp;
+        self.dirty = true;
+        self.last_activity = Instant::now();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Map an event-type id to a pipeline ordinal.
+pub fn event_type_to_ordinal(et: u16) -> u8 {
+    match et {
+        94 => 0,  // received
+        95 => 1,  // authorized
+        101 => 2, // refined
+        102 => 3, // report_built
+        105 => 4, // guarantee_built
+        109 => 5, // distributed
+        _ => 0,
+    }
+}
+
+/// Convert a JCE-epoch microsecond timestamp to a `chrono::DateTime<Utc>`.
+pub fn ts_to_chrono(ts: u64) -> DateTime<Utc> {
+    let unix_us = JCE_EPOCH_UNIX_MICROS + ts as i64;
+    Utc.timestamp_micros(unix_us)
+        .single()
+        .unwrap_or_else(|| Utc.timestamp_micros(0).unwrap())
+}
+
+/// Convert an `Option<u64>` timestamp the same way, returning `None` when the
+/// input is `None`.
+fn opt_ts_to_chrono(ts: Option<u64>) -> Option<DateTime<Utc>> {
+    ts.map(ts_to_chrono)
+}
+
+// ---------------------------------------------------------------------------
+// Flush
+// ---------------------------------------------------------------------------
+
+/// Two-phase flush: collect dirty entries without holding guards across await,
+/// then upsert to Postgres, then clear dirty flags / evict stale entries.
+pub async fn flush_wp_tracker(tracker: &WpTracker, pool: &PgPool) {
+    const EVICT_AFTER: Duration = Duration::from_secs(60);
+
+    // Phase 1 — snapshot dirty entries and find eviction candidates.
+    let mut to_flush: Vec<([u8; 32], WpStateSnapshot)> = Vec::new();
+    let mut to_evict: Vec<[u8; 32]> = Vec::new();
+
+    for entry in tracker.iter() {
+        let key = *entry.key();
+        let val = entry.value();
+
+        if val.dirty {
+            to_flush.push((key, WpStateSnapshot::from(val)));
+        }
+
+        if val.last_activity.elapsed() > EVICT_AFTER {
+            to_evict.push(key);
+        }
+    }
+
+    // Phase 2 — upsert to DB (no DashMap guards held).
+    for (hash, snap) in &to_flush {
+        let first_seen = ts_to_chrono(snap.first_seen);
+        let last_updated = ts_to_chrono(snap.last_updated);
+        let received_at = opt_ts_to_chrono(snap.received_at);
+        let authorized_at = opt_ts_to_chrono(snap.authorized_at);
+        let refined_at = opt_ts_to_chrono(snap.refined_at);
+        let report_built_at = opt_ts_to_chrono(snap.report_built_at);
+        let guarantee_built_at = opt_ts_to_chrono(snap.guarantee_built_at);
+        let distributed_at = opt_ts_to_chrono(snap.distributed_at);
+        let failed_at = opt_ts_to_chrono(snap.failed_at);
+
+        let service_ids: Vec<i32> = snap.service_ids.iter().map(|&s| s as i32).collect();
+
+        let node_id_str = snap.node_id.as_deref().map(|s| s.to_string());
+
+        let res = sqlx::query(
+            r#"
+INSERT INTO wp_tracking (wp_hash, first_seen, last_updated, core, service_ids,
+    received_at, authorized_at, refined_at, report_built_at,
+    guarantee_built_at, distributed_at, failed_at,
+    received_by, guaranteed_by, stage,
+    node_id, refine_gas_used, failure_reason)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+ON CONFLICT (wp_hash)
+DO UPDATE SET
+    last_updated = EXCLUDED.last_updated,
+    received_at = COALESCE(wp_tracking.received_at, EXCLUDED.received_at),
+    authorized_at = COALESCE(wp_tracking.authorized_at, EXCLUDED.authorized_at),
+    refined_at = COALESCE(wp_tracking.refined_at, EXCLUDED.refined_at),
+    report_built_at = COALESCE(wp_tracking.report_built_at, EXCLUDED.report_built_at),
+    guarantee_built_at = COALESCE(wp_tracking.guarantee_built_at, EXCLUDED.guarantee_built_at),
+    distributed_at = COALESCE(wp_tracking.distributed_at, EXCLUDED.distributed_at),
+    failed_at = COALESCE(wp_tracking.failed_at, EXCLUDED.failed_at),
+    received_by = GREATEST(wp_tracking.received_by, EXCLUDED.received_by),
+    guaranteed_by = GREATEST(wp_tracking.guaranteed_by, EXCLUDED.guaranteed_by),
+    stage = GREATEST(wp_tracking.stage, EXCLUDED.stage),
+    node_id = COALESCE(wp_tracking.node_id, EXCLUDED.node_id),
+    refine_gas_used = COALESCE(EXCLUDED.refine_gas_used, wp_tracking.refine_gas_used),
+    failure_reason = COALESCE(EXCLUDED.failure_reason, wp_tracking.failure_reason)
+"#,
+        )
+        .bind(hash.as_slice())
+        .bind(first_seen)
+        .bind(last_updated)
+        .bind(snap.core as i16)
+        .bind(&service_ids)
+        .bind(received_at)
+        .bind(authorized_at)
+        .bind(refined_at)
+        .bind(report_built_at)
+        .bind(guarantee_built_at)
+        .bind(distributed_at)
+        .bind(failed_at)
+        .bind(snap.received_by as i16)
+        .bind(snap.guaranteed_by as i16)
+        .bind(snap.stage as i16)
+        .bind(&node_id_str)
+        .bind(snap.refine_gas_used)
+        .bind(&snap.failure_reason)
+        .execute(pool)
+        .await;
+
+        if let Err(e) = res {
+            warn!(wp_hash = hex::encode(hash), error = %e, "wp_tracking upsert failed");
+        }
+    }
+
+    // Phase 3 — clear dirty flags and evict stale entries.
+    for (hash, _) in &to_flush {
+        if let Some(mut entry) = tracker.get_mut(hash) {
+            entry.dirty = false;
+        }
+    }
+
+    for hash in &to_evict {
+        tracker.remove(hash);
+    }
+
+    let flushed = to_flush.len();
+    let evicted = to_evict.len();
+    if flushed > 0 || evicted > 0 {
+        debug!(
+            flushed,
+            evicted,
+            active = tracker.len(),
+            "wp_tracker flush complete"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Internal snapshot (owned copy, safe to hold across await)
+// ---------------------------------------------------------------------------
+
+struct WpStateSnapshot {
+    first_seen: u64,
+    last_updated: u64,
+    core: u16,
+    service_ids: Vec<u32>,
+    received_by: u16,
+    guaranteed_by: u16,
+    stage: u8,
+    received_at: Option<u64>,
+    authorized_at: Option<u64>,
+    refined_at: Option<u64>,
+    report_built_at: Option<u64>,
+    guarantee_built_at: Option<u64>,
+    distributed_at: Option<u64>,
+    failed_at: Option<u64>,
+    node_id: Option<Arc<str>>,
+    refine_gas_used: Option<i64>,
+    failure_reason: Option<String>,
+}
+
+impl From<&WpState> for WpStateSnapshot {
+    fn from(s: &WpState) -> Self {
+        Self {
+            first_seen: s.first_seen,
+            last_updated: s.last_updated,
+            core: s.core,
+            service_ids: s.service_ids.clone(),
+            received_by: s.received_by,
+            guaranteed_by: s.guaranteed_by,
+            stage: s.stage,
+            received_at: s.received_at,
+            authorized_at: s.authorized_at,
+            refined_at: s.refined_at,
+            report_built_at: s.report_built_at,
+            guarantee_built_at: s.guarantee_built_at,
+            distributed_at: s.distributed_at,
+            failed_at: s.failed_at,
+            node_id: s.node_id.clone(),
+            refine_gas_used: s.refine_gas_used,
+            failure_reason: s.failure_reason.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sequential_pipeline() {
+        let mut state = WpState::default();
+        state.update_stage(0, 100);
+        state.update_stage(1, 200);
+        state.update_stage(2, 300);
+        state.update_stage(3, 400);
+        state.update_stage(4, 500);
+        state.update_stage(5, 600);
+
+        assert_eq!(state.received_at, Some(100));
+        assert_eq!(state.authorized_at, Some(200));
+        assert_eq!(state.refined_at, Some(300));
+        assert_eq!(state.report_built_at, Some(400));
+        assert_eq!(state.guarantee_built_at, Some(500));
+        assert_eq!(state.distributed_at, Some(600));
+        assert_eq!(state.stage, 5);
+        assert!(state.dirty);
+        assert_eq!(state.last_updated, 600);
+    }
+
+    #[test]
+    fn idempotent_stage() {
+        let mut state = WpState::default();
+        state.update_stage(0, 100);
+        state.update_stage(0, 999);
+        assert_eq!(state.received_at, Some(100)); // not overwritten
+        assert_eq!(state.last_updated, 999); // last_updated still advances
+    }
+
+    #[test]
+    fn out_of_order_stage() {
+        let mut state = WpState::default();
+        state.update_stage(3, 100);
+        state.update_stage(1, 200);
+        assert_eq!(state.stage, 3); // only advances forward
+        assert_eq!(state.report_built_at, Some(100));
+        assert_eq!(state.authorized_at, Some(200));
+    }
+
+    #[test]
+    fn mark_failed() {
+        let mut state = WpState::default();
+        state.mark_failed(500);
+        assert_eq!(state.failed_at, Some(500));
+        assert!(state.dirty);
+        assert_eq!(state.last_updated, 500);
+    }
+
+    #[test]
+    fn mark_failed_idempotent() {
+        let mut state = WpState::default();
+        state.mark_failed(500);
+        state.mark_failed(999);
+        assert_eq!(state.failed_at, Some(500)); // first call wins
+        assert_eq!(state.last_updated, 999); // last_updated still advances
+    }
+
+    #[test]
+    fn event_type_to_ordinal_known() {
+        assert_eq!(event_type_to_ordinal(94), 0);
+        assert_eq!(event_type_to_ordinal(95), 1);
+        assert_eq!(event_type_to_ordinal(101), 2);
+        assert_eq!(event_type_to_ordinal(102), 3);
+        assert_eq!(event_type_to_ordinal(105), 4);
+        assert_eq!(event_type_to_ordinal(109), 5);
+    }
+
+    #[test]
+    fn event_type_to_ordinal_unknown() {
+        assert_eq!(event_type_to_ordinal(0), 0);
+        assert_eq!(event_type_to_ordinal(999), 0);
+        assert_eq!(event_type_to_ordinal(92), 0); // failure handled separately
+    }
+}

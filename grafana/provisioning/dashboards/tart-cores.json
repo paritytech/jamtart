@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Core analysis \u2014 status, utilization, validators, and bottlenecks",
+  "description": "[JIP-3] Core analysis — status, utilization, validators, and bottlenecks",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -42,94 +42,6 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "fixed"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 0,
-        "y": 1
-      },
-      "id": 2,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "targets": [
-        {
-          "columns": [
-            {
-              "selector": "total_cores",
-              "text": "Total",
-              "type": "number"
-            },
-            {
-              "selector": "active_cores",
-              "text": "Active",
-              "type": "number"
-            },
-            {
-              "selector": "idle_cores",
-              "text": "Idle",
-              "type": "number"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "jamtart-api"
-          },
-          "filters": [],
-          "format": "table",
-          "global_query_id": "",
-          "parser": "backend",
-          "refId": "A",
-          "root_selector": "summary",
-          "source": "url",
-          "type": "json",
-          "url": "http://tart-backend:8080/api/cores/status",
-          "url_options": {
-            "method": "GET",
-            "data": "",
-            "headers": [],
-            "params": []
-          }
-        }
-      ],
-      "title": "Core Summary",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "jamtart-api"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
             "mode": "palette-classic"
           },
           "custom": {
@@ -178,12 +90,13 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 4,
-        "w": 9,
-        "x": 6,
+        "h": 6,
+        "w": 12,
+        "x": 0,
         "y": 1
       },
       "id": 3,
+      "description": "[JIP-3] Guarantee event counts per core over time — shows which cores are actively producing guarantees and relative load distribution. Each line is one core's count per interval. (From core_stats_1m)",
       "options": {
         "legend": {
           "calcs": [],
@@ -200,18 +113,18 @@
         {
           "columns": [
             {
-              "selector": "timestamp",
+              "selector": "ts",
               "text": "",
               "type": "timestamp"
             },
             {
-              "selector": "core_index",
+              "selector": "core",
               "text": "Core",
-              "type": "number"
+              "type": "string"
             },
             {
-              "selector": "guarantees",
-              "text": "",
+              "selector": "count",
+              "text": "Count",
               "type": "number"
             }
           ],
@@ -224,10 +137,10 @@
           "global_query_id": "",
           "parser": "backend",
           "refId": "A",
-          "root_selector": "data",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/metrics/timeseries/grouped?metric=guarantees&group_by=core&duration=1&interval=1",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?group_by=core&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -251,7 +164,8 @@
             }
           }
         }
-      ]
+      ],
+      "maxDataPoints": 300
     },
     {
       "datasource": {
@@ -309,12 +223,13 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 4,
-        "w": 9,
-        "x": 15,
+        "h": 6,
+        "w": 12,
+        "x": 12,
         "y": 1
       },
       "id": 4,
+      "description": "[JIP-3] Network-wide failure events broken down by type: WorkPackageFailed, WorkPackageSharingFailed, and other failure/discard events. Stacked to show total failure volume. (1-minute buckets from event_stats_1m)",
       "options": {
         "legend": {
           "calcs": [],
@@ -331,18 +246,18 @@
         {
           "columns": [
             {
-              "selector": "timestamp",
+              "selector": "ts",
               "text": "",
               "type": "timestamp"
             },
             {
-              "selector": "category",
-              "text": "",
+              "selector": "event_type_name",
+              "text": "Event Type",
               "type": "string"
             },
             {
-              "selector": "failures",
-              "text": "",
+              "selector": "count",
+              "text": "Count",
               "type": "number"
             }
           ],
@@ -355,10 +270,10 @@
           "global_query_id": "",
           "parser": "backend",
           "refId": "A",
-          "root_selector": "data",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/metrics/timeseries/grouped?metric=failures&group_by=category&duration=1&interval=1",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?group_by=event_type&event_types=failures&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -367,14 +282,14 @@
           }
         }
       ],
-      "title": "Failures by Category",
+      "title": "Failures by Type",
       "type": "timeseries",
       "transformations": [
         {
           "id": "partitionByValues",
           "options": {
             "fields": [
-              "category"
+              "Event Type"
             ],
             "keepFields": false,
             "naming": {
@@ -382,7 +297,8 @@
             }
           }
         }
-      ]
+      ],
+      "maxDataPoints": 300
     },
     {
       "datasource": {
@@ -433,56 +349,16 @@
             ]
           }
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Status"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "options": {
-                      "idle": {
-                        "color": "blue",
-                        "index": 0,
-                        "text": "idle"
-                      },
-                      "active": {
-                        "color": "green",
-                        "index": 1,
-                        "text": "active"
-                      },
-                      "overloaded": {
-                        "color": "red",
-                        "index": 2,
-                        "text": "overloaded"
-                      }
-                    },
-                    "type": "value"
-                  }
-                ]
-              },
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "mode": "basic",
-                  "type": "color-background"
-                }
-              }
-            ]
-          }
-        ]
+        "overrides": []
       },
       "gridPos": {
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 5
+        "y": 7
       },
       "id": 5,
+      "description": "[JIP-3] Per-core summary: work packages received, guarantees produced, and failures — one row per core. Use to spot underperforming or overloaded cores at a glance.",
       "options": {
         "cellHeight": "sm",
         "footer": {
@@ -505,43 +381,23 @@
         {
           "columns": [
             {
-              "selector": "core_index",
+              "selector": "core",
               "text": "Core",
               "type": "number"
             },
             {
-              "selector": "status",
-              "text": "Status",
-              "type": "string"
-            },
-            {
-              "selector": "gas_used",
-              "text": "Gas Used",
+              "selector": "work_packages",
+              "text": "Work Packages",
               "type": "number"
             },
             {
-              "selector": "utilization_pct",
-              "text": "Utilization %",
+              "selector": "guarantees",
+              "text": "Guarantees",
               "type": "number"
             },
             {
-              "selector": "da_load",
-              "text": "DA Load",
-              "type": "number"
-            },
-            {
-              "selector": "work_packages_last_hour",
-              "text": "WPs/Hour",
-              "type": "number"
-            },
-            {
-              "selector": "guarantees_last_hour",
-              "text": "Guarantees/Hour",
-              "type": "number"
-            },
-            {
-              "selector": "last_active_slot",
-              "text": "Last Active Slot",
+              "selector": "failures",
+              "text": "Failures",
               "type": "number"
             }
           ],
@@ -554,10 +410,10 @@
           "global_query_id": "",
           "parser": "backend",
           "refId": "A",
-          "root_selector": "cores",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/cores/status",
+          "url": "http://tart-backend:8080/api/grafana/cores?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -611,6 +467,7 @@
         "y": 16
       },
       "id": 7,
+      "description": "[JIP-3] Key pipeline metrics for this core: total work packages, failure rate, and average end-to-end pipeline latency in ms. (From wp_tracking)",
       "options": {
         "colorMode": "background_solid",
         "graphMode": "none",
@@ -630,43 +487,23 @@
         {
           "columns": [
             {
-              "selector": "gas_utilization_pct",
-              "text": "Gas Util %",
+              "selector": "total_wps",
+              "text": "Total WPs",
               "type": "number"
             },
             {
-              "selector": "throughput_per_second",
-              "text": "Throughput/s",
+              "selector": "failed_wps",
+              "text": "Failed WPs",
               "type": "number"
             },
             {
-              "selector": "processing_efficiency_pct",
-              "text": "Processing %",
+              "selector": "failure_rate",
+              "text": "Failure Rate",
               "type": "number"
             },
             {
-              "selector": "accumulate_efficiency_pct",
-              "text": "Accumulate %",
-              "type": "number"
-            },
-            {
-              "selector": "work_packages_processed_24h",
-              "text": "WPs (24h)",
-              "type": "number"
-            },
-            {
-              "selector": "stats.wps_received",
-              "text": "WPs Received",
-              "type": "number"
-            },
-            {
-              "selector": "stats.guarantees_built",
-              "text": "Guarantees Built",
-              "type": "number"
-            },
-            {
-              "selector": "stats.refinements_completed",
-              "text": "Refinements Done",
+              "selector": "avg_pipeline_ms",
+              "text": "Avg Pipeline (ms)",
               "type": "number"
             }
           ],
@@ -682,7 +519,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/cores/${core_index}/metrics",
+          "url": "http://tart-backend:8080/api/grafana/bottlenecks?core=${core_index}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -691,156 +528,8 @@
           }
         }
       ],
-      "title": "Core Metrics",
+      "title": "Pipeline Stats",
       "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "jamtart-api"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "fixed"
-          },
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "auto"
-            },
-            "inspect": false
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Active"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "options": {
-                      "true": {
-                        "color": "green",
-                        "index": 0,
-                        "text": "Yes"
-                      },
-                      "false": {
-                        "color": "red",
-                        "index": 1,
-                        "text": "No"
-                      }
-                    },
-                    "type": "value"
-                  }
-                ]
-              },
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "mode": "basic",
-                  "type": "color-background"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 12,
-        "x": 12,
-        "y": 16
-      },
-      "id": 8,
-      "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
-        "showHeader": true
-      },
-      "targets": [
-        {
-          "columns": [
-            {
-              "selector": "node_id",
-              "text": "Node ID",
-              "type": "string"
-            },
-            {
-              "selector": "validator_index",
-              "text": "Index",
-              "type": "number"
-            },
-            {
-              "selector": "implementation_name",
-              "text": "Impl",
-              "type": "string"
-            },
-            {
-              "selector": "implementation_version",
-              "text": "Version",
-              "type": "string"
-            },
-            {
-              "selector": "is_active",
-              "text": "Active",
-              "type": "string"
-            },
-            {
-              "selector": "guarantee_count",
-              "text": "Guarantees",
-              "type": "number"
-            },
-            {
-              "selector": "latest_slot",
-              "text": "Latest Slot",
-              "type": "number"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "jamtart-api"
-          },
-          "filters": [],
-          "format": "table",
-          "global_query_id": "",
-          "parser": "backend",
-          "refId": "A",
-          "root_selector": "validators",
-          "source": "url",
-          "type": "json",
-          "url": "http://tart-backend:8080/api/cores/${core_index}/validators",
-          "url_options": {
-            "method": "GET",
-            "data": "",
-            "headers": [],
-            "params": []
-          }
-        }
-      ],
-      "title": "Core Validators",
-      "type": "table"
     },
     {
       "datasource": {
@@ -874,11 +563,12 @@
       },
       "gridPos": {
         "h": 6,
-        "w": 12,
+        "w": 24,
         "x": 0,
-        "y": 22
+        "y": 28
       },
       "id": 9,
+      "description": "[JIP-3] 100 most recent work packages on this core with full pipeline timestamps: received, authorized, refined, report built, guarantee built, distributed, and failure time. Use for timeline analysis of individual WPs.",
       "options": {
         "cellHeight": "sm",
         "footer": {
@@ -895,23 +585,28 @@
         {
           "columns": [
             {
-              "selector": "work_package_hash",
+              "selector": "wp_hash",
               "text": "WP Hash",
               "type": "string"
             },
             {
-              "selector": "status",
-              "text": "Status",
-              "type": "string"
+              "selector": "stage",
+              "text": "Stage",
+              "type": "number"
             },
             {
-              "selector": "submitted_at",
-              "text": "Submitted",
+              "selector": "first_seen",
+              "text": "First Seen",
               "type": "timestamp"
             },
             {
-              "selector": "node_id",
-              "text": "Node",
+              "selector": "received_by",
+              "text": "Received By",
+              "type": "string"
+            },
+            {
+              "selector": "guaranteed_by",
+              "text": "Guaranteed By",
               "type": "string"
             }
           ],
@@ -924,10 +619,10 @@
           "global_query_id": "",
           "parser": "backend",
           "refId": "A",
-          "root_selector": "work_packages",
+          "root_selector": "recent_work_packages",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/cores/${core_index}/work-packages",
+          "url": "http://tart-backend:8080/api/grafana/cores/${core_index}?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -966,9 +661,10 @@
         "h": 6,
         "w": 12,
         "x": 12,
-        "y": 22
+        "y": 16
       },
       "id": 10,
+      "description": "[JIP-3] P50 and P95 latency for each pipeline stage on this core: authorize, refine, report, guarantee, distribute. Identifies which stage is the bottleneck. (From wp_tracking)",
       "options": {
         "colorMode": "value",
         "graphMode": "none",
@@ -988,23 +684,43 @@
         {
           "columns": [
             {
-              "selector": "stats.bottleneck_count",
-              "text": "Bottlenecks",
+              "selector": "stage_timing.authorize.p50_ms",
+              "text": "Authorize p50",
               "type": "number"
             },
             {
-              "selector": "stats.failure_rate",
-              "text": "Failure Rate",
+              "selector": "stage_timing.authorize.p95_ms",
+              "text": "Authorize p95",
               "type": "number"
             },
             {
-              "selector": "stats.total_events",
-              "text": "Total Events",
+              "selector": "stage_timing.refine.p50_ms",
+              "text": "Refine p50",
               "type": "number"
             },
             {
-              "selector": "stats.total_failures",
-              "text": "Total Failures",
+              "selector": "stage_timing.refine.p95_ms",
+              "text": "Refine p95",
+              "type": "number"
+            },
+            {
+              "selector": "stage_timing.guarantee.p50_ms",
+              "text": "Guarantee p50",
+              "type": "number"
+            },
+            {
+              "selector": "stage_timing.guarantee.p95_ms",
+              "text": "Guarantee p95",
+              "type": "number"
+            },
+            {
+              "selector": "stage_timing.pipeline_total.p50_ms",
+              "text": "Total p50",
+              "type": "number"
+            },
+            {
+              "selector": "stage_timing.pipeline_total.p95_ms",
+              "text": "Total p95",
               "type": "number"
             }
           ],
@@ -1020,7 +736,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/cores/${core_index}/bottlenecks",
+          "url": "http://tart-backend:8080/api/grafana/bottlenecks?core=${core_index}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1029,20 +745,8 @@
           }
         }
       ],
-      "title": "Core Bottlenecks",
+      "title": "Stage Timing (ms)",
       "type": "stat"
-    },
-    {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 28
-      },
-      "id": 11,
-      "title": "Validator-Core Mapping",
-      "type": "row"
     },
     {
       "datasource": {
@@ -1052,14 +756,39 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "fixed"
+            "mode": "palette-classic"
           },
           "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "auto"
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
             },
-            "inspect": false
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
           "mappings": [],
           "thresholds": {
@@ -1075,45 +804,41 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 8,
-        "w": 24,
+        "h": 6,
+        "w": 12,
         "x": 0,
-        "y": 29
+        "y": 22
       },
-      "id": 13,
+      "id": 16,
+      "description": "[JIP-3] Failure events on this core broken down by type. Each series is a distinct failure event type. Use to identify recurring failure patterns on this core. (1-minute buckets)",
       "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
         },
-        "showHeader": true
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
       },
       "targets": [
         {
           "columns": [
             {
-              "selector": "category",
-              "text": "Category",
+              "selector": "ts",
+              "text": "",
+              "type": "timestamp"
+            },
+            {
+              "selector": "event_type_name",
+              "text": "Event Type",
               "type": "string"
             },
             {
-              "selector": "attempts",
-              "text": "Attempts",
-              "type": "number"
-            },
-            {
-              "selector": "failures",
-              "text": "Failures",
-              "type": "number"
-            },
-            {
-              "selector": "rate",
-              "text": "Rate",
+              "selector": "count",
+              "text": "Count",
               "type": "number"
             }
           ],
@@ -1126,10 +851,10 @@
           "global_query_id": "",
           "parser": "backend",
           "refId": "A",
-          "root_selector": "by_category",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/analytics/failure-rates",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?group_by=event_type&event_types=failures&core=${core_index}&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1138,8 +863,655 @@
           }
         }
       ],
-      "title": "Failure Rates by Category",
-      "type": "table"
+      "title": "Core Failures by Type",
+      "type": "timeseries",
+      "transformations": [
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "Event Type"
+            ],
+            "keepFields": false,
+            "naming": {
+              "asLabels": true
+            }
+          }
+        }
+      ],
+      "maxDataPoints": 300
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "bars",
+            "fillOpacity": 100,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineWidth": 0,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 22
+      },
+      "id": 17,
+      "description": "[JIP-3] All event types on this core shown as stacked bars — total event volume composition over time. Each color band is one event type. (1-minute buckets)",
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "ts",
+              "text": "",
+              "type": "timestamp"
+            },
+            {
+              "selector": "event_type_name",
+              "text": "Event Type",
+              "type": "string"
+            },
+            {
+              "selector": "count",
+              "text": "Count",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "filters": [],
+          "format": "table",
+          "global_query_id": "",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?group_by=event_type&core=${core_index}&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          }
+        }
+      ],
+      "title": "Core Events by Type",
+      "type": "timeseries",
+      "transformations": [
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "Event Type"
+            ],
+            "keepFields": false,
+            "naming": {
+              "asLabels": true
+            }
+          }
+        }
+      ],
+      "maxDataPoints": 300
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 40
+      },
+      "id": 14,
+      "title": "Work Package Pipeline",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
+      "description": "[JIP-3] Work package pipeline funnel — shows how many WPs reach each stage.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Failed"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 41
+      },
+      "id": 15,
+      "options": {
+        "displayMode": "gradient",
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "namePlacement": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "showUnfilled": true,
+        "sizing": "auto",
+        "valueMode": "color"
+      },
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "received",
+              "text": "Received",
+              "type": "number"
+            },
+            {
+              "selector": "authorized",
+              "text": "Authorized",
+              "type": "number"
+            },
+            {
+              "selector": "refined",
+              "text": "Refined",
+              "type": "number"
+            },
+            {
+              "selector": "report_built",
+              "text": "Report Built",
+              "type": "number"
+            },
+            {
+              "selector": "guarantee_built",
+              "text": "Guarantee Built",
+              "type": "number"
+            },
+            {
+              "selector": "distributed",
+              "text": "Distributed",
+              "type": "number"
+            },
+            {
+              "selector": "failed",
+              "text": "Failed",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "filters": [],
+          "format": "table",
+          "global_query_id": "",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/wp-funnel?start=${__from:date:iso}&end=${__to:date:iso}",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          }
+        }
+      ],
+      "title": "WP Pipeline Funnel",
+      "type": "bargauge"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 49 },
+      "id": 18,
+      "panels": [],
+      "title": "WP Funnel \u2014 Core ${core_index}",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "[JIP-3] Work package pipeline stage counts per time bucket for core ${core_index}. Stacked bars show how many WPs reached each stage: WorkPackageReceived(94) \u2192 Authorized(95) \u2192 Refined(101) \u2192 WorkReportBuilt(102) \u2192 GuaranteeBuilt(105) \u2192 GuaranteesDistributed(109). Failed shows WorkPackageFailed(92). Drop-off between stages indicates pipeline issues. (From wp_tracking, bucketed by first_seen)",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "bars", "fillOpacity": 80, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "never", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "normal" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Received" }, "properties": [{ "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "Authorized" }, "properties": [{ "id": "color", "value": { "fixedColor": "purple", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "Refined" }, "properties": [{ "id": "color", "value": { "fixedColor": "yellow", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "Report Built" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "Guarantee Built" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "Distributed" }, "properties": [{ "id": "color", "value": { "fixedColor": "super-light-green", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "Failed" }, "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }] }
+        ]
+      },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 50 },
+      "id": 19,
+      "maxDataPoints": 60,
+      "options": {
+        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [{
+        "columns": [
+          { "selector": "ts", "text": "", "type": "timestamp" },
+          { "selector": "received", "text": "Received", "type": "number" },
+          { "selector": "authorized", "text": "Authorized", "type": "number" },
+          { "selector": "refined", "text": "Refined", "type": "number" },
+          { "selector": "report_built", "text": "Report Built", "type": "number" },
+          { "selector": "guarantee_built", "text": "Guarantee Built", "type": "number" },
+          { "selector": "distributed", "text": "Distributed", "type": "number" },
+          { "selector": "failed", "text": "Failed", "type": "number" }
+        ],
+        "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+        "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
+        "refId": "A", "root_selector": "", "source": "url", "type": "json",
+        "url": "http://tart-backend:8080/api/grafana/wp-funnel-timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&core=${core_index}",
+        "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
+      }],
+      "title": "WP Funnel \u2014 Core ${core_index}",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 60 },
+      "id": 20,
+      "panels": [],
+      "title": "Bottlenecks \u2014 Core ${core_index}",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "[JIP-3] P50/P95 latency for the authorize stage on core ${core_index}. Measures WorkPackageReceived(94) \u2192 Authorized(95) delta in ms. (From wp_tracking)",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "bars", "fillOpacity": 40, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "never", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "ms"
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "P50" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }, { "id": "custom.fillOpacity", "value": 80 }] },
+          { "matcher": { "id": "byName", "options": "P95" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }, { "id": "custom.fillOpacity", "value": 20 }] }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 62 },
+      "id": 21,
+      "maxDataPoints": 60,
+      "options": {
+        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [{
+        "columns": [
+          { "selector": "ts", "text": "", "type": "timestamp" },
+          { "selector": "authorize_p50", "text": "P50", "type": "number" },
+          { "selector": "authorize_p95", "text": "P95", "type": "number" }
+        ],
+        "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+        "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
+        "refId": "A", "root_selector": "", "source": "url", "type": "json",
+        "url": "http://tart-backend:8080/api/grafana/bottlenecks-timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&core=${core_index}",
+        "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
+      }],
+      "title": "Authorize \u2014 Core ${core_index}",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "[JIP-3] P50/P95 latency for the refine stage on core ${core_index}. Measures Authorized(95) \u2192 Refined(101) delta in ms. (From wp_tracking)",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "bars", "fillOpacity": 40, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "never", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "ms"
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "P50" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }, { "id": "custom.fillOpacity", "value": 80 }] },
+          { "matcher": { "id": "byName", "options": "P95" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }, { "id": "custom.fillOpacity", "value": 20 }] }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 62 },
+      "id": 22,
+      "maxDataPoints": 60,
+      "options": {
+        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [{
+        "columns": [
+          { "selector": "ts", "text": "", "type": "timestamp" },
+          { "selector": "refine_p50", "text": "P50", "type": "number" },
+          { "selector": "refine_p95", "text": "P95", "type": "number" }
+        ],
+        "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+        "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
+        "refId": "A", "root_selector": "", "source": "url", "type": "json",
+        "url": "http://tart-backend:8080/api/grafana/bottlenecks-timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&core=${core_index}",
+        "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
+      }],
+      "title": "Refine \u2014 Core ${core_index}",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "[JIP-3] P50/P95 latency for the report stage on core ${core_index}. Measures Refined(101) \u2192 WorkReportBuilt(102) delta in ms. (From wp_tracking)",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "bars", "fillOpacity": 40, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "never", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "ms"
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "P50" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }, { "id": "custom.fillOpacity", "value": 80 }] },
+          { "matcher": { "id": "byName", "options": "P95" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }, { "id": "custom.fillOpacity", "value": 20 }] }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 62 },
+      "id": 23,
+      "maxDataPoints": 60,
+      "options": {
+        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [{
+        "columns": [
+          { "selector": "ts", "text": "", "type": "timestamp" },
+          { "selector": "report_p50", "text": "P50", "type": "number" },
+          { "selector": "report_p95", "text": "P95", "type": "number" }
+        ],
+        "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+        "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
+        "refId": "A", "root_selector": "", "source": "url", "type": "json",
+        "url": "http://tart-backend:8080/api/grafana/bottlenecks-timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&core=${core_index}",
+        "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
+      }],
+      "title": "Report \u2014 Core ${core_index}",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "[JIP-3] P50/P95 latency for the guarantee stage on core ${core_index}. Measures WorkReportBuilt(102) \u2192 GuaranteeBuilt(105) delta in ms. (From wp_tracking)",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "bars", "fillOpacity": 40, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "never", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "ms"
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "P50" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }, { "id": "custom.fillOpacity", "value": 80 }] },
+          { "matcher": { "id": "byName", "options": "P95" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }, { "id": "custom.fillOpacity", "value": 20 }] }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 70 },
+      "id": 24,
+      "maxDataPoints": 60,
+      "options": {
+        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [{
+        "columns": [
+          { "selector": "ts", "text": "", "type": "timestamp" },
+          { "selector": "guarantee_p50", "text": "P50", "type": "number" },
+          { "selector": "guarantee_p95", "text": "P95", "type": "number" }
+        ],
+        "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+        "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
+        "refId": "A", "root_selector": "", "source": "url", "type": "json",
+        "url": "http://tart-backend:8080/api/grafana/bottlenecks-timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&core=${core_index}",
+        "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
+      }],
+      "title": "Guarantee \u2014 Core ${core_index}",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "[JIP-3] P50/P95 latency for the distribute stage on core ${core_index}. Measures GuaranteeBuilt(105) \u2192 GuaranteesDistributed(109) delta in ms. (From wp_tracking)",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "bars", "fillOpacity": 40, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "never", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "ms"
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "P50" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }, { "id": "custom.fillOpacity", "value": 80 }] },
+          { "matcher": { "id": "byName", "options": "P95" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }, { "id": "custom.fillOpacity", "value": 20 }] }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 70 },
+      "id": 25,
+      "maxDataPoints": 60,
+      "options": {
+        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [{
+        "columns": [
+          { "selector": "ts", "text": "", "type": "timestamp" },
+          { "selector": "distribute_p50", "text": "P50", "type": "number" },
+          { "selector": "distribute_p95", "text": "P95", "type": "number" }
+        ],
+        "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+        "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
+        "refId": "A", "root_selector": "", "source": "url", "type": "json",
+        "url": "http://tart-backend:8080/api/grafana/bottlenecks-timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&core=${core_index}",
+        "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
+      }],
+      "title": "Distribute \u2014 Core ${core_index}",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+      "description": "[JIP-3] P50/P95 end-to-end pipeline latency on core ${core_index}. Measures WorkPackageReceived(94) \u2192 GuaranteesDistributed(109) or last update, in ms. (From wp_tracking)",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0,
+            "drawStyle": "bars", "fillOpacity": 40, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
+            "pointSize": 5, "scaleDistribution": { "type": "linear" },
+            "showPoints": "never", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "ms"
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "P50" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }, { "id": "custom.fillOpacity", "value": 80 }] },
+          { "matcher": { "id": "byName", "options": "P95" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }, { "id": "custom.fillOpacity", "value": 20 }] }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 70 },
+      "id": 26,
+      "maxDataPoints": 60,
+      "options": {
+        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [{
+        "columns": [
+          { "selector": "ts", "text": "", "type": "timestamp" },
+          { "selector": "pipeline_p50", "text": "P50", "type": "number" },
+          { "selector": "pipeline_p95", "text": "P95", "type": "number" }
+        ],
+        "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jamtart-api" },
+        "filters": [], "format": "table", "global_query_id": "", "parser": "backend",
+        "refId": "A", "root_selector": "", "source": "url", "type": "json",
+        "url": "http://tart-backend:8080/api/grafana/bottlenecks-timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&core=${core_index}",
+        "url_options": { "method": "GET", "data": "", "headers": [], "params": [] }
+      }],
+      "title": "Pipeline Total \u2014 Core ${core_index}",
+      "type": "timeseries"
     }
   ],
   "schemaVersion": 39,
@@ -1165,19 +1537,19 @@
             "type": "json",
             "source": "url",
             "parser": "backend",
-            "url": "http://tart-backend:8080/api/cores/status",
+            "url": "http://tart-backend:8080/api/grafana/cores?start=${__from:date:iso}&end=${__to:date:iso}",
             "url_options": {
               "method": "GET",
               "data": "",
               "headers": [],
               "params": []
             },
-            "root_selector": "cores",
+            "root_selector": "",
             "columns": [
               {
-                "selector": "core_index",
-                "text": "core_index",
-                "type": "number"
+                "selector": "core",
+                "text": "core",
+                "type": "string"
               }
             ],
             "format": "table"
@@ -1196,8 +1568,8 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "TART-cores",
-  "uid": "tart-cores",
+  "title": "TART Cores (JIP-3)",
+  "uid": "tart-grafana-cores",
   "version": 1,
   "weekStart": ""
 }

@@ -1,3 +1,6 @@
+//! Binary protocol deserializer. Decodes length-prefixed message frames from the
+//! telemetry wire format into typed `Event` values.
+
 use crate::events::*;
 use crate::types::*;
 use bytes::Buf;
@@ -743,7 +746,7 @@ impl Event {
             }),
             61 => Ok(Event::BlockAnnouncementStreamClosed {
                 timestamp,
-                peer: PeerId::decode(buf)?,
+                opened_id: EventId::decode(buf)?,
                 closer: ConnectionSide::decode(buf)?,
                 reason: Reason::decode(buf)?,
             }),

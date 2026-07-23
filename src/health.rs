@@ -1,3 +1,6 @@
+//! Component health monitoring. Tracks health status (Healthy/Degraded) for
+//! subsystems like the database and telemetry server, exposed via the API.
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::future::Future;

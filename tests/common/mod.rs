@@ -1,7 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
-use tart_backend::events::NodeInformation;
+use tart_backend::events::{Event, NodeInformation};
 use tart_backend::types::*;
+// GuaranteeDiscardReason, GuaranteeSummary, ConnectionSide, BoundedString — all from types::*
 use tart_backend::TelemetryServer;
 use tokio::time::sleep;
 
@@ -151,5 +152,710 @@ pub fn test_node_info(peer_id: [u8; 32]) -> NodeInformation {
         implementation_version: BoundedString::new("1.0.0").unwrap(),
         gp_version: BoundedString::new("0.1.0").unwrap(),
         additional_info: BoundedString::new("Test node").unwrap(),
+    }
+}
+
+/// Force-refresh all continuous aggregates used by grafana endpoints.
+/// TimescaleDB continuous aggregates don't auto-refresh fast enough in tests.
+#[allow(dead_code)]
+pub async fn refresh_aggregates(pool: &sqlx::PgPool) {
+    // The refresh window covers a generous range so test data is always included
+    let aggregates = [
+        // Non-event aggregates (not affected by migration 020)
+        "service_stats_1m",
+        "node_stats_1m",
+        // Count table aggregates — all 14 groups (single aggregation source after migration 020)
+        "status_counts_1m",
+        "connection_counts_1m",
+        "block_counts_1m",
+        "ticket_low_counts_1m",
+        "wp_pipeline_counts_1m",
+        "block_distribution_counts_1m",
+        "ticket_counts_1m",
+        "guarantee_sending_counts_1m",
+        "guarantee_receiving_counts_1m",
+        "shard_counts_1m",
+        "assurance_counts_1m",
+        "bundle_counts_1m",
+        "segment_counts_1m",
+        "preimage_counts_1m",
+    ];
+    for agg in aggregates {
+        let sql = format!(
+            "CALL refresh_continuous_aggregate('{agg}', NOW() - INTERVAL '1 hour', NOW() + INTERVAL '1 hour')"
+        );
+        // Some aggregates may not exist in all test schemas — ignore errors
+        let _ = sqlx::query(&sql).execute(pool).await;
+    }
+}
+
+/// Flush batch_writer + trackers. Combined helper for grafana tests.
+#[allow(dead_code)]
+pub async fn flush_all(server: &Arc<TelemetryServer>) {
+    sleep(Duration::from_millis(100)).await;
+    server.flush_writes().await.expect("Flush writes failed");
+    server.flush_trackers_for_test().await;
+}
+
+/// Construct a Status event (event_type=10) with the given timestamp.
+/// num_guarantees has TEST_CORE_COUNT elements (required by the decoder).
+#[allow(dead_code)]
+pub fn status_event(ts: u64) -> Event {
+    Event::Status {
+        timestamp: ts,
+        num_peers: 25,
+        num_val_peers: 20,
+        num_sync_peers: 5,
+        num_guarantees: vec![3; TEST_CORE_COUNT],
+        num_shards: 100,
+        shards_size: 50000,
+        num_preimages: 10,
+        preimages_size: 4096,
+    }
+}
+
+/// Construct a BestBlockChanged event (event_type=11).
+#[allow(dead_code)]
+pub fn best_block_event(ts: u64, slot: u32) -> Event {
+    Event::BestBlockChanged {
+        timestamp: ts,
+        slot,
+        hash: [0xBB; 32],
+    }
+}
+
+/// Construct a FinalizedBlockChanged event (event_type=12).
+#[allow(dead_code)]
+pub fn finalized_block_event(ts: u64, slot: u32) -> Event {
+    Event::FinalizedBlockChanged {
+        timestamp: ts,
+        slot,
+        hash: [0xFF; 32],
+    }
+}
+
+/// Construct an Authoring event (event_type=40) with the given slot.
+#[allow(dead_code)]
+pub fn authoring_event(ts: u64, slot: u32) -> Event {
+    Event::Authoring {
+        timestamp: ts,
+        slot,
+        parent: [0u8; 32],
+    }
+}
+
+/// Construct an Authored event (event_type=42) with BlockOutline.
+#[allow(dead_code)]
+pub fn authored_event(ts: u64, authoring_id: u64) -> Event {
+    use tart_backend::types::BlockSummary;
+    Event::Authored {
+        timestamp: ts,
+        authoring_id,
+        outline: BlockSummary {
+            size_bytes: 2048,
+            hash: [0xAA; 32],
+            num_tickets: 2,
+            num_preimages: 1,
+            total_preimages_size: 512,
+            num_guarantees: 3,
+            num_assurances: 2,
+            num_dispute_verdicts: 0,
+        },
+    }
+}
+
+/// Construct an Importing event (event_type=43) with the given slot and block hash.
+#[allow(dead_code)]
+pub fn importing_event(ts: u64, slot: u32, block_hash: [u8; 32]) -> Event {
+    use tart_backend::types::BlockSummary;
+    Event::Importing {
+        timestamp: ts,
+        slot,
+        outline: BlockSummary {
+            size_bytes: 2048,
+            hash: block_hash,
+            num_tickets: 2,
+            num_preimages: 1,
+            total_preimages_size: 512,
+            num_guarantees: 3,
+            num_assurances: 2,
+            num_dispute_verdicts: 0,
+        },
+    }
+}
+
+/// Construct a WorkPackageReceived event (event_type=94).
+#[allow(dead_code)]
+pub fn wp_received_event(ts: u64, submission_id: u64, core: u16) -> Event {
+    use tart_backend::types::*;
+    Event::WorkPackageReceived {
+        timestamp: ts,
+        submission_or_share_id: submission_id,
+        core,
+        outline: WorkPackageSummary {
+            work_package_size: 2048,
+            work_package_hash: {
+                let mut h = [0xCC; 32];
+                h[..8].copy_from_slice(&submission_id.to_le_bytes());
+                h
+            },
+            anchor: [0xAA; 32],
+            lookup_anchor_slot: 100,
+            prerequisites: vec![],
+            work_items: vec![
+                WorkItemSummary {
+                    service_id: 10,
+                    payload_size: 512,
+                    refine_gas_limit: 1_000_000,
+                    accumulate_gas_limit: 500_000,
+                    sum_of_extrinsic_lengths: 128,
+                    imports: vec![],
+                    num_exported_segments: 2,
+                },
+                WorkItemSummary {
+                    service_id: 20,
+                    payload_size: 256,
+                    refine_gas_limit: 2_000_000,
+                    accumulate_gas_limit: 300_000,
+                    sum_of_extrinsic_lengths: 64,
+                    imports: vec![],
+                    num_exported_segments: 1,
+                },
+            ],
+        },
+    }
+}
+
+/// Construct an Authorized event (event_type=95).
+#[allow(dead_code)]
+pub fn authorized_event(ts: u64, submission_id: u64) -> Event {
+    use tart_backend::types::*;
+    Event::Authorized {
+        timestamp: ts,
+        submission_or_share_id: submission_id,
+        cost: IsAuthorizedCost {
+            total: ExecCost {
+                gas_used: 100_000,
+                elapsed_ns: 200_000,
+            },
+            load_ns: 50_000,
+            host_call: ExecCost {
+                gas_used: 30_000,
+                elapsed_ns: 60_000,
+            },
+        },
+    }
+}
+
+/// Construct a Refined event (event_type=101).
+#[allow(dead_code)]
+pub fn refined_event(ts: u64, submission_id: u64) -> Event {
+    use tart_backend::types::*;
+    Event::Refined {
+        timestamp: ts,
+        submission_or_share_id: submission_id,
+        costs: vec![RefineCost {
+            total: ExecCost {
+                gas_used: 500_000,
+                elapsed_ns: 1_000_000,
+            },
+            load_ns: 100_000,
+            host_call: RefineHostCallCost {
+                lookup: ExecCost {
+                    gas_used: 50_000,
+                    elapsed_ns: 100_000,
+                },
+                vm: ExecCost {
+                    gas_used: 200_000,
+                    elapsed_ns: 400_000,
+                },
+                mem: ExecCost {
+                    gas_used: 30_000,
+                    elapsed_ns: 60_000,
+                },
+                invoke: ExecCost {
+                    gas_used: 100_000,
+                    elapsed_ns: 200_000,
+                },
+                other: ExecCost {
+                    gas_used: 20_000,
+                    elapsed_ns: 40_000,
+                },
+            },
+        }],
+    }
+}
+
+/// Construct a WorkReportBuilt event (event_type=102).
+#[allow(dead_code)]
+pub fn work_report_built_event(ts: u64, submission_id: u64) -> Event {
+    use tart_backend::types::*;
+    Event::WorkReportBuilt {
+        timestamp: ts,
+        submission_or_share_id: submission_id,
+        outline: WorkReportSummary {
+            work_report_hash: [0xDD; 32],
+            bundle_size: 4096,
+            erasure_root: [0xEE; 32],
+            segments_root: [0x11; 32],
+        },
+    }
+}
+
+/// Construct a GuaranteeBuilt event (event_type=105).
+#[allow(dead_code)]
+pub fn guarantee_built_event(ts: u64, submission_id: u64) -> Event {
+    use tart_backend::types::*;
+    Event::GuaranteeBuilt {
+        timestamp: ts,
+        submission_id,
+        outline: GuaranteeSummary {
+            work_report_hash: [0xBB; 32],
+            slot: 200,
+            guarantors: vec![0, 1, 2],
+        },
+    }
+}
+
+/// Construct a GuaranteesDistributed event (event_type=109).
+#[allow(dead_code)]
+pub fn guarantees_distributed_event(ts: u64, submission_id: u64) -> Event {
+    Event::GuaranteesDistributed {
+        timestamp: ts,
+        submission_id,
+    }
+}
+
+/// Construct a WorkPackageFailed event (event_type=92).
+#[allow(dead_code)]
+pub fn wp_failed_event(ts: u64, submission_id: u64) -> Event {
+    Event::WorkPackageFailed {
+        timestamp: ts,
+        submission_or_share_id: submission_id,
+        reason: BoundedString::new("test failure").unwrap(),
+    }
+}
+
+/// Construct a WorkPackageFailed event (event_type=92) with a custom reason.
+#[allow(dead_code)]
+pub fn wp_failed_event_with_reason(ts: u64, submission_id: u64, reason: &str) -> Event {
+    Event::WorkPackageFailed {
+        timestamp: ts,
+        submission_or_share_id: submission_id,
+        reason: BoundedString::new(reason).unwrap(),
+    }
+}
+
+/// Returns the hex-encoded node_id for a test node created with `connect_test_node(port, id, server)`.
+#[allow(dead_code)]
+pub fn node_id_hex(node_id: u8) -> String {
+    hex::encode([node_id; 32])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pre-aggregated event constructors (for storage optimization tests)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Construct a BlockAnnounced event (event_type=62).
+#[allow(dead_code)]
+pub fn block_announced_event(ts: u64, slot: u32) -> Event {
+    Event::BlockAnnounced {
+        timestamp: ts,
+        peer: [0x01; 32],
+        announcer: ConnectionSide::Remote,
+        slot,
+        hash: [0xAA; 32],
+    }
+}
+
+/// Construct an AssuranceSent event (event_type=128).
+#[allow(dead_code)]
+pub fn assurance_sent_event(ts: u64) -> Event {
+    Event::AssuranceSent {
+        timestamp: ts,
+        distributing_id: 1,
+        recipient: [0x02; 32],
+    }
+}
+
+/// Construct an AssuranceReceived event (event_type=131).
+#[allow(dead_code)]
+pub fn assurance_received_event(ts: u64) -> Event {
+    Event::AssuranceReceived {
+        timestamp: ts,
+        sender: [0x03; 32],
+        anchor: [0xBB; 32],
+    }
+}
+
+/// Construct an AssuranceReceived event with custom anchor and sender (event_type=131).
+#[allow(dead_code)]
+pub fn assurance_received_event_with(ts: u64, anchor: [u8; 32], sender: [u8; 32]) -> Event {
+    Event::AssuranceReceived {
+        timestamp: ts,
+        sender,
+        anchor,
+    }
+}
+
+/// Construct a DistributingAssurance event (event_type=126).
+#[allow(dead_code)]
+pub fn distributing_assurance_event(ts: u64, anchor: [u8; 32]) -> Event {
+    use tart_backend::types::AvailabilityStatement;
+    Event::DistributingAssurance {
+        timestamp: ts,
+        statement: AvailabilityStatement {
+            anchor,
+            bitfield: vec![0xFF; 43], // ~343 cores / 8 = 43 bytes
+        },
+    }
+}
+
+/// Construct an AssuranceSendFailed event (event_type=127).
+#[allow(dead_code)]
+pub fn assurance_send_failed_event(ts: u64, reason: &str) -> Event {
+    Event::AssuranceSendFailed {
+        timestamp: ts,
+        distributing_id: 1,
+        recipient: [0x04; 32],
+        reason: BoundedString::new(reason).unwrap(),
+    }
+}
+
+/// Construct a GuaranteeReceived event (event_type=112).
+#[allow(dead_code)]
+pub fn guarantee_received_event(ts: u64, slot: u32, report_hash: [u8; 32]) -> Event {
+    Event::GuaranteeReceived {
+        timestamp: ts,
+        receiving_id: 1,
+        outline: GuaranteeSummary {
+            work_report_hash: report_hash,
+            slot,
+            guarantors: vec![0, 1, 2],
+        },
+    }
+}
+
+/// Construct a GuaranteeDiscarded event (event_type=113).
+#[allow(dead_code)]
+pub fn guarantee_discarded_event(
+    ts: u64,
+    slot: u32,
+    report_hash: [u8; 32],
+    reason: GuaranteeDiscardReason,
+) -> Event {
+    Event::GuaranteeDiscarded {
+        timestamp: ts,
+        outline: GuaranteeSummary {
+            work_report_hash: report_hash,
+            slot,
+            guarantors: vec![0, 1, 2],
+        },
+        reason,
+    }
+}
+
+/// Construct a SendingGuarantee event (event_type=106).
+#[allow(dead_code)]
+pub fn sending_guarantee_event(ts: u64, built_id: u64) -> Event {
+    Event::SendingGuarantee {
+        timestamp: ts,
+        built_id,
+        recipient: [0x05; 32],
+    }
+}
+
+/// Construct a GuaranteeSent event (event_type=108).
+#[allow(dead_code)]
+pub fn guarantee_sent_event(ts: u64, sending_id: u64) -> Event {
+    Event::GuaranteeSent {
+        timestamp: ts,
+        sending_id,
+    }
+}
+
+/// Construct a TicketTransferred event (event_type=84).
+#[allow(dead_code)]
+pub fn ticket_transferred_event(ts: u64, from_proxy: bool, epoch: u32) -> Event {
+    Event::TicketTransferred {
+        timestamp: ts,
+        peer: [0x06; 32],
+        sender: ConnectionSide::Local,
+        from_proxy,
+        epoch,
+        attempt: 0,
+        id: [0x77; 32],
+    }
+}
+
+/// Construct a ShardRequestFailed event (event_type=122).
+#[allow(dead_code)]
+pub fn shard_request_failed_event(ts: u64, reason: &str) -> Event {
+    Event::ShardRequestFailed {
+        timestamp: ts,
+        request_id: 1,
+        reason: BoundedString::new(reason).unwrap(),
+    }
+}
+
+/// Construct a ShardRequestFailed event (event_type=122) with custom request_id.
+#[allow(dead_code)]
+pub fn shard_request_failed_event_with_id(ts: u64, request_id: u64, reason: &str) -> Event {
+    Event::ShardRequestFailed {
+        timestamp: ts,
+        request_id,
+        reason: BoundedString::new(reason).unwrap(),
+    }
+}
+
+/// Construct a GuaranteeBuilt event (event_type=105) with custom report_hash and slot.
+#[allow(dead_code)]
+pub fn guarantee_built_event_with_hash(
+    ts: u64,
+    submission_id: u64,
+    report_hash: [u8; 32],
+    slot: u32,
+) -> Event {
+    use tart_backend::types::*;
+    Event::GuaranteeBuilt {
+        timestamp: ts,
+        submission_id,
+        outline: GuaranteeSummary {
+            work_report_hash: report_hash,
+            slot,
+            guarantors: vec![0, 1, 2],
+        },
+    }
+}
+
+/// Construct a PreimageAnnounced event (event_type=191).
+#[allow(dead_code)]
+pub fn preimage_announced_event(ts: u64, service: u32) -> Event {
+    Event::PreimageAnnounced {
+        timestamp: ts,
+        peer: [0x07; 32],
+        announcer: ConnectionSide::Remote,
+        service,
+        hash: [0xCC; 32],
+        length: 1024,
+    }
+}
+
+/// Construct a BlockExecuted event (event_type=47) with service gas data.
+#[allow(dead_code)]
+pub fn block_executed_event(ts: u64, authoring_id: u64, services: &[(u32, u64)]) -> Event {
+    use tart_backend::types::*;
+    let accumulate_costs: Vec<(ServiceId, AccumulateCost)> = services
+        .iter()
+        .map(|(sid, gas)| {
+            (
+                *sid,
+                AccumulateCost {
+                    num_calls: 1,
+                    num_transfers: 0,
+                    num_items: 1,
+                    total: ExecCost {
+                        gas_used: *gas,
+                        elapsed_ns: gas * 2,
+                    },
+                    load_ns: 1000,
+                    host_call: AccumulateHostCallCost {
+                        state: ExecCost {
+                            gas_used: 0,
+                            elapsed_ns: 0,
+                        },
+                        lookup: ExecCost {
+                            gas_used: 0,
+                            elapsed_ns: 0,
+                        },
+                        preimage: ExecCost {
+                            gas_used: 0,
+                            elapsed_ns: 0,
+                        },
+                        service: ExecCost {
+                            gas_used: 0,
+                            elapsed_ns: 0,
+                        },
+                        transfer: ExecCost {
+                            gas_used: 0,
+                            elapsed_ns: 0,
+                        },
+                        transfer_dest_gas: 0,
+                        other: ExecCost {
+                            gas_used: 0,
+                            elapsed_ns: 0,
+                        },
+                    },
+                },
+            )
+        })
+        .collect();
+    Event::BlockExecuted {
+        timestamp: ts,
+        authoring_or_importing_id: authoring_id,
+        accumulate_costs,
+    }
+}
+
+/// Construct a SendingShardRequest event (event_type=120).
+#[allow(dead_code)]
+pub fn sending_shard_request_event(
+    ts: u64,
+    guarantor: [u8; 32],
+    erasure_root: [u8; 32],
+    shard: u16,
+) -> Event {
+    Event::SendingShardRequest {
+        timestamp: ts,
+        guarantor,
+        erasure_root,
+        shard,
+    }
+}
+
+/// Construct a ReceivingShardRequest event (event_type=121).
+#[allow(dead_code)]
+pub fn receiving_shard_request_event(ts: u64, assurer: [u8; 32]) -> Event {
+    Event::ReceivingShardRequest {
+        timestamp: ts,
+        assurer,
+    }
+}
+
+/// Construct a ShardRequestReceived event (event_type=124).
+#[allow(dead_code)]
+pub fn shard_request_received_event(
+    ts: u64,
+    request_id: u64,
+    erasure_root: [u8; 32],
+    shard: u16,
+) -> Event {
+    Event::ShardRequestReceived {
+        timestamp: ts,
+        request_id,
+        erasure_root,
+        shard,
+    }
+}
+
+/// Construct a ShardsTransferred event (event_type=125).
+#[allow(dead_code)]
+pub fn shards_transferred_event(ts: u64, request_id: u64) -> Event {
+    Event::ShardsTransferred {
+        timestamp: ts,
+        request_id,
+    }
+}
+
+// Phase 3 test helpers
+
+#[allow(dead_code)]
+pub fn connected_in_event(ts: u64, peer: [u8; 32]) -> Event {
+    Event::ConnectedIn {
+        timestamp: ts,
+        connecting_id: 1,
+        peer_id: peer,
+    }
+}
+
+#[allow(dead_code)]
+pub fn disconnected_event(ts: u64, peer: [u8; 32]) -> Event {
+    Event::Disconnected {
+        timestamp: ts,
+        peer,
+        terminator: None,
+        reason: BoundedString::new("closed").unwrap(),
+    }
+}
+
+#[allow(dead_code)]
+pub fn guarantee_send_failed_event(ts: u64, sending_id: u64, reason: &str) -> Event {
+    Event::GuaranteeSendFailed {
+        timestamp: ts,
+        sending_id,
+        reason: BoundedString::new(reason).unwrap(),
+    }
+}
+
+// DA latency tracker test helpers
+
+#[allow(dead_code)]
+pub fn sending_bundle_shard_request_event(
+    ts: u64,
+    audit_id: u64,
+    assurer: [u8; 32],
+    shard: u16,
+) -> Event {
+    Event::SendingBundleShardRequest {
+        timestamp: ts,
+        audit_id,
+        assurer,
+        shard,
+    }
+}
+
+#[allow(dead_code)]
+pub fn bundle_shard_transferred_event(ts: u64, request_id: u64) -> Event {
+    Event::BundleShardTransferred {
+        timestamp: ts,
+        request_id,
+    }
+}
+
+#[allow(dead_code)]
+pub fn reconstructing_bundle_event(ts: u64, audit_id: u64, kind: ReconstructionKind) -> Event {
+    Event::ReconstructingBundle {
+        timestamp: ts,
+        audit_id,
+        kind,
+    }
+}
+
+#[allow(dead_code)]
+pub fn bundle_reconstructed_event(ts: u64, audit_id: u64) -> Event {
+    Event::BundleReconstructed {
+        timestamp: ts,
+        audit_id,
+    }
+}
+
+#[allow(dead_code)]
+pub fn sending_segment_shard_request_event(
+    ts: u64,
+    submission_id: u64,
+    assurer: [u8; 32],
+) -> Event {
+    Event::SendingSegmentShardRequest {
+        timestamp: ts,
+        submission_id,
+        assurer,
+        proofs: false,
+        shards: BoundedVec::new(),
+    }
+}
+
+#[allow(dead_code)]
+pub fn segment_shards_transferred_event(ts: u64, request_id: u64) -> Event {
+    Event::SegmentShardsTransferred {
+        timestamp: ts,
+        request_id,
+    }
+}
+
+#[allow(dead_code)]
+pub fn sending_preimage_request_event(ts: u64, recipient: [u8; 32], hash: [u8; 32]) -> Event {
+    Event::SendingPreimageRequest {
+        timestamp: ts,
+        recipient,
+        hash,
+    }
+}
+
+#[allow(dead_code)]
+pub fn preimage_transferred_event(ts: u64, request_id: u64, length: u32) -> Event {
+    Event::PreimageTransferred {
+        timestamp: ts,
+        request_id,
+        length,
     }
 }

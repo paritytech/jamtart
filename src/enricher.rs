@@ -1,0 +1,1001 @@
+//! Cross-event correlation engine. Propagates context (core, wp_hash, service_ids)
+//! from root events like `WorkPackageReceived` to downstream events that only carry
+//! opaque IDs (submission_id, built_id, sending_id, etc.).
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use dashmap::DashMap;
+use tracing::debug;
+
+use crate::batch_writer::NodeId;
+use crate::events::Event;
+
+/// Maximum entries per map per node (hard cap to prevent unbounded growth).
+const MAX_MAP_ENTRIES: usize = 50_000;
+
+/// TTL for stale entries.
+const STALE_TTL: Duration = Duration::from_secs(60);
+
+/// How often (in calls to `process`) to run eviction of stale map entries.
+const EVICTION_INTERVAL: u64 = 1000;
+
+/// Enriched fields derived from cross-event correlation.
+#[derive(Debug, Clone, Default)]
+pub struct EnrichedFields {
+    pub slot: Option<u32>,
+    pub core: Option<u16>,
+    pub submission_id: Option<u64>,
+    pub service_ids: Option<Vec<u32>>,
+    pub wp_hash: Option<[u8; 32]>,
+}
+
+pub type EnricherMap = Arc<DashMap<NodeId, NodeEventEnricher>>;
+
+pub fn new_enricher_map() -> EnricherMap {
+    Arc::new(DashMap::new())
+}
+
+struct SubmissionContext {
+    core: u16,
+    work_package_hash: Option<[u8; 32]>,
+    service_ids: Vec<u32>,
+    inserted_at: Instant,
+}
+
+struct ChainEntry {
+    core: u16,
+    service_ids: Option<Vec<u32>>,
+    inserted_at: Instant,
+}
+
+struct SlotEntry {
+    slot: u32,
+    inserted_at: Instant,
+}
+
+pub struct NodeEventEnricher {
+    /// submission_or_share_id / submission_id -> context
+    submissions: HashMap<u64, SubmissionContext>,
+    /// built_id -> context (GuaranteeBuilt event_id)
+    built_ids: HashMap<u64, ChainEntry>,
+    /// sending_id -> context (SendingGuarantee event_id)
+    sending_ids: HashMap<u64, ChainEntry>,
+    /// request_id -> context (SendingSegmentShardRequest / SendingSegmentRequest event_id)
+    request_ids: HashMap<u64, ChainEntry>,
+    /// reconstructing_id -> context (ReconstructingSegments event_id)
+    reconstructing_ids: HashMap<u64, ChainEntry>,
+    /// authoring event_id -> slot (for Authored/AuthoringFailed/BlockExecuted correlation)
+    authoring_ids: HashMap<u64, SlotEntry>,
+    /// importing event_id -> slot (for BlockVerified/BlockVerificationFailed/BlockExecuted correlation)
+    importing_ids: HashMap<u64, SlotEntry>,
+    last_activity: Instant,
+    call_count: u64,
+    // --- Diagnostics counters (cheap u64 increments) ---
+    events_processed: u64,
+    lookups_attempted: u64,
+    lookups_missed: u64,
+    chain_lookups_missed: u64,
+    evictions_triggered: u64,
+}
+
+impl Default for NodeEventEnricher {
+    fn default() -> Self {
+        Self {
+            submissions: HashMap::new(),
+            built_ids: HashMap::new(),
+            sending_ids: HashMap::new(),
+            request_ids: HashMap::new(),
+            reconstructing_ids: HashMap::new(),
+            authoring_ids: HashMap::new(),
+            importing_ids: HashMap::new(),
+            last_activity: Instant::now(),
+            call_count: 0,
+            events_processed: 0,
+            lookups_attempted: 0,
+            lookups_missed: 0,
+            chain_lookups_missed: 0,
+            evictions_triggered: 0,
+        }
+    }
+}
+
+/// Evict the oldest 25% of entries when the map exceeds the limit.
+fn cap_map<V>(map: &mut HashMap<u64, V>, limit: usize, get_age: impl Fn(&V) -> Instant) {
+    if map.len() < limit {
+        return;
+    }
+    let before = map.len();
+    let to_remove = before / 4;
+    let mut by_age: Vec<(u64, Instant)> = map.iter().map(|(&k, v)| (k, get_age(v))).collect();
+    by_age.sort_unstable_by_key(|(_, t)| *t); // oldest first
+    for (k, _) in by_age.into_iter().take(to_remove) {
+        map.remove(&k);
+    }
+    debug!(
+        before,
+        after = map.len(),
+        removed = to_remove,
+        "enricher partial eviction"
+    );
+}
+
+impl NodeEventEnricher {
+    /// Returns `true` if this enricher has not been used for longer than [`STALE_TTL`].
+    pub fn is_stale(&self) -> bool {
+        self.last_activity.elapsed() > STALE_TTL
+    }
+
+    /// Process an event and return any enriched fields that could be derived.
+    pub fn process(&mut self, event: &Event, event_id: u64) -> EnrichedFields {
+        self.last_activity = Instant::now();
+        self.call_count += 1;
+        self.events_processed += 1;
+
+        if self.call_count.is_multiple_of(EVICTION_INTERVAL) {
+            self.evict_stale();
+        }
+
+        let mut fields = EnrichedFields::default();
+
+        // --- 1. Extract slot directly from events that carry it ---
+        match event {
+            Event::BestBlockChanged { slot, .. }
+            | Event::FinalizedBlockChanged { slot, .. }
+            | Event::Authoring { slot, .. }
+            | Event::Importing { slot, .. }
+            | Event::BlockAnnounced { slot, .. }
+            | Event::BlockTransferred { slot, .. } => {
+                fields.slot = Some(*slot);
+            }
+            Event::GuaranteeReceived { outline, .. }
+            | Event::GuaranteeDiscarded { outline, .. } => {
+                fields.slot = Some(outline.slot);
+            }
+            _ => {}
+        }
+
+        // --- 1b. Store authoring/importing context for slot chain correlation ---
+        if let Event::Authoring { slot, .. } = event {
+            cap_map(&mut self.authoring_ids, MAX_MAP_ENTRIES, |v| v.inserted_at);
+            self.authoring_ids.insert(
+                event_id,
+                SlotEntry {
+                    slot: *slot,
+                    inserted_at: Instant::now(),
+                },
+            );
+        }
+        if let Event::Importing { slot, .. } = event {
+            cap_map(&mut self.importing_ids, MAX_MAP_ENTRIES, |v| v.inserted_at);
+            self.importing_ids.insert(
+                event_id,
+                SlotEntry {
+                    slot: *slot,
+                    inserted_at: Instant::now(),
+                },
+            );
+        }
+
+        // --- 1c. Propagate slot via authoring_id / importing_id chains ---
+        match event {
+            Event::Authored { authoring_id, .. } | Event::AuthoringFailed { authoring_id, .. } => {
+                if let Some(entry) = self.authoring_ids.get(authoring_id) {
+                    fields.slot = fields.slot.or(Some(entry.slot));
+                }
+            }
+            Event::BlockVerified { importing_id, .. }
+            | Event::BlockVerificationFailed { importing_id, .. } => {
+                if let Some(entry) = self.importing_ids.get(importing_id) {
+                    fields.slot = fields.slot.or(Some(entry.slot));
+                }
+            }
+            Event::BlockExecuted {
+                authoring_or_importing_id,
+                ..
+            }
+            | Event::BlockExecutionFailed {
+                authoring_or_importing_id,
+                ..
+            } => {
+                if let Some(entry) = self
+                    .authoring_ids
+                    .get(authoring_or_importing_id)
+                    .or_else(|| self.importing_ids.get(authoring_or_importing_id))
+                {
+                    fields.slot = fields.slot.or(Some(entry.slot));
+                }
+            }
+            _ => {}
+        }
+
+        // --- 2. Extract core directly from events that carry it ---
+        match event {
+            Event::WorkPackageReceived { core, .. } | Event::DuplicateWorkPackage { core, .. } => {
+                fields.core = Some(*core);
+            }
+            _ => {}
+        }
+
+        // --- 3. Extract submission-family id ---
+        let submission_key: Option<u64> = match event {
+            // Events with submission_or_share_id
+            Event::WorkPackageFailed {
+                submission_or_share_id,
+                ..
+            }
+            | Event::DuplicateWorkPackage {
+                submission_or_share_id,
+                ..
+            }
+            | Event::WorkPackageReceived {
+                submission_or_share_id,
+                ..
+            }
+            | Event::Authorized {
+                submission_or_share_id,
+                ..
+            }
+            | Event::ExtrinsicDataReceived {
+                submission_or_share_id,
+                ..
+            }
+            | Event::ImportsReceived {
+                submission_or_share_id,
+                ..
+            }
+            | Event::Refined {
+                submission_or_share_id,
+                ..
+            }
+            | Event::WorkReportBuilt {
+                submission_or_share_id,
+                ..
+            } => Some(*submission_or_share_id),
+
+            // Events with submission_id
+            Event::SharingWorkPackage { submission_id, .. }
+            | Event::WorkPackageSharingFailed { submission_id, .. }
+            | Event::BundleSent { submission_id, .. }
+            | Event::WorkReportSignatureReceived { submission_id, .. }
+            | Event::GuaranteeBuilt { submission_id, .. }
+            | Event::GuaranteesDistributed { submission_id, .. }
+            | Event::WorkPackageHashMapped { submission_id, .. }
+            | Event::SegmentsRootMapped { submission_id, .. }
+            | Event::SendingSegmentShardRequest { submission_id, .. }
+            | Event::ReconstructingSegments { submission_id, .. }
+            | Event::SegmentVerificationFailed { submission_id, .. }
+            | Event::SegmentsVerified { submission_id, .. }
+            | Event::SendingSegmentRequest { submission_id, .. } => Some(*submission_id),
+
+            // Events with share_id
+            Event::WorkReportSignatureSent { share_id, .. } => Some(*share_id),
+
+            _ => None,
+        };
+
+        if let Some(sid) = submission_key {
+            fields.submission_id = Some(sid);
+        }
+
+        // --- 4. WorkPackageReceived: store context in submissions map ---
+        if let Event::WorkPackageReceived {
+            core,
+            submission_or_share_id,
+            outline,
+            ..
+        } = event
+        {
+            let service_ids: Vec<u32> = outline.work_items.iter().map(|wi| wi.service_id).collect();
+            fields.service_ids = Some(service_ids.clone());
+            fields.wp_hash = Some(outline.work_package_hash);
+
+            cap_map(&mut self.submissions, MAX_MAP_ENTRIES, |v| v.inserted_at);
+            self.submissions.insert(
+                *submission_or_share_id,
+                SubmissionContext {
+                    core: *core,
+                    work_package_hash: Some(outline.work_package_hash),
+                    service_ids,
+                    inserted_at: Instant::now(),
+                },
+            );
+        }
+
+        // --- 5. Look up submissions map for events that have a submission key but lack fields ---
+        if fields.core.is_none() || fields.service_ids.is_none() || fields.wp_hash.is_none() {
+            if let Some(sid) = submission_key {
+                self.lookups_attempted += 1;
+                if let Some(ctx) = self.submissions.get(&sid) {
+                    if fields.core.is_none() {
+                        fields.core = Some(ctx.core);
+                    }
+                    if fields.service_ids.is_none() {
+                        fields.service_ids = Some(ctx.service_ids.clone());
+                    }
+                    if fields.wp_hash.is_none() {
+                        fields.wp_hash = ctx.work_package_hash;
+                    }
+                } else {
+                    self.lookups_missed += 1;
+                }
+            }
+        }
+
+        // --- 6. Chain correlations ---
+
+        // GuaranteeBuilt -> store in built_ids
+        if let Event::GuaranteeBuilt { .. } = event {
+            if let Some(core) = fields.core {
+                cap_map(&mut self.built_ids, MAX_MAP_ENTRIES, |v| v.inserted_at);
+                self.built_ids.insert(
+                    event_id,
+                    ChainEntry {
+                        core,
+                        service_ids: fields.service_ids.clone(),
+                        inserted_at: Instant::now(),
+                    },
+                );
+            }
+        }
+
+        // SendingGuarantee(built_id) -> look up built_ids, then store in sending_ids
+        if let Event::SendingGuarantee { built_id, .. } = event {
+            if let Some(entry) = self.built_ids.get(built_id) {
+                fields.core = fields.core.or(Some(entry.core));
+                if fields.service_ids.is_none() {
+                    fields.service_ids = entry.service_ids.clone();
+                }
+            } else {
+                self.chain_lookups_missed += 1;
+            }
+            if let Some(core) = fields.core {
+                cap_map(&mut self.sending_ids, MAX_MAP_ENTRIES, |v| v.inserted_at);
+                self.sending_ids.insert(
+                    event_id,
+                    ChainEntry {
+                        core,
+                        service_ids: fields.service_ids.clone(),
+                        inserted_at: Instant::now(),
+                    },
+                );
+            }
+        }
+
+        // GuaranteeSent / GuaranteeSendFailed(sending_id) -> look up sending_ids
+        match event {
+            Event::GuaranteeSent { sending_id, .. }
+            | Event::GuaranteeSendFailed { sending_id, .. } => {
+                if let Some(entry) = self.sending_ids.get(sending_id) {
+                    fields.core = fields.core.or(Some(entry.core));
+                    if fields.service_ids.is_none() {
+                        fields.service_ids = entry.service_ids.clone();
+                    }
+                } else {
+                    self.chain_lookups_missed += 1;
+                }
+            }
+            _ => {}
+        }
+
+        // SendingSegmentShardRequest / SendingSegmentRequest -> store in request_ids
+        match event {
+            Event::SendingSegmentShardRequest { .. } | Event::SendingSegmentRequest { .. } => {
+                if let Some(core) = fields.core {
+                    cap_map(&mut self.request_ids, MAX_MAP_ENTRIES, |v| v.inserted_at);
+                    self.request_ids.insert(
+                        event_id,
+                        ChainEntry {
+                            core,
+                            service_ids: fields.service_ids.clone(),
+                            inserted_at: Instant::now(),
+                        },
+                    );
+                }
+            }
+            _ => {}
+        }
+
+        // Segment*Request* events with request_id -> look up request_ids
+        match event {
+            Event::SegmentShardRequestFailed { request_id, .. }
+            | Event::SegmentShardRequestSent { request_id, .. }
+            | Event::SegmentShardRequestReceived { request_id, .. }
+            | Event::SegmentShardsTransferred { request_id, .. }
+            | Event::SegmentRequestFailed { request_id, .. }
+            | Event::SegmentRequestSent { request_id, .. }
+            | Event::SegmentRequestReceived { request_id, .. }
+            | Event::SegmentsTransferred { request_id, .. } => {
+                if let Some(entry) = self.request_ids.get(request_id) {
+                    fields.core = fields.core.or(Some(entry.core));
+                    if fields.service_ids.is_none() {
+                        fields.service_ids = entry.service_ids.clone();
+                    }
+                } else {
+                    self.chain_lookups_missed += 1;
+                }
+            }
+            _ => {}
+        }
+
+        // ReconstructingSegments -> store in reconstructing_ids
+        if let Event::ReconstructingSegments { .. } = event {
+            if let Some(core) = fields.core {
+                cap_map(&mut self.reconstructing_ids, MAX_MAP_ENTRIES, |v| {
+                    v.inserted_at
+                });
+                self.reconstructing_ids.insert(
+                    event_id,
+                    ChainEntry {
+                        core,
+                        service_ids: fields.service_ids.clone(),
+                        inserted_at: Instant::now(),
+                    },
+                );
+            }
+        }
+
+        // SegmentReconstructionFailed / SegmentsReconstructed(reconstructing_id) -> look up
+        match event {
+            Event::SegmentReconstructionFailed {
+                reconstructing_id, ..
+            }
+            | Event::SegmentsReconstructed {
+                reconstructing_id, ..
+            } => {
+                if let Some(entry) = self.reconstructing_ids.get(reconstructing_id) {
+                    fields.core = fields.core.or(Some(entry.core));
+                    if fields.service_ids.is_none() {
+                        fields.service_ids = entry.service_ids.clone();
+                    }
+                } else {
+                    self.chain_lookups_missed += 1;
+                }
+            }
+            _ => {}
+        }
+
+        fields
+    }
+
+    /// Total entries across all 7 internal maps.
+    pub fn total_map_entries(&self) -> usize {
+        self.submissions.len()
+            + self.built_ids.len()
+            + self.sending_ids.len()
+            + self.request_ids.len()
+            + self.reconstructing_ids.len()
+            + self.authoring_ids.len()
+            + self.importing_ids.len()
+    }
+
+    /// Reset diagnostics counters (called by periodic sweep after snapshotting).
+    pub fn reset_counters(&mut self) {
+        self.events_processed = 0;
+        self.lookups_attempted = 0;
+        self.lookups_missed = 0;
+        self.chain_lookups_missed = 0;
+        self.evictions_triggered = 0;
+    }
+
+    /// Evict entries older than [`STALE_TTL`] from all internal maps.
+    fn evict_stale(&mut self) {
+        self.evictions_triggered += 1;
+        let cutoff = STALE_TTL;
+        self.submissions
+            .retain(|_, ctx| ctx.inserted_at.elapsed() <= cutoff);
+        self.built_ids
+            .retain(|_, e| e.inserted_at.elapsed() <= cutoff);
+        self.sending_ids
+            .retain(|_, e| e.inserted_at.elapsed() <= cutoff);
+        self.request_ids
+            .retain(|_, e| e.inserted_at.elapsed() <= cutoff);
+        self.reconstructing_ids
+            .retain(|_, e| e.inserted_at.elapsed() <= cutoff);
+        self.authoring_ids
+            .retain(|_, e| e.inserted_at.elapsed() <= cutoff);
+        self.importing_ids
+            .retain(|_, e| e.inserted_at.elapsed() <= cutoff);
+    }
+}
+
+/// Periodic diagnostics sweep over all per-node enrichers.
+///
+/// Three phases to minimise lock contention with the hot path:
+///   1. `.iter()` — read guards, snapshot counters + map sizes (ns per node)
+///   2. compute aggregates + percentiles (no locks held)
+///   3. `.iter_mut()` — write guards, zero counters (ns per node)
+pub fn log_enricher_diagnostics(map: &EnricherMap, interval_secs: f64) {
+    // Phase 1 — snapshot
+    struct Snap {
+        node_id: crate::batch_writer::NodeId,
+        events: u64,
+        lookups: u64,
+        missed: u64,
+        chain_missed: u64,
+        evictions: u64,
+        map_entries: usize,
+    }
+    let mut snaps: Vec<Snap> = Vec::with_capacity(map.len());
+    for entry in map.iter() {
+        let e = entry.value();
+        snaps.push(Snap {
+            node_id: entry.key().clone(),
+            events: e.events_processed,
+            lookups: e.lookups_attempted,
+            missed: e.lookups_missed,
+            chain_missed: e.chain_lookups_missed,
+            evictions: e.evictions_triggered,
+            map_entries: e.total_map_entries(),
+        });
+    }
+
+    if snaps.is_empty() {
+        return;
+    }
+
+    // Phase 2 — compute (no locks)
+    let total_events: u64 = snaps.iter().map(|s| s.events).sum();
+    let total_lookups: u64 = snaps.iter().map(|s| s.lookups).sum();
+    let total_missed: u64 = snaps.iter().map(|s| s.missed).sum();
+    let total_chain_missed: u64 = snaps.iter().map(|s| s.chain_missed).sum();
+    let total_evictions: u64 = snaps.iter().map(|s| s.evictions).sum();
+
+    let max_per_node = 7 * MAX_MAP_ENTRIES;
+    let mut fill_pcts: Vec<f64> = snaps
+        .iter()
+        .map(|s| s.map_entries as f64 / max_per_node as f64 * 100.0)
+        .collect();
+    fill_pcts.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+
+    let p50 = fill_pcts[fill_pcts.len() / 2];
+    let p95_idx = ((fill_pcts.len() as f64 * 0.95) as usize).min(fill_pcts.len() - 1);
+    let p95 = fill_pcts[p95_idx];
+
+    // Find the node with highest fill
+    let max_snap = snaps.iter().max_by_key(|s| s.map_entries).unwrap();
+    let max_fill = max_snap.map_entries as f64 / max_per_node as f64 * 100.0;
+
+    let miss_pct = if total_lookups > 0 {
+        total_missed as f64 / total_lookups as f64 * 100.0
+    } else {
+        0.0
+    };
+
+    let events_per_sec = total_events as f64 / interval_secs;
+
+    debug!(
+        nodes = snaps.len(),
+        "enricher: {:.0} events/s, lookups={} (missed={:.1}%), chain_missed={}, evictions={}, \
+         map_fill: p50={:.1}% p95={:.1}% max={:.1}% (node={})",
+        events_per_sec,
+        total_lookups,
+        miss_pct,
+        total_chain_missed,
+        total_evictions,
+        p50,
+        p95,
+        max_fill,
+        max_snap.node_id,
+    );
+
+    // Phase 3 — reset counters
+    for mut entry in map.iter_mut() {
+        entry.value_mut().reset_counters();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::Event;
+    use crate::types::*;
+
+    fn make_wp_outline(service_ids: &[u32], wp_hash: [u8; 32]) -> WorkPackageOutline {
+        WorkPackageSummary {
+            work_package_size: 100,
+            work_package_hash: wp_hash,
+            anchor: [0u8; 32],
+            lookup_anchor_slot: 0,
+            prerequisites: vec![],
+            work_items: service_ids
+                .iter()
+                .map(|&sid| WorkItemSummary {
+                    service_id: sid,
+                    payload_size: 0,
+                    refine_gas_limit: 0,
+                    accumulate_gas_limit: 0,
+                    sum_of_extrinsic_lengths: 0,
+                    imports: vec![],
+                    num_exported_segments: 0,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn test_wp_received_populates_submission() {
+        let mut enricher = NodeEventEnricher::default();
+        let wp_hash = [42u8; 32];
+        let event = Event::WorkPackageReceived {
+            timestamp: 1000,
+            submission_or_share_id: 100,
+            core: 5,
+            outline: make_wp_outline(&[10, 20, 30], wp_hash),
+        };
+
+        let fields = enricher.process(&event, 1);
+
+        assert_eq!(fields.core, Some(5));
+        assert_eq!(fields.submission_id, Some(100));
+        assert_eq!(fields.service_ids, Some(vec![10, 20, 30]));
+        assert_eq!(fields.wp_hash, Some(wp_hash));
+    }
+
+    #[test]
+    fn test_submission_chain_lookup() {
+        let mut enricher = NodeEventEnricher::default();
+        let wp_hash = [42u8; 32];
+
+        // First: WPReceived stores context
+        let wp_event = Event::WorkPackageReceived {
+            timestamp: 1000,
+            submission_or_share_id: 100,
+            core: 5,
+            outline: make_wp_outline(&[10, 20], wp_hash),
+        };
+        enricher.process(&wp_event, 1);
+
+        // Then: Authorized with same submission_or_share_id inherits
+        let auth_event = Event::Authorized {
+            timestamp: 1001,
+            submission_or_share_id: 100,
+            cost: IsAuthorizedCost {
+                total: ExecCost {
+                    gas_used: 500,
+                    elapsed_ns: 100,
+                },
+                load_ns: 50,
+                host_call: ExecCost {
+                    gas_used: 200,
+                    elapsed_ns: 40,
+                },
+            },
+        };
+        let fields = enricher.process(&auth_event, 2);
+
+        assert_eq!(fields.core, Some(5));
+        assert_eq!(fields.submission_id, Some(100));
+        assert_eq!(fields.service_ids, Some(vec![10, 20]));
+        assert_eq!(fields.wp_hash, Some(wp_hash));
+    }
+
+    #[test]
+    fn test_guarantee_chain() {
+        let mut enricher = NodeEventEnricher::default();
+        let wp_hash = [42u8; 32];
+
+        // WPReceived → stores submission context
+        let wp_event = Event::WorkPackageReceived {
+            timestamp: 1000,
+            submission_or_share_id: 100,
+            core: 3,
+            outline: make_wp_outline(&[10], wp_hash),
+        };
+        enricher.process(&wp_event, 1);
+
+        // GuaranteeBuilt (submission_id=100) → inherits core from submission, stores in built_ids
+        let built_event = Event::GuaranteeBuilt {
+            timestamp: 1001,
+            submission_id: 100,
+            outline: GuaranteeSummary {
+                work_report_hash: [0u8; 32],
+                slot: 10,
+                guarantors: vec![],
+            },
+        };
+        let fields = enricher.process(&built_event, 2);
+        assert_eq!(fields.core, Some(3));
+
+        // SendingGuarantee (built_id=2) → looks up built_ids, stores in sending_ids
+        let sending_event = Event::SendingGuarantee {
+            timestamp: 1002,
+            built_id: 2,
+            recipient: [0u8; 32],
+        };
+        let fields = enricher.process(&sending_event, 3);
+        assert_eq!(fields.core, Some(3));
+
+        // GuaranteeSent (sending_id=3) → looks up sending_ids
+        let sent_event = Event::GuaranteeSent {
+            timestamp: 1003,
+            sending_id: 3,
+        };
+        let fields = enricher.process(&sent_event, 4);
+        assert_eq!(fields.core, Some(3));
+    }
+
+    #[test]
+    fn test_segment_chain() {
+        let mut enricher = NodeEventEnricher::default();
+        let wp_hash = [42u8; 32];
+
+        // WPReceived
+        let wp_event = Event::WorkPackageReceived {
+            timestamp: 1000,
+            submission_or_share_id: 100,
+            core: 7,
+            outline: make_wp_outline(&[10], wp_hash),
+        };
+        enricher.process(&wp_event, 1);
+
+        // SendingSegmentShardRequest (submission_id=100) → inherits core, stores in request_ids
+        let request_event = Event::SendingSegmentShardRequest {
+            timestamp: 1001,
+            submission_id: 100,
+            assurer: [0u8; 32],
+            proofs: false,
+            shards: vec![],
+        };
+        let fields = enricher.process(&request_event, 2);
+        assert_eq!(fields.core, Some(7));
+
+        // SegmentShardRequestSent (request_id=2) → looks up request_ids
+        let sent_event = Event::SegmentShardRequestSent {
+            timestamp: 1002,
+            request_id: 2,
+        };
+        let fields = enricher.process(&sent_event, 3);
+        assert_eq!(fields.core, Some(7));
+    }
+
+    #[test]
+    fn test_reconstructing_chain() {
+        let mut enricher = NodeEventEnricher::default();
+        let wp_hash = [42u8; 32];
+
+        // WPReceived
+        let wp_event = Event::WorkPackageReceived {
+            timestamp: 1000,
+            submission_or_share_id: 100,
+            core: 2,
+            outline: make_wp_outline(&[10], wp_hash),
+        };
+        enricher.process(&wp_event, 1);
+
+        // ReconstructingSegments (submission_id=100) → inherits core, stores in reconstructing_ids
+        let recon_event = Event::ReconstructingSegments {
+            timestamp: 1001,
+            submission_id: 100,
+            segments: vec![],
+            kind: ReconstructionKind::Trivial,
+        };
+        let fields = enricher.process(&recon_event, 2);
+        assert_eq!(fields.core, Some(2));
+
+        // SegmentsReconstructed (reconstructing_id=2) → looks up reconstructing_ids
+        let done_event = Event::SegmentsReconstructed {
+            timestamp: 1002,
+            reconstructing_id: 2,
+        };
+        let fields = enricher.process(&done_event, 3);
+        assert_eq!(fields.core, Some(2));
+    }
+
+    #[test]
+    fn test_partial_eviction() {
+        let mut enricher = NodeEventEnricher::default();
+
+        // Insert MAX_MAP_ENTRIES + 1 submissions to trigger partial eviction
+        for i in 0..=MAX_MAP_ENTRIES {
+            let event = Event::WorkPackageReceived {
+                timestamp: 1000,
+                submission_or_share_id: i as u64,
+                core: 1,
+                outline: make_wp_outline(&[10], [0u8; 32]),
+            };
+            enricher.process(&event, i as u64);
+        }
+
+        // After partial eviction (25% removed), map should have ~75% of MAX_MAP_ENTRIES + 1
+        let expected = MAX_MAP_ENTRIES - MAX_MAP_ENTRIES / 4 + 1;
+        assert_eq!(enricher.submissions.len(), expected);
+
+        // The newest entry should still be present
+        assert!(enricher.submissions.contains_key(&(MAX_MAP_ENTRIES as u64)));
+    }
+
+    #[test]
+    fn test_dropped_event_no_enrich() {
+        let mut enricher = NodeEventEnricher::default();
+
+        let event = Event::Dropped {
+            timestamp: 1000,
+            last_timestamp: 999,
+            num: 5,
+        };
+        let fields = enricher.process(&event, 1);
+
+        assert!(fields.slot.is_none());
+        assert!(fields.core.is_none());
+        assert!(fields.submission_id.is_none());
+        assert!(fields.service_ids.is_none());
+        assert!(fields.wp_hash.is_none());
+    }
+
+    #[test]
+    fn test_slot_extraction() {
+        let mut enricher = NodeEventEnricher::default();
+
+        let event = Event::BestBlockChanged {
+            timestamp: 1000,
+            slot: 42,
+            hash: [0u8; 32],
+        };
+        let fields = enricher.process(&event, 1);
+        assert_eq!(fields.slot, Some(42));
+    }
+
+    #[test]
+    fn test_authoring_to_authored_slot() {
+        let mut enricher = NodeEventEnricher::default();
+
+        // Authoring carries slot directly
+        let authoring = Event::Authoring {
+            timestamp: 1000,
+            slot: 200,
+            parent: [0u8; 32],
+        };
+        let fields = enricher.process(&authoring, 1);
+        assert_eq!(fields.slot, Some(200));
+
+        // Authored links via authoring_id — should inherit slot
+        let authored = Event::Authored {
+            timestamp: 1001,
+            authoring_id: 1,
+            outline: crate::types::BlockSummary {
+                size_bytes: 1024,
+                hash: [0u8; 32],
+                num_tickets: 0,
+                num_preimages: 0,
+                total_preimages_size: 0,
+                num_guarantees: 3,
+                num_assurances: 2,
+                num_dispute_verdicts: 0,
+            },
+        };
+        let fields = enricher.process(&authored, 2);
+        assert_eq!(fields.slot, Some(200));
+    }
+
+    #[test]
+    fn test_authoring_to_authoring_failed_slot() {
+        let mut enricher = NodeEventEnricher::default();
+
+        let authoring = Event::Authoring {
+            timestamp: 1000,
+            slot: 150,
+            parent: [0u8; 32],
+        };
+        enricher.process(&authoring, 1);
+
+        let failed = Event::AuthoringFailed {
+            timestamp: 1001,
+            authoring_id: 1,
+            reason: crate::types::BoundedString::new("test failure").unwrap(),
+        };
+        let fields = enricher.process(&failed, 2);
+        assert_eq!(fields.slot, Some(150));
+    }
+
+    #[test]
+    fn test_importing_to_block_verified_slot() {
+        let mut enricher = NodeEventEnricher::default();
+
+        let importing = Event::Importing {
+            timestamp: 1000,
+            slot: 300,
+            outline: crate::types::BlockSummary {
+                size_bytes: 512,
+                hash: [0u8; 32],
+                num_tickets: 0,
+                num_preimages: 0,
+                total_preimages_size: 0,
+                num_guarantees: 0,
+                num_assurances: 0,
+                num_dispute_verdicts: 0,
+            },
+        };
+        enricher.process(&importing, 1);
+
+        let verified = Event::BlockVerified {
+            timestamp: 1001,
+            importing_id: 1,
+        };
+        let fields = enricher.process(&verified, 2);
+        assert_eq!(fields.slot, Some(300));
+    }
+
+    #[test]
+    fn test_importing_to_block_executed_slot() {
+        let mut enricher = NodeEventEnricher::default();
+
+        let importing = Event::Importing {
+            timestamp: 1000,
+            slot: 400,
+            outline: crate::types::BlockSummary {
+                size_bytes: 512,
+                hash: [0u8; 32],
+                num_tickets: 0,
+                num_preimages: 0,
+                total_preimages_size: 0,
+                num_guarantees: 0,
+                num_assurances: 0,
+                num_dispute_verdicts: 0,
+            },
+        };
+        enricher.process(&importing, 1);
+
+        let executed = Event::BlockExecuted {
+            timestamp: 1001,
+            authoring_or_importing_id: 1,
+            accumulate_costs: vec![],
+        };
+        let fields = enricher.process(&executed, 2);
+        assert_eq!(fields.slot, Some(400));
+    }
+
+    #[test]
+    fn test_authoring_to_block_executed_slot() {
+        let mut enricher = NodeEventEnricher::default();
+
+        let authoring = Event::Authoring {
+            timestamp: 1000,
+            slot: 500,
+            parent: [0u8; 32],
+        };
+        enricher.process(&authoring, 1);
+
+        // BlockExecuted with authoring_or_importing_id pointing to Authoring
+        let executed = Event::BlockExecuted {
+            timestamp: 1001,
+            authoring_or_importing_id: 1,
+            accumulate_costs: vec![],
+        };
+        let fields = enricher.process(&executed, 2);
+        assert_eq!(fields.slot, Some(500));
+    }
+
+    #[test]
+    fn test_guarantee_received_slot_extraction() {
+        let mut enricher = NodeEventEnricher::default();
+        let event = Event::GuaranteeReceived {
+            timestamp: 1000,
+            receiving_id: 1,
+            outline: crate::types::GuaranteeSummary {
+                work_report_hash: [0xAA; 32],
+                slot: 42,
+                guarantors: vec![1, 2, 3],
+            },
+        };
+        let fields = enricher.process(&event, 1);
+        assert_eq!(fields.slot, Some(42));
+    }
+
+    #[test]
+    fn test_guarantee_discarded_slot_extraction() {
+        let mut enricher = NodeEventEnricher::default();
+        let event = Event::GuaranteeDiscarded {
+            timestamp: 1000,
+            outline: crate::types::GuaranteeSummary {
+                work_report_hash: [0xBB; 32],
+                slot: 99,
+                guarantors: vec![4, 5],
+            },
+            reason: crate::types::GuaranteeDiscardReason::ReplacedByBetter,
+        };
+        let fields = enricher.process(&event, 1);
+        assert_eq!(fields.slot, Some(99));
+    }
+}

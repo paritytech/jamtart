@@ -1,3 +1,7 @@
+//! Binary encoding primitives and error types for the telemetry wire format.
+//! Provides variable-length integer encoding and the `Encode` trait used by event
+//! serialization.
+
 use bytes::{BufMut, BytesMut};
 use std::io;
 use thiserror::Error;

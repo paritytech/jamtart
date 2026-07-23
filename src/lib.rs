@@ -1,19 +1,39 @@
+//! JamTart v3 — telemetry ingestion, storage, and visualization for JAM networks.
+
 pub mod api;
 pub mod batch_writer;
 pub mod cache;
 pub mod circuit_breaker;
+pub mod convergence_tracker;
+pub mod da_latency_tracker;
+pub mod da_tracker;
 pub mod decoder;
 pub mod encoding;
+pub mod enricher;
 pub mod event_broadcaster;
+pub mod event_counter;
+pub mod event_type_meta;
 pub mod events;
+pub mod feature_flags;
+pub mod grafana;
+pub mod grafana_store;
+pub mod grafana_types;
 pub mod health;
+pub mod histogram;
 pub mod jam_rpc;
+pub mod live_counters;
+pub mod metrics_tracker;
 pub mod node_id;
+pub mod onchain_stats;
+pub mod onchain_store;
+pub mod onchain_types;
 pub mod rate_limiter;
 pub mod retry;
 pub mod server;
+pub mod slot_tracker;
 pub mod store;
 pub mod types;
+pub mod wp_tracker;
 
 pub use events::{Event, EventType, NodeInformation};
 pub use jam_rpc::{JamRpcClient, NetworkStats, ServiceInfo};

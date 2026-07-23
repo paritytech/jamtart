@@ -47,6 +47,7 @@ async fn setup_ws_test() -> (String, Arc<TelemetryServer>, u16) {
         health_monitor,
         jam_rpc: None,
         cache: Arc::new(tart_backend::cache::TtlCache::new(Duration::from_secs(5))),
+        metrics_tracker: None,
     };
 
     let app = create_api_router(api_state);

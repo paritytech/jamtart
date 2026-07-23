@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Network-wide overview \u2014 live stats, events, blocks, health, and aggregates",
+  "description": "[JIP-3] Network-wide overview — live stats, events, blocks, health, and aggregates",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -101,7 +101,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/metrics/live",
+          "url": "http://tart-backend:8080/api/grafana/stats?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -112,6 +112,7 @@
         }
       ],
       "title": "Active Nodes",
+      "description": "[JIP-3] Number of nodes currently connected to the telemetry server.",
       "type": "stat"
     },
     {
@@ -159,7 +160,7 @@
         {
           "columns": [
             {
-              "selector": "latest_slot",
+              "selector": "best_slot",
               "text": "Best Slot",
               "type": "number"
             }
@@ -173,7 +174,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/metrics/live",
+          "url": "http://tart-backend:8080/api/grafana/stats?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -184,6 +185,7 @@
         }
       ],
       "title": "Best Slot",
+      "description": "[JIP-3] Highest slot number reported by any node via BestBlockChanged (11).",
       "type": "stat"
     },
     {
@@ -245,7 +247,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/metrics/live",
+          "url": "http://tart-backend:8080/api/grafana/stats?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -256,6 +258,7 @@
         }
       ],
       "title": "Finalized Slot",
+      "description": "[JIP-3] Latest finalized slot reported via FinalizedBlockChanged (12).",
       "type": "stat"
     },
     {
@@ -312,7 +315,7 @@
         {
           "columns": [
             {
-              "selector": "last_10s.events_per_second",
+              "selector": "events_per_sec_10s",
               "text": "Events/sec",
               "type": "number"
             }
@@ -326,7 +329,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/metrics/live",
+          "url": "http://tart-backend:8080/api/grafana/stats?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -337,6 +340,7 @@
         }
       ],
       "title": "Events/sec (10s)",
+      "description": "[JIP-3] Total telemetry events ingested per second, averaged over the last 10 seconds. Covers all event types from all nodes.",
       "type": "stat"
     },
     {
@@ -385,7 +389,7 @@
         {
           "columns": [
             {
-              "selector": "last_10s.blocks_per_second",
+              "selector": "blocks_per_sec_10s",
               "text": "Blocks/sec",
               "type": "number"
             }
@@ -399,7 +403,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/metrics/live",
+          "url": "http://tart-backend:8080/api/grafana/stats?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -410,91 +414,8 @@
         }
       ],
       "title": "Blocks/sec (10s)",
+      "description": "[JIP-3] Authored (42) events per second, averaged over the last 10 seconds. One count per block produced by any node.",
       "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "jamtart-api"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "max": 100,
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 40
-              },
-              {
-                "color": "green",
-                "value": 70
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 20,
-        "y": 1
-      },
-      "id": 7,
-      "options": {
-        "minVizHeight": 75,
-        "minVizWidth": 75,
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showThresholdLabels": false,
-        "showThresholdMarkers": true,
-        "sizing": "auto"
-      },
-      "targets": [
-        {
-          "columns": [
-            {
-              "selector": "health_score",
-              "text": "Health Score",
-              "type": "number"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "jamtart-api"
-          },
-          "format": "table",
-          "parser": "backend",
-          "root_selector": "",
-          "source": "url",
-          "type": "json",
-          "url": "http://tart-backend:8080/api/analytics/network-health",
-          "url_options": {
-            "method": "GET",
-            "data": "",
-            "headers": [],
-            "params": []
-          },
-          "refId": "A"
-        }
-      ],
-      "title": "Health Score",
-      "type": "gauge"
     },
     {
       "collapsed": false,
@@ -505,7 +426,7 @@
         "y": 5
       },
       "id": 8,
-      "title": "Event Analysis",
+      "title": "Event Totals",
       "type": "row"
     },
     {
@@ -1538,7 +1459,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
+        "w": 12,
         "x": 0,
         "y": 6
       },
@@ -1561,17 +1482,17 @@
         {
           "columns": [
             {
-              "selector": "timestamp",
+              "selector": "ts",
               "text": "Time",
               "type": "timestamp"
             },
             {
-              "selector": "event_type",
+              "selector": "event_type_name",
               "text": "Event Type",
               "type": "string"
             },
             {
-              "selector": "events",
+              "selector": "count",
               "text": "Events",
               "type": "number"
             }
@@ -1582,10 +1503,10 @@
           },
           "format": "table",
           "parser": "backend",
-          "root_selector": "data",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/metrics/timeseries/grouped?metric=events&group_by=event_type&duration=1&interval=1",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?group_by=event_type&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1596,6 +1517,7 @@
         }
       ],
       "title": "Events by Type",
+      "description": "[JIP-3] Network-wide event counts grouped by event type name. All events from all nodes \u2014 each line is one event type's count per interval. (1-minute buckets from all_event_stats_1m)",
       "type": "timeseries",
       "transformations": [
         {
@@ -1669,8 +1591,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 8,
+        "w": 12,
+        "x": 12,
         "y": 6
       },
       "id": 10,
@@ -1693,7 +1615,7 @@
         {
           "columns": [
             {
-              "selector": "timestamp",
+              "selector": "ts",
               "text": "Time",
               "type": "timestamp"
             },
@@ -1703,7 +1625,7 @@
               "type": "string"
             },
             {
-              "selector": "events",
+              "selector": "count",
               "text": "Events",
               "type": "number"
             }
@@ -1714,10 +1636,10 @@
           },
           "format": "table",
           "parser": "backend",
-          "root_selector": "data",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/metrics/timeseries/grouped?metric=events&group_by=node&duration=1&interval=1",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?group_by=node_id&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1728,6 +1650,7 @@
         }
       ],
       "title": "Events by Node",
+      "description": "[JIP-3] Network-wide event counts grouped by node. Each line is one node's total event volume per interval. (1-minute buckets from all_event_stats_1m)",
       "type": "timeseries",
       "transformations": [
         {
@@ -1743,6 +1666,145 @@
           }
         }
       ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 23
+      },
+      "id": 40,
+      "title": "Selected Events",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
+      "description": "Event counts for individually selected event types.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 24
+      },
+      "id": 41,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "ts",
+              "text": "",
+              "type": "timestamp"
+            },
+            {
+              "selector": "event_type_name",
+              "text": "event_type_name",
+              "type": "string"
+            },
+            {
+              "selector": "count",
+              "text": "Count",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "format": "table",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?event_types=${event_type}&group_by=event_type&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
+          "url_options": {
+            "data": "",
+            "headers": [],
+            "method": "GET",
+            "params": []
+          }
+        }
+      ],
+      "title": "Selected Events",
+      "type": "timeseries",
+      "transformations": [
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "event_type_name"
+            ],
+            "keepFields": false
+          }
+        }
+      ],
+      "maxDataPoints": 300
     },
     {
       "datasource": {
@@ -1768,9 +1830,9 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 6
+        "w": 12,
+        "x": 12,
+        "y": 24
       },
       "id": 11,
       "options": {
@@ -1789,23 +1851,18 @@
         {
           "columns": [
             {
-              "selector": "category",
-              "text": "Category",
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "event_type_name",
+              "text": "Event Type",
               "type": "string"
             },
             {
-              "selector": "attempts",
-              "text": "Attempts",
-              "type": "number"
-            },
-            {
-              "selector": "failures",
-              "text": "Failures",
-              "type": "number"
-            },
-            {
-              "selector": "rate",
-              "text": "Rate",
+              "selector": "count",
+              "text": "Count",
               "type": "number"
             }
           ],
@@ -1815,10 +1872,10 @@
           },
           "format": "table",
           "parser": "backend",
-          "root_selector": "by_category",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/analytics/failure-rates",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?group_by=event_type&event_types=failures&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -1829,6 +1886,7 @@
         }
       ],
       "title": "Failure Rates",
+      "description": "[JIP-3] All failure and discard events across the network: AuthoringFailed (41), BlockVerificationFailed (44), BlockExecutionFailed (46), BlockRequestFailed (65), TicketGenerationFailed (81), TicketTransferFailed (83), WorkPackageFailed (92), DuplicateWorkPackage (93), WorkPackageSharingFailed (99), GuaranteeSendFailed (107), GuaranteeReceiveFailed (111), GuaranteeDiscarded (113), ShardRequestFailed (122), AssuranceSendFailed (127), AssuranceReceiveFailed (130), and others. Grouped by type. (1-minute buckets from all_event_stats_1m)",
       "type": "table"
     },
     {
@@ -1837,10 +1895,10 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 14
+        "y": 32
       },
-      "id": 12,
-      "title": "Time Series (last hour)",
+      "id": 16,
+      "title": "Blocks & Pipeline",
       "type": "row"
     },
     {
@@ -1902,120 +1960,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 15
-      },
-      "id": 13,
-      "options": {
-        "legend": {
-          "calcs": [
-            "mean",
-            "max"
-          ],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "all",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "columns": [
-            {
-              "selector": "timestamp",
-              "text": "Time",
-              "type": "timestamp"
-            },
-            {
-              "selector": "total_events",
-              "text": "Total Events",
-              "type": "number"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "jamtart-api"
-          },
-          "format": "timeseries",
-          "parser": "backend",
-          "root_selector": "data",
-          "source": "url",
-          "type": "json",
-          "url": "http://tart-backend:8080/api/metrics/timeseries?metric=events&duration=1&interval=1",
-          "url_options": {
-            "method": "GET",
-            "data": "",
-            "headers": [],
-            "params": []
-          },
-          "refId": "A"
-        }
-      ],
-      "title": "Event Throughput",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "jamtart-api"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 15
+        "y": 33
       },
       "id": 14,
       "options": {
@@ -2037,18 +1982,13 @@
         {
           "columns": [
             {
-              "selector": "timestamp",
+              "selector": "ts",
               "text": "Time",
               "type": "timestamp"
             },
             {
-              "selector": "blocks",
+              "selector": "count",
               "text": "Blocks",
-              "type": "number"
-            },
-            {
-              "selector": "max_slot",
-              "text": "Max Slot",
               "type": "number"
             }
           ],
@@ -2056,12 +1996,12 @@
             "type": "yesoreyeram-infinity-datasource",
             "uid": "jamtart-api"
           },
-          "format": "timeseries",
+          "format": "table",
           "parser": "backend",
-          "root_selector": "data",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/metrics/timeseries?metric=blocks&duration=1&interval=1",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?event_types=42&start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2072,6 +2012,7 @@
         }
       ],
       "title": "Block Production",
+      "description": "[JIP-3] Authored (42) events per interval \u2014 one count per block produced by any node. (1-minute buckets from event_stats_1m)",
       "type": "timeseries"
     },
     {
@@ -2132,8 +2073,8 @@
       "gridPos": {
         "h": 8,
         "w": 8,
-        "x": 16,
-        "y": 15
+        "x": 8,
+        "y": 33
       },
       "id": 15,
       "options": {
@@ -2154,22 +2095,12 @@
         {
           "columns": [
             {
-              "selector": "timestamp",
+              "selector": "ts",
               "text": "Time",
               "type": "timestamp"
             },
             {
-              "selector": "work_package_events",
-              "text": "Work Packages",
-              "type": "number"
-            },
-            {
-              "selector": "guarantee_events",
-              "text": "Guarantees",
-              "type": "number"
-            },
-            {
-              "selector": "authored_blocks",
+              "selector": "count",
               "text": "Authored Blocks",
               "type": "number"
             }
@@ -2180,10 +2111,10 @@
           },
           "format": "timeseries",
           "parser": "backend",
-          "root_selector": "data",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/metrics/timeseries?metric=throughput&duration=1&interval=1",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&event_types=42",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2191,92 +2122,17 @@
             "params": []
           },
           "refId": "A"
-        }
-      ],
-      "title": "Pipeline Activity",
-      "type": "timeseries"
-    },
-    {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 23
-      },
-      "id": 16,
-      "title": "Block & Consensus",
-      "type": "row"
-    },
-    {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "jamtart-api"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
         },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 0,
-        "y": 24
-      },
-      "id": 17,
-      "options": {
-        "colorMode": "background_solid",
-        "graphMode": "none",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "targets": [
         {
           "columns": [
             {
-              "selector": "totals.authored",
-              "text": "Authored",
-              "type": "number"
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
             },
             {
-              "selector": "totals.verified",
-              "text": "Verified",
-              "type": "number"
-            },
-            {
-              "selector": "totals.executed",
-              "text": "Executed",
-              "type": "number"
-            },
-            {
-              "selector": "chain.best_slot",
-              "text": "Best Slot",
-              "type": "number"
-            },
-            {
-              "selector": "chain.finalized_slot",
-              "text": "Finalized",
+              "selector": "count",
+              "text": "Guarantees",
               "type": "number"
             }
           ],
@@ -2284,12 +2140,217 @@
             "type": "yesoreyeram-infinity-datasource",
             "uid": "jamtart-api"
           },
-          "format": "table",
+          "format": "timeseries",
           "parser": "backend",
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/blocks",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&event_types=wp_pipeline",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          },
+          "refId": "B"
+        },
+        {
+          "columns": [
+            {
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "count",
+              "text": "Work Packages",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "format": "timeseries",
+          "parser": "backend",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/timeseries?start=${__from:date:iso}&end=${__to:date:iso}&interval=${__interval}&event_types=guarantee_receiving",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "headers": [],
+            "params": []
+          },
+          "refId": "C"
+        }
+      ],
+      "title": "Pipeline Activity",
+      "description": "[JIP-3] Three series showing the block production pipeline: Authored (42), WP pipeline (WorkPackageReceived through GuaranteesDistributed, types 90\u2013109), and guarantee receiving (ReceivingGuarantee through GuaranteeDiscarded, types 110\u2013113). (1-minute buckets)",
+      "type": "timeseries",
+      "maxDataPoints": 300
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "jamtart-api"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "fillOpacity": 80,
+            "stacking": {
+              "mode": "normal"
+            },
+            "barAlignment": 0,
+            "drawStyle": "bars",
+            "lineWidth": 0,
+            "pointSize": 5,
+            "showPoints": "never"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Guarantees"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Assurances"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "blue",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Preimages"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Tickets"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "purple",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Disputes"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 33
+      },
+      "id": 17,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "timestamp",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "num_guarantees",
+              "text": "Guarantees",
+              "type": "number"
+            },
+            {
+              "selector": "num_assurances",
+              "text": "Assurances",
+              "type": "number"
+            },
+            {
+              "selector": "num_preimages",
+              "text": "Preimages",
+              "type": "number"
+            },
+            {
+              "selector": "num_tickets",
+              "text": "Tickets",
+              "type": "number"
+            },
+            {
+              "selector": "num_disputes",
+              "text": "Disputes",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "jamtart-api"
+          },
+          "format": "timeseries",
+          "parser": "backend",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://tart-backend:8080/api/grafana/blocks/contents?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2299,8 +2360,9 @@
           "refId": "A"
         }
       ],
-      "title": "Block Stats",
-      "type": "stat"
+      "title": "Block Composition",
+      "description": "[JIP-3] Contents of each authored block over time: number of guarantees, assurances, preimages, and tickets included. Extracted from Authored (42) event payload. Stacked bars.",
+      "type": "timeseries"
     },
     {
       "datasource": {
@@ -2323,13 +2385,29 @@
             ]
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Failed"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 24
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 41
       },
       "id": 18,
       "options": {
@@ -2349,28 +2427,33 @@
         {
           "columns": [
             {
-              "selector": "totals.built",
-              "text": "Built",
-              "type": "number"
-            },
-            {
-              "selector": "totals.sent",
-              "text": "Sent",
-              "type": "number"
-            },
-            {
-              "selector": "totals.received",
+              "selector": "received",
               "text": "Received",
               "type": "number"
             },
             {
-              "selector": "totals.discarded",
-              "text": "Discarded",
+              "selector": "authorized",
+              "text": "Authorized",
               "type": "number"
             },
             {
-              "selector": "totals.distributed",
+              "selector": "refined",
+              "text": "Refined",
+              "type": "number"
+            },
+            {
+              "selector": "guarantee_built",
+              "text": "Guaranteed",
+              "type": "number"
+            },
+            {
+              "selector": "distributed",
               "text": "Distributed",
+              "type": "number"
+            },
+            {
+              "selector": "failed",
+              "text": "Failed",
               "type": "number"
             }
           ],
@@ -2383,7 +2466,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/guarantees",
+          "url": "http://tart-backend:8080/api/grafana/wp-funnel?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2393,7 +2476,8 @@
           "refId": "A"
         }
       ],
-      "title": "Guarantee Pipeline",
+      "title": "WP Funnel",
+      "description": "[JIP-3] Work package pipeline summary: how many WPs were received (WorkPackageReceived 94), authorized (Authorized 95), refined (Refined 101), built into guarantees (GuaranteeBuilt 105), distributed (GuaranteesDistributed 109), and how many failed (WorkPackageFailed 92). Snapshot over the selected time range. (from wp_tracking)",
       "type": "stat"
     },
     {
@@ -2417,13 +2501,53 @@
             ]
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Failed WPs"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Avg Pipeline"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Failure Rate"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 24
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 41
       },
       "id": 19,
       "options": {
@@ -2443,23 +2567,23 @@
         {
           "columns": [
             {
-              "selector": "totals.submissions",
-              "text": "Submissions",
+              "selector": "total_wps",
+              "text": "Total WPs",
               "type": "number"
             },
             {
-              "selector": "totals.refined",
-              "text": "Refined",
+              "selector": "failed_wps",
+              "text": "Failed WPs",
               "type": "number"
             },
             {
-              "selector": "totals.guarantees_built",
-              "text": "Guarantees Built",
+              "selector": "failure_rate",
+              "text": "Failure Rate",
               "type": "number"
             },
             {
-              "selector": "totals.work_reports_built",
-              "text": "Work Reports",
+              "selector": "avg_pipeline_ms",
+              "text": "Avg Pipeline",
               "type": "number"
             }
           ],
@@ -2472,7 +2596,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/workpackages",
+          "url": "http://tart-backend:8080/api/grafana/bottlenecks?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2482,7 +2606,8 @@
           "refId": "A"
         }
       ],
-      "title": "Work Package Pipeline",
+      "title": "Pipeline Bottlenecks",
+      "description": "[JIP-3] Pipeline health metrics: total WPs processed, failure count and rate, average pipeline latency from WorkPackageReceived to GuaranteeBuilt in milliseconds. (from wp_tracking)",
       "type": "stat"
     },
     {
@@ -2491,259 +2616,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 32
-      },
-      "id": 20,
-      "title": "Network Health",
-      "type": "row"
-    },
-    {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "jamtart-api"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "healthy": {
-                  "color": "green",
-                  "index": 0
-                },
-                "degraded": {
-                  "color": "yellow",
-                  "index": 1
-                },
-                "unhealthy": {
-                  "color": "red",
-                  "index": 2
-                }
-              },
-              "type": "value"
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "score"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 60
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "status"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 90
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 33
-      },
-      "id": 21,
-      "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
-        "showHeader": true
-      },
-      "targets": [
-        {
-          "columns": [
-            {
-              "selector": "name",
-              "text": "Component",
-              "type": "string"
-            },
-            {
-              "selector": "status",
-              "text": "Status",
-              "type": "string"
-            },
-            {
-              "selector": "score",
-              "text": "Score",
-              "type": "number"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "jamtart-api"
-          },
-          "format": "table",
-          "parser": "backend",
-          "root_selector": "components",
-          "source": "url",
-          "type": "json",
-          "url": "http://tart-backend:8080/api/analytics/network-health",
-          "url_options": {
-            "method": "GET",
-            "data": "",
-            "headers": [],
-            "params": []
-          },
-          "refId": "A"
-        }
-      ],
-      "title": "Health Components",
-      "type": "table"
-    },
-    {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "jamtart-api"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "critical": {
-                  "color": "red",
-                  "index": 0
-                },
-                "warning": {
-                  "color": "yellow",
-                  "index": 1
-                },
-                "info": {
-                  "color": "blue",
-                  "index": 2
-                }
-              },
-              "type": "value"
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "severity"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 80
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 33
-      },
-      "id": 22,
-      "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
-        "showHeader": true
-      },
-      "targets": [
-        {
-          "columns": [
-            {
-              "selector": "severity",
-              "text": "Severity",
-              "type": "string"
-            },
-            {
-              "selector": "component",
-              "text": "Component",
-              "type": "string"
-            },
-            {
-              "selector": "message",
-              "text": "Message",
-              "type": "string"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "jamtart-api"
-          },
-          "format": "table",
-          "parser": "backend",
-          "root_selector": "alerts",
-          "source": "url",
-          "type": "json",
-          "url": "http://tart-backend:8080/api/analytics/network-health",
-          "url_options": {
-            "method": "GET",
-            "data": "",
-            "headers": [],
-            "params": []
-          },
-          "refId": "A"
-        }
-      ],
-      "title": "Alerts",
-      "type": "table"
-    },
-    {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 41
+        "y": 47
       },
       "id": 23,
       "title": "Nodes & Data Availability",
@@ -2792,7 +2665,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 42
+        "y": 48
       },
       "id": 24,
       "options": {
@@ -2853,10 +2726,10 @@
           },
           "format": "table",
           "parser": "backend",
-          "root_selector": "nodes",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/nodes",
+          "url": "http://tart-backend:8080/api/grafana/nodes",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2867,6 +2740,7 @@
         }
       ],
       "title": "Nodes",
+      "description": "[JIP-3] All nodes that have connected to the telemetry server. Shows implementation name, version, connection status, and last seen time.",
       "type": "table"
     },
     {
@@ -2893,7 +2767,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "shard_size_bytes"
+              "options": "Shard Size"
             },
             "properties": [
               {
@@ -2908,7 +2782,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 42
+        "y": 48
       },
       "id": 25,
       "options": {
@@ -2937,7 +2811,7 @@
               "type": "number"
             },
             {
-              "selector": "shard_size_bytes",
+              "selector": "shards_size",
               "text": "Shard Size",
               "type": "number"
             },
@@ -2947,7 +2821,7 @@
               "type": "number"
             },
             {
-              "selector": "preimage_size_bytes",
+              "selector": "preimages_size",
               "text": "Preimage Size",
               "type": "number"
             }
@@ -2958,10 +2832,10 @@
           },
           "format": "table",
           "parser": "backend",
-          "root_selector": "by_node",
+          "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/da/stats",
+          "url": "http://tart-backend:8080/api/grafana/node-stats?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -2972,6 +2846,7 @@
         }
       ],
       "title": "Data Availability by Node",
+      "description": "[JIP-3] Per-node data availability storage: number of shards and preimages held, with sizes. Extracted from Status (10) events. (from node_stats)",
       "type": "table"
     },
     {
@@ -2999,7 +2874,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Total Shard Size"
+              "options": "Max Shard Size"
             },
             "properties": [
               {
@@ -3011,7 +2886,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Total Preimage Size"
+              "options": "Max Preimage Size"
             },
             "properties": [
               {
@@ -3026,7 +2901,7 @@
         "h": 4,
         "w": 24,
         "x": 0,
-        "y": 50
+        "y": 48
       },
       "id": 26,
       "options": {
@@ -3046,33 +2921,33 @@
         {
           "columns": [
             {
-              "selector": "aggregate.total_shards",
-              "text": "Total Shards",
+              "selector": "max_shards",
+              "text": "Max Shards",
               "type": "number"
             },
             {
-              "selector": "aggregate.total_shard_size_bytes",
-              "text": "Total Shard Size",
+              "selector": "max_shards_size",
+              "text": "Max Shard Size",
               "type": "number"
             },
             {
-              "selector": "aggregate.total_preimages",
-              "text": "Total Preimages",
+              "selector": "max_preimages",
+              "text": "Max Preimages",
               "type": "number"
             },
             {
-              "selector": "aggregate.total_preimages_size_bytes",
-              "text": "Total Preimage Size",
+              "selector": "max_preimages_size",
+              "text": "Max Preimage Size",
               "type": "number"
             },
             {
-              "selector": "aggregate.average_shards_per_node",
-              "text": "Avg Shards/Node",
+              "selector": "avg_peers",
+              "text": "Avg Peers",
               "type": "number"
             },
             {
-              "selector": "aggregate.node_count",
-              "text": "Reporting Nodes",
+              "selector": "status_count",
+              "text": "Reports",
               "type": "number"
             }
           ],
@@ -3085,7 +2960,7 @@
           "root_selector": "",
           "source": "url",
           "type": "json",
-          "url": "http://tart-backend:8080/api/da/stats",
+          "url": "http://tart-backend:8080/api/grafana/node-stats-aggregate?start=${__from:date:iso}&end=${__to:date:iso}",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -3096,6 +2971,7 @@
         }
       ],
       "title": "DA Aggregate",
+      "description": "[JIP-3] Network-wide data availability summary: max shard/preimage counts and sizes, average peer count. Extracted from Status (10) events. (from node_stats_1m)",
       "type": "stat"
     }
   ],
@@ -3105,7 +2981,62 @@
     "global"
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "name": "event_group",
+        "label": "Event Group",
+        "type": "custom",
+        "query": "status,connections,blocks,block_distribution,tickets,wp_pipeline,guarantee_receiving,shards,assurances,bundles,segments,preimages,system",
+        "current": {
+          "text": "blocks",
+          "value": "blocks"
+        },
+        "options": [],
+        "multi": true,
+        "includeAll": true,
+        "allValue": "",
+        "refresh": 0
+      },
+      {
+        "name": "event_type",
+        "label": "Event Type",
+        "type": "query",
+        "datasource": {
+          "type": "yesoreyeram-infinity-datasource",
+          "uid": "jamtart-api"
+        },
+        "query": {
+          "queryType": "infinity",
+          "infinityQuery": {
+            "refId": "variable",
+            "type": "json",
+            "source": "url",
+            "parser": "backend",
+            "url": "http://tart-backend:8080/api/grafana/event-types?group=${event_group}",
+            "url_options": {
+              "method": "GET",
+              "data": "",
+              "headers": [],
+              "params": []
+            },
+            "root_selector": "",
+            "columns": [
+              {
+                "selector": "name",
+                "text": "name",
+                "type": "string"
+              }
+            ],
+            "format": "table"
+          }
+        },
+        "current": {},
+        "options": [],
+        "multi": true,
+        "includeAll": true,
+        "refresh": 2
+      }
+    ]
   },
   "time": {
     "from": "now-1h",
@@ -3113,8 +3044,8 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "TART-global",
-  "uid": "tart-global",
+  "title": "TART Global (JIP-3)",
+  "uid": "tart-grafana-global",
   "version": 1,
   "weekStart": ""
 }

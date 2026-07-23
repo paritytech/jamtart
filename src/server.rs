@@ -1,9 +1,23 @@
+//! TCP telemetry server that accepts binary-framed connections from JAM nodes,
+//! decodes event streams, enriches them with cross-event context, and forwards
+//! records to the batch writer for persistence.
+
 use crate::batch_writer::{BatchWriter, EventRecord};
+use crate::convergence_tracker::{
+    self, AssuranceConvergenceTracker, GuaranteeConvergenceTracker, HeaderHashLookup,
+};
+use crate::da_latency_tracker::{self, DaLatencyTracker};
+use crate::da_tracker::{self, DaTracker};
 use crate::decoder::{decode_message_frame, Decode, DecodingError};
+use crate::enricher::EnricherMap;
 use crate::event_broadcaster::{build_ws_envelope, BroadcastRecord, EventBroadcaster};
+use crate::event_counter::{self, EventCounter};
 use crate::events::{Event, NodeInformation};
+use crate::feature_flags::FeatureFlags;
 use crate::rate_limiter::RateLimiter;
+use crate::slot_tracker::{self, SlotTracker};
 use crate::store::EventStore;
+use crate::wp_tracker::{self, WpTracker};
 use bytes::{Buf, BytesMut};
 use dashmap::DashMap;
 use std::io::Cursor;
@@ -129,6 +143,16 @@ pub struct TelemetryServer {
     broadcaster: Arc<EventBroadcaster>,
     /// When true, rate limiting is disabled (--no-rate-limit flag)
     rate_limit_disabled: bool,
+    enricher_map: EnricherMap,
+    event_counter: EventCounter,
+    slot_tracker: SlotTracker,
+    wp_tracker: WpTracker,
+    guarantee_convergence_tracker: GuaranteeConvergenceTracker,
+    assurance_convergence_tracker: AssuranceConvergenceTracker,
+    header_hash_lookup: HeaderHashLookup,
+    da_tracker: DaTracker,
+    da_latency_tracker: DaLatencyTracker,
+    feature_flags: FeatureFlags,
     connection_watch: Arc<tokio::sync::watch::Sender<usize>>,
     /// Kept alive so the watch channel stays open (senders fail when all receivers drop)
     #[allow(dead_code)]
@@ -153,6 +177,25 @@ impl TelemetryServer {
         store: Option<Arc<EventStore>>,
         no_rate_limit: bool,
         ingestion_threads: usize,
+    ) -> Result<Self, std::io::Error> {
+        Self::with_options_and_metrics(
+            bind_address,
+            store,
+            no_rate_limit,
+            ingestion_threads,
+            None,
+            FeatureFlags::default(),
+        )
+        .await
+    }
+
+    pub async fn with_options_and_metrics(
+        bind_address: &str,
+        store: Option<Arc<EventStore>>,
+        no_rate_limit: bool,
+        ingestion_threads: usize,
+        metrics_tx: Option<tokio::sync::mpsc::Sender<crate::metrics_tracker::MetricsEvent>>,
+        feature_flags: FeatureFlags,
     ) -> Result<Self, std::io::Error> {
         let bind_addr: SocketAddr = bind_address.parse().map_err(|e| {
             std::io::Error::new(
@@ -195,16 +238,27 @@ impl TelemetryServer {
             "Number of events pending in write buffer"
         );
 
-        let batch_writer = BatchWriter::new(store.clone());
-
         if no_rate_limit {
             info!("Rate limiting DISABLED - nodes can send unlimited events");
         }
 
         let (connection_watch, connection_watch_rx) = tokio::sync::watch::channel(0usize);
 
-        let broadcaster = Arc::new(EventBroadcaster::new());
-        broadcaster.start_aggregator();
+        let broadcaster = Arc::new(EventBroadcaster::with_metrics_tx(metrics_tx));
+        if !feature_flags.disable_ws_broadcast {
+            broadcaster.start_aggregator();
+        } else {
+            info!("WebSocket broadcast DISABLED — skipping aggregator");
+        }
+
+        // When db writes are disabled, use a no-store BatchWriter (no channel, no workers)
+        let effective_store = if feature_flags.disable_db_writes {
+            info!("DB writes DISABLED — batch writer will be no-op");
+            None
+        } else {
+            store.clone()
+        };
+        let batch_writer = BatchWriter::new(effective_store);
 
         Ok(Self {
             listener,
@@ -215,6 +269,16 @@ impl TelemetryServer {
             broadcaster,
             store,
             rate_limit_disabled: no_rate_limit,
+            enricher_map: crate::enricher::new_enricher_map(),
+            event_counter: event_counter::new_event_counter(),
+            slot_tracker: slot_tracker::new_slot_tracker(),
+            wp_tracker: wp_tracker::new_wp_tracker(),
+            guarantee_convergence_tracker: convergence_tracker::new_guarantee_convergence_tracker(),
+            assurance_convergence_tracker: convergence_tracker::new_assurance_convergence_tracker(),
+            header_hash_lookup: convergence_tracker::new_header_hash_lookup(),
+            da_tracker: da_tracker::new_da_tracker(),
+            da_latency_tracker: da_latency_tracker::new_da_latency_tracker(),
+            feature_flags,
             connection_watch: Arc::new(connection_watch),
             _connection_watch_rx: connection_watch_rx,
         })
@@ -287,6 +351,16 @@ impl TelemetryServer {
             let rate_limiter = Arc::clone(&self.rate_limiter);
             let broadcaster = Arc::clone(&self.broadcaster);
             let rate_limit_disabled = self.rate_limit_disabled;
+            let enricher_map = Arc::clone(&self.enricher_map);
+            let event_counter = Arc::clone(&self.event_counter);
+            let slot_tracker = Arc::clone(&self.slot_tracker);
+            let wp_tracker = Arc::clone(&self.wp_tracker);
+            let guarantee_convergence_tracker = Arc::clone(&self.guarantee_convergence_tracker);
+            let assurance_convergence_tracker = Arc::clone(&self.assurance_convergence_tracker);
+            let header_hash_lookup = Arc::clone(&self.header_hash_lookup);
+            let da_tracker = Arc::clone(&self.da_tracker);
+            let da_latency_tracker = Arc::clone(&self.da_latency_tracker);
+            let feature_flags = self.feature_flags;
             let connection_watch = Arc::clone(&self.connection_watch);
 
             let handle = std::thread::Builder::new()
@@ -336,6 +410,16 @@ impl TelemetryServer {
                                                 rate_limiter: rl.clone(),
                                                 broadcaster: Arc::clone(&broadcaster),
                                                 rate_limit_disabled,
+                                                enricher_map: Arc::clone(&enricher_map),
+                                                event_counter: Arc::clone(&event_counter),
+                                                slot_tracker: Arc::clone(&slot_tracker),
+                                                wp_tracker: Arc::clone(&wp_tracker),
+                                                guarantee_convergence_tracker: Arc::clone(&guarantee_convergence_tracker),
+                                                assurance_convergence_tracker: Arc::clone(&assurance_convergence_tracker),
+                                                header_hash_lookup: Arc::clone(&header_hash_lookup),
+                                                da_tracker: Arc::clone(&da_tracker),
+                                                da_latency_tracker: Arc::clone(&da_latency_tracker),
+                                                feature_flags,
                                                 connection_watch: Arc::clone(&connection_watch),
                                             };
 
@@ -390,6 +474,16 @@ impl TelemetryServer {
             rate_limiter: rate_limiter.clone(),
             broadcaster: Arc::clone(&self.broadcaster),
             rate_limit_disabled: self.rate_limit_disabled,
+            enricher_map: Arc::clone(&self.enricher_map),
+            event_counter: Arc::clone(&self.event_counter),
+            slot_tracker: Arc::clone(&self.slot_tracker),
+            wp_tracker: Arc::clone(&self.wp_tracker),
+            guarantee_convergence_tracker: Arc::clone(&self.guarantee_convergence_tracker),
+            assurance_convergence_tracker: Arc::clone(&self.assurance_convergence_tracker),
+            header_hash_lookup: Arc::clone(&self.header_hash_lookup),
+            da_tracker: Arc::clone(&self.da_tracker),
+            da_latency_tracker: Arc::clone(&self.da_latency_tracker),
+            feature_flags: self.feature_flags,
             connection_watch: Arc::clone(&self.connection_watch),
         };
 
@@ -445,6 +539,107 @@ impl TelemetryServer {
         self.batch_writer.clone()
     }
 
+    pub fn get_enricher_map(&self) -> EnricherMap {
+        Arc::clone(&self.enricher_map)
+    }
+
+    pub fn get_event_counter(&self) -> EventCounter {
+        Arc::clone(&self.event_counter)
+    }
+
+    pub fn get_slot_tracker(&self) -> SlotTracker {
+        Arc::clone(&self.slot_tracker)
+    }
+
+    pub fn get_wp_tracker(&self) -> WpTracker {
+        Arc::clone(&self.wp_tracker)
+    }
+
+    pub fn get_guarantee_convergence_tracker(&self) -> GuaranteeConvergenceTracker {
+        Arc::clone(&self.guarantee_convergence_tracker)
+    }
+
+    pub fn get_assurance_convergence_tracker(&self) -> AssuranceConvergenceTracker {
+        Arc::clone(&self.assurance_convergence_tracker)
+    }
+
+    pub fn get_header_hash_lookup(&self) -> HeaderHashLookup {
+        Arc::clone(&self.header_hash_lookup)
+    }
+
+    pub fn get_da_tracker(&self) -> DaTracker {
+        Arc::clone(&self.da_tracker)
+    }
+
+    pub fn get_da_latency_tracker(&self) -> DaLatencyTracker {
+        Arc::clone(&self.da_latency_tracker)
+    }
+
+    /// Flush slot_tracker, wp_tracker, and event_counter to database on-demand.
+    /// For testing only — in production these flush every 5s via the periodic task.
+    pub async fn flush_trackers(&self) {
+        if let Some(ref store) = self.store {
+            crate::slot_tracker::flush_slot_tracker(
+                &self.slot_tracker,
+                store.pool(),
+                std::time::Duration::from_secs(10),
+                std::time::Duration::from_secs(60),
+            )
+            .await;
+            crate::wp_tracker::flush_wp_tracker(&self.wp_tracker, store.pool()).await;
+            convergence_tracker::flush_guarantee_convergence(
+                &self.guarantee_convergence_tracker,
+                store.pool(),
+                std::time::Duration::from_secs(10),
+                std::time::Duration::from_secs(60),
+            )
+            .await;
+            convergence_tracker::flush_assurance_convergence(
+                &self.assurance_convergence_tracker,
+                store.pool(),
+                std::time::Duration::from_secs(10),
+                std::time::Duration::from_secs(60),
+            )
+            .await;
+            da_tracker::flush_da_tracker(&self.da_tracker, store.pool()).await;
+            da_latency_tracker::flush_da_latency_tracker(&self.da_latency_tracker, store.pool())
+                .await;
+            event_counter::flush_event_counter(&self.event_counter, store.pool()).await;
+        }
+    }
+
+    /// Test-only flush: bypasses the age gate so slot_tracker entries flush immediately.
+    pub async fn flush_trackers_for_test(&self) {
+        if let Some(ref store) = self.store {
+            crate::slot_tracker::flush_slot_tracker(
+                &self.slot_tracker,
+                store.pool(),
+                std::time::Duration::ZERO,
+                std::time::Duration::from_secs(3600),
+            )
+            .await;
+            crate::wp_tracker::flush_wp_tracker(&self.wp_tracker, store.pool()).await;
+            convergence_tracker::flush_guarantee_convergence(
+                &self.guarantee_convergence_tracker,
+                store.pool(),
+                std::time::Duration::ZERO,
+                std::time::Duration::from_secs(3600),
+            )
+            .await;
+            convergence_tracker::flush_assurance_convergence(
+                &self.assurance_convergence_tracker,
+                store.pool(),
+                std::time::Duration::ZERO,
+                std::time::Duration::from_secs(3600),
+            )
+            .await;
+            da_tracker::flush_da_tracker(&self.da_tracker, store.pool()).await;
+            da_latency_tracker::flush_da_latency_tracker(&self.da_latency_tracker, store.pool())
+                .await;
+            event_counter::flush_event_counter(&self.event_counter, store.pool()).await;
+        }
+    }
+
     /// Flush all pending batch writes to database
     ///
     /// **For testing only**: Forces immediate flush of all buffered
@@ -484,6 +679,16 @@ struct ConnectionContext {
     rate_limiter: Arc<RateLimiter>,
     broadcaster: Arc<EventBroadcaster>,
     rate_limit_disabled: bool,
+    enricher_map: EnricherMap,
+    event_counter: EventCounter,
+    slot_tracker: SlotTracker,
+    wp_tracker: WpTracker,
+    guarantee_convergence_tracker: GuaranteeConvergenceTracker,
+    assurance_convergence_tracker: AssuranceConvergenceTracker,
+    header_hash_lookup: HeaderHashLookup,
+    da_tracker: DaTracker,
+    da_latency_tracker: DaLatencyTracker,
+    feature_flags: FeatureFlags,
     connection_watch: Arc<tokio::sync::watch::Sender<usize>>,
 }
 
@@ -498,6 +703,16 @@ async fn handle_connection_optimized(
         rate_limiter,
         broadcaster,
         rate_limit_disabled,
+        enricher_map,
+        event_counter,
+        slot_tracker,
+        wp_tracker,
+        guarantee_convergence_tracker,
+        assurance_convergence_tracker,
+        header_hash_lookup,
+        da_tracker,
+        da_latency_tracker,
+        feature_flags: ff,
         connection_watch,
     } = ctx;
     // Set TCP nodelay for lower latency
@@ -623,7 +838,18 @@ async fn handle_connection_optimized(
                     let mut cursor = Cursor::new(msg_data);
                     match Event::decode_event(&mut cursor, core_count) {
                         Ok(event) => {
-                            event_count += 1;
+                            // EventId assignment: post-increment (JIP-3 §implicit IDs).
+                            // First event = ID 0, each subsequent = previous + 1,
+                            // except Dropped events advance by `num`.
+                            let this_event_id = event_count;
+                            match &event {
+                                Event::Dropped { num, .. } => {
+                                    event_count += num;
+                                }
+                                _ => {
+                                    event_count += 1;
+                                }
+                            }
 
                             // Apply rate limiting (unless disabled)
                             if !rate_limit_disabled && !rate_limiter.allow_event(&node_id_str) {
@@ -641,30 +867,1125 @@ async fn handle_connection_optimized(
                                 serde_json::to_vec(&*event).unwrap_or_else(|_| b"{}".to_vec()),
                             );
 
-                            // Build WS envelope in ingestion thread (parallelized across 8 runtimes)
-                            let id = broadcaster.next_event_id();
-                            let event_type = event.event_type() as u8;
-                            let timestamp = chrono::Utc::now();
-                            let ws_json = build_ws_envelope(
-                                id,
-                                &node_id_str,
-                                event_type,
-                                &event_json,
-                                timestamp,
-                                &mut ws_buf,
-                            );
+                            // Enrich event with cross-event correlation (core, services, wp_hash)
+                            let enriched = if !ff.disable_enricher {
+                                let mut enricher =
+                                    enricher_map.entry(node_id_str.clone()).or_default();
+                                enricher.process(&event, this_event_id)
+                            } else {
+                                crate::enricher::EnrichedFields::default()
+                            };
 
-                            // Accumulate for batch send after inner loop
-                            broadcast_batch.push(BroadcastRecord {
-                                node_id: node_id_str.clone(),
-                                event: Arc::clone(&event),
-                                event_json: Arc::clone(&event_json),
-                                id,
-                                event_type,
-                                timestamp,
-                                ws_json,
-                            });
-                            db_batch.push((node_id_str.clone(), event_count, event, event_json));
+                            // Update SlotTracker for block propagation convergence
+                            if let Some(slot) = enriched.slot.filter(|_| !ff.disable_slot_tracker) {
+                                let evt_ts = event.timestamp();
+                                let et_raw = event.event_type() as u16;
+                                match et_raw {
+                                    42 => {
+                                        // Authored
+                                        slot_tracker
+                                            .entry(slot)
+                                            .and_modify(|s| {
+                                                s.authored_at = Some(evt_ts);
+                                                s.record(et_raw, evt_ts);
+                                            })
+                                            .or_insert_with(|| {
+                                                crate::slot_tracker::SlotState::new(
+                                                    et_raw,
+                                                    evt_ts,
+                                                    Some(evt_ts),
+                                                )
+                                            });
+                                        // Populate HeaderHashLookup for assurance convergence
+                                        if let Event::Authored { outline, .. } = &*event {
+                                            header_hash_lookup.insert(outline.hash, slot);
+                                        }
+                                    }
+                                    11 | 12 | 40 | 43 => {
+                                        // BestBlockChanged, FinalizedBlockChanged, Authoring, Importing
+                                        slot_tracker
+                                            .entry(slot)
+                                            .and_modify(|s| {
+                                                s.record(et_raw, evt_ts);
+                                            })
+                                            .or_insert_with(|| {
+                                                crate::slot_tracker::SlotState::new(
+                                                    et_raw, evt_ts, None,
+                                                )
+                                            });
+                                        // Populate HeaderHashLookup for assurance convergence
+                                        if let Event::Importing { outline, .. } = &*event {
+                                            header_hash_lookup.insert(outline.hash, slot);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+
+                            // Update WpTracker for work package pipeline tracking
+                            if !ff.disable_wp_tracker {
+                                let et_raw = event.event_type() as u16;
+                                let evt_ts = event.timestamp();
+                                match et_raw {
+                                    94 => {
+                                        // WorkPackageReceived
+                                        if let Some(hash) = enriched.wp_hash {
+                                            let core = enriched.core.unwrap_or(0);
+                                            let sids =
+                                                enriched.service_ids.clone().unwrap_or_default();
+                                            let nid = node_id_str.clone();
+                                            wp_tracker
+                                                .entry(hash)
+                                                .and_modify(|s| {
+                                                    if s.received_nodes.insert(nid.clone()) {
+                                                        s.received_by += 1;
+                                                    }
+                                                    s.last_updated = evt_ts;
+                                                    s.dirty = true;
+                                                    s.last_activity = std::time::Instant::now();
+                                                })
+                                                .or_insert_with(|| {
+                                                    let mut received_nodes =
+                                                        std::collections::HashSet::new();
+                                                    received_nodes.insert(nid.clone());
+                                                    crate::wp_tracker::WpState {
+                                                        first_seen: evt_ts,
+                                                        last_updated: evt_ts,
+                                                        core,
+                                                        service_ids: sids,
+                                                        received_by: 1,
+                                                        received_nodes,
+                                                        stage: 0,
+                                                        received_at: Some(evt_ts),
+                                                        dirty: true,
+                                                        node_id: Some(nid),
+                                                        ..Default::default()
+                                                    }
+                                                });
+                                        }
+                                    }
+                                    92 => {
+                                        // WorkPackageFailed
+                                        if let Some(hash) = enriched.wp_hash {
+                                            // Extract failure reason from event
+                                            let reason =
+                                                if let crate::events::Event::WorkPackageFailed {
+                                                    ref reason,
+                                                    ..
+                                                } = *event
+                                                {
+                                                    reason.as_str().ok().map(|s| s.to_string())
+                                                } else {
+                                                    None
+                                                };
+                                            wp_tracker.entry(hash).and_modify(|s| {
+                                                s.mark_failed(evt_ts);
+                                                if s.failure_reason.is_none() {
+                                                    s.failure_reason = reason;
+                                                }
+                                            });
+                                        }
+                                    }
+                                    105 => {
+                                        // GuaranteeBuilt — also count guarantors
+                                        if let Some(hash) = enriched.wp_hash {
+                                            wp_tracker.entry(hash).and_modify(|s| {
+                                                if s.guaranteed_nodes.insert(node_id_str.clone()) {
+                                                    s.guaranteed_by += 1;
+                                                }
+                                                s.update_stage(4, evt_ts);
+                                            });
+                                        }
+                                    }
+                                    101 => {
+                                        // Refined — extract gas_used
+                                        if let Some(hash) = enriched.wp_hash {
+                                            let gas = if let crate::events::Event::Refined {
+                                                ref costs,
+                                                ..
+                                            } = *event
+                                            {
+                                                let total: u64 =
+                                                    costs.iter().map(|c| c.total.gas_used).sum();
+                                                if total > 0 {
+                                                    Some(total as i64)
+                                                } else {
+                                                    None
+                                                }
+                                            } else {
+                                                None
+                                            };
+                                            wp_tracker.entry(hash).and_modify(|s| {
+                                                s.update_stage(2, evt_ts);
+                                                if s.refine_gas_used.is_none() {
+                                                    s.refine_gas_used = gas;
+                                                }
+                                            });
+                                        }
+                                    }
+                                    95 | 102 | 109 => {
+                                        if let Some(hash) = enriched.wp_hash {
+                                            let ordinal =
+                                                crate::wp_tracker::event_type_to_ordinal(et_raw);
+                                            wp_tracker.entry(hash).and_modify(|s| {
+                                                s.update_stage(ordinal, evt_ts);
+                                            });
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+
+                            // Update GuaranteeConvergenceTracker for guarantee propagation convergence
+                            if !ff.disable_convergence {
+                                let et_raw = event.event_type() as u16;
+                                let evt_ts = event.timestamp();
+                                match et_raw {
+                                    105 => {
+                                        // GuaranteeBuilt — anchor event
+                                        if let Event::GuaranteeBuilt { outline, .. } = &*event {
+                                            let wrh = outline.work_report_hash;
+                                            let slot = outline.slot;
+                                            guarantee_convergence_tracker.entry(wrh)
+                                                .and_modify(|s| {
+                                                    if s.built_at.is_none() {
+                                                        s.built_at = Some(evt_ts);
+                                                    }
+                                                    if s.slot.is_none() {
+                                                        s.slot = Some(slot);
+                                                    }
+                                                    if s.core.is_none() {
+                                                        s.core = enriched.core;
+                                                    }
+                                                    if s.wp_hash.is_none() {
+                                                        s.wp_hash = enriched.wp_hash;
+                                                    }
+                                                    if s.builder_node_id.is_none() {
+                                                        s.builder_node_id = Some(node_id_str.clone());
+                                                    }
+                                                    s.dirty = true;
+                                                    s.last_event = std::time::Instant::now();
+                                                })
+                                                .or_insert_with(|| {
+                                                    crate::convergence_tracker::GuaranteeConvergenceState {
+                                                        built_at: Some(evt_ts),
+                                                        slot: Some(slot),
+                                                        core: enriched.core,
+                                                        wp_hash: enriched.wp_hash,
+                                                        builder_node_id: Some(node_id_str.clone()),
+                                                        received_timestamps: Vec::new(),
+                                                        last_event: std::time::Instant::now(),
+                                                        flushed: false,
+                                                        dirty: true,
+                                                    }
+                                                });
+                                        }
+                                    }
+                                    112 => {
+                                        // GuaranteeReceived — measured event
+                                        if let Event::GuaranteeReceived { outline, .. } = &*event {
+                                            let wrh = outline.work_report_hash;
+                                            guarantee_convergence_tracker.entry(wrh)
+                                                .and_modify(|s| {
+                                                    s.received_timestamps.push(evt_ts);
+                                                    s.dirty = true;
+                                                    s.last_event = std::time::Instant::now();
+                                                })
+                                                .or_insert_with(|| {
+                                                    crate::convergence_tracker::GuaranteeConvergenceState {
+                                                        built_at: None,
+                                                        slot: None,
+                                                        core: None,
+                                                        wp_hash: None,
+                                                        builder_node_id: None,
+                                                        received_timestamps: vec![evt_ts],
+                                                        last_event: std::time::Instant::now(),
+                                                        flushed: false,
+                                                        dirty: true,
+                                                    }
+                                                });
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+
+                            // Update AssuranceConvergenceTracker for assurance propagation convergence
+                            if !ff.disable_convergence {
+                                let et_raw = event.event_type() as u16;
+                                let evt_ts = event.timestamp();
+                                match et_raw {
+                                    126 => {
+                                        // DistributingAssurance — sender begins distribution
+                                        if let Event::DistributingAssurance { statement, .. } =
+                                            &*event
+                                        {
+                                            let anchor = statement.anchor;
+                                            let slot = header_hash_lookup.get(&anchor).map(|s| *s);
+                                            let sender_id = node_id_str.clone();
+                                            assurance_convergence_tracker.entry(anchor)
+                                                .and_modify(|s| {
+                                                    if s.slot.is_none() {
+                                                        s.slot = slot;
+                                                    }
+                                                    // Drain pending_received for this sender
+                                                    let distributed_at = evt_ts;
+                                                    let mut resolved = Vec::new();
+                                                    s.pending_received.retain(|(sid, ts)| {
+                                                        if *sid == sender_id {
+                                                            let delta = (*ts as i64 - distributed_at as i64) / 1000;
+                                                            resolved.push(delta.max(0) as i32);
+                                                            false
+                                                        } else {
+                                                            true
+                                                        }
+                                                    });
+                                                    let sender_state = s.senders.entry(sender_id.clone())
+                                                        .or_insert_with(|| crate::convergence_tracker::SenderAssuranceState {
+                                                            distributed_at,
+                                                            deltas_ms: Vec::new(),
+                                                        });
+                                                    sender_state.deltas_ms.extend(resolved);
+                                                    s.dirty = true;
+                                                    s.last_event = std::time::Instant::now();
+                                                })
+                                                .or_insert_with(|| {
+                                                    let mut senders = std::collections::HashMap::new();
+                                                    senders.insert(sender_id, crate::convergence_tracker::SenderAssuranceState {
+                                                        distributed_at: evt_ts,
+                                                        deltas_ms: Vec::new(),
+                                                    });
+                                                    crate::convergence_tracker::AnchorState {
+                                                        slot,
+                                                        senders,
+                                                        pending_received: Vec::new(),
+                                                        last_event: std::time::Instant::now(),
+                                                        flushed: false,
+                                                        dirty: true,
+                                                    }
+                                                });
+                                        }
+                                    }
+                                    131 => {
+                                        // AssuranceReceived — validator received an assurance
+                                        if let Event::AssuranceReceived { anchor, sender, .. } =
+                                            &*event
+                                        {
+                                            let sender_node_id: Arc<str> =
+                                                Arc::from(hex::encode(sender));
+                                            assurance_convergence_tracker
+                                                .entry(*anchor)
+                                                .and_modify(|s| {
+                                                    if s.slot.is_none() {
+                                                        s.slot = header_hash_lookup
+                                                            .get(anchor)
+                                                            .map(|sl| *sl);
+                                                    }
+                                                    if let Some(sender_state) =
+                                                        s.senders.get_mut(&sender_node_id)
+                                                    {
+                                                        let delta = (evt_ts as i64
+                                                            - sender_state.distributed_at as i64)
+                                                            / 1000;
+                                                        sender_state
+                                                            .deltas_ms
+                                                            .push(delta.max(0) as i32);
+                                                    } else {
+                                                        // Sender not yet seen — buffer for later resolution
+                                                        s.pending_received
+                                                            .push((sender_node_id.clone(), evt_ts));
+                                                    }
+                                                    s.dirty = true;
+                                                    s.last_event = std::time::Instant::now();
+                                                })
+                                                .or_insert_with(|| {
+                                                    crate::convergence_tracker::AnchorState {
+                                                        slot: header_hash_lookup
+                                                            .get(anchor)
+                                                            .map(|sl| *sl),
+                                                        senders: std::collections::HashMap::new(),
+                                                        pending_received: vec![(
+                                                            sender_node_id,
+                                                            evt_ts,
+                                                        )],
+                                                        last_event: std::time::Instant::now(),
+                                                        flushed: false,
+                                                        dirty: true,
+                                                    }
+                                                });
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+
+                            // Update DaTracker for shard distribution and preimage events
+                            if !ff.disable_da_tracker {
+                                let et_raw = event.event_type() as u16;
+                                let evt_ts = event.timestamp();
+                                match et_raw {
+                                    120 => {
+                                        // SendingShardRequest — assurer initiates
+                                        da_tracker
+                                            .entry(node_id_str.clone())
+                                            .and_modify(|s| {
+                                                s.shard_requests_sent += 1;
+                                                s.assurer_pending.insert(this_event_id, evt_ts);
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            })
+                                            .or_insert_with(|| {
+                                                let mut s = da_tracker::DaNodeState {
+                                                    shard_requests_sent: 1,
+                                                    dirty: true,
+                                                    ..Default::default()
+                                                };
+                                                s.assurer_pending.insert(this_event_id, evt_ts);
+                                                s
+                                            });
+                                    }
+                                    121 => {
+                                        // ReceivingShardRequest — guarantor receives
+                                        da_tracker
+                                            .entry(node_id_str.clone())
+                                            .and_modify(|s| {
+                                                s.shard_requests_received += 1;
+                                                s.guarantor_pending.insert(this_event_id, evt_ts);
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            })
+                                            .or_insert_with(|| {
+                                                let mut s = da_tracker::DaNodeState {
+                                                    shard_requests_received: 1,
+                                                    dirty: true,
+                                                    ..Default::default()
+                                                };
+                                                s.guarantor_pending.insert(this_event_id, evt_ts);
+                                                s
+                                            });
+                                    }
+                                    122 => {
+                                        // ShardRequestFailed — check both pending maps
+                                        if let Event::ShardRequestFailed { request_id, .. } =
+                                            &*event
+                                        {
+                                            da_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                                s.shard_failures += 1;
+                                                // Compute delta and record in histogram
+                                                if let Some(sent_ts) =
+                                                    s.assurer_pending.remove(request_id)
+                                                {
+                                                    let delta_us = evt_ts.saturating_sub(sent_ts);
+                                                    let delta_ms = (delta_us / 1000) as i32;
+                                                    s.assurer_latency_sum_us += delta_us;
+                                                    s.assurer_latency_count += 1;
+                                                    let idx =
+                                                        da_tracker::hist_bucket_index(delta_ms);
+                                                    s.assurer_hist[idx] += 1;
+                                                    s.assurer_hist_total += 1;
+                                                    s.assurer_hist_failed += 1;
+                                                } else if let Some(recv_ts) =
+                                                    s.guarantor_pending.remove(request_id)
+                                                {
+                                                    let delta_us = evt_ts.saturating_sub(recv_ts);
+                                                    let delta_ms = (delta_us / 1000) as i32;
+                                                    s.guarantor_latency_sum_us += delta_us;
+                                                    s.guarantor_latency_count += 1;
+                                                    let idx =
+                                                        da_tracker::hist_bucket_index(delta_ms);
+                                                    s.guarantor_hist[idx] += 1;
+                                                    s.guarantor_hist_total += 1;
+                                                    s.guarantor_hist_failed += 1;
+                                                }
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            });
+                                        }
+                                    }
+                                    123 => {
+                                        // ShardRequestSent
+                                        da_tracker
+                                            .entry(node_id_str.clone())
+                                            .and_modify(|s| {
+                                                s.shard_sent_confirmed += 1;
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            })
+                                            .or_insert_with(|| da_tracker::DaNodeState {
+                                                shard_sent_confirmed: 1,
+                                                dirty: true,
+                                                ..Default::default()
+                                            });
+                                    }
+                                    124 => {
+                                        // ShardRequestReceived — guarantor side completion
+                                        if let Event::ShardRequestReceived {
+                                            request_id,
+                                            shard,
+                                            ..
+                                        } = &*event
+                                        {
+                                            da_tracker
+                                                .entry(node_id_str.clone())
+                                                .and_modify(|s| {
+                                                    s.shard_received_confirmed += 1;
+                                                    s.active_shards.insert(*shard);
+                                                    if let Some(recv_ts) =
+                                                        s.guarantor_pending.remove(request_id)
+                                                    {
+                                                        let delta_us =
+                                                            evt_ts.saturating_sub(recv_ts);
+                                                        let delta_ms = (delta_us / 1000) as i32;
+                                                        s.guarantor_latency_sum_us += delta_us;
+                                                        s.guarantor_latency_count += 1;
+                                                        let idx =
+                                                            da_tracker::hist_bucket_index(delta_ms);
+                                                        s.guarantor_hist[idx] += 1;
+                                                        s.guarantor_hist_total += 1;
+                                                    }
+                                                    s.dirty = true;
+                                                    s.last_activity = std::time::Instant::now();
+                                                })
+                                                .or_insert_with(|| {
+                                                    let mut s = da_tracker::DaNodeState {
+                                                        shard_received_confirmed: 1,
+                                                        dirty: true,
+                                                        ..Default::default()
+                                                    };
+                                                    s.active_shards.insert(*shard);
+                                                    s
+                                                });
+                                        }
+                                    }
+                                    125 => {
+                                        // ShardsTransferred — assurer side completion ONLY
+                                        if let Event::ShardsTransferred { request_id, .. } = &*event
+                                        {
+                                            da_tracker
+                                                .entry(node_id_str.clone())
+                                                .and_modify(|s| {
+                                                    s.shards_transferred += 1;
+                                                    if let Some(sent_ts) =
+                                                        s.assurer_pending.remove(request_id)
+                                                    {
+                                                        let delta_us =
+                                                            evt_ts.saturating_sub(sent_ts);
+                                                        let delta_ms = (delta_us / 1000) as i32;
+                                                        s.assurer_latency_sum_us += delta_us;
+                                                        s.assurer_latency_count += 1;
+                                                        let idx =
+                                                            da_tracker::hist_bucket_index(delta_ms);
+                                                        s.assurer_hist[idx] += 1;
+                                                        s.assurer_hist_total += 1;
+                                                    }
+                                                    s.dirty = true;
+                                                    s.last_activity = std::time::Instant::now();
+                                                })
+                                                .or_insert_with(|| da_tracker::DaNodeState {
+                                                    shards_transferred: 1,
+                                                    dirty: true,
+                                                    ..Default::default()
+                                                });
+                                        }
+                                    }
+                                    190 => {
+                                        // PreimageAnnouncementFailed
+                                        da_tracker
+                                            .entry(node_id_str.clone())
+                                            .and_modify(|s| {
+                                                s.preimage_ann_failures += 1;
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            })
+                                            .or_insert_with(|| da_tracker::DaNodeState {
+                                                preimage_ann_failures: 1,
+                                                dirty: true,
+                                                ..Default::default()
+                                            });
+                                    }
+                                    191 => {
+                                        // PreimageAnnounced
+                                        da_tracker
+                                            .entry(node_id_str.clone())
+                                            .and_modify(|s| {
+                                                s.preimages_announced += 1;
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            })
+                                            .or_insert_with(|| da_tracker::DaNodeState {
+                                                preimages_announced: 1,
+                                                dirty: true,
+                                                ..Default::default()
+                                            });
+                                    }
+                                    192 => {
+                                        // AnnouncedPreimageForgotten
+                                        da_tracker
+                                            .entry(node_id_str.clone())
+                                            .and_modify(|s| {
+                                                s.preimages_forgotten += 1;
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            })
+                                            .or_insert_with(|| da_tracker::DaNodeState {
+                                                preimages_forgotten: 1,
+                                                dirty: true,
+                                                ..Default::default()
+                                            });
+                                    }
+                                    _ => {}
+                                }
+                            }
+
+                            // Update DaLatencyTracker for bundle/segment/preimage latency
+                            if !ff.disable_da_tracker {
+                                let et_raw = event.event_type() as u16;
+                                let evt_ts = event.timestamp();
+                                match et_raw {
+                                    // -- Bundle shard path (140-145) --
+                                    140 => {
+                                        // SendingBundleShardRequest — requestor start
+                                        if let Event::SendingBundleShardRequest {
+                                            audit_id, ..
+                                        } = &*event
+                                        {
+                                            da_latency_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                                s.bundle_shard_req.start(this_event_id, evt_ts);
+                                                s.bundle_e2e.start_if_absent(*audit_id, evt_ts);
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            }).or_insert_with(|| {
+                                                let mut s = da_latency_tracker::DaLatencyNodeState::default();
+                                                s.bundle_shard_req.start(this_event_id, evt_ts);
+                                                s.bundle_e2e.start_if_absent(*audit_id, evt_ts);
+                                                s.dirty = true;
+                                                s
+                                            });
+                                        }
+                                    }
+                                    141 => {
+                                        // ReceivingBundleShardRequest — responder start
+                                        da_latency_tracker
+                                            .entry(node_id_str.clone())
+                                            .and_modify(|s| {
+                                                s.bundle_shard_resp.start(this_event_id, evt_ts);
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            })
+                                            .or_insert_with(|| {
+                                                let mut s =
+                                                    da_latency_tracker::DaLatencyNodeState::default(
+                                                    );
+                                                s.bundle_shard_resp.start(this_event_id, evt_ts);
+                                                s.dirty = true;
+                                                s
+                                            });
+                                    }
+                                    142 => {
+                                        // BundleShardRequestFailed — resolve from req or resp
+                                        if let Event::BundleShardRequestFailed {
+                                            request_id, ..
+                                        } = &*event
+                                        {
+                                            da_latency_tracker
+                                                .entry(node_id_str.clone())
+                                                .and_modify(|s| {
+                                                    s.bundle_shard_req
+                                                        .fail(*request_id, evt_ts)
+                                                        .or_else(|| {
+                                                            s.bundle_shard_resp
+                                                                .fail(*request_id, evt_ts)
+                                                        });
+                                                    s.dirty = true;
+                                                    s.last_activity = std::time::Instant::now();
+                                                });
+                                        }
+                                    }
+                                    145 => {
+                                        // BundleShardTransferred — resolve from req or resp
+                                        if let Event::BundleShardTransferred {
+                                            request_id, ..
+                                        } = &*event
+                                        {
+                                            da_latency_tracker
+                                                .entry(node_id_str.clone())
+                                                .and_modify(|s| {
+                                                    s.bundle_shard_req
+                                                        .complete(*request_id, evt_ts)
+                                                        .or_else(|| {
+                                                            s.bundle_shard_resp
+                                                                .complete(*request_id, evt_ts)
+                                                        });
+                                                    s.dirty = true;
+                                                    s.last_activity = std::time::Instant::now();
+                                                });
+                                        }
+                                    }
+                                    146 => {
+                                        // ReconstructingBundle — reconstruction start + kind
+                                        if let Event::ReconstructingBundle {
+                                            audit_id, kind, ..
+                                        } = &*event
+                                        {
+                                            da_latency_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                                s.bundle_reconstruct.start(*audit_id, evt_ts);
+                                                match kind {
+                                                    crate::types::ReconstructionKind::Trivial => s.bundle_trivial += 1,
+                                                    crate::types::ReconstructionKind::NonTrivial => s.bundle_nontrivial += 1,
+                                                }
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            }).or_insert_with(|| {
+                                                let mut s = da_latency_tracker::DaLatencyNodeState::default();
+                                                s.bundle_reconstruct.start(*audit_id, evt_ts);
+                                                match kind {
+                                                    crate::types::ReconstructionKind::Trivial => s.bundle_trivial = 1,
+                                                    crate::types::ReconstructionKind::NonTrivial => s.bundle_nontrivial = 1,
+                                                }
+                                                s.dirty = true;
+                                                s
+                                            });
+                                        }
+                                    }
+                                    147 => {
+                                        // BundleReconstructed — reconstruction + e2e complete
+                                        if let Event::BundleReconstructed { audit_id, .. } = &*event
+                                        {
+                                            da_latency_tracker
+                                                .entry(node_id_str.clone())
+                                                .and_modify(|s| {
+                                                    s.bundle_reconstruct
+                                                        .complete(*audit_id, evt_ts);
+                                                    s.bundle_e2e.complete(*audit_id, evt_ts);
+                                                    s.dirty = true;
+                                                    s.last_activity = std::time::Instant::now();
+                                                });
+                                        }
+                                    }
+                                    // -- Bundle full path (148-153) --
+                                    148 => {
+                                        // SendingBundleRequest — requestor start
+                                        da_latency_tracker
+                                            .entry(node_id_str.clone())
+                                            .and_modify(|s| {
+                                                s.bundle_full_req.start(this_event_id, evt_ts);
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            })
+                                            .or_insert_with(|| {
+                                                let mut s =
+                                                    da_latency_tracker::DaLatencyNodeState::default(
+                                                    );
+                                                s.bundle_full_req.start(this_event_id, evt_ts);
+                                                s.dirty = true;
+                                                s
+                                            });
+                                    }
+                                    149 => {
+                                        // ReceivingBundleRequest — responder start
+                                        da_latency_tracker
+                                            .entry(node_id_str.clone())
+                                            .and_modify(|s| {
+                                                s.bundle_full_resp.start(this_event_id, evt_ts);
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            })
+                                            .or_insert_with(|| {
+                                                let mut s =
+                                                    da_latency_tracker::DaLatencyNodeState::default(
+                                                    );
+                                                s.bundle_full_resp.start(this_event_id, evt_ts);
+                                                s.dirty = true;
+                                                s
+                                            });
+                                    }
+                                    150 => {
+                                        // BundleRequestFailed
+                                        if let Event::BundleRequestFailed { request_id, .. } =
+                                            &*event
+                                        {
+                                            da_latency_tracker
+                                                .entry(node_id_str.clone())
+                                                .and_modify(|s| {
+                                                    s.bundle_full_req
+                                                        .fail(*request_id, evt_ts)
+                                                        .or_else(|| {
+                                                            s.bundle_full_resp
+                                                                .fail(*request_id, evt_ts)
+                                                        });
+                                                    s.dirty = true;
+                                                    s.last_activity = std::time::Instant::now();
+                                                });
+                                        }
+                                    }
+                                    153 => {
+                                        // BundleTransferred
+                                        if let Event::BundleTransferred { request_id, .. } = &*event
+                                        {
+                                            da_latency_tracker
+                                                .entry(node_id_str.clone())
+                                                .and_modify(|s| {
+                                                    s.bundle_full_req
+                                                        .complete(*request_id, evt_ts)
+                                                        .or_else(|| {
+                                                            s.bundle_full_resp
+                                                                .complete(*request_id, evt_ts)
+                                                        });
+                                                    s.dirty = true;
+                                                    s.last_activity = std::time::Instant::now();
+                                                });
+                                        }
+                                    }
+                                    // -- Segment shard path (162-167) --
+                                    162 => {
+                                        // SendingSegmentShardRequest — requestor start
+                                        da_latency_tracker
+                                            .entry(node_id_str.clone())
+                                            .and_modify(|s| {
+                                                s.seg_shard_req.start(this_event_id, evt_ts);
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            })
+                                            .or_insert_with(|| {
+                                                let mut s =
+                                                    da_latency_tracker::DaLatencyNodeState::default(
+                                                    );
+                                                s.seg_shard_req.start(this_event_id, evt_ts);
+                                                s.dirty = true;
+                                                s
+                                            });
+                                    }
+                                    163 => {
+                                        // ReceivingSegmentShardRequest — responder start
+                                        da_latency_tracker
+                                            .entry(node_id_str.clone())
+                                            .and_modify(|s| {
+                                                s.seg_shard_resp.start(this_event_id, evt_ts);
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            })
+                                            .or_insert_with(|| {
+                                                let mut s =
+                                                    da_latency_tracker::DaLatencyNodeState::default(
+                                                    );
+                                                s.seg_shard_resp.start(this_event_id, evt_ts);
+                                                s.dirty = true;
+                                                s
+                                            });
+                                    }
+                                    164 => {
+                                        // SegmentShardRequestFailed
+                                        if let Event::SegmentShardRequestFailed {
+                                            request_id, ..
+                                        } = &*event
+                                        {
+                                            da_latency_tracker
+                                                .entry(node_id_str.clone())
+                                                .and_modify(|s| {
+                                                    s.seg_shard_req
+                                                        .fail(*request_id, evt_ts)
+                                                        .or_else(|| {
+                                                            s.seg_shard_resp
+                                                                .fail(*request_id, evt_ts)
+                                                        });
+                                                    s.dirty = true;
+                                                    s.last_activity = std::time::Instant::now();
+                                                });
+                                        }
+                                    }
+                                    167 => {
+                                        // SegmentShardsTransferred
+                                        if let Event::SegmentShardsTransferred {
+                                            request_id, ..
+                                        } = &*event
+                                        {
+                                            da_latency_tracker
+                                                .entry(node_id_str.clone())
+                                                .and_modify(|s| {
+                                                    s.seg_shard_req
+                                                        .complete(*request_id, evt_ts)
+                                                        .or_else(|| {
+                                                            s.seg_shard_resp
+                                                                .complete(*request_id, evt_ts)
+                                                        });
+                                                    s.dirty = true;
+                                                    s.last_activity = std::time::Instant::now();
+                                                });
+                                        }
+                                    }
+                                    // -- Segment reconstruction (168-172) --
+                                    168 => {
+                                        // ReconstructingSegments — reconstruction start + kind
+                                        if let Event::ReconstructingSegments { kind, .. } = &*event
+                                        {
+                                            da_latency_tracker.entry(node_id_str.clone()).and_modify(|s| {
+                                                s.seg_reconstruct.start(this_event_id, evt_ts);
+                                                match kind {
+                                                    crate::types::ReconstructionKind::Trivial => s.seg_trivial += 1,
+                                                    crate::types::ReconstructionKind::NonTrivial => s.seg_nontrivial += 1,
+                                                }
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            }).or_insert_with(|| {
+                                                let mut s = da_latency_tracker::DaLatencyNodeState::default();
+                                                s.seg_reconstruct.start(this_event_id, evt_ts);
+                                                match kind {
+                                                    crate::types::ReconstructionKind::Trivial => s.seg_trivial = 1,
+                                                    crate::types::ReconstructionKind::NonTrivial => s.seg_nontrivial = 1,
+                                                }
+                                                s.dirty = true;
+                                                s
+                                            });
+                                        }
+                                    }
+                                    169 => {
+                                        // SegmentReconstructionFailed
+                                        if let Event::SegmentReconstructionFailed {
+                                            reconstructing_id,
+                                            ..
+                                        } = &*event
+                                        {
+                                            da_latency_tracker
+                                                .entry(node_id_str.clone())
+                                                .and_modify(|s| {
+                                                    s.seg_reconstruct
+                                                        .fail(*reconstructing_id, evt_ts);
+                                                    s.dirty = true;
+                                                    s.last_activity = std::time::Instant::now();
+                                                });
+                                        }
+                                    }
+                                    170 => {
+                                        // SegmentsReconstructed
+                                        if let Event::SegmentsReconstructed {
+                                            reconstructing_id,
+                                            ..
+                                        } = &*event
+                                        {
+                                            da_latency_tracker
+                                                .entry(node_id_str.clone())
+                                                .and_modify(|s| {
+                                                    s.seg_reconstruct
+                                                        .complete(*reconstructing_id, evt_ts);
+                                                    s.dirty = true;
+                                                    s.last_activity = std::time::Instant::now();
+                                                });
+                                        }
+                                    }
+                                    171 => {
+                                        // SegmentVerificationFailed — counter only
+                                        da_latency_tracker.entry(node_id_str.clone()).and_modify(
+                                            |s| {
+                                                s.seg_verification_failures += 1;
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            },
+                                        );
+                                    }
+                                    // -- Segment full path (173-178) --
+                                    173 => {
+                                        // SendingSegmentRequest — requestor start
+                                        da_latency_tracker
+                                            .entry(node_id_str.clone())
+                                            .and_modify(|s| {
+                                                s.seg_full_req.start(this_event_id, evt_ts);
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            })
+                                            .or_insert_with(|| {
+                                                let mut s =
+                                                    da_latency_tracker::DaLatencyNodeState::default(
+                                                    );
+                                                s.seg_full_req.start(this_event_id, evt_ts);
+                                                s.dirty = true;
+                                                s
+                                            });
+                                    }
+                                    174 => {
+                                        // ReceivingSegmentRequest — responder start
+                                        da_latency_tracker
+                                            .entry(node_id_str.clone())
+                                            .and_modify(|s| {
+                                                s.seg_full_resp.start(this_event_id, evt_ts);
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            })
+                                            .or_insert_with(|| {
+                                                let mut s =
+                                                    da_latency_tracker::DaLatencyNodeState::default(
+                                                    );
+                                                s.seg_full_resp.start(this_event_id, evt_ts);
+                                                s.dirty = true;
+                                                s
+                                            });
+                                    }
+                                    175 => {
+                                        // SegmentRequestFailed
+                                        if let Event::SegmentRequestFailed { request_id, .. } =
+                                            &*event
+                                        {
+                                            da_latency_tracker
+                                                .entry(node_id_str.clone())
+                                                .and_modify(|s| {
+                                                    s.seg_full_req
+                                                        .fail(*request_id, evt_ts)
+                                                        .or_else(|| {
+                                                            s.seg_full_resp
+                                                                .fail(*request_id, evt_ts)
+                                                        });
+                                                    s.dirty = true;
+                                                    s.last_activity = std::time::Instant::now();
+                                                });
+                                        }
+                                    }
+                                    178 => {
+                                        // SegmentsTransferred
+                                        if let Event::SegmentsTransferred { request_id, .. } =
+                                            &*event
+                                        {
+                                            da_latency_tracker
+                                                .entry(node_id_str.clone())
+                                                .and_modify(|s| {
+                                                    s.seg_full_req
+                                                        .complete(*request_id, evt_ts)
+                                                        .or_else(|| {
+                                                            s.seg_full_resp
+                                                                .complete(*request_id, evt_ts)
+                                                        });
+                                                    s.dirty = true;
+                                                    s.last_activity = std::time::Instant::now();
+                                                });
+                                        }
+                                    }
+                                    // -- Preimage transfers (193-198) --
+                                    193 => {
+                                        // SendingPreimageRequest — requestor start
+                                        da_latency_tracker
+                                            .entry(node_id_str.clone())
+                                            .and_modify(|s| {
+                                                s.preimage_req.start(this_event_id, evt_ts);
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            })
+                                            .or_insert_with(|| {
+                                                let mut s =
+                                                    da_latency_tracker::DaLatencyNodeState::default(
+                                                    );
+                                                s.preimage_req.start(this_event_id, evt_ts);
+                                                s.dirty = true;
+                                                s
+                                            });
+                                    }
+                                    194 => {
+                                        // ReceivingPreimageRequest — responder start
+                                        da_latency_tracker
+                                            .entry(node_id_str.clone())
+                                            .and_modify(|s| {
+                                                s.preimage_resp.start(this_event_id, evt_ts);
+                                                s.dirty = true;
+                                                s.last_activity = std::time::Instant::now();
+                                            })
+                                            .or_insert_with(|| {
+                                                let mut s =
+                                                    da_latency_tracker::DaLatencyNodeState::default(
+                                                    );
+                                                s.preimage_resp.start(this_event_id, evt_ts);
+                                                s.dirty = true;
+                                                s
+                                            });
+                                    }
+                                    195 => {
+                                        // PreimageRequestFailed
+                                        if let Event::PreimageRequestFailed { request_id, .. } =
+                                            &*event
+                                        {
+                                            da_latency_tracker
+                                                .entry(node_id_str.clone())
+                                                .and_modify(|s| {
+                                                    s.preimage_req
+                                                        .fail(*request_id, evt_ts)
+                                                        .or_else(|| {
+                                                            s.preimage_resp
+                                                                .fail(*request_id, evt_ts)
+                                                        });
+                                                    s.dirty = true;
+                                                    s.last_activity = std::time::Instant::now();
+                                                });
+                                        }
+                                    }
+                                    198 => {
+                                        // PreimageTransferred
+                                        if let Event::PreimageTransferred { request_id, .. } =
+                                            &*event
+                                        {
+                                            da_latency_tracker
+                                                .entry(node_id_str.clone())
+                                                .and_modify(|s| {
+                                                    s.preimage_req
+                                                        .complete(*request_id, evt_ts)
+                                                        .or_else(|| {
+                                                            s.preimage_resp
+                                                                .complete(*request_id, evt_ts)
+                                                        });
+                                                    s.dirty = true;
+                                                    s.last_activity = std::time::Instant::now();
+                                                });
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+
+                            // Pre-aggregate high-volume events into in-memory counters
+                            let et_val = event.event_type() as u16;
+                            if !ff.disable_event_counter && event_counter::is_pre_aggregated(et_val)
+                            {
+                                let unix_micros =
+                                    crate::types::JCE_EPOCH_UNIX_MICROS + event.timestamp() as i64;
+                                event_counter::record_event(
+                                    &event_counter,
+                                    &event,
+                                    &enriched,
+                                    unix_micros,
+                                    &node_id_str,
+                                    event.event_type(),
+                                );
+                            }
+
+                            // Build WS envelope in ingestion thread (parallelized across 8 runtimes)
+                            if !ff.disable_ws_broadcast {
+                                let id = broadcaster.next_event_id();
+                                let event_type = event.event_type() as u8;
+                                let timestamp = chrono::Utc::now();
+                                let ws_json = build_ws_envelope(
+                                    id,
+                                    &node_id_str,
+                                    event_type,
+                                    &event_json,
+                                    timestamp,
+                                    &mut ws_buf,
+                                );
+
+                                // Accumulate for batch send after inner loop
+                                broadcast_batch.push(BroadcastRecord {
+                                    node_id: node_id_str.clone(),
+                                    event: Arc::clone(&event),
+                                    event_json: Arc::clone(&event_json),
+                                    id,
+                                    event_type,
+                                    timestamp,
+                                    ws_json,
+                                });
+                            }
+                            if !ff.disable_db_writes {
+                                db_batch.push(EventRecord {
+                                    node_id: node_id_str.clone(),
+                                    event_id: this_event_id,
+                                    event,
+                                    event_json,
+                                    enriched,
+                                });
+                            }
                             batch_received += 1;
 
                             buffer.advance(4 + size as usize);

@@ -1,3 +1,7 @@
+//! Circuit breaker pattern implementation (Closed → Open → HalfOpen) for
+//! fault-tolerant external calls with configurable failure thresholds and
+//! recovery timeouts.
+
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::future::Future;
