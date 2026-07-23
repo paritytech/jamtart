@@ -1246,7 +1246,7 @@ fn render_events(
 
             let content = Line::from(vec![
                 Span::styled(
-                    format!("{} ", &time),
+                    format!("{} ", time),
                     Style::default()
                         .fg(Color::Rgb(255, 255, 150))
                         .add_modifier(Modifier::BOLD),
