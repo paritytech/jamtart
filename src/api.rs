@@ -901,7 +901,9 @@ async fn websocket_connection(
                 // Periodic debug log every 2 seconds
                 if debug_last_log.elapsed() >= std::time::Duration::from_secs(2) {
                     let elapsed = debug_last_log.elapsed().as_secs_f64();
-                    let avg_send_us = if debug_sends_since_log > 0 { debug_send_time_us / debug_sends_since_log } else { 0 };
+                    let avg_send_us = debug_send_time_us
+                        .checked_div(debug_sends_since_log)
+                        .unwrap_or(0);
                     let filter_desc = match &current_filter {
                         SubscriptionFilter::All => "all".to_string(),
                         SubscriptionFilter::Nodes { node_ids } => {

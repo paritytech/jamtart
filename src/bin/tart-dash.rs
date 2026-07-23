@@ -335,10 +335,8 @@ impl App {
                             self.events_scroll += 1;
                         }
                     }
-                    2 => {
-                        if self.nodes_scroll < data.nodes.len().saturating_sub(1) {
-                            self.nodes_scroll += 1;
-                        }
+                    2 if self.nodes_scroll < data.nodes.len().saturating_sub(1) => {
+                        self.nodes_scroll += 1;
                     }
                     _ => {}
                 }
@@ -973,7 +971,7 @@ fn render_nodes(f: &mut Frame, area: Rect, data: &DashboardData, scroll: usize, 
         .height(1);
 
     let mut nodes = data.nodes.clone();
-    nodes.sort_by(|a, b| b.event_count.cmp(&a.event_count));
+    nodes.sort_by_key(|n| std::cmp::Reverse(n.event_count));
 
     let rows: Vec<Row> = nodes
         .iter()

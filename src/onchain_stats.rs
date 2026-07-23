@@ -226,7 +226,7 @@ async fn handle_fork_detection(
         info!(
             "Fork detected at slot {}: new best {:.16}, previous {:.16}",
             slot,
-            hex::encode(&new_hash.0),
+            hex::encode(new_hash.0),
             hex::encode(&old_hash),
         );
 
@@ -485,7 +485,7 @@ async fn handle_finalization(
 
     // Walk canonical chain backwards from finalized to prev_finalized
     let mut canonical: Vec<(i32, Vec<u8>)> = Vec::new();
-    let mut current = finalized.clone();
+    let mut current = *finalized;
     let mut max_walk = 1000u32;
 
     while (current.slot as i32) > prev_finalized_slot && max_walk > 0 {

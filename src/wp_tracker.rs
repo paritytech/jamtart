@@ -121,10 +121,8 @@ impl WpState {
                     self.guarantee_built_at = Some(timestamp);
                 }
             }
-            5 => {
-                if self.distributed_at.is_none() {
-                    self.distributed_at = Some(timestamp);
-                }
+            5 if self.distributed_at.is_none() => {
+                self.distributed_at = Some(timestamp);
             }
             _ => {}
         }

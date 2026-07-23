@@ -133,7 +133,7 @@ impl NodeEventEnricher {
         self.call_count += 1;
         self.events_processed += 1;
 
-        if self.call_count % EVICTION_INTERVAL == 0 {
+        if self.call_count.is_multiple_of(EVICTION_INTERVAL) {
             self.evict_stale();
         }
 

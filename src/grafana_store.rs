@@ -111,6 +111,7 @@ impl EventStore {
     ///   - `event_stats_30s`  if interval < 60s
     ///   - `event_stats_1m`   if interval < 3600s
     ///   - `event_stats_1h`   otherwise
+    #[allow(clippy::too_many_arguments)]
     pub async fn grafana_timeseries(
         &self,
         start: DateTime<Utc>,
@@ -1110,6 +1111,7 @@ impl EventStore {
     /// Queries `ingested_raw_events` (1h retention, all 115 event types).
     /// Filters: event_types (optional), node_id, core (hot column), wp_hash (hot column).
     /// Returns paginated response with total count for UI pagination controls.
+    #[allow(clippy::too_many_arguments)]
     pub async fn grafana_events(
         &self,
         start: DateTime<Utc>,
@@ -1141,7 +1143,6 @@ impl EventStore {
         }
         if wp_hash.is_some() {
             conditions.push(format!("wp_hash = ${}", param_idx));
-            param_idx += 1;
         }
 
         let where_clause = conditions.join(" AND ");
@@ -1971,8 +1972,7 @@ impl EventStore {
         let node_clause = if node_filter.is_some() {
             "AND node_id = $4".to_string()
         } else {
-            format!(
-                "AND node_id IN (
+            "AND node_id IN (
                     SELECT node_id FROM wp_tracking
                     WHERE first_seen >= $1 AND first_seen < $2
                       AND ($3::SMALLINT IS NULL OR core = $3)
@@ -1981,8 +1981,7 @@ impl EventStore {
                     GROUP BY node_id
                     ORDER BY AVG(EXTRACT(EPOCH FROM (distributed_at - received_at)) * 1000) DESC NULLS LAST
                     LIMIT 20
-                )"
-            )
+                )".to_string()
         };
 
         let sql = format!(
@@ -2451,10 +2450,9 @@ impl EventStore {
         let mapping = self.node_core_mapping(start, end).await?;
 
         // Group by node_id to get primary core + all cores
-        let mut node_map: std::collections::HashMap<
-            String,
-            (Vec<i16>, i64, Option<DateTime<Utc>>),
-        > = std::collections::HashMap::new();
+        type NodeCoreAgg = (Vec<i16>, i64, Option<DateTime<Utc>>);
+        let mut node_map: std::collections::HashMap<String, NodeCoreAgg> =
+            std::collections::HashMap::new();
         for row in &mapping {
             let entry = node_map
                 .entry(row.node_id.clone())
@@ -2481,7 +2479,7 @@ impl EventStore {
                 }
             })
             .collect();
-        guarantors.sort_by(|a, b| b.guarantee_count.cmp(&a.guarantee_count));
+        guarantors.sort_by_key(|g| std::cmp::Reverse(g.guarantee_count));
         let total = guarantors.len() as i64;
 
         Ok(GuarantorBreakdownResponse {
@@ -2601,7 +2599,7 @@ impl EventStore {
                 guarantee_count: count,
             })
             .collect();
-        result.sort_by(|a, b| b.guarantee_count.cmp(&a.guarantee_count));
+        result.sort_by_key(|r| std::cmp::Reverse(r.guarantee_count));
 
         Ok(result)
     }

@@ -581,10 +581,10 @@ async fn flush_events(store: &Arc<EventStore>, event_batch: &mut Vec<EventRecord
 
     trace!("Flushing {} events", event_count);
 
-    // Collect event_services rows and node_stats rows before consuming the batch
-    let mut service_rows: Vec<(i64, String, i16, i32, Option<i64>, Option<i64>, Option<i64>)> =
-        Vec::new();
-    let mut stats_rows: Vec<(
+    // Collect event_services rows and node_stats rows before consuming the batch.
+    // Owned variants of store::EventServiceRow / store::NodeStatsRow.
+    type OwnedEventServiceRow = (i64, String, i16, i32, Option<i64>, Option<i64>, Option<i64>);
+    type OwnedNodeStatsRow = (
         i64,
         String,
         i32,
@@ -598,7 +598,9 @@ async fn flush_events(store: &Arc<EventStore>, event_batch: &mut Vec<EventRecord
         i16,
         f32,
         i16,
-    )> = Vec::new();
+    );
+    let mut service_rows: Vec<OwnedEventServiceRow> = Vec::new();
+    let mut stats_rows: Vec<OwnedNodeStatsRow> = Vec::new();
 
     for record in event_batch.iter() {
         let et = record.event.event_type() as u16;
@@ -702,7 +704,7 @@ async fn flush_events(store: &Arc<EventStore>, event_batch: &mut Vec<EventRecord
     let svc_count = service_rows.len();
     let svc_ms;
     if !service_rows.is_empty() {
-        let refs: Vec<(i64, &str, i16, i32, Option<i64>, Option<i64>, Option<i64>)> = service_rows
+        let refs: Vec<crate::store::EventServiceRow<'_>> = service_rows
             .iter()
             .map(|(ts, nid, et, sid, g, elapsed, load)| {
                 (*ts, nid.as_str(), *et, *sid, *g, *elapsed, *load)
@@ -721,21 +723,7 @@ async fn flush_events(store: &Arc<EventStore>, event_batch: &mut Vec<EventRecord
     let stats_count = stats_rows.len();
     let stats_ms;
     if !stats_rows.is_empty() {
-        let refs: Vec<(
-            i64,
-            &str,
-            i32,
-            i32,
-            i32,
-            i32,
-            i64,
-            i32,
-            i32,
-            i16,
-            i16,
-            f32,
-            i16,
-        )> = stats_rows
+        let refs: Vec<crate::store::NodeStatsRow<'_>> = stats_rows
             .iter()
             .map(|(ts, nid, a, b, c, d, e, f, g, h, i, j, k)| {
                 (
@@ -782,10 +770,9 @@ async fn flush_events(store: &Arc<EventStore>, event_batch: &mut Vec<EventRecord
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+
     use crate::events::Event;
     use crate::types::*;
-    use std::sync::Arc;
 
     fn zero_exec() -> ExecCost {
         ExecCost {
@@ -998,7 +985,8 @@ mod tests {
         };
 
         // Simulate the extraction pattern from flush_events
-        let mut rows: Vec<(i32, Option<i64>, Option<i64>, Option<i64>)> = Vec::new();
+        type CostRow = (i32, Option<i64>, Option<i64>, Option<i64>);
+        let mut rows: Vec<CostRow> = Vec::new();
         if let Event::BlockExecuted {
             accumulate_costs, ..
         } = &event

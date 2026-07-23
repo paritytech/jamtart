@@ -35,6 +35,35 @@ type NodeId = Arc<str>;
 /// # Ok(())
 /// # }
 /// ```
+/// event_services row: (unix_micros, node_id, event_type, service_id, gas_used, elapsed_ns, load_ns)
+pub type EventServiceRow<'a> = (
+    i64,
+    &'a str,
+    i16,
+    i32,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+);
+
+/// node_stats row extracted from Status events (unix_micros, node_id, then the
+/// numeric Status fields in `node_stats` column order).
+pub type NodeStatsRow<'a> = (
+    i64,
+    &'a str,
+    i32,
+    i32,
+    i32,
+    i32,
+    i64,
+    i32,
+    i32,
+    i16,
+    i16,
+    f32,
+    i16,
+);
+
 /// True if a migration failed as a deadlock victim (SQLSTATE 40P01), e.g. by
 /// colliding with a TimescaleDB background policy job.
 fn is_deadlock(e: &sqlx::migrate::MigrateError) -> bool {
@@ -410,7 +439,7 @@ impl EventStore {
     /// Only called for the 21 low-volume pipeline event types + BlockExecuted.
     pub async fn store_event_services_batch(
         &self,
-        rows: &[(i64, &str, i16, i32, Option<i64>, Option<i64>, Option<i64>)], // (unix_micros, node_id, event_type, service_id, gas_used, elapsed_ns, load_ns)
+        rows: &[EventServiceRow<'_>],
     ) -> Result<(), sqlx::Error> {
         if rows.is_empty() {
             return Ok(());
@@ -489,21 +518,7 @@ impl EventStore {
     /// Store node_stats rows using PostgreSQL COPY for Status event extraction.
     pub async fn store_node_stats_batch(
         &self,
-        rows: &[(
-            i64,
-            &str,
-            i32,
-            i32,
-            i32,
-            i32,
-            i64,
-            i32,
-            i32,
-            i16,
-            i16,
-            f32,
-            i16,
-        )],
+        rows: &[NodeStatsRow<'_>],
     ) -> Result<(), sqlx::Error> {
         if rows.is_empty() {
             return Ok(());

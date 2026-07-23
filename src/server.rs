@@ -1235,10 +1235,12 @@ async fn handle_connection_optimized(
                                                 s.last_activity = std::time::Instant::now();
                                             })
                                             .or_insert_with(|| {
-                                                let mut s = da_tracker::DaNodeState::default();
-                                                s.shard_requests_sent = 1;
+                                                let mut s = da_tracker::DaNodeState {
+                                                    shard_requests_sent: 1,
+                                                    dirty: true,
+                                                    ..Default::default()
+                                                };
                                                 s.assurer_pending.insert(this_event_id, evt_ts);
-                                                s.dirty = true;
                                                 s
                                             });
                                     }
@@ -1253,10 +1255,12 @@ async fn handle_connection_optimized(
                                                 s.last_activity = std::time::Instant::now();
                                             })
                                             .or_insert_with(|| {
-                                                let mut s = da_tracker::DaNodeState::default();
-                                                s.shard_requests_received = 1;
+                                                let mut s = da_tracker::DaNodeState {
+                                                    shard_requests_received: 1,
+                                                    dirty: true,
+                                                    ..Default::default()
+                                                };
                                                 s.guarantor_pending.insert(this_event_id, evt_ts);
-                                                s.dirty = true;
                                                 s
                                             });
                                     }
@@ -1307,11 +1311,10 @@ async fn handle_connection_optimized(
                                                 s.dirty = true;
                                                 s.last_activity = std::time::Instant::now();
                                             })
-                                            .or_insert_with(|| {
-                                                let mut s = da_tracker::DaNodeState::default();
-                                                s.shard_sent_confirmed = 1;
-                                                s.dirty = true;
-                                                s
+                                            .or_insert_with(|| da_tracker::DaNodeState {
+                                                shard_sent_confirmed: 1,
+                                                dirty: true,
+                                                ..Default::default()
                                             });
                                     }
                                     124 => {
@@ -1344,10 +1347,12 @@ async fn handle_connection_optimized(
                                                     s.last_activity = std::time::Instant::now();
                                                 })
                                                 .or_insert_with(|| {
-                                                    let mut s = da_tracker::DaNodeState::default();
-                                                    s.shard_received_confirmed = 1;
+                                                    let mut s = da_tracker::DaNodeState {
+                                                        shard_received_confirmed: 1,
+                                                        dirty: true,
+                                                        ..Default::default()
+                                                    };
                                                     s.active_shards.insert(*shard);
-                                                    s.dirty = true;
                                                     s
                                                 });
                                         }
@@ -1376,11 +1381,10 @@ async fn handle_connection_optimized(
                                                     s.dirty = true;
                                                     s.last_activity = std::time::Instant::now();
                                                 })
-                                                .or_insert_with(|| {
-                                                    let mut s = da_tracker::DaNodeState::default();
-                                                    s.shards_transferred = 1;
-                                                    s.dirty = true;
-                                                    s
+                                                .or_insert_with(|| da_tracker::DaNodeState {
+                                                    shards_transferred: 1,
+                                                    dirty: true,
+                                                    ..Default::default()
                                                 });
                                         }
                                     }
@@ -1393,11 +1397,10 @@ async fn handle_connection_optimized(
                                                 s.dirty = true;
                                                 s.last_activity = std::time::Instant::now();
                                             })
-                                            .or_insert_with(|| {
-                                                let mut s = da_tracker::DaNodeState::default();
-                                                s.preimage_ann_failures = 1;
-                                                s.dirty = true;
-                                                s
+                                            .or_insert_with(|| da_tracker::DaNodeState {
+                                                preimage_ann_failures: 1,
+                                                dirty: true,
+                                                ..Default::default()
                                             });
                                     }
                                     191 => {
@@ -1409,11 +1412,10 @@ async fn handle_connection_optimized(
                                                 s.dirty = true;
                                                 s.last_activity = std::time::Instant::now();
                                             })
-                                            .or_insert_with(|| {
-                                                let mut s = da_tracker::DaNodeState::default();
-                                                s.preimages_announced = 1;
-                                                s.dirty = true;
-                                                s
+                                            .or_insert_with(|| da_tracker::DaNodeState {
+                                                preimages_announced: 1,
+                                                dirty: true,
+                                                ..Default::default()
                                             });
                                     }
                                     192 => {
@@ -1425,11 +1427,10 @@ async fn handle_connection_optimized(
                                                 s.dirty = true;
                                                 s.last_activity = std::time::Instant::now();
                                             })
-                                            .or_insert_with(|| {
-                                                let mut s = da_tracker::DaNodeState::default();
-                                                s.preimages_forgotten = 1;
-                                                s.dirty = true;
-                                                s
+                                            .or_insert_with(|| da_tracker::DaNodeState {
+                                                preimages_forgotten: 1,
+                                                dirty: true,
+                                                ..Default::default()
                                             });
                                     }
                                     _ => {}

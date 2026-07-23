@@ -394,7 +394,7 @@ async fn main() -> anyhow::Result<()> {
 
                 tick_count += 1;
                 // Flush DA tracker every 2 ticks (10s)
-                let (da_ms, da_lat_ms) = if tick_count % 2 == 0 {
+                let (da_ms, da_lat_ms) = if tick_count.is_multiple_of(2) {
                     let da = if !ff.disable_da_tracker {
                         let t0 = std::time::Instant::now();
                         tart_backend::da_tracker::flush_da_tracker(&da_tracker, &pool).await;
@@ -427,18 +427,18 @@ async fn main() -> anyhow::Result<()> {
                     slot_ms, wp_ms, guar_ms, assur_ms, counter_ms, da_ms, da_lat_ms,
                 );
                 // Evict stale header_hash_lookup entries every 6 ticks (30s)
-                if tick_count % 6 == 0 && !ff.disable_convergence {
+                if tick_count.is_multiple_of(6) && !ff.disable_convergence {
                     tart_backend::convergence_tracker::evict_header_hash_lookup(
                         &header_hash_lookup,
                         50000,
                     );
                 }
                 // Sweep stale enrichers every 30 ticks (~2.5 min)
-                if tick_count % 30 == 0 && !ff.disable_enricher {
+                if tick_count.is_multiple_of(30) && !ff.disable_enricher {
                     enricher_map.retain(|_, e| !e.is_stale());
                 }
                 // Retention cleanup: delete convergence rows older than 7 days (every 60 ticks = 5 min)
-                if tick_count % 60 == 0 {
+                if tick_count.is_multiple_of(60) {
                     let cutoff = "NOW() - INTERVAL '7 days'";
                     for table_and_col in &[
                         ("slot_convergence", "authored_at"),

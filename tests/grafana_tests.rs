@@ -1281,11 +1281,11 @@ async fn test_grafana_event_types_filtered_by_group() {
         "blocks group should contain BlockExecuted"
     );
     assert!(
-        !names.iter().any(|n| *n == "WorkPackageFailed"),
+        !names.contains(&"WorkPackageFailed"),
         "blocks group should not contain WorkPackageFailed"
     );
     assert!(
-        !names.iter().any(|n| *n == "Dropped"),
+        !names.contains(&"Dropped"),
         "blocks group should not contain Dropped"
     );
 
@@ -2081,7 +2081,7 @@ async fn test_guarantee_discards_endpoint() {
         .filter(|e| {
             e["reason"]
                 .as_str()
-                .map_or(false, |r| r.contains("ReplacedByBetter"))
+                .is_some_and(|r| r.contains("ReplacedByBetter"))
         })
         .map(|e| e["count"].as_i64().unwrap_or(0))
         .sum();
@@ -2090,7 +2090,7 @@ async fn test_guarantee_discards_endpoint() {
         .filter(|e| {
             e["reason"]
                 .as_str()
-                .map_or(false, |r| r.contains("TooManyGuarantees"))
+                .is_some_and(|r| r.contains("TooManyGuarantees"))
         })
         .map(|e| e["count"].as_i64().unwrap_or(0))
         .sum();
@@ -3199,7 +3199,7 @@ async fn test_grafana_guarantees() {
 
 #[tokio::test]
 async fn test_grafana_guarantees_by_guarantor() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
@@ -3281,7 +3281,7 @@ async fn test_grafana_wp_stats() {
 
 #[tokio::test]
 async fn test_grafana_validators_cores() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
