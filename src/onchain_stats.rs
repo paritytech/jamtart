@@ -557,7 +557,10 @@ async fn handle_finalization(
             if deleted > 0 {
                 info!(
                     "Fork cleanup: deleted {} orphan rows from {} (slots {}..{})",
-                    deleted, table, prev_finalized_slot + 1, new_slot
+                    deleted,
+                    table,
+                    prev_finalized_slot + 1,
+                    new_slot
                 );
             }
 

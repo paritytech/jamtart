@@ -16,12 +16,12 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use utoipa::OpenApi;
 use std::sync::Arc;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::timeout::TimeoutLayer;
 use tracing::{debug, error, info, warn};
+use utoipa::OpenApi;
 
 /// Validates that a node_id is a valid 64-character hexadecimal string (32 bytes encoded).
 fn is_valid_node_id(node_id: &str) -> bool {
@@ -158,9 +158,15 @@ pub fn create_api_router(state: ApiState) -> Router {
         .layer(TimeoutLayer::new(std::time::Duration::from_secs(30))) // Innermost: timeout on handler
         .layer(DefaultBodyLimit::max(256 * 1024)) // Body limit before handler
         .layer(CompressionLayer::new())
-        .layer(tower_http::trace::TraceLayer::new_for_http()
-            .make_span_with(tower_http::trace::DefaultMakeSpan::new().level(tracing::Level::DEBUG))
-            .on_response(tower_http::trace::DefaultOnResponse::new().level(tracing::Level::DEBUG)))
+        .layer(
+            tower_http::trace::TraceLayer::new_for_http()
+                .make_span_with(
+                    tower_http::trace::DefaultMakeSpan::new().level(tracing::Level::DEBUG),
+                )
+                .on_response(
+                    tower_http::trace::DefaultOnResponse::new().level(tracing::Level::DEBUG),
+                ),
+        )
         .layer(CorsLayer::permissive()) // Outermost: cheap CORS preflight
         .with_state(state)
 }
@@ -194,7 +200,6 @@ async fn detailed_health_check(
     Ok((status_code, Json(health_report)))
 }
 
-
 /// Returns network topology information gleaned from connected nodes.
 /// This includes core count, validator count, and other protocol parameters.
 async fn get_network_info(State(state): State<ApiState>) -> Result<impl IntoResponse, StatusCode> {
@@ -206,7 +211,6 @@ async fn get_network_info(State(state): State<ApiState>) -> Result<impl IntoResp
         }
     }
 }
-
 
 async fn get_node_details(
     Path(node_id): Path<String>,
@@ -266,7 +270,6 @@ async fn get_node_status(
     }
 }
 
-
 /// Get peer/connection metrics for a specific node
 async fn get_node_peers(
     Path(node_id): Path<String>,
@@ -285,7 +288,6 @@ async fn get_node_peers(
         }
     }
 }
-
 
 /// Get peer topology and network traffic patterns
 async fn get_peer_topology(State(state): State<ApiState>) -> Result<impl IntoResponse, StatusCode> {
@@ -699,9 +701,10 @@ impl EventSource {
                 use tokio_stream::StreamExt;
                 match map.next().await {
                     Some((_key, Ok(event))) => Ok(event),
-                    Some((_key, Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)))) => {
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n))
-                    }
+                    Some((
+                        _key,
+                        Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)),
+                    )) => Err(tokio::sync::broadcast::error::RecvError::Lagged(n)),
                     None => Err(tokio::sync::broadcast::error::RecvError::Closed),
                 }
             }
@@ -722,9 +725,10 @@ impl EventSource {
                 let mut cx = std::task::Context::from_waker(&waker);
                 match std::pin::Pin::new(map).poll_next(&mut cx) {
                     std::task::Poll::Ready(Some((_key, Ok(event)))) => Ok(event),
-                    std::task::Poll::Ready(Some((_key, Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)))) ) => {
-                        Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n))
-                    }
+                    std::task::Poll::Ready(Some((
+                        _key,
+                        Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)),
+                    ))) => Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)),
                     _ => Err(tokio::sync::broadcast::error::TryRecvError::Empty),
                 }
             }

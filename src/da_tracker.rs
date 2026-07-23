@@ -27,25 +27,25 @@ pub fn new_da_tracker() -> DaTracker {
 
 pub struct DaNodeState {
     // Shard event counts (since last flush)
-    pub shard_requests_sent: u32,       // SendingShardRequest(120)
-    pub shard_requests_received: u32,   // ReceivingShardRequest(121)
-    pub shard_sent_confirmed: u32,      // ShardRequestSent(123)
-    pub shard_received_confirmed: u32,  // ShardRequestReceived(124)
-    pub shards_transferred: u32,        // ShardsTransferred(125)
-    pub shard_failures: u32,            // ShardRequestFailed(122)
+    pub shard_requests_sent: u32,      // SendingShardRequest(120)
+    pub shard_requests_received: u32,  // ReceivingShardRequest(121)
+    pub shard_sent_confirmed: u32,     // ShardRequestSent(123)
+    pub shard_received_confirmed: u32, // ShardRequestReceived(124)
+    pub shards_transferred: u32,       // ShardsTransferred(125)
+    pub shard_failures: u32,           // ShardRequestFailed(122)
 
     // Preimage event counts
-    pub preimage_ann_failures: u32,     // PreimageAnnouncementFailed(190)
-    pub preimages_announced: u32,       // PreimageAnnounced(191)
-    pub preimages_forgotten: u32,       // AnnouncedPreimageForgotten(192)
+    pub preimage_ann_failures: u32, // PreimageAnnouncementFailed(190)
+    pub preimages_announced: u32,   // PreimageAnnounced(191)
+    pub preimages_forgotten: u32,   // AnnouncedPreimageForgotten(192)
 
     // Shard latency — assurer side: SendingShardRequest(120) → ShardsTransferred(125)
-    pub assurer_pending: HashMap<u64, u64>,  // event_id → timestamp (JCE micros)
+    pub assurer_pending: HashMap<u64, u64>, // event_id → timestamp (JCE micros)
     pub assurer_latency_sum_us: u64,
     pub assurer_latency_count: u32,
 
     // Shard latency — guarantor side: ReceivingShardRequest(121) → ShardRequestReceived(124)
-    pub guarantor_pending: HashMap<u64, u64>,  // event_id → timestamp (JCE micros)
+    pub guarantor_pending: HashMap<u64, u64>, // event_id → timestamp (JCE micros)
     pub guarantor_latency_sum_us: u64,
     pub guarantor_latency_count: u32,
 
@@ -100,7 +100,9 @@ impl Default for DaNodeState {
 // Histogram
 // ---------------------------------------------------------------------------
 
-const HIST_BOUNDARIES_MS: [u32; 14] = [0, 1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2000, 3000, 5000];
+const HIST_BOUNDARIES_MS: [u32; 14] = [
+    0, 1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2000, 3000, 5000,
+];
 
 /// Find the histogram bucket index for a delta in milliseconds.
 /// Boundaries: [0,1), [1,2), [2,5), [5,10), [10,25), [25,50), [50,100),
@@ -196,12 +198,20 @@ pub async fn flush_da_tracker(tracker: &DaTracker, pool: &PgPool) {
 
         if state.dirty {
             let assurer_avg = if state.assurer_latency_count > 0 {
-                Some(state.assurer_latency_sum_us as f64 / state.assurer_latency_count as f64 / 1000.0)
+                Some(
+                    state.assurer_latency_sum_us as f64
+                        / state.assurer_latency_count as f64
+                        / 1000.0,
+                )
             } else {
                 None
             };
             let guarantor_avg = if state.guarantor_latency_count > 0 {
-                Some(state.guarantor_latency_sum_us as f64 / state.guarantor_latency_count as f64 / 1000.0)
+                Some(
+                    state.guarantor_latency_sum_us as f64
+                        / state.guarantor_latency_count as f64
+                        / 1000.0,
+                )
             } else {
                 None
             };
@@ -340,7 +350,10 @@ pub async fn flush_da_tracker(tracker: &DaTracker, pool: &PgPool) {
 
             match result {
                 Ok(_) => hist_rows_written += 1,
-                Err(e) => warn!("shard_latency_hist (assurer) insert failed for {}: {e}", snap.node_id),
+                Err(e) => warn!(
+                    "shard_latency_hist (assurer) insert failed for {}: {e}",
+                    snap.node_id
+                ),
             }
         }
 
@@ -378,7 +391,10 @@ pub async fn flush_da_tracker(tracker: &DaTracker, pool: &PgPool) {
 
             match result {
                 Ok(_) => hist_rows_written += 1,
-                Err(e) => warn!("shard_latency_hist (guarantor) insert failed for {}: {e}", snap.node_id),
+                Err(e) => warn!(
+                    "shard_latency_hist (guarantor) insert failed for {}: {e}",
+                    snap.node_id
+                ),
             }
         }
     }
@@ -410,14 +426,14 @@ mod tests {
 
     #[test]
     fn test_hist_bucket_index() {
-        assert_eq!(hist_bucket_index(0), 0);    // [0,1)
-        assert_eq!(hist_bucket_index(1), 1);    // [1,2)
-        assert_eq!(hist_bucket_index(4), 2);    // [2,5)
-        assert_eq!(hist_bucket_index(5), 3);    // [5,10)
-        assert_eq!(hist_bucket_index(47), 5);   // [25,50)
+        assert_eq!(hist_bucket_index(0), 0); // [0,1)
+        assert_eq!(hist_bucket_index(1), 1); // [1,2)
+        assert_eq!(hist_bucket_index(4), 2); // [2,5)
+        assert_eq!(hist_bucket_index(5), 3); // [5,10)
+        assert_eq!(hist_bucket_index(47), 5); // [25,50)
         assert_eq!(hist_bucket_index(3001), 12); // [3000,5000)
         assert_eq!(hist_bucket_index(6000), 13); // [5000,∞)
-        assert_eq!(hist_bucket_index(-5), 0);   // negative → clamped to 0
+        assert_eq!(hist_bucket_index(-5), 0); // negative → clamped to 0
     }
 
     #[test]
@@ -427,11 +443,11 @@ mod tests {
 
         // Fresh entry — should survive
         pending.insert(1, now_us - 1_000_000); // 1s ago
-        // Stale entry — should be evicted (>30s)
+                                               // Stale entry — should be evicted (>30s)
         pending.insert(2, now_us - 31_000_000); // 31s ago
-        // Another stale
+                                                // Another stale
         pending.insert(3, now_us - 50_000_000); // 50s ago
-        // Fresh
+                                                // Fresh
         pending.insert(4, now_us - 5_000_000); // 5s ago
 
         let evicted = evict_pending(&mut pending, now_us);
@@ -466,7 +482,8 @@ mod tests {
 
         assert_eq!(state.assurer_latency_count, 1);
         assert_eq!(state.assurer_latency_sum_us, 50_000); // 50ms in micros
-        let avg_ms = state.assurer_latency_sum_us as f64 / state.assurer_latency_count as f64 / 1000.0;
+        let avg_ms =
+            state.assurer_latency_sum_us as f64 / state.assurer_latency_count as f64 / 1000.0;
         assert!((avg_ms - 50.0).abs() < 0.001);
         // 50ms → bucket 6 [50,100)
         assert_eq!(state.assurer_hist[6], 1);
@@ -496,7 +513,8 @@ mod tests {
 
         assert_eq!(state.guarantor_latency_count, 1);
         assert_eq!(state.guarantor_latency_sum_us, 5_000); // 5ms in micros
-        let avg_ms = state.guarantor_latency_sum_us as f64 / state.guarantor_latency_count as f64 / 1000.0;
+        let avg_ms =
+            state.guarantor_latency_sum_us as f64 / state.guarantor_latency_count as f64 / 1000.0;
         assert!((avg_ms - 5.0).abs() < 0.001);
         // 5ms → bucket 3 [5,10)
         assert_eq!(state.guarantor_hist[3], 1);

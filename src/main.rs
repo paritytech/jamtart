@@ -14,9 +14,9 @@ use clap::Parser;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tart_backend::api::{create_api_router, create_minimal_router, ApiState, MinimalApiState};
+use tart_backend::feature_flags::FeatureFlags;
 use tart_backend::health::{checks, HealthMonitor};
 use tart_backend::jam_rpc::JamRpcClient;
-use tart_backend::feature_flags::FeatureFlags;
 use tart_backend::{EventStore, TelemetryServer};
 use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -51,7 +51,6 @@ struct Cli {
     ingestion_threads: usize,
 
     // --- Feature flags for disabling subsystems (memory debugging) ---
-
     /// Disable enricher (cross-event correlation)
     #[arg(long, env = "DISABLE_ENRICHER")]
     disable_enricher: bool,
@@ -342,15 +341,20 @@ async fn main() -> anyhow::Result<()> {
                         &pool,
                         std::time::Duration::from_secs(10),
                         std::time::Duration::from_secs(60),
-                    ).await;
+                    )
+                    .await;
                     t0.elapsed().as_millis()
-                } else { 0 };
+                } else {
+                    0
+                };
 
                 let wp_ms = if !ff.disable_wp_tracker {
                     let t0 = std::time::Instant::now();
                     tart_backend::wp_tracker::flush_wp_tracker(&wp_tracker, &pool).await;
                     t0.elapsed().as_millis()
-                } else { 0 };
+                } else {
+                    0
+                };
 
                 let guar_ms = if !ff.disable_convergence {
                     let t0 = std::time::Instant::now();
@@ -359,9 +363,12 @@ async fn main() -> anyhow::Result<()> {
                         &pool,
                         std::time::Duration::from_secs(10),
                         std::time::Duration::from_secs(60),
-                    ).await;
+                    )
+                    .await;
                     t0.elapsed().as_millis()
-                } else { 0 };
+                } else {
+                    0
+                };
 
                 let assur_ms = if !ff.disable_convergence {
                     let t0 = std::time::Instant::now();
@@ -370,15 +377,20 @@ async fn main() -> anyhow::Result<()> {
                         &pool,
                         std::time::Duration::from_secs(10),
                         std::time::Duration::from_secs(60),
-                    ).await;
+                    )
+                    .await;
                     t0.elapsed().as_millis()
-                } else { 0 };
+                } else {
+                    0
+                };
 
                 let counter_ms = if !ff.disable_event_counter {
                     let t0 = std::time::Instant::now();
                     tart_backend::event_counter::flush_event_counter(&event_counter, &pool).await;
                     t0.elapsed().as_millis()
-                } else { 0 };
+                } else {
+                    0
+                };
 
                 tick_count += 1;
                 // Flush DA tracker every 2 ticks (10s)
@@ -387,12 +399,20 @@ async fn main() -> anyhow::Result<()> {
                         let t0 = std::time::Instant::now();
                         tart_backend::da_tracker::flush_da_tracker(&da_tracker, &pool).await;
                         t0.elapsed().as_millis()
-                    } else { 0 };
+                    } else {
+                        0
+                    };
                     let da_lat = if !ff.disable_da_tracker {
                         let t0 = std::time::Instant::now();
-                        tart_backend::da_latency_tracker::flush_da_latency_tracker(&da_latency_tracker, &pool).await;
+                        tart_backend::da_latency_tracker::flush_da_latency_tracker(
+                            &da_latency_tracker,
+                            &pool,
+                        )
+                        .await;
                         t0.elapsed().as_millis()
-                    } else { 0 };
+                    } else {
+                        0
+                    };
                     if !ff.disable_enricher {
                         tart_backend::enricher::log_enricher_diagnostics(&enricher_map, 10.0);
                     }
@@ -408,7 +428,10 @@ async fn main() -> anyhow::Result<()> {
                 );
                 // Evict stale header_hash_lookup entries every 6 ticks (30s)
                 if tick_count % 6 == 0 && !ff.disable_convergence {
-                    tart_backend::convergence_tracker::evict_header_hash_lookup(&header_hash_lookup, 50000);
+                    tart_backend::convergence_tracker::evict_header_hash_lookup(
+                        &header_hash_lookup,
+                        50000,
+                    );
                 }
                 // Sweep stale enrichers every 30 ticks (~2.5 min)
                 if tick_count % 30 == 0 && !ff.disable_enricher {
@@ -431,8 +454,15 @@ async fn main() -> anyhow::Result<()> {
                             tracing::warn!("retention cleanup for {} failed: {e}", table_and_col.0);
                         }
                     }
-                    for table in &["assurance_convergence_senders", "da_node_stats", "shard_latency_hist"] {
-                        let sql = format!("SELECT drop_chunks('{}', older_than => INTERVAL '7 days')", table);
+                    for table in &[
+                        "assurance_convergence_senders",
+                        "da_node_stats",
+                        "shard_latency_hist",
+                    ] {
+                        let sql = format!(
+                            "SELECT drop_chunks('{}', older_than => INTERVAL '7 days')",
+                            table
+                        );
                         if let Err(e) = sqlx::query(&sql).execute(&pool).await {
                             tracing::warn!("drop_chunks for {} failed: {e}", table);
                         }
@@ -479,7 +509,11 @@ async fn main() -> anyhow::Result<()> {
                 } else if feature_flags.disable_onchain {
                     info!("On-chain stats ingestion DISABLED by feature flag");
                     // Still connect JamRpcClient for /api/jam endpoints
-                    info!("Connecting to JAM node RPC at {} ({} URL(s))", urls[0], urls.len());
+                    info!(
+                        "Connecting to JAM node RPC at {} ({} URL(s))",
+                        urls[0],
+                        urls.len()
+                    );
                     let mut client = JamRpcClient::new(&urls[0]);
                     match client.connect().await {
                         Ok(()) => {
@@ -500,13 +534,14 @@ async fn main() -> anyhow::Result<()> {
                         store.pool().clone(),
                         6, // default slot period, will be validated on connect
                     );
-                    info!(
-                        "On-chain stats ingestion spawned for {} URL(s)",
-                        urls.len()
-                    );
+                    info!("On-chain stats ingestion spawned for {} URL(s)", urls.len());
 
                     // Connect first URL for the existing JamRpcClient (used by /api/jam endpoints)
-                    info!("Connecting to JAM node RPC at {} ({} URL(s))", urls[0], urls.len());
+                    info!(
+                        "Connecting to JAM node RPC at {} ({} URL(s))",
+                        urls[0],
+                        urls.len()
+                    );
                     let mut client = JamRpcClient::new(&urls[0]);
                     match client.connect().await {
                         Ok(()) => {

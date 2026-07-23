@@ -203,9 +203,15 @@ pub fn router() -> Router<ApiState> {
         .route("/bottlenecks", get(bottlenecks))
         .route("/wp-funnel", get(wp_funnel))
         .route("/guarantee-convergence", get(guarantee_convergence))
-        .route("/guarantee-convergence/detail", get(guarantee_convergence_detail))
+        .route(
+            "/guarantee-convergence/detail",
+            get(guarantee_convergence_detail),
+        )
         .route("/assurance-convergence", get(assurance_convergence))
-        .route("/assurance-convergence/senders", get(assurance_convergence_senders))
+        .route(
+            "/assurance-convergence/senders",
+            get(assurance_convergence_senders),
+        )
         .route("/da-stats", get(da_stats))
         .route("/shard-latency", get(shard_latency))
         .route("/bundle-latency", get(bundle_latency))
@@ -234,7 +240,10 @@ pub fn router() -> Router<ApiState> {
         .route("/cores/:core_id/validators", get(core_validators))
         // Validator profiling
         .route("/validator-profiling", get(validator_profiling))
-        .route("/validator-profiling-timeseries", get(validator_profiling_timeseries))
+        .route(
+            "/validator-profiling-timeseries",
+            get(validator_profiling_timeseries),
+        )
         // Phase 5
         .route("/execution", get(execution_metrics))
         .nest("/onchain", onchain_router())
@@ -453,7 +462,9 @@ pub struct ValidatorProfilingTimeseriesQuery {
 
 /// Strip Grafana multi-select curly-brace wrapper: `{a,b}` → `a,b`.
 fn strip_grafana_braces(s: &str) -> &str {
-    s.strip_prefix('{').and_then(|s| s.strip_suffix('}')).unwrap_or(s)
+    s.strip_prefix('{')
+        .and_then(|s| s.strip_suffix('}'))
+        .unwrap_or(s)
 }
 
 /// Parse comma-separated validator indices, stripping Grafana curly-brace wrapper.
@@ -502,9 +513,10 @@ async fn timeseries(
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let interval = q.interval.as_deref().unwrap_or("1m");
-    let event_types: Option<Vec<i16>> = q.event_types.map(|s| {
-        crate::event_type_meta::expand_event_types(&s)
-    }).filter(|v| !v.is_empty());
+    let event_types: Option<Vec<i16>> = q
+        .event_types
+        .map(|s| crate::event_type_meta::expand_event_types(&s))
+        .filter(|v| !v.is_empty());
 
     state
         .store
@@ -744,12 +756,7 @@ async fn services_timeseries(
 
     state
         .store
-        .grafana_services_timeseries(
-            q.start,
-            q.end,
-            interval,
-            services.as_deref(),
-        )
+        .grafana_services_timeseries(q.start, q.end, interval, services.as_deref())
         .await
         .map(Json)
         .map_err(|e| map_sqlx_error("grafana/services/timeseries", e))
@@ -771,9 +778,7 @@ async fn services_timeseries(
     ),
     tag = "grafana"
 )]
-async fn nodes(
-    State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
+async fn nodes(State(state): State<ApiState>) -> Result<impl IntoResponse, StatusCode> {
     state
         .store
         .grafana_nodes()
@@ -858,9 +863,7 @@ async fn node_stats_aggregate(
     ),
     tag = "grafana"
 )]
-async fn db_stats(
-    State(state): State<ApiState>,
-) -> Result<impl IntoResponse, StatusCode> {
+async fn db_stats(State(state): State<ApiState>) -> Result<impl IntoResponse, StatusCode> {
     state
         .store
         .grafana_db_stats()
@@ -987,12 +990,7 @@ async fn guarantee_convergence_detail(
     let wp_hash_bytes = q.wp_hash.as_deref().and_then(|h| hex::decode(h).ok());
     state
         .store
-        .grafana_guarantee_convergence_detail(
-            q.start,
-            q.end,
-            q.core,
-            wp_hash_bytes.as_deref(),
-        )
+        .grafana_guarantee_convergence_detail(q.start, q.end, q.core, wp_hash_bytes.as_deref())
         .await
         .map(Json)
         .map_err(|e| map_sqlx_error("grafana/guarantee-convergence/detail", e))
@@ -1059,12 +1057,7 @@ async fn assurance_convergence_senders(
     if let Some(interval) = &q.interval {
         state
             .store
-            .grafana_assurance_convergence_senders_hist(
-                q.start,
-                q.end,
-                interval,
-                q.node.as_deref(),
-            )
+            .grafana_assurance_convergence_senders_hist(q.start, q.end, interval, q.node.as_deref())
             .await
             .map(|rows| Json(rows).into_response())
             .map_err(|e| map_sqlx_error("grafana/assurance-convergence/senders", e))
@@ -1355,13 +1348,7 @@ async fn validator_profiling_timeseries(
     let interval = q.interval.as_deref().unwrap_or("1m");
     state
         .store
-        .grafana_validator_profiling_timeseries(
-            q.start,
-            q.end,
-            interval,
-            q.core,
-            q.node.as_deref(),
-        )
+        .grafana_validator_profiling_timeseries(q.start, q.end, interval, q.core, q.node.as_deref())
         .await
         .map(Json)
         .map_err(|e| map_sqlx_error("grafana/validator-profiling-timeseries", e))
@@ -1387,7 +1374,11 @@ async fn event_types(Query(params): Query<EventTypesParams>) -> impl IntoRespons
     let all = crate::event_type_meta::event_type_metadata();
     if let Some(ref group) = params.group {
         let ids = crate::event_type_meta::expand_event_types(group);
-        let filtered: Vec<_> = all.iter().filter(|m| ids.contains(&m.id)).cloned().collect();
+        let filtered: Vec<_> = all
+            .iter()
+            .filter(|m| ids.contains(&m.id))
+            .cloned()
+            .collect();
         Json(filtered)
     } else {
         Json(all.to_vec())

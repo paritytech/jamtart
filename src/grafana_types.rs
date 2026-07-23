@@ -74,9 +74,7 @@ impl utoipa::PartialSchema for DbServiceId {
             .schema_type(utoipa::openapi::schema::SchemaType::new(
                 utoipa::openapi::schema::Type::String,
             ))
-            .description(Some(
-                "Service ID in zero-padded hex, e.g. \"0x0000000a\"",
-            ))
+            .description(Some("Service ID in zero-padded hex, e.g. \"0x0000000a\""))
             .into()
     }
 }

@@ -159,11 +159,23 @@ impl NodeEventEnricher {
         // --- 1b. Store authoring/importing context for slot chain correlation ---
         if let Event::Authoring { slot, .. } = event {
             cap_map(&mut self.authoring_ids, MAX_MAP_ENTRIES, |v| v.inserted_at);
-            self.authoring_ids.insert(event_id, SlotEntry { slot: *slot, inserted_at: Instant::now() });
+            self.authoring_ids.insert(
+                event_id,
+                SlotEntry {
+                    slot: *slot,
+                    inserted_at: Instant::now(),
+                },
+            );
         }
         if let Event::Importing { slot, .. } = event {
             cap_map(&mut self.importing_ids, MAX_MAP_ENTRIES, |v| v.inserted_at);
-            self.importing_ids.insert(event_id, SlotEntry { slot: *slot, inserted_at: Instant::now() });
+            self.importing_ids.insert(
+                event_id,
+                SlotEntry {
+                    slot: *slot,
+                    inserted_at: Instant::now(),
+                },
+            );
         }
 
         // --- 1c. Propagate slot via authoring_id / importing_id chains ---
@@ -179,9 +191,17 @@ impl NodeEventEnricher {
                     fields.slot = fields.slot.or(Some(entry.slot));
                 }
             }
-            Event::BlockExecuted { authoring_or_importing_id, .. }
-            | Event::BlockExecutionFailed { authoring_or_importing_id, .. } => {
-                if let Some(entry) = self.authoring_ids.get(authoring_or_importing_id)
+            Event::BlockExecuted {
+                authoring_or_importing_id,
+                ..
+            }
+            | Event::BlockExecutionFailed {
+                authoring_or_importing_id,
+                ..
+            } => {
+                if let Some(entry) = self
+                    .authoring_ids
+                    .get(authoring_or_importing_id)
                     .or_else(|| self.importing_ids.get(authoring_or_importing_id))
                 {
                     fields.slot = fields.slot.or(Some(entry.slot));
@@ -192,8 +212,7 @@ impl NodeEventEnricher {
 
         // --- 2. Extract core directly from events that carry it ---
         match event {
-            Event::WorkPackageReceived { core, .. }
-            | Event::DuplicateWorkPackage { core, .. } => {
+            Event::WorkPackageReceived { core, .. } | Event::DuplicateWorkPackage { core, .. } => {
                 fields.core = Some(*core);
             }
             _ => {}
@@ -268,11 +287,7 @@ impl NodeEventEnricher {
             ..
         } = event
         {
-            let service_ids: Vec<u32> = outline
-                .work_items
-                .iter()
-                .map(|wi| wi.service_id)
-                .collect();
+            let service_ids: Vec<u32> = outline.work_items.iter().map(|wi| wi.service_id).collect();
             fields.service_ids = Some(service_ids.clone());
             fields.wp_hash = Some(outline.work_package_hash);
 
@@ -366,8 +381,7 @@ impl NodeEventEnricher {
 
         // SendingSegmentShardRequest / SendingSegmentRequest -> store in request_ids
         match event {
-            Event::SendingSegmentShardRequest { .. }
-            | Event::SendingSegmentRequest { .. } => {
+            Event::SendingSegmentShardRequest { .. } | Event::SendingSegmentRequest { .. } => {
                 if let Some(core) = fields.core {
                     cap_map(&mut self.request_ids, MAX_MAP_ENTRIES, |v| v.inserted_at);
                     self.request_ids.insert(
@@ -408,7 +422,9 @@ impl NodeEventEnricher {
         // ReconstructingSegments -> store in reconstructing_ids
         if let Event::ReconstructingSegments { .. } = event {
             if let Some(core) = fields.core {
-                cap_map(&mut self.reconstructing_ids, MAX_MAP_ENTRIES, |v| v.inserted_at);
+                cap_map(&mut self.reconstructing_ids, MAX_MAP_ENTRIES, |v| {
+                    v.inserted_at
+                });
                 self.reconstructing_ids.insert(
                     event_id,
                     ChainEntry {
@@ -636,9 +652,15 @@ mod tests {
             timestamp: 1001,
             submission_or_share_id: 100,
             cost: IsAuthorizedCost {
-                total: ExecCost { gas_used: 500, elapsed_ns: 100 },
+                total: ExecCost {
+                    gas_used: 500,
+                    elapsed_ns: 100,
+                },
                 load_ns: 50,
-                host_call: ExecCost { gas_used: 200, elapsed_ns: 40 },
+                host_call: ExecCost {
+                    gas_used: 200,
+                    elapsed_ns: 40,
+                },
             },
         };
         let fields = enricher.process(&auth_event, 2);

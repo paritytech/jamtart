@@ -22,9 +22,14 @@ async fn setup_test_api() -> (TestServer, Arc<EventStore>) {
         .expect("Failed to cleanup test data");
 
     let telemetry_server = Arc::new(
-        tart_backend::TelemetryServer::with_options("127.0.0.1:0", Some(Arc::clone(&store)), true, 0)
-            .await
-            .unwrap(),
+        tart_backend::TelemetryServer::with_options(
+            "127.0.0.1:0",
+            Some(Arc::clone(&store)),
+            true,
+            0,
+        )
+        .await
+        .unwrap(),
     );
 
     let broadcaster = telemetry_server.get_broadcaster();
@@ -36,7 +41,9 @@ async fn setup_test_api() -> (TestServer, Arc<EventStore>) {
         broadcaster,
         health_monitor,
         jam_rpc: None,
-        cache: Arc::new(tart_backend::cache::TtlCache::new(std::time::Duration::ZERO)),
+        cache: Arc::new(tart_backend::cache::TtlCache::new(
+            std::time::Duration::ZERO,
+        )),
         metrics_tracker: None,
     };
 
@@ -58,7 +65,14 @@ fn time_range_params() -> String {
 }
 
 /// Insert test rows into onchain_core_stats.
-async fn insert_core_stats(pool: &sqlx::PgPool, ts: &str, slot: i32, core: i16, gas_used: i64, da_load: i32) {
+async fn insert_core_stats(
+    pool: &sqlx::PgPool,
+    ts: &str,
+    slot: i32,
+    core: i16,
+    gas_used: i64,
+    da_load: i32,
+) {
     sqlx::query(
         "INSERT INTO onchain_core_stats (timestamp, slot, header_hash, core, gas_used, da_load, popularity, imports, extrinsic_count, extrinsic_size, exports, bundle_size, on_best_chain) \
          VALUES ($1::timestamptz, $2, '\\x0000000000000000000000000000000000000000000000000000000000000000', $3, $4, $5, 100, 2, 1, 256, 3, 512, true)",
@@ -74,7 +88,14 @@ async fn insert_core_stats(pool: &sqlx::PgPool, ts: &str, slot: i32, core: i16, 
 }
 
 /// Insert test rows into onchain_validator_stats.
-async fn insert_validator_stats(pool: &sqlx::PgPool, ts: &str, slot: i32, validator_index: i16, blocks_produced: i32, guarantees: i32) {
+async fn insert_validator_stats(
+    pool: &sqlx::PgPool,
+    ts: &str,
+    slot: i32,
+    validator_index: i16,
+    blocks_produced: i32,
+    guarantees: i32,
+) {
     sqlx::query(
         "INSERT INTO onchain_validator_stats (timestamp, slot, header_hash, validator_index, blocks_produced, tickets, preimages, preimages_size, guarantees, assurances, on_best_chain) \
          VALUES ($1::timestamptz, $2, '\\x0000000000000000000000000000000000000000000000000000000000000000', $3, $4, 0, 0, 0, $5, 0, true)",
@@ -153,8 +174,12 @@ async fn test_onchain_cores_timeseries_aggregate() {
     let pool = store.pool();
 
     let now = chrono::Utc::now();
-    let t1 = (now - chrono::Duration::minutes(10)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    let t2 = (now - chrono::Duration::minutes(5)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let t1 = (now - chrono::Duration::minutes(10))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+    let t2 = (now - chrono::Duration::minutes(5))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
 
     // Core 0: gas=1000, da=100 at t1 and t2
     insert_core_stats(pool, &t1, 100, 0, 1000, 100).await;
@@ -175,11 +200,19 @@ async fn test_onchain_cores_timeseries_aggregate() {
     let body: Vec<Value> = response.json();
 
     // With 30m interval, all data falls in one bucket
-    assert_eq!(body.len(), 1, "Expected 1 aggregate bucket, got {}", body.len());
+    assert_eq!(
+        body.len(),
+        1,
+        "Expected 1 aggregate bucket, got {}",
+        body.len()
+    );
     let row = &body[0];
 
     // No `core` field in aggregate response
-    assert!(row.get("core").is_none(), "Aggregate should not have `core` field");
+    assert!(
+        row.get("core").is_none(),
+        "Aggregate should not have `core` field"
+    );
 
     // gas_used = 1000 + 2000 + 3000 + 4000 + 5000 = 15000
     assert_eq!(row["gas_used"].as_i64().unwrap(), 15000);
@@ -193,8 +226,12 @@ async fn test_onchain_cores_timeseries_filtered() {
     let pool = store.pool();
 
     let now = chrono::Utc::now();
-    let t1 = (now - chrono::Duration::minutes(10)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    let t2 = (now - chrono::Duration::minutes(5)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let t1 = (now - chrono::Duration::minutes(10))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+    let t2 = (now - chrono::Duration::minutes(5))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
 
     // Core 0
     insert_core_stats(pool, &t1, 100, 0, 1000, 100).await;
@@ -233,8 +270,12 @@ async fn test_onchain_validators_timeseries_aggregate() {
     let pool = store.pool();
 
     let now = chrono::Utc::now();
-    let t1 = (now - chrono::Duration::minutes(10)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    let t2 = (now - chrono::Duration::minutes(5)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let t1 = (now - chrono::Duration::minutes(10))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+    let t2 = (now - chrono::Duration::minutes(5))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
 
     // Validator 0: blocks_produced=1, guarantees=5 at t1; blocks=2, guarantees=8 at t2
     insert_validator_stats(pool, &t1, 100, 0, 1, 5).await;
@@ -258,7 +299,10 @@ async fn test_onchain_validators_timeseries_aggregate() {
     let row = &body[0];
 
     // No `validator_index` field
-    assert!(row.get("validator_index").is_none(), "Aggregate should not have `validator_index` field");
+    assert!(
+        row.get("validator_index").is_none(),
+        "Aggregate should not have `validator_index` field"
+    );
 
     // blocks_produced = 1 + 2 + 0 + 1 + 3 = 7
     assert_eq!(row["blocks_produced"].as_i64().unwrap(), 7);
@@ -272,8 +316,12 @@ async fn test_onchain_validators_timeseries_filtered() {
     let pool = store.pool();
 
     let now = chrono::Utc::now();
-    let t1 = (now - chrono::Duration::minutes(10)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    let t2 = (now - chrono::Duration::minutes(5)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let t1 = (now - chrono::Duration::minutes(10))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+    let t2 = (now - chrono::Duration::minutes(5))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
 
     // Validator 0
     insert_validator_stats(pool, &t1, 100, 0, 1, 5).await;

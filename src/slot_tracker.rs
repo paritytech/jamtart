@@ -178,7 +178,11 @@ pub async fn flush_slot_tracker(
             .await;
 
             if let Err(e) = result {
-                warn!(slot = slot, event_type = row.event_type, "slot_convergence INSERT failed: {e}");
+                warn!(
+                    slot = slot,
+                    event_type = row.event_type,
+                    "slot_convergence INSERT failed: {e}"
+                );
             }
         }
     }
@@ -212,7 +216,11 @@ pub async fn flush_slot_tracker(
             .await;
 
             if let Err(e) = result {
-                warn!(slot = slot, event_type = row.event_type, "slot_convergence UPSERT failed: {e}");
+                warn!(
+                    slot = slot,
+                    event_type = row.event_type,
+                    "slot_convergence UPSERT failed: {e}"
+                );
             }
         }
     }
@@ -300,10 +308,10 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].node_count, 100);
         // offsets_ms sorted: [1, 2, ..., 100] (each i*1000 / 1000 = i)
-        assert_eq!(rows[0].p50_ms, 51);   // index 50
-        assert_eq!(rows[0].p75_ms, 76);   // index 75
-        assert_eq!(rows[0].p95_ms, 96);   // index 95
-        assert_eq!(rows[0].p99_ms, 100);  // index 99
+        assert_eq!(rows[0].p50_ms, 51); // index 50
+        assert_eq!(rows[0].p75_ms, 76); // index 75
+        assert_eq!(rows[0].p95_ms, 96); // index 95
+        assert_eq!(rows[0].p99_ms, 100); // index 99
         assert_eq!(rows[0].p100_ms, 100);
     }
 

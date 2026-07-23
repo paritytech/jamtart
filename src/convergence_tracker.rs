@@ -93,7 +93,10 @@ pub fn compute_percentiles(anchor_ts: u64, timestamps: &[u64]) -> Option<Converg
 }
 
 /// Compute offsets in ms from an anchor timestamp, and bucket them into a convergence histogram.
-fn offsets_to_histogram(anchor_ts: u64, timestamps: &[u64]) -> ([u32; crate::histogram::CONVERGENCE_BUCKET_COUNT], u32) {
+fn offsets_to_histogram(
+    anchor_ts: u64,
+    timestamps: &[u64],
+) -> ([u32; crate::histogram::CONVERGENCE_BUCKET_COUNT], u32) {
     let deltas: Vec<i32> = timestamps
         .iter()
         .map(|&t| ((t as i64 - anchor_ts as i64) / 1000) as i32)
@@ -142,7 +145,8 @@ pub async fn flush_guarantee_convergence(
         if age >= age_evict {
             if state.dirty {
                 if let Some(p) = compute_percentiles(built_at, &state.received_timestamps) {
-                    let (histogram, hist_total) = offsets_to_histogram(built_at, &state.received_timestamps);
+                    let (histogram, hist_total) =
+                        offsets_to_histogram(built_at, &state.received_timestamps);
                     to_upsert.push(GuaranteeConvergenceRow {
                         work_report_hash,
                         slot,
@@ -165,7 +169,8 @@ pub async fn flush_guarantee_convergence(
             to_evict.push(work_report_hash);
         } else if !state.flushed && age >= age_insert {
             if let Some(p) = compute_percentiles(built_at, &state.received_timestamps) {
-                let (histogram, hist_total) = offsets_to_histogram(built_at, &state.received_timestamps);
+                let (histogram, hist_total) =
+                    offsets_to_histogram(built_at, &state.received_timestamps);
                 to_insert.push(GuaranteeConvergenceRow {
                     work_report_hash,
                     slot,
@@ -186,7 +191,8 @@ pub async fn flush_guarantee_convergence(
             }
         } else if state.flushed && state.dirty {
             if let Some(p) = compute_percentiles(built_at, &state.received_timestamps) {
-                let (histogram, hist_total) = offsets_to_histogram(built_at, &state.received_timestamps);
+                let (histogram, hist_total) =
+                    offsets_to_histogram(built_at, &state.received_timestamps);
                 to_upsert.push(GuaranteeConvergenceRow {
                     work_report_hash,
                     slot,
@@ -273,7 +279,8 @@ pub async fn flush_guarantee_convergence(
 
     // Phase 2: DB writes — per-guarantee rows (INSERT and UPSERT share the same SQL)
     let all_guarantee_rows: Vec<(&GuaranteeConvergenceRow, &str)> = to_insert
-        .iter().map(|r| (r, "INSERT"))
+        .iter()
+        .map(|r| (r, "INSERT"))
         .chain(to_upsert.iter().map(|r| (r, "UPSERT")))
         .collect();
 
@@ -365,7 +372,10 @@ pub async fn flush_guarantee_convergence(
         .await;
 
         if let Err(e) = result {
-            warn!(slot = row.slot, "guarantee_convergence_slots UPSERT failed: {e}");
+            warn!(
+                slot = row.slot,
+                "guarantee_convergence_slots UPSERT failed: {e}"
+            );
         }
     }
 
@@ -557,7 +567,8 @@ pub async fn flush_assurance_convergence(
 
                 if write_senders {
                     if let Some(sp) = compute_percentiles_from_deltas(&sender_state.deltas_ms) {
-                        let (sh, st) = crate::histogram::bucket_deltas_convergence(&sender_state.deltas_ms);
+                        let (sh, st) =
+                            crate::histogram::bucket_deltas_convergence(&sender_state.deltas_ms);
                         sender_rows.push(AssuranceSenderFlushRow {
                             distributed_at: ts_to_datetime(sender_state.distributed_at),
                             anchor,
@@ -584,19 +595,20 @@ pub async fn flush_assurance_convergence(
                     .iter()
                     .map(|&t| ((t as i64 - min_dist as i64) / 1000).max(0) as i32)
                     .collect();
-                let dist_p = compute_percentiles_from_deltas(&dist_spread_deltas)
-                    .unwrap_or(ConvergencePercentiles {
+                let dist_p = compute_percentiles_from_deltas(&dist_spread_deltas).unwrap_or(
+                    ConvergencePercentiles {
                         p50_ms: 0,
                         p75_ms: 0,
                         p95_ms: 0,
                         p99_ms: 0,
                         p100_ms: 0,
-                    });
+                    },
+                );
 
                 let slot_i32 = state.slot.map(|s| s as i32);
-                let slot_ts = state.slot.map(|s| {
-                    crate::onchain_stats::slot_to_timestamp(s, 6)
-                });
+                let slot_ts = state
+                    .slot
+                    .map(|s| crate::onchain_stats::slot_to_timestamp(s, 6));
 
                 let (ah, at) = crate::histogram::bucket_deltas_convergence(&all_deltas);
                 anchor_rows.push(AssuranceAnchorFlushRow {
@@ -805,9 +817,9 @@ mod tests {
         let timestamps: Vec<u64> = (1..=100).map(|i| i * 1000).collect();
         let p = compute_percentiles(0, &timestamps).unwrap();
         // offsets[50]=51, offsets[75]=76, offsets[95]=96, offsets[99]=100
-        assert_eq!(p.p50_ms, 51);  // index 100/2 = 50
-        assert_eq!(p.p75_ms, 76);  // index (100*0.75) as usize = 75
-        assert_eq!(p.p95_ms, 96);  // index (100*0.95) as usize = 95
+        assert_eq!(p.p50_ms, 51); // index 100/2 = 50
+        assert_eq!(p.p75_ms, 76); // index (100*0.75) as usize = 75
+        assert_eq!(p.p95_ms, 96); // index (100*0.95) as usize = 95
         assert_eq!(p.p99_ms, 100); // index (100*0.99) as usize = 99
         assert_eq!(p.p100_ms, 100);
     }
@@ -893,10 +905,10 @@ mod tests {
         // sorted: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
         let deltas: Vec<i32> = (1..=10).collect();
         let p = compute_percentiles_from_deltas(&deltas).unwrap();
-        assert_eq!(p.p50_ms, 6);   // index 10/2 = 5 → sorted[5] = 6
-        assert_eq!(p.p75_ms, 8);   // index (10*0.75)=7 → sorted[7] = 8
-        assert_eq!(p.p95_ms, 10);  // index (10*0.95)=9 → sorted[9] = 10
-        assert_eq!(p.p99_ms, 10);  // index (10*0.99)=9 → sorted[9] = 10
+        assert_eq!(p.p50_ms, 6); // index 10/2 = 5 → sorted[5] = 6
+        assert_eq!(p.p75_ms, 8); // index (10*0.75)=7 → sorted[7] = 8
+        assert_eq!(p.p95_ms, 10); // index (10*0.95)=9 → sorted[9] = 10
+        assert_eq!(p.p99_ms, 10); // index (10*0.99)=9 → sorted[9] = 10
         assert_eq!(p.p100_ms, 10);
     }
 
@@ -966,10 +978,10 @@ mod tests {
 
         let p = compute_percentiles_from_deltas(&spread_deltas).unwrap();
         // sorted: [0, 5, 10], len=3
-        assert_eq!(p.p50_ms, 5);   // index 3/2 = 1 → sorted[1] = 5
-        assert_eq!(p.p75_ms, 10);  // index (3*0.75)=2 → sorted[2] = 10
-        assert_eq!(p.p95_ms, 10);  // index (3*0.95)=2 → sorted[2] = 10
-        assert_eq!(p.p99_ms, 10);  // index (3*0.99)=2 → sorted[2] = 10
+        assert_eq!(p.p50_ms, 5); // index 3/2 = 1 → sorted[1] = 5
+        assert_eq!(p.p75_ms, 10); // index (3*0.75)=2 → sorted[2] = 10
+        assert_eq!(p.p95_ms, 10); // index (3*0.95)=2 → sorted[2] = 10
+        assert_eq!(p.p99_ms, 10); // index (3*0.99)=2 → sorted[2] = 10
         assert_eq!(p.p100_ms, 10);
     }
 

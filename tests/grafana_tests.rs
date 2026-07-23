@@ -47,7 +47,9 @@ async fn setup_test_api() -> (TestServer, Arc<TelemetryServer>, u16, Arc<EventSt
         broadcaster,
         health_monitor,
         jam_rpc: None,
-        cache: Arc::new(tart_backend::cache::TtlCache::new(std::time::Duration::ZERO)),
+        cache: Arc::new(tart_backend::cache::TtlCache::new(
+            std::time::Duration::ZERO,
+        )),
         metrics_tracker: None,
     };
 
@@ -57,11 +59,7 @@ async fn setup_test_api() -> (TestServer, Arc<TelemetryServer>, u16, Arc<EventSt
     (test_server, telemetry_server, telemetry_port, store)
 }
 
-async fn connect_test_node(
-    port: u16,
-    node_id: u8,
-    server: &Arc<TelemetryServer>,
-) -> TcpStream {
+async fn connect_test_node(port: u16, node_id: u8, server: &Arc<TelemetryServer>) -> TcpStream {
     let expected = server.connection_count() + 1;
 
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
@@ -69,8 +67,7 @@ async fn connect_test_node(
         .unwrap();
 
     let mut node_info = common::test_node_info([node_id; 32]);
-    node_info.implementation_name =
-        BoundedString::new(&format!("test-node-{}", node_id)).unwrap();
+    node_info.implementation_name = BoundedString::new(&format!("test-node-{}", node_id)).unwrap();
 
     let encoded = encode_message(&node_info).unwrap();
     stream.write_all(&encoded).await.unwrap();
@@ -115,14 +112,8 @@ async fn test_grafana_all_endpoints_empty_200() {
         ),
         format!("/api/grafana/stats?{}", time_range_params()),
         format!("/api/grafana/cores?{}", time_range_params()),
-        format!(
-            "/api/grafana/blocks/convergence?{}",
-            time_range_params()
-        ),
-        format!(
-            "/api/grafana/blocks/contents?{}",
-            time_range_params()
-        ),
+        format!("/api/grafana/blocks/convergence?{}", time_range_params()),
+        format!("/api/grafana/blocks/contents?{}", time_range_params()),
         format!("/api/grafana/services?{}", time_range_params()),
         format!(
             "/api/grafana/services/timeseries?{}&interval=1m",
@@ -130,25 +121,16 @@ async fn test_grafana_all_endpoints_empty_200() {
         ),
         "/api/grafana/nodes".to_string(),
         format!("/api/grafana/node-stats?{}", time_range_params()),
-        format!(
-            "/api/grafana/node-stats-aggregate?{}",
-            time_range_params()
-        ),
+        format!("/api/grafana/node-stats-aggregate?{}", time_range_params()),
         "/api/grafana/db-stats".to_string(),
         format!("/api/grafana/bottlenecks?{}", time_range_params()),
         format!("/api/grafana/wp-funnel?{}", time_range_params()),
-        format!(
-            "/api/grafana/guarantee-convergence?{}",
-            time_range_params()
-        ),
+        format!("/api/grafana/guarantee-convergence?{}", time_range_params()),
         format!(
             "/api/grafana/guarantee-convergence/detail?{}",
             time_range_params()
         ),
-        format!(
-            "/api/grafana/assurance-convergence?{}",
-            time_range_params()
-        ),
+        format!("/api/grafana/assurance-convergence?{}", time_range_params()),
         format!(
             "/api/grafana/assurance-convergence/senders?{}",
             time_range_params()
@@ -166,10 +148,7 @@ async fn test_grafana_all_endpoints_empty_200() {
             "/api/grafana/bottlenecks-timeseries?{}&interval=1m",
             time_range_params()
         ),
-        format!(
-            "/api/grafana/events?{}&event_types=92",
-            time_range_params()
-        ),
+        format!("/api/grafana/events?{}&event_types=92", time_range_params()),
         format!(
             "/api/grafana/bundle-latency?{}&interval=1m",
             time_range_params()
@@ -261,8 +240,14 @@ async fn test_grafana_timeseries_with_events() {
     // Verify structure: each entry has ts, event_type, event_type_name, count
     for entry in arr {
         assert!(entry.get("ts").is_some(), "entry missing ts");
-        assert!(entry.get("event_type").is_some(), "entry missing event_type");
-        assert!(entry.get("event_type_name").is_some(), "entry missing event_type_name");
+        assert!(
+            entry.get("event_type").is_some(),
+            "entry missing event_type"
+        );
+        assert!(
+            entry.get("event_type_name").is_some(),
+            "entry missing event_type_name"
+        );
         assert!(entry.get("count").is_some(), "entry missing count");
     }
 
@@ -284,7 +269,10 @@ async fn test_grafana_timeseries_with_events() {
     // Verify event_type_name mappings
     for entry in arr {
         match entry["event_type"].as_i64() {
-            Some(94) => assert_eq!(entry["event_type_name"].as_str(), Some("WorkPackageReceived")),
+            Some(94) => assert_eq!(
+                entry["event_type_name"].as_str(),
+                Some("WorkPackageReceived")
+            ),
             Some(11) => assert_eq!(entry["event_type_name"].as_str(), Some("BestBlockChanged")),
             _ => {}
         }
@@ -388,21 +376,20 @@ async fn test_grafana_blocks_contents_from_authored() {
     // Authoring is the first event → event_id = 0.
     // Authored references authoring_id = 0 so the enricher propagates the slot.
     let events = vec![
-        common::authoring_event(ts, 200),          // event_id = 0, slot = 200
-        common::authored_event(ts + 1000, 0),       // authoring_id = 0 → inherits slot 200
+        common::authoring_event(ts, 200),     // event_id = 0, slot = 200
+        common::authored_event(ts + 1000, 0), // authoring_id = 0 → inherits slot 200
     ];
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
 
-    let path = format!(
-        "/api/grafana/blocks/contents?{}",
-        time_range_params()
-    );
+    let path = format!("/api/grafana/blocks/contents?{}", time_range_params());
     let response = server.get(&path).await;
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
-    let arr = json.as_array().expect("blocks/contents should return an array");
+    let arr = json
+        .as_array()
+        .expect("blocks/contents should return an array");
 
     assert!(
         !arr.is_empty(),
@@ -411,12 +398,36 @@ async fn test_grafana_blocks_contents_from_authored() {
 
     let row = &arr[0];
     assert_eq!(row["slot"].as_i64(), Some(200), "slot should be 200");
-    assert_eq!(row["num_guarantees"].as_i64(), Some(3), "num_guarantees should be 3");
-    assert_eq!(row["num_assurances"].as_i64(), Some(2), "num_assurances should be 2");
-    assert_eq!(row["num_preimages"].as_i64(), Some(1), "num_preimages should be 1");
-    assert_eq!(row["num_tickets"].as_i64(), Some(2), "num_tickets should be 2");
-    assert_eq!(row["num_disputes"].as_i64(), Some(0), "num_disputes should be 0");
-    assert_eq!(row["extrinsic_size"].as_i64(), Some(2048), "extrinsic_size should be 2048");
+    assert_eq!(
+        row["num_guarantees"].as_i64(),
+        Some(3),
+        "num_guarantees should be 3"
+    );
+    assert_eq!(
+        row["num_assurances"].as_i64(),
+        Some(2),
+        "num_assurances should be 2"
+    );
+    assert_eq!(
+        row["num_preimages"].as_i64(),
+        Some(1),
+        "num_preimages should be 1"
+    );
+    assert_eq!(
+        row["num_tickets"].as_i64(),
+        Some(2),
+        "num_tickets should be 2"
+    );
+    assert_eq!(
+        row["num_disputes"].as_i64(),
+        Some(0),
+        "num_disputes should be 0"
+    );
+    assert_eq!(
+        row["extrinsic_size"].as_i64(),
+        Some(2048),
+        "extrinsic_size should be 2048"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -518,10 +529,7 @@ async fn test_grafana_bottlenecks_with_pipeline() {
     assert!(entry.get("total_wps").is_some(), "missing total_wps");
     assert!(entry.get("failed_wps").is_some(), "missing failed_wps");
     assert!(entry.get("failure_rate").is_some(), "missing failure_rate");
-    assert!(
-        entry.get("stage_timing").is_some(),
-        "missing stage_timing"
-    );
+    assert!(entry.get("stage_timing").is_some(), "missing stage_timing");
 
     let stage_timing = &entry["stage_timing"];
     assert!(
@@ -625,10 +633,7 @@ async fn test_grafana_stats_basic() {
     assert!(json.get("wp_events").is_some(), "missing wp_events");
     assert!(json.get("guarantees").is_some(), "missing guarantees");
     assert!(json.get("failures").is_some(), "missing failures");
-    assert!(
-        json.get("slot_events").is_some(),
-        "missing slot_events"
-    );
+    assert!(json.get("slot_events").is_some(), "missing slot_events");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -670,10 +675,7 @@ async fn test_grafana_cores_summary() {
             entry.get("guarantees").is_some(),
             "entry missing guarantees"
         );
-        assert!(
-            entry.get("failures").is_some(),
-            "entry missing failures"
-        );
+        assert!(entry.get("failures").is_some(), "entry missing failures");
     }
 
     // Check that core 3 and core 5 have work_packages > 0
@@ -724,13 +726,23 @@ async fn test_grafana_services_pipeline() {
 
     // Verify structure
     for entry in arr {
-        assert!(entry.get("service_id").is_some(), "entry missing service_id");
-        assert!(entry.get("work_packages").is_some(), "entry missing work_packages");
+        assert!(
+            entry.get("service_id").is_some(),
+            "entry missing service_id"
+        );
+        assert!(
+            entry.get("work_packages").is_some(),
+            "entry missing work_packages"
+        );
     }
 
     // Check that services 10 and 20 appear as zero-padded hex strings
-    let svc10 = arr.iter().find(|e| e["service_id"].as_str() == Some("0x0000000a"));
-    let svc20 = arr.iter().find(|e| e["service_id"].as_str() == Some("0x00000014"));
+    let svc10 = arr
+        .iter()
+        .find(|e| e["service_id"].as_str() == Some("0x0000000a"));
+    let svc20 = arr
+        .iter()
+        .find(|e| e["service_id"].as_str() == Some("0x00000014"));
 
     assert!(svc10.is_some(), "expected entry for service 10");
     assert!(svc20.is_some(), "expected entry for service 20");
@@ -779,10 +791,7 @@ async fn test_grafana_timeseries_group_by_core() {
     }
 
     // Both cores should appear
-    let cores: Vec<i64> = arr
-        .iter()
-        .filter_map(|e| e["core"].as_i64())
-        .collect();
+    let cores: Vec<i64> = arr.iter().filter_map(|e| e["core"].as_i64()).collect();
     assert!(cores.contains(&3), "expected core 3 in results");
     assert!(cores.contains(&5), "expected core 5 in results");
 }
@@ -852,7 +861,11 @@ async fn test_grafana_blocks_convergence_multi_node() {
     );
     let response = server.get(&path).await;
     assert_eq!(response.status_code(), StatusCode::OK);
-    let arr = response.json::<Value>().as_array().cloned().unwrap_or_default();
+    let arr = response
+        .json::<Value>()
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     for row in &arr {
         assert_eq!(
             row["event_type"].as_i64(),
@@ -869,7 +882,11 @@ async fn test_grafana_blocks_convergence_multi_node() {
     );
     let response = server.get(&path).await;
     assert_eq!(response.status_code(), StatusCode::OK);
-    let arr = response.json::<Value>().as_array().cloned().unwrap_or_default();
+    let arr = response
+        .json::<Value>()
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     for row in &arr {
         assert_eq!(
             row["event_type"].as_i64(),
@@ -886,8 +903,15 @@ async fn test_grafana_blocks_convergence_multi_node() {
     );
     let response = server.get(&path).await;
     assert_eq!(response.status_code(), StatusCode::OK);
-    let arr = response.json::<Value>().as_array().cloned().unwrap_or_default();
-    assert!(arr.is_empty(), "non-existent event_type should return empty array");
+    let arr = response
+        .json::<Value>()
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        arr.is_empty(),
+        "non-existent event_type should return empty array"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -929,11 +953,26 @@ async fn test_grafana_wp_failure_partial_pipeline() {
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
-    assert!(json["received"].as_i64().unwrap_or(0) >= 3, "expected received >= 3");
-    assert!(json["authorized"].as_i64().unwrap_or(0) >= 2, "expected authorized >= 2");
-    assert!(json["refined"].as_i64().unwrap_or(0) >= 2, "expected refined >= 2");
-    assert!(json["distributed"].as_i64().unwrap_or(0) >= 1, "expected distributed >= 1");
-    assert!(json["failed"].as_i64().unwrap_or(0) >= 1, "expected failed >= 1");
+    assert!(
+        json["received"].as_i64().unwrap_or(0) >= 3,
+        "expected received >= 3"
+    );
+    assert!(
+        json["authorized"].as_i64().unwrap_or(0) >= 2,
+        "expected authorized >= 2"
+    );
+    assert!(
+        json["refined"].as_i64().unwrap_or(0) >= 2,
+        "expected refined >= 2"
+    );
+    assert!(
+        json["distributed"].as_i64().unwrap_or(0) >= 1,
+        "expected distributed >= 1"
+    );
+    assert!(
+        json["failed"].as_i64().unwrap_or(0) >= 1,
+        "expected failed >= 1"
+    );
 
     // bottlenecks assertions (returns array after wrapping for Infinity plugin)
     let path = format!("/api/grafana/bottlenecks?{}", time_range_params());
@@ -944,8 +983,14 @@ async fn test_grafana_wp_failure_partial_pipeline() {
     let arr = json.as_array().expect("bottlenecks should return an array");
     assert!(!arr.is_empty(), "bottlenecks array should not be empty");
     let entry = &arr[0];
-    assert!(entry["total_wps"].as_i64().unwrap_or(0) >= 3, "expected total_wps >= 3");
-    assert!(entry["failed_wps"].as_i64().unwrap_or(0) >= 1, "expected failed_wps >= 1");
+    assert!(
+        entry["total_wps"].as_i64().unwrap_or(0) >= 3,
+        "expected total_wps >= 3"
+    );
+    assert!(
+        entry["failed_wps"].as_i64().unwrap_or(0) >= 1,
+        "expected failed_wps >= 1"
+    );
     assert!(
         entry["failure_rate"].as_f64().unwrap_or(0.0) > 0.0,
         "expected failure_rate > 0"
@@ -985,7 +1030,9 @@ async fn test_grafana_node_stats_aggregate_and_filter() {
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
-    let arr = json.as_array().expect("node-stats-aggregate should return an array");
+    let arr = json
+        .as_array()
+        .expect("node-stats-aggregate should return an array");
     assert!(!arr.is_empty(), "expected aggregate rows");
 
     // Filtered by node 1
@@ -999,7 +1046,9 @@ async fn test_grafana_node_stats_aggregate_and_filter() {
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
-    let arr = json.as_array().expect("filtered aggregate should return an array");
+    let arr = json
+        .as_array()
+        .expect("filtered aggregate should return an array");
     for row in arr {
         assert_eq!(
             row["node_id"].as_str(),
@@ -1094,7 +1143,9 @@ async fn test_grafana_node_disconnect() {
     let arr = json.as_array().unwrap();
 
     let node2_id = common::node_id_hex(2);
-    let node2 = arr.iter().find(|n| n["node_id"].as_str() == Some(&node2_id));
+    let node2 = arr
+        .iter()
+        .find(|n| n["node_id"].as_str() == Some(&node2_id));
     if let Some(n) = node2 {
         assert_eq!(
             n["is_connected"].as_bool(),
@@ -1105,7 +1156,9 @@ async fn test_grafana_node_disconnect() {
 
     // Node 1 should still be connected
     let node1_id = common::node_id_hex(1);
-    let node1 = arr.iter().find(|n| n["node_id"].as_str() == Some(&node1_id));
+    let node1 = arr
+        .iter()
+        .find(|n| n["node_id"].as_str() == Some(&node1_id));
     assert!(node1.is_some(), "node 1 should still exist");
     assert_eq!(
         node1.unwrap()["is_connected"].as_bool(),
@@ -1147,7 +1200,10 @@ async fn test_grafana_timeseries_node_and_event_type_filters() {
     let json: Value = response.json();
     let arr = json.as_array().expect("should return array");
     for entry in arr {
-        assert!(entry.get("node_id").is_some(), "entry missing node_id for group_by=node_id");
+        assert!(
+            entry.get("node_id").is_some(),
+            "entry missing node_id for group_by=node_id"
+        );
     }
 
     // node filter
@@ -1160,7 +1216,10 @@ async fn test_grafana_timeseries_node_and_event_type_filters() {
     assert_eq!(response.status_code(), StatusCode::OK);
     let json: Value = response.json();
     let arr = json.as_array().expect("should return array");
-    assert!(!arr.is_empty(), "node-filtered timeseries should have results");
+    assert!(
+        !arr.is_empty(),
+        "node-filtered timeseries should have results"
+    );
 
     // event_types filter: only WPReceived (94) and BestBlockChanged (11)
     let path = format!(
@@ -1194,7 +1253,11 @@ async fn test_grafana_event_types_unfiltered() {
 
     let json: Value = response.json();
     let arr = json.as_array().expect("should return array");
-    assert_eq!(arr.len(), 115, "unfiltered should return all 115 event types");
+    assert_eq!(
+        arr.len(),
+        115,
+        "unfiltered should return all 115 event types"
+    );
 }
 
 #[tokio::test]
@@ -1209,10 +1272,22 @@ async fn test_grafana_event_types_filtered_by_group() {
 
     // All returned events should belong to the blocks group
     let names: Vec<&str> = arr.iter().filter_map(|e| e["name"].as_str()).collect();
-    assert!(names.contains(&"Authored"), "blocks group should contain Authored");
-    assert!(names.contains(&"BlockExecuted"), "blocks group should contain BlockExecuted");
-    assert!(!names.iter().any(|n| *n == "WorkPackageFailed"), "blocks group should not contain WorkPackageFailed");
-    assert!(!names.iter().any(|n| *n == "Dropped"), "blocks group should not contain Dropped");
+    assert!(
+        names.contains(&"Authored"),
+        "blocks group should contain Authored"
+    );
+    assert!(
+        names.contains(&"BlockExecuted"),
+        "blocks group should contain BlockExecuted"
+    );
+    assert!(
+        !names.iter().any(|n| *n == "WorkPackageFailed"),
+        "blocks group should not contain WorkPackageFailed"
+    );
+    assert!(
+        !names.iter().any(|n| *n == "Dropped"),
+        "blocks group should not contain Dropped"
+    );
 
     // All entries should have group=blocks
     for entry in arr {
@@ -1273,11 +1348,26 @@ async fn test_grafana_services_timeseries_with_data() {
     // Verify structure — split gas columns
     for entry in arr {
         assert!(entry.get("ts").is_some(), "entry missing ts");
-        assert!(entry.get("service_id").is_some(), "entry missing service_id");
-        assert!(entry.get("work_packages").is_some(), "entry missing work_packages");
-        assert!(entry.get("authorization_gas").is_some(), "entry missing authorization_gas");
-        assert!(entry.get("refinement_gas").is_some(), "entry missing refinement_gas");
-        assert!(entry.get("execution_gas").is_some(), "entry missing execution_gas");
+        assert!(
+            entry.get("service_id").is_some(),
+            "entry missing service_id"
+        );
+        assert!(
+            entry.get("work_packages").is_some(),
+            "entry missing work_packages"
+        );
+        assert!(
+            entry.get("authorization_gas").is_some(),
+            "entry missing authorization_gas"
+        );
+        assert!(
+            entry.get("refinement_gas").is_some(),
+            "entry missing refinement_gas"
+        );
+        assert!(
+            entry.get("execution_gas").is_some(),
+            "entry missing execution_gas"
+        );
     }
 }
 
@@ -1288,9 +1378,11 @@ async fn test_grafana_services_timeseries_service_filter() {
 
     let ts = common::now_jce_micros();
 
-    let events = vec![
-        common::block_executed_event(ts, 42, &[(10, 50_000), (20, 30_000)]),
-    ];
+    let events = vec![common::block_executed_event(
+        ts,
+        42,
+        &[(10, 50_000), (20, 30_000)],
+    )];
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
     common::refresh_aggregates(store.pool()).await;
@@ -1323,9 +1415,7 @@ async fn test_grafana_services_timeseries_gas_split() {
     let ts = common::now_jce_micros();
 
     // BlockExecuted carries per-service gas (event_type=47 → execution_gas)
-    let events = vec![
-        common::block_executed_event(ts, 42, &[(10, 50_000)]),
-    ];
+    let events = vec![common::block_executed_event(ts, 42, &[(10, 50_000)])];
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
     common::refresh_aggregates(store.pool()).await;
@@ -1415,7 +1505,10 @@ async fn test_grafana_timeseries_core_filter() {
     let json: Value = response.json();
     let arr = json.as_array().expect("should return array");
     let total_count: i64 = arr.iter().filter_map(|e| e["count"].as_i64()).sum();
-    assert!(total_count >= 3, "unfiltered should have at least 3 failure events, got {total_count}");
+    assert!(
+        total_count >= 3,
+        "unfiltered should have at least 3 failure events, got {total_count}"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1442,17 +1535,18 @@ async fn test_grafana_events_raw() {
     common::flush_all(&telemetry).await;
 
     // Query raw events for event_type=92 (WorkPackageFailed)
-    let path = format!(
-        "/api/grafana/events?{}&event_types=92",
-        time_range_params()
-    );
+    let path = format!("/api/grafana/events?{}&event_types=92", time_range_params());
     let response = server.get(&path).await;
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
     // Response is now EventsSearchResponse {events: [...], pagination: {...}}
     let arr = json["events"].as_array().expect("should have events array");
-    assert!(arr.len() >= 3, "expected at least 3 events, got {}", arr.len());
+    assert!(
+        arr.len() >= 3,
+        "expected at least 3 events, got {}",
+        arr.len()
+    );
 
     // Pagination metadata
     assert!(json["pagination"]["total"].as_i64().unwrap() >= 3);
@@ -1464,7 +1558,10 @@ async fn test_grafana_events_raw() {
         assert!(entry["node_id"].is_string(), "node_id should be present");
         assert_eq!(entry["event_type"].as_i64().unwrap(), 92);
         assert!(entry["data"].is_object(), "data should be a JSON object");
-        assert!(entry["created_at"].is_string(), "created_at should be present");
+        assert!(
+            entry["created_at"].is_string(),
+            "created_at should be present"
+        );
 
         // The data should contain WorkPackageFailed with a reason field
         let wp_data = &entry["data"]["WorkPackageFailed"];
@@ -1546,8 +1643,14 @@ async fn test_grafana_events_with_limit() {
     let arr = json["events"].as_array().expect("should have events array");
     assert_eq!(arr.len(), 2, "should respect limit=2");
     // Pagination should indicate more results exist
-    assert!(json["pagination"]["has_more"].as_bool().unwrap(), "should have more events");
-    assert!(json["pagination"]["total"].as_i64().unwrap() >= 5, "total should be >= 5");
+    assert!(
+        json["pagination"]["has_more"].as_bool().unwrap(),
+        "should have more events"
+    );
+    assert!(
+        json["pagination"]["total"].as_i64().unwrap() >= 5,
+        "total should be >= 5"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1710,7 +1813,10 @@ async fn test_timeseries_failures_cross_storage_paths() {
     }
     // AssuranceSendFailed (127) will be pre-aggregated
     for i in 0..3u64 {
-        events.push(common::assurance_send_failed_event(ts + i * 1000, "timeout"));
+        events.push(common::assurance_send_failed_event(
+            ts + i * 1000,
+            "timeout",
+        ));
     }
 
     send_events(&mut stream, &events).await;
@@ -1773,11 +1879,7 @@ async fn test_guarantee_sending_enriched_core_in_timeseries() {
         1,
         "expected 1 SendingGuarantee"
     );
-    assert_eq!(
-        sum_counts_for_type(arr, 108),
-        1,
-        "expected 1 GuaranteeSent"
-    );
+    assert_eq!(sum_counts_for_type(arr, 108), 1, "expected 1 GuaranteeSent");
 }
 
 #[tokio::test]
@@ -2064,12 +2166,11 @@ async fn test_event_services_dual_write_for_segments() {
     let pool = store.pool();
 
     // Check event_services has rows for type 160 with service_ids 10 and 20
-    let es_rows: Vec<(i16, i32)> = sqlx::query_as(
-        "SELECT event_type, service_id FROM event_services WHERE event_type = 160",
-    )
-    .fetch_all(pool)
-    .await
-    .expect("event_services query failed");
+    let es_rows: Vec<(i16, i32)> =
+        sqlx::query_as("SELECT event_type, service_id FROM event_services WHERE event_type = 160")
+            .fetch_all(pool)
+            .await
+            .expect("event_services query failed");
 
     let service_ids: Vec<i32> = es_rows.iter().map(|r| r.1).collect();
     assert!(
@@ -2089,12 +2190,11 @@ async fn test_event_services_dual_write_for_segments() {
 
     // After migration 020: all types write to ingested_raw_events (1h browsing store).
     // Type 160 is now in BOTH segment_counts AND ingested_raw_events.
-    let raw: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*)::BIGINT FROM ingested_raw_events WHERE event_type = 160",
-    )
-    .fetch_one(pool)
-    .await
-    .expect("ingested_raw_events query failed");
+    let raw: (i64,) =
+        sqlx::query_as("SELECT COUNT(*)::BIGINT FROM ingested_raw_events WHERE event_type = 160")
+            .fetch_one(pool)
+            .await
+            .expect("ingested_raw_events query failed");
     assert!(
         raw.0 > 0,
         "type 160 should now be in ingested_raw_events (unified architecture)"
@@ -2137,12 +2237,32 @@ async fn test_grafana_wp_funnel_timeseries() {
     let data_row = &arr[0];
     assert!(data_row["ts"].is_string(), "missing ts");
     assert_eq!(data_row["total"].as_i64(), Some(1), "expected total=1");
-    assert_eq!(data_row["received"].as_i64(), Some(1), "expected received=1");
-    assert_eq!(data_row["authorized"].as_i64(), Some(1), "expected authorized=1");
+    assert_eq!(
+        data_row["received"].as_i64(),
+        Some(1),
+        "expected received=1"
+    );
+    assert_eq!(
+        data_row["authorized"].as_i64(),
+        Some(1),
+        "expected authorized=1"
+    );
     assert_eq!(data_row["refined"].as_i64(), Some(1), "expected refined=1");
-    assert_eq!(data_row["report_built"].as_i64(), Some(1), "expected report_built=1");
-    assert_eq!(data_row["guarantee_built"].as_i64(), Some(1), "expected guarantee_built=1");
-    assert_eq!(data_row["distributed"].as_i64(), Some(1), "expected distributed=1");
+    assert_eq!(
+        data_row["report_built"].as_i64(),
+        Some(1),
+        "expected report_built=1"
+    );
+    assert_eq!(
+        data_row["guarantee_built"].as_i64(),
+        Some(1),
+        "expected guarantee_built=1"
+    );
+    assert_eq!(
+        data_row["distributed"].as_i64(),
+        Some(1),
+        "expected distributed=1"
+    );
     assert_eq!(data_row["failed"].as_i64(), Some(0), "expected failed=0");
 }
 
@@ -2159,10 +2279,10 @@ async fn test_grafana_bottlenecks_timeseries() {
     let sid: u64 = 7000;
     let events = vec![
         common::wp_received_event(now, sid, 3),
-        common::authorized_event(now + 100_000, sid),       // +100ms
-        common::refined_event(now + 200_000, sid),           // +100ms
+        common::authorized_event(now + 100_000, sid), // +100ms
+        common::refined_event(now + 200_000, sid),    // +100ms
         common::work_report_built_event(now + 300_000, sid), // +100ms
-        common::guarantee_built_event(now + 400_000, sid),   // +100ms
+        common::guarantee_built_event(now + 400_000, sid), // +100ms
         common::guarantees_distributed_event(now + 500_000, sid), // +100ms
     ];
     send_events(&mut stream, &events).await;
@@ -2181,11 +2301,24 @@ async fn test_grafana_bottlenecks_timeseries() {
 
     let data_row = &arr[0];
     assert!(data_row["ts"].is_string(), "missing ts");
-    assert_eq!(data_row["total_wps"].as_i64(), Some(1), "expected total_wps=1");
-    assert_eq!(data_row["failed_wps"].as_i64(), Some(0), "expected failed_wps=0");
+    assert_eq!(
+        data_row["total_wps"].as_i64(),
+        Some(1),
+        "expected total_wps=1"
+    );
+    assert_eq!(
+        data_row["failed_wps"].as_i64(),
+        Some(0),
+        "expected failed_wps=0"
+    );
     // authorize_p50 should be ~100ms (received→authorized delta is 100_000 JCE micros = 100ms)
-    let auth_p50 = data_row["authorize_p50"].as_f64().expect("authorize_p50 should be a number");
-    assert!(auth_p50 > 50.0 && auth_p50 < 200.0, "authorize_p50={auth_p50} should be ~100ms");
+    let auth_p50 = data_row["authorize_p50"]
+        .as_f64()
+        .expect("authorize_p50 should be a number");
+    assert!(
+        auth_p50 > 50.0 && auth_p50 < 200.0,
+        "authorize_p50={auth_p50} should be ~100ms"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2214,15 +2347,27 @@ async fn test_grafana_guarantee_convergence() {
     let mut stream_c = connect_test_node(port, 3, &telemetry).await;
     let mut stream_d = connect_test_node(port, 4, &telemetry).await;
 
-    send_events(&mut stream_b, &[
-        common::guarantee_received_event(now + 200_000, 200, report_hash), // +100ms after built
-    ]).await;
-    send_events(&mut stream_c, &[
-        common::guarantee_received_event(now + 300_000, 200, report_hash), // +200ms after built
-    ]).await;
-    send_events(&mut stream_d, &[
-        common::guarantee_received_event(now + 400_000, 200, report_hash), // +300ms after built
-    ]).await;
+    send_events(
+        &mut stream_b,
+        &[
+            common::guarantee_received_event(now + 200_000, 200, report_hash), // +100ms after built
+        ],
+    )
+    .await;
+    send_events(
+        &mut stream_c,
+        &[
+            common::guarantee_received_event(now + 300_000, 200, report_hash), // +200ms after built
+        ],
+    )
+    .await;
+    send_events(
+        &mut stream_d,
+        &[
+            common::guarantee_received_event(now + 400_000, 200, report_hash), // +300ms after built
+        ],
+    )
+    .await;
 
     common::flush_all(&telemetry).await;
 
@@ -2252,11 +2397,20 @@ async fn test_grafana_guarantee_convergence() {
     assert!(!arr.is_empty(), "should have at least one guarantee");
     let row = &arr[0];
     assert_eq!(row["slot"].as_i64(), Some(200));
-    assert!(row["node_count"].as_i64().unwrap_or(0) >= 3, "expected node_count >= 3");
-    assert!(row["work_report_hash"].is_string(), "expected work_report_hash");
+    assert!(
+        row["node_count"].as_i64().unwrap_or(0) >= 3,
+        "expected node_count >= 3"
+    );
+    assert!(
+        row["work_report_hash"].is_string(),
+        "expected work_report_hash"
+    );
     assert!(row["p50_ms"].is_number(), "expected p50_ms");
     assert!(row["p99_ms"].is_number(), "expected p99_ms");
-    assert!(row["builder_node_id"].is_string(), "expected builder_node_id");
+    assert!(
+        row["builder_node_id"].is_string(),
+        "expected builder_node_id"
+    );
 
     // Test interval mode — should return ConvergenceTimeseriesRow
     let path = format!(
@@ -2271,8 +2425,14 @@ async fn test_grafana_guarantee_convergence() {
     assert!(!arr.is_empty(), "interval mode should have data");
     let row = &arr[0];
     assert!(row["ts"].is_string(), "expected ts in interval mode");
-    assert!(row["sample_count"].as_i64().unwrap_or(0) > 0, "expected sample_count > 0");
-    assert!(row["p50_ms"].is_number(), "expected p50_ms in interval mode");
+    assert!(
+        row["sample_count"].as_i64().unwrap_or(0) > 0,
+        "expected sample_count > 0"
+    );
+    assert!(
+        row["p50_ms"].is_number(),
+        "expected p50_ms in interval mode"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2288,27 +2448,37 @@ async fn test_grafana_assurance_convergence() {
 
     // Node X: sends Importing to populate HeaderHashLookup
     let mut stream_x = connect_test_node(port, 10, &telemetry).await;
-    send_events(&mut stream_x, &[
-        common::importing_event(now, 500, anchor),
-    ]).await;
+    send_events(&mut stream_x, &[common::importing_event(now, 500, anchor)]).await;
 
     // Node A: sender — distributes assurance
     let mut stream_a = connect_test_node(port, 1, &telemetry).await;
     // peer_id for node 1 = [1; 32] (connect_test_node uses [node_id; 32])
     let sender_a_peer_id = [1u8; 32];
-    send_events(&mut stream_a, &[
-        common::distributing_assurance_event(now + 100_000, anchor), // distributed_at = now + 100ms
-    ]).await;
+    send_events(
+        &mut stream_a,
+        &[
+            common::distributing_assurance_event(now + 100_000, anchor), // distributed_at = now + 100ms
+        ],
+    )
+    .await;
 
     // Nodes B, C: receivers
     let mut stream_b = connect_test_node(port, 2, &telemetry).await;
     let mut stream_c = connect_test_node(port, 3, &telemetry).await;
-    send_events(&mut stream_b, &[
-        common::assurance_received_event_with(now + 200_000, anchor, sender_a_peer_id), // +100ms after distribution
-    ]).await;
-    send_events(&mut stream_c, &[
-        common::assurance_received_event_with(now + 300_000, anchor, sender_a_peer_id), // +200ms after distribution
-    ]).await;
+    send_events(
+        &mut stream_b,
+        &[
+            common::assurance_received_event_with(now + 200_000, anchor, sender_a_peer_id), // +100ms after distribution
+        ],
+    )
+    .await;
+    send_events(
+        &mut stream_c,
+        &[
+            common::assurance_received_event_with(now + 300_000, anchor, sender_a_peer_id), // +200ms after distribution
+        ],
+    )
+    .await;
 
     common::flush_all(&telemetry).await;
 
@@ -2322,7 +2492,10 @@ async fn test_grafana_assurance_convergence() {
     assert!(!arr.is_empty(), "should have at least one anchor");
     let row = &arr[0];
     assert_eq!(row["slot"].as_i64(), Some(500));
-    assert!(row["sender_count"].as_i64().unwrap_or(0) >= 1, "expected sender_count >= 1");
+    assert!(
+        row["sender_count"].as_i64().unwrap_or(0) >= 1,
+        "expected sender_count >= 1"
+    );
     assert!(row["p50_ms"].is_number(), "expected p50_ms");
 
     // Test senders endpoint
@@ -2338,7 +2511,10 @@ async fn test_grafana_assurance_convergence() {
     assert!(!arr.is_empty(), "should have at least one sender row");
     let row = &arr[0];
     assert!(row["sender_node_id"].is_string(), "expected sender_node_id");
-    assert!(row["node_count"].as_i64().unwrap_or(0) >= 2, "expected node_count >= 2");
+    assert!(
+        row["node_count"].as_i64().unwrap_or(0) >= 2,
+        "expected node_count >= 2"
+    );
 
     // Test interval mode on overview endpoint
     let path = format!(
@@ -2353,8 +2529,14 @@ async fn test_grafana_assurance_convergence() {
     assert!(!arr.is_empty(), "assurance interval mode should have data");
     let row = &arr[0];
     assert!(row["ts"].is_string(), "expected ts in interval mode");
-    assert!(row["sample_count"].as_i64().unwrap_or(0) > 0, "expected sample_count > 0");
-    assert!(row["p50_ms"].is_number(), "expected p50_ms in interval mode");
+    assert!(
+        row["sample_count"].as_i64().unwrap_or(0) > 0,
+        "expected sample_count > 0"
+    );
+    assert!(
+        row["p50_ms"].is_number(),
+        "expected p50_ms in interval mode"
+    );
 
     // Test interval mode on senders endpoint
     let path = format!(
@@ -2368,8 +2550,14 @@ async fn test_grafana_assurance_convergence() {
     let arr = json.as_array().expect("should return array");
     assert!(!arr.is_empty(), "senders interval mode should have data");
     let row = &arr[0];
-    assert!(row["ts"].is_string(), "expected ts in senders interval mode");
-    assert!(row["sample_count"].as_i64().unwrap_or(0) > 0, "expected sample_count > 0");
+    assert!(
+        row["ts"].is_string(),
+        "expected ts in senders interval mode"
+    );
+    assert!(
+        row["sample_count"].as_i64().unwrap_or(0) > 0,
+        "expected sample_count > 0"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2388,15 +2576,23 @@ async fn test_grafana_da_stats() {
     let mut stream_a = connect_test_node(port, 1, &telemetry).await;
     // Event IDs: first event after connection is event_id=0 (NodeInformation doesn't count)
     // Actually event IDs are per-node, starting from 0 after the NodeInformation
-    send_events(&mut stream_a, &[
-        common::sending_shard_request_event(now, guarantor_peer, erasure_root, 42),
-        // event_id=0 for this node
-    ]).await;
+    send_events(
+        &mut stream_a,
+        &[
+            common::sending_shard_request_event(now, guarantor_peer, erasure_root, 42),
+            // event_id=0 for this node
+        ],
+    )
+    .await;
     // Small delay to ensure ordering
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    send_events(&mut stream_a, &[
-        common::shards_transferred_event(now + 50_000, 0), // request_id=0, +50ms
-    ]).await;
+    send_events(
+        &mut stream_a,
+        &[
+            common::shards_transferred_event(now + 50_000, 0), // request_id=0, +50ms
+        ],
+    )
+    .await;
 
     common::flush_all(&telemetry).await;
 
@@ -2409,7 +2605,9 @@ async fn test_grafana_da_stats() {
     assert!(!arr.is_empty(), "should have at least one node");
     // Find node A's row
     let node_a_id = hex::encode([1u8; 32]);
-    let node_a_row = arr.iter().find(|r| r["node_id"].as_str() == Some(&node_a_id));
+    let node_a_row = arr
+        .iter()
+        .find(|r| r["node_id"].as_str() == Some(&node_a_id));
     assert!(node_a_row.is_some(), "expected node A row");
     let row = node_a_row.unwrap();
     assert!(row["shard_requests_sent"].as_i64().unwrap_or(0) >= 1);
@@ -2433,31 +2631,55 @@ async fn test_grafana_shard_latency_histogram() {
     let mut stream_a = connect_test_node(port, 1, &telemetry).await;
 
     // Request 1: 5ms delay (5000 us)
-    send_events(&mut stream_a, &[
-        common::sending_shard_request_event(now, guarantor_peer, erasure_root, 10),           // event_id=0
-    ]).await;
+    send_events(
+        &mut stream_a,
+        &[
+            common::sending_shard_request_event(now, guarantor_peer, erasure_root, 10), // event_id=0
+        ],
+    )
+    .await;
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    send_events(&mut stream_a, &[
-        common::shards_transferred_event(now + 5_000, 0),                                      // request_id=0, +5ms
-    ]).await;
+    send_events(
+        &mut stream_a,
+        &[
+            common::shards_transferred_event(now + 5_000, 0), // request_id=0, +5ms
+        ],
+    )
+    .await;
 
     // Request 2: 50ms delay (50000 us)
-    send_events(&mut stream_a, &[
-        common::sending_shard_request_event(now + 100_000, guarantor_peer, erasure_root, 11),  // event_id=2
-    ]).await;
+    send_events(
+        &mut stream_a,
+        &[
+            common::sending_shard_request_event(now + 100_000, guarantor_peer, erasure_root, 11), // event_id=2
+        ],
+    )
+    .await;
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    send_events(&mut stream_a, &[
-        common::shards_transferred_event(now + 150_000, 2),                                    // request_id=2, +50ms
-    ]).await;
+    send_events(
+        &mut stream_a,
+        &[
+            common::shards_transferred_event(now + 150_000, 2), // request_id=2, +50ms
+        ],
+    )
+    .await;
 
     // Request 3: 200ms delay (200000 us)
-    send_events(&mut stream_a, &[
-        common::sending_shard_request_event(now + 300_000, guarantor_peer, erasure_root, 12),  // event_id=4
-    ]).await;
+    send_events(
+        &mut stream_a,
+        &[
+            common::sending_shard_request_event(now + 300_000, guarantor_peer, erasure_root, 12), // event_id=4
+        ],
+    )
+    .await;
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    send_events(&mut stream_a, &[
-        common::shards_transferred_event(now + 500_000, 4),                                    // request_id=4, +200ms
-    ]).await;
+    send_events(
+        &mut stream_a,
+        &[
+            common::shards_transferred_event(now + 500_000, 4), // request_id=4, +200ms
+        ],
+    )
+    .await;
 
     common::flush_all(&telemetry).await;
 
@@ -2469,7 +2691,9 @@ async fn test_grafana_shard_latency_histogram() {
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
-    let arr = json.as_array().expect("shard-latency should return an array");
+    let arr = json
+        .as_array()
+        .expect("shard-latency should return an array");
     assert!(!arr.is_empty(), "should have at least one time bucket");
 
     // Check assurer samples >= 3
@@ -2514,22 +2738,38 @@ async fn test_grafana_shard_latency_with_failure() {
     let mut stream_a = connect_test_node(port, 1, &telemetry).await;
 
     // Request that fails after 10ms
-    send_events(&mut stream_a, &[
-        common::sending_shard_request_event(now, guarantor_peer, erasure_root, 10),  // event_id=0
-    ]).await;
+    send_events(
+        &mut stream_a,
+        &[
+            common::sending_shard_request_event(now, guarantor_peer, erasure_root, 10), // event_id=0
+        ],
+    )
+    .await;
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    send_events(&mut stream_a, &[
-        common::shard_request_failed_event_with_id(now + 10_000, 0, "timeout"),       // request_id=0, +10ms
-    ]).await;
+    send_events(
+        &mut stream_a,
+        &[
+            common::shard_request_failed_event_with_id(now + 10_000, 0, "timeout"), // request_id=0, +10ms
+        ],
+    )
+    .await;
 
     // Request that succeeds after 20ms (to confirm both paths work on same node)
-    send_events(&mut stream_a, &[
-        common::sending_shard_request_event(now + 100_000, guarantor_peer, erasure_root, 11),  // event_id=2
-    ]).await;
+    send_events(
+        &mut stream_a,
+        &[
+            common::sending_shard_request_event(now + 100_000, guarantor_peer, erasure_root, 11), // event_id=2
+        ],
+    )
+    .await;
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    send_events(&mut stream_a, &[
-        common::shards_transferred_event(now + 120_000, 2),                                     // request_id=2, +20ms
-    ]).await;
+    send_events(
+        &mut stream_a,
+        &[
+            common::shards_transferred_event(now + 120_000, 2), // request_id=2, +20ms
+        ],
+    )
+    .await;
 
     common::flush_all(&telemetry).await;
 
@@ -2541,7 +2781,9 @@ async fn test_grafana_shard_latency_with_failure() {
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
-    let arr = json.as_array().expect("shard-latency should return an array");
+    let arr = json
+        .as_array()
+        .expect("shard-latency should return an array");
     assert!(!arr.is_empty(), "should have at least one time bucket");
 
     // Sum failed_count across all buckets
@@ -2582,30 +2824,46 @@ async fn test_grafana_guarantee_convergence_multi_core_slot_summary() {
 
     // Node 1: guarantor A — builds guarantee with report_hash_a, slot=300, core=3
     let mut stream_1 = connect_test_node(port, 1, &telemetry).await;
-    send_events(&mut stream_1, &[
-        common::wp_received_event(now, 9000, 3),
-        common::guarantee_built_event_with_hash(now + 100_000, 9000, report_hash_a, 300),
-    ]).await;
+    send_events(
+        &mut stream_1,
+        &[
+            common::wp_received_event(now, 9000, 3),
+            common::guarantee_built_event_with_hash(now + 100_000, 9000, report_hash_a, 300),
+        ],
+    )
+    .await;
 
     // Node 2: guarantor B — builds guarantee with report_hash_b, slot=300, core=5
     let mut stream_2 = connect_test_node(port, 2, &telemetry).await;
-    send_events(&mut stream_2, &[
-        common::wp_received_event(now, 9001, 5),
-        common::guarantee_built_event_with_hash(now + 100_000, 9001, report_hash_b, 300),
-    ]).await;
+    send_events(
+        &mut stream_2,
+        &[
+            common::wp_received_event(now, 9001, 5),
+            common::guarantee_built_event_with_hash(now + 100_000, 9001, report_hash_b, 300),
+        ],
+    )
+    .await;
 
     // Nodes 3, 4: validators — receive both guarantees
     let mut stream_3 = connect_test_node(port, 3, &telemetry).await;
     let mut stream_4 = connect_test_node(port, 4, &telemetry).await;
 
-    send_events(&mut stream_3, &[
-        common::guarantee_received_event(now + 200_000, 300, report_hash_a),
-        common::guarantee_received_event(now + 250_000, 300, report_hash_b),
-    ]).await;
-    send_events(&mut stream_4, &[
-        common::guarantee_received_event(now + 300_000, 300, report_hash_a),
-        common::guarantee_received_event(now + 350_000, 300, report_hash_b),
-    ]).await;
+    send_events(
+        &mut stream_3,
+        &[
+            common::guarantee_received_event(now + 200_000, 300, report_hash_a),
+            common::guarantee_received_event(now + 250_000, 300, report_hash_b),
+        ],
+    )
+    .await;
+    send_events(
+        &mut stream_4,
+        &[
+            common::guarantee_received_event(now + 300_000, 300, report_hash_a),
+            common::guarantee_received_event(now + 350_000, 300, report_hash_b),
+        ],
+    )
+    .await;
 
     common::flush_all(&telemetry).await;
 
@@ -2671,30 +2929,42 @@ async fn test_grafana_assurance_convergence_pending_buffer() {
 
     // Step 1: send Importing on any node to populate HeaderHashLookup (anchor → slot)
     let mut stream_x = connect_test_node(port, 10, &telemetry).await;
-    send_events(&mut stream_x, &[
-        common::importing_event(now, 600, anchor),
-    ]).await;
+    send_events(&mut stream_x, &[common::importing_event(now, 600, anchor)]).await;
 
     // Step 2: send AssuranceReceived BEFORE DistributingAssurance (out-of-order)
     // Node B: receiver — sees assurance from sender (node 1, peer_id=[1;32])
     let sender_peer_id = [1u8; 32];
     let mut stream_b = connect_test_node(port, 2, &telemetry).await;
-    send_events(&mut stream_b, &[
-        common::assurance_received_event_with(now + 200_000, anchor, sender_peer_id),
-    ]).await;
+    send_events(
+        &mut stream_b,
+        &[common::assurance_received_event_with(
+            now + 200_000,
+            anchor,
+            sender_peer_id,
+        )],
+    )
+    .await;
 
     // Node C: another receiver
     let mut stream_c = connect_test_node(port, 3, &telemetry).await;
-    send_events(&mut stream_c, &[
-        common::assurance_received_event_with(now + 250_000, anchor, sender_peer_id),
-    ]).await;
+    send_events(
+        &mut stream_c,
+        &[common::assurance_received_event_with(
+            now + 250_000,
+            anchor,
+            sender_peer_id,
+        )],
+    )
+    .await;
 
     // Step 3: send DistributingAssurance AFTER receivers (pending buffer resolves)
     // Node A: sender — distributes assurance
     let mut stream_a = connect_test_node(port, 1, &telemetry).await;
-    send_events(&mut stream_a, &[
-        common::distributing_assurance_event(now + 100_000, anchor),
-    ]).await;
+    send_events(
+        &mut stream_a,
+        &[common::distributing_assurance_event(now + 100_000, anchor)],
+    )
+    .await;
 
     common::flush_all(&telemetry).await;
 
@@ -2771,18 +3041,34 @@ async fn test_grafana_failure_rates() {
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
-    assert!(json["overall"]["total_events"].as_i64().unwrap() > 0, "should have total events");
-    assert!(json["overall"]["failed_events"].as_i64().unwrap() > 0, "should have failures");
-    assert!(json["overall"]["failure_rate"].as_f64().unwrap() > 0.0, "rate should be > 0");
+    assert!(
+        json["overall"]["total_events"].as_i64().unwrap() > 0,
+        "should have total events"
+    );
+    assert!(
+        json["overall"]["failed_events"].as_i64().unwrap() > 0,
+        "should have failures"
+    );
+    assert!(
+        json["overall"]["failure_rate"].as_f64().unwrap() > 0.0,
+        "rate should be > 0"
+    );
 
-    let categories = json["by_category"].as_array().expect("should have categories");
+    let categories = json["by_category"]
+        .as_array()
+        .expect("should have categories");
     assert!(!categories.is_empty(), "should have category breakdown");
 
     // recent_failures should have entries (from raw events)
-    let recent = json["recent_failures"].as_array().expect("should have recent_failures");
+    let recent = json["recent_failures"]
+        .as_array()
+        .expect("should have recent_failures");
     assert!(!recent.is_empty(), "should have recent failure events");
     // Each recent failure should have event_name
-    assert!(recent[0]["event_name"].is_string(), "should have event_name");
+    assert!(
+        recent[0]["event_name"].is_string(),
+        "should have event_name"
+    );
 }
 
 #[tokio::test]
@@ -2799,7 +3085,10 @@ async fn test_grafana_sync_timeline() {
     common::flush_all(&telemetry).await;
     common::refresh_aggregates(store.pool()).await;
 
-    let path = format!("/api/grafana/sync-timeline?{}&interval=30m", time_range_params());
+    let path = format!(
+        "/api/grafana/sync-timeline?{}&interval=30m",
+        time_range_params()
+    );
     let response = server.get(&path).await;
     assert_eq!(response.status_code(), StatusCode::OK);
 
@@ -2808,10 +3097,22 @@ async fn test_grafana_sync_timeline() {
     assert!(!arr.is_empty(), "should have timeline data");
 
     let row = &arr[0];
-    assert!(row["total_nodes"].as_i64().unwrap() >= 2, "should have 2+ nodes");
-    assert!(row["network_slot"].as_i64().unwrap() >= 100, "network slot should be >= 100");
-    assert!(row["synced_nodes"].as_i64().unwrap() >= 1, "should have synced nodes");
-    assert!(row["sync_percentage"].as_f64().is_some(), "should have sync_percentage");
+    assert!(
+        row["total_nodes"].as_i64().unwrap() >= 2,
+        "should have 2+ nodes"
+    );
+    assert!(
+        row["network_slot"].as_i64().unwrap() >= 100,
+        "network slot should be >= 100"
+    );
+    assert!(
+        row["synced_nodes"].as_i64().unwrap() >= 1,
+        "should have synced nodes"
+    );
+    assert!(
+        row["sync_percentage"].as_f64().is_some(),
+        "should have sync_percentage"
+    );
 }
 
 #[tokio::test]
@@ -2823,20 +3124,30 @@ async fn test_grafana_connections_timeline() {
 
     // Connected events (type 23, 26) are emitted by the TCP server on connect.
     // We also inject a Disconnected event (type 27) via telemetry.
-    let events = vec![
-        common::disconnected_event(ts + 1000, [3; 32]),
-    ];
+    let events = vec![common::disconnected_event(ts + 1000, [3; 32])];
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
     common::refresh_aggregates(store.pool()).await;
 
-    let path = format!("/api/grafana/connections-timeline?{}&interval=30m", time_range_params());
+    let path = format!(
+        "/api/grafana/connections-timeline?{}&interval=30m",
+        time_range_params()
+    );
     let response = server.get(&path).await;
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
-    assert!(json["health_stats"]["total_nodes_seen"].as_i64().unwrap() >= 1, "should see nodes");
-    assert!(json["health_stats"]["currently_connected"].as_i64().unwrap() >= 1, "should have connected nodes");
+    assert!(
+        json["health_stats"]["total_nodes_seen"].as_i64().unwrap() >= 1,
+        "should see nodes"
+    );
+    assert!(
+        json["health_stats"]["currently_connected"]
+            .as_i64()
+            .unwrap()
+            >= 1,
+        "should have connected nodes"
+    );
 }
 
 #[tokio::test]
@@ -2865,10 +3176,22 @@ async fn test_grafana_guarantees() {
 
     let json: Value = response.json();
     let totals = &json["totals"];
-    assert!(totals["built"].as_i64().unwrap() >= 1, "should have GuaranteeBuilt");
-    assert!(totals["sending"].as_i64().unwrap() >= 1, "should have SendingGuarantee");
-    assert!(totals["sent"].as_i64().unwrap() >= 1, "should have GuaranteeSent");
-    assert!(totals["received"].as_i64().unwrap() >= 1, "should have GuaranteeReceived");
+    assert!(
+        totals["built"].as_i64().unwrap() >= 1,
+        "should have GuaranteeBuilt"
+    );
+    assert!(
+        totals["sending"].as_i64().unwrap() >= 1,
+        "should have SendingGuarantee"
+    );
+    assert!(
+        totals["sent"].as_i64().unwrap() >= 1,
+        "should have GuaranteeSent"
+    );
+    assert!(
+        totals["received"].as_i64().unwrap() >= 1,
+        "should have GuaranteeReceived"
+    );
 
     // Success rates
     assert!(json["success_rates"]["send_success_rate"].as_f64().unwrap() > 0.0);
@@ -2890,13 +3213,22 @@ async fn test_grafana_guarantees_by_guarantor() {
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
 
-    let path = format!("/api/grafana/guarantees/by-guarantor?{}", time_range_params());
+    let path = format!(
+        "/api/grafana/guarantees/by-guarantor?{}",
+        time_range_params()
+    );
     let response = server.get(&path).await;
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
-    assert!(json["total_guarantors"].as_i64().unwrap() >= 0, "should have total_guarantors");
-    assert!(json["guarantors"].is_array(), "should have guarantors array");
+    assert!(
+        json["total_guarantors"].as_i64().unwrap() >= 0,
+        "should have total_guarantors"
+    );
+    assert!(
+        json["guarantors"].is_array(),
+        "should have guarantors array"
+    );
 }
 
 #[tokio::test]
@@ -2925,10 +3257,22 @@ async fn test_grafana_wp_stats() {
 
     let json: Value = response.json();
     let totals = &json["totals"];
-    assert!(totals["received"].as_i64().unwrap() >= 1, "should have received WPs");
-    assert!(totals["authorized"].as_i64().unwrap() >= 1, "should have authorized WPs");
-    assert!(totals["refined"].as_i64().unwrap() >= 1, "should have refined WPs");
-    assert!(totals["distributed"].as_i64().unwrap() >= 1, "should have distributed WPs");
+    assert!(
+        totals["received"].as_i64().unwrap() >= 1,
+        "should have received WPs"
+    );
+    assert!(
+        totals["authorized"].as_i64().unwrap() >= 1,
+        "should have authorized WPs"
+    );
+    assert!(
+        totals["refined"].as_i64().unwrap() >= 1,
+        "should have refined WPs"
+    );
+    assert!(
+        totals["distributed"].as_i64().unwrap() >= 1,
+        "should have distributed WPs"
+    );
 
     // By core
     let by_core = json["by_core"].as_array().expect("should have by_core");
@@ -2961,7 +3305,10 @@ async fn test_grafana_validators_cores() {
     // The endpoint itself works and returns the right shape
     for row in arr {
         assert!(row["node_id"].is_string(), "should have node_id");
-        assert!(row["guarantee_count"].is_number(), "should have guarantee_count");
+        assert!(
+            row["guarantee_count"].is_number(),
+            "should have guarantee_count"
+        );
     }
 }
 
@@ -2989,14 +3336,25 @@ async fn test_grafana_network_health() {
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
-    assert!(json["health_score"].as_f64().is_some(), "should have health_score");
-    assert!(json["overall_health"].is_string(), "should have overall_health");
+    assert!(
+        json["health_score"].as_f64().is_some(),
+        "should have health_score"
+    );
+    assert!(
+        json["overall_health"].is_string(),
+        "should have overall_health"
+    );
 
-    let components = json["components"].as_array().expect("should have components");
+    let components = json["components"]
+        .as_array()
+        .expect("should have components");
     assert_eq!(components.len(), 5, "should have 5 health components");
     for comp in components {
         assert!(comp["name"].is_string(), "component should have name");
-        assert!(comp["score"].as_f64().is_some(), "component should have score");
+        assert!(
+            comp["score"].as_f64().is_some(),
+            "component should have score"
+        );
         assert!(comp["status"].is_string(), "component should have status");
     }
 }
@@ -3032,9 +3390,15 @@ async fn test_grafana_wp_active() {
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
-    let wps = json["work_packages"].as_array().expect("should have work_packages");
+    let wps = json["work_packages"]
+        .as_array()
+        .expect("should have work_packages");
     // All 3 WPs should appear (no filter on distributed/failed — matches legacy behavior)
-    assert!(wps.len() >= 3, "expected >= 3 WPs (all recent, not just in-flight), got {}", wps.len());
+    assert!(
+        wps.len() >= 3,
+        "expected >= 3 WPs (all recent, not just in-flight), got {}",
+        wps.len()
+    );
 
     // Summary should count all WPs
     assert!(json["summary"]["total"].as_i64().unwrap() >= 3);
@@ -3076,7 +3440,10 @@ async fn test_grafana_wp_detail() {
         let json: Value = response.json();
         // Summary should exist
         assert!(json["summary"].is_object(), "should have summary");
-        assert!(json["summary"]["wp_hash"].is_string(), "summary should have wp_hash");
+        assert!(
+            json["summary"]["wp_hash"].is_string(),
+            "summary should have wp_hash"
+        );
         // Events array (from raw events within 1h)
         assert!(json["events"].is_array(), "should have events array");
     }
@@ -3105,15 +3472,26 @@ async fn test_grafana_blocks_summary() {
 
     let json: Value = response.json();
     let totals = &json["totals"];
-    assert!(totals["authoring_started"].as_i64().unwrap() >= 1, "should have authoring");
-    assert!(totals["authored"].as_i64().unwrap() >= 1, "should have authored");
-    assert!(totals["best_block_changes"].as_i64().unwrap() >= 1, "should have BestBlockChanged");
+    assert!(
+        totals["authoring_started"].as_i64().unwrap() >= 1,
+        "should have authoring"
+    );
+    assert!(
+        totals["authored"].as_i64().unwrap() >= 1,
+        "should have authored"
+    );
+    assert!(
+        totals["best_block_changes"].as_i64().unwrap() >= 1,
+        "should have BestBlockChanged"
+    );
 
     // Chain state
     assert!(json["chain"].is_object(), "should have chain state");
 
     // Authoring by node
-    let by_node = json["authoring_by_node"].as_array().expect("should have authoring_by_node");
+    let by_node = json["authoring_by_node"]
+        .as_array()
+        .expect("should have authoring_by_node");
     assert!(!by_node.is_empty(), "should have per-node authoring data");
 }
 
@@ -3159,13 +3537,18 @@ async fn test_grafana_events_filter_by_node() {
 
     let ts = common::now_jce_micros();
     send_events(&mut stream1, &[common::wp_received_event(ts, 10100, 0)]).await;
-    send_events(&mut stream2, &[common::wp_received_event(ts + 1000, 10101, 1)]).await;
+    send_events(
+        &mut stream2,
+        &[common::wp_received_event(ts + 1000, 10101, 1)],
+    )
+    .await;
     common::flush_all(&telemetry).await;
 
     let node1_hex = common::node_id_hex(1);
     let path = format!(
         "/api/grafana/events?{}&event_types=94&node={}",
-        time_range_params(), node1_hex
+        time_range_params(),
+        node1_hex
     );
     let response = server.get(&path).await;
     assert_eq!(response.status_code(), StatusCode::OK);
@@ -3174,7 +3557,11 @@ async fn test_grafana_events_filter_by_node() {
     let events = json["events"].as_array().expect("should have events");
     assert!(!events.is_empty(), "should have events for node 1");
     for e in events {
-        assert_eq!(e["node_id"].as_str().unwrap(), node1_hex, "all events should be from node 1");
+        assert_eq!(
+            e["node_id"].as_str().unwrap(),
+            node1_hex,
+            "all events should be from node 1"
+        );
     }
 }
 
@@ -3184,10 +3571,14 @@ async fn test_grafana_events_filter_by_core() {
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
-    send_events(&mut stream, &[
-        common::wp_received_event(ts, 10200, 5),
-        common::wp_received_event(ts + 1000, 10201, 7),
-    ]).await;
+    send_events(
+        &mut stream,
+        &[
+            common::wp_received_event(ts, 10200, 5),
+            common::wp_received_event(ts + 1000, 10201, 7),
+        ],
+    )
+    .await;
     common::flush_all(&telemetry).await;
 
     let path = format!(
@@ -3208,10 +3599,14 @@ async fn test_grafana_events_no_event_types_returns_all() {
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
-    send_events(&mut stream, &[
-        common::wp_received_event(ts, 10300, 0),
-        common::best_block_event(ts + 1000, 300),
-    ]).await;
+    send_events(
+        &mut stream,
+        &[
+            common::wp_received_event(ts, 10300, 0),
+            common::best_block_event(ts + 1000, 300),
+        ],
+    )
+    .await;
     common::flush_all(&telemetry).await;
 
     // No event_types param — should return all types
@@ -3222,10 +3617,15 @@ async fn test_grafana_events_no_event_types_returns_all() {
     let json: Value = response.json();
     let events = json["events"].as_array().expect("should have events");
     // Should have events of multiple types
-    let types: std::collections::HashSet<i64> = events.iter()
+    let types: std::collections::HashSet<i64> = events
+        .iter()
         .filter_map(|e| e["event_type"].as_i64())
         .collect();
-    assert!(types.len() >= 2, "expected multiple event types, got {:?}", types);
+    assert!(
+        types.len() >= 2,
+        "expected multiple event types, got {:?}",
+        types
+    );
 }
 
 #[tokio::test]
@@ -3247,7 +3647,10 @@ async fn test_grafana_cores_last_activity() {
     // Find core 3
     let core3 = arr.iter().find(|c| c["core"].as_i64() == Some(3));
     assert!(core3.is_some(), "core 3 should exist");
-    assert!(core3.unwrap()["last_activity"].is_string(), "core 3 should have last_activity");
+    assert!(
+        core3.unwrap()["last_activity"].is_string(),
+        "core 3 should have last_activity"
+    );
 }
 
 #[tokio::test]
@@ -3256,11 +3659,15 @@ async fn test_grafana_wp_batch() {
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
-    send_events(&mut stream, &[
-        common::wp_received_event(ts, 10500, 0),
-        common::wp_received_event(ts + 1000, 10501, 1),
-        common::wp_received_event(ts + 2000, 10502, 2),
-    ]).await;
+    send_events(
+        &mut stream,
+        &[
+            common::wp_received_event(ts, 10500, 0),
+            common::wp_received_event(ts + 1000, 10501, 1),
+            common::wp_received_event(ts + 2000, 10502, 2),
+        ],
+    )
+    .await;
     common::flush_all(&telemetry).await;
 
     // Get WP hashes from wp-active
@@ -3270,14 +3677,13 @@ async fn test_grafana_wp_batch() {
     let wps = active_json["work_packages"].as_array().unwrap();
 
     if wps.len() >= 2 {
-        let hashes: Vec<String> = wps.iter().take(2)
+        let hashes: Vec<String> = wps
+            .iter()
+            .take(2)
             .map(|wp| wp["wp_hash"].as_str().unwrap().to_string())
             .collect();
 
-        let batch_response = server
-            .post("/api/grafana/wp/batch")
-            .json(&hashes)
-            .await;
+        let batch_response = server.post("/api/grafana/wp/batch").json(&hashes).await;
         assert_eq!(batch_response.status_code(), StatusCode::OK);
 
         let batch_json: Value = batch_response.json();
@@ -3293,11 +3699,15 @@ async fn test_grafana_core_validators() {
 
     let ts = common::now_jce_micros();
     // Create guarantee activity on core 5 to populate guarantee_convergence
-    send_events(&mut stream, &[
-        common::wp_received_event(ts, 10600, 5),
-        common::guarantee_built_event_with_hash(ts + 1000, 10600, [0xAB; 32], 70),
-        common::guarantee_received_event(ts + 2000, 70, [0xAB; 32]),
-    ]).await;
+    send_events(
+        &mut stream,
+        &[
+            common::wp_received_event(ts, 10600, 5),
+            common::guarantee_built_event_with_hash(ts + 1000, 10600, [0xAB; 32], 70),
+            common::guarantee_received_event(ts + 2000, 70, [0xAB; 32]),
+        ],
+    )
+    .await;
     common::flush_all(&telemetry).await;
 
     let path = format!("/api/grafana/cores/5/validators?{}", time_range_params());
@@ -3306,7 +3716,10 @@ async fn test_grafana_core_validators() {
 
     let json: Value = response.json();
     assert_eq!(json["core"].as_i64().unwrap(), 5);
-    assert!(json["validators"].is_array(), "should have validators array");
+    assert!(
+        json["validators"].is_array(),
+        "should have validators array"
+    );
     assert!(json["total_active"].is_number(), "should have total_active");
 }
 
@@ -3343,72 +3756,124 @@ async fn test_grafana_execution_metrics() {
 
     // Authorization phase (type 95): enricher maps to first service only
     let auth = &json["authorization"];
-    assert!(auth["count"].as_i64().unwrap() >= 1, "should have authorization events");
-    assert!(auth["avg_time_ns"].as_f64().unwrap() > 0.0, "auth should have avg_time_ns");
-    assert!(auth["avg_load_ns"].as_f64().unwrap() > 0.0, "auth should have avg_load_ns");
+    assert!(
+        auth["count"].as_i64().unwrap() >= 1,
+        "should have authorization events"
+    );
+    assert!(
+        auth["avg_time_ns"].as_f64().unwrap() > 0.0,
+        "auth should have avg_time_ns"
+    );
+    assert!(
+        auth["avg_load_ns"].as_f64().unwrap() > 0.0,
+        "auth should have avg_load_ns"
+    );
 
     // Refinement phase (type 101): per-work-item timing
     let refine = &json["refinement"];
-    assert!(refine["count"].as_i64().unwrap() >= 1, "should have refinement events");
-    assert!(refine["avg_time_ns"].as_f64().unwrap() > 0.0, "refine should have avg_time_ns");
-    assert!(refine["avg_load_ns"].as_f64().unwrap() > 0.0, "refine should have avg_load_ns");
+    assert!(
+        refine["count"].as_i64().unwrap() >= 1,
+        "should have refinement events"
+    );
+    assert!(
+        refine["avg_time_ns"].as_f64().unwrap() > 0.0,
+        "refine should have avg_time_ns"
+    );
+    assert!(
+        refine["avg_load_ns"].as_f64().unwrap() > 0.0,
+        "refine should have avg_load_ns"
+    );
 
     // Accumulation phase (type 47): 2 services
     let accum = &json["accumulation"];
-    assert!(accum["count"].as_i64().unwrap() >= 2, "should have 2+ accumulation entries (services 10, 20)");
-    assert!(accum["avg_time_ns"].as_f64().unwrap() > 0.0, "accum should have avg_time_ns");
-    assert!(accum["avg_load_ns"].as_f64().unwrap() > 0.0, "accum should have avg_load_ns");
+    assert!(
+        accum["count"].as_i64().unwrap() >= 2,
+        "should have 2+ accumulation entries (services 10, 20)"
+    );
+    assert!(
+        accum["avg_time_ns"].as_f64().unwrap() > 0.0,
+        "accum should have avg_time_ns"
+    );
+    assert!(
+        accum["avg_load_ns"].as_f64().unwrap() > 0.0,
+        "accum should have avg_load_ns"
+    );
 
     // Per-service breakdown: now includes all phases
-    let by_service = json["by_service"].as_array().expect("should have by_service array");
+    let by_service = json["by_service"]
+        .as_array()
+        .expect("should have by_service array");
 
     // Every entry should have a phase field
     for entry in by_service {
         let phase = entry["phase"].as_str().expect("entry missing phase");
         assert!(
             ["authorization", "refinement", "accumulation"].contains(&phase),
-            "unexpected phase: {}", phase
+            "unexpected phase: {}",
+            phase
         );
     }
 
     // Accumulation: service 10 — gas=5000, elapsed_ns=10000, load_ns=1000
-    let accum_svc10 = by_service.iter().find(|s|
+    let accum_svc10 = by_service.iter().find(|s| {
         s["service_id"].as_i64() == Some(10) && s["phase"].as_str() == Some("accumulation")
+    });
+    assert!(
+        accum_svc10.is_some(),
+        "should have accumulation for service 10"
     );
-    assert!(accum_svc10.is_some(), "should have accumulation for service 10");
     let accum_svc10 = accum_svc10.unwrap();
     assert_eq!(accum_svc10["total_gas"].as_i64().unwrap(), 5000);
     assert!((accum_svc10["avg_time_ns"].as_f64().unwrap() - 10000.0).abs() < 1.0);
     assert!((accum_svc10["avg_load_ns"].as_f64().unwrap() - 1000.0).abs() < 1.0);
 
     // Accumulation: service 20 — gas=3000, elapsed_ns=6000, load_ns=1000
-    let accum_svc20 = by_service.iter().find(|s|
+    let accum_svc20 = by_service.iter().find(|s| {
         s["service_id"].as_i64() == Some(20) && s["phase"].as_str() == Some("accumulation")
+    });
+    assert!(
+        accum_svc20.is_some(),
+        "should have accumulation for service 20"
     );
-    assert!(accum_svc20.is_some(), "should have accumulation for service 20");
     let accum_svc20 = accum_svc20.unwrap();
     assert_eq!(accum_svc20["total_gas"].as_i64().unwrap(), 3000);
     assert!((accum_svc20["avg_time_ns"].as_f64().unwrap() - 6000.0).abs() < 1.0);
 
     // Refinement and authorization should appear for enriched services
     // (enricher maps WPReceived service_ids [10, 20] to Authorized and Refined)
-    let refine_entries: Vec<_> = by_service.iter()
+    let refine_entries: Vec<_> = by_service
+        .iter()
         .filter(|s| s["phase"].as_str() == Some("refinement"))
         .collect();
-    assert!(!refine_entries.is_empty(), "should have refinement entries in by_service");
+    assert!(
+        !refine_entries.is_empty(),
+        "should have refinement entries in by_service"
+    );
     // First service (aligned with the single work item) should have timing
-    let refine_with_timing = refine_entries.iter()
+    let refine_with_timing = refine_entries
+        .iter()
         .any(|e| e["avg_time_ns"].as_f64().unwrap() > 0.0);
-    assert!(refine_with_timing, "at least one refinement entry should have timing");
+    assert!(
+        refine_with_timing,
+        "at least one refinement entry should have timing"
+    );
 
-    let auth_entries: Vec<_> = by_service.iter()
+    let auth_entries: Vec<_> = by_service
+        .iter()
         .filter(|s| s["phase"].as_str() == Some("authorization"))
         .collect();
-    assert!(!auth_entries.is_empty(), "should have authorization entries in by_service");
+    assert!(
+        !auth_entries.is_empty(),
+        "should have authorization entries in by_service"
+    );
     // First service gets WP-level auth timing
-    let auth_with_timing = auth_entries.iter()
+    let auth_with_timing = auth_entries
+        .iter()
         .any(|e| e["avg_time_ns"].as_f64().unwrap() > 0.0);
-    assert!(auth_with_timing, "at least one authorization entry should have timing");
+    assert!(
+        auth_with_timing,
+        "at least one authorization entry should have timing"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3463,7 +3928,9 @@ async fn test_grafana_validator_profiling_slow_vs_fast_node() {
     let json: Value = response.json();
 
     // Response is wrapped: { network_avg_total_ms, nodes: [...] }
-    let network_avg = json["network_avg_total_ms"].as_f64().expect("missing network_avg_total_ms");
+    let network_avg = json["network_avg_total_ms"]
+        .as_f64()
+        .expect("missing network_avg_total_ms");
     let arr = json["nodes"].as_array().expect("nodes should be an array");
     assert_eq!(arr.len(), 2, "expected 2 nodes");
 
@@ -3477,13 +3944,31 @@ async fn test_grafana_validator_profiling_slow_vs_fast_node() {
         assert!(entry.get("wp_count").is_some(), "missing wp_count");
         assert!(entry.get("failures").is_some(), "missing failures");
         assert!(entry.get("failure_rate").is_some(), "missing failure_rate");
-        assert!(entry.get("avg_authorize_ms").is_some(), "missing avg_authorize_ms");
-        assert!(entry.get("avg_refine_ms").is_some(), "missing avg_refine_ms");
-        assert!(entry.get("avg_report_ms").is_some(), "missing avg_report_ms");
-        assert!(entry.get("avg_guarantee_ms").is_some(), "missing avg_guarantee_ms");
-        assert!(entry.get("avg_distribute_ms").is_some(), "missing avg_distribute_ms");
+        assert!(
+            entry.get("avg_authorize_ms").is_some(),
+            "missing avg_authorize_ms"
+        );
+        assert!(
+            entry.get("avg_refine_ms").is_some(),
+            "missing avg_refine_ms"
+        );
+        assert!(
+            entry.get("avg_report_ms").is_some(),
+            "missing avg_report_ms"
+        );
+        assert!(
+            entry.get("avg_guarantee_ms").is_some(),
+            "missing avg_guarantee_ms"
+        );
+        assert!(
+            entry.get("avg_distribute_ms").is_some(),
+            "missing avg_distribute_ms"
+        );
         assert!(entry.get("avg_total_ms").is_some(), "missing avg_total_ms");
-        assert!(entry.get("slowdown_factor").is_some(), "missing slowdown_factor");
+        assert!(
+            entry.get("slowdown_factor").is_some(),
+            "missing slowdown_factor"
+        );
     }
 
     // Both should have 3 WPs, 0 failures
@@ -3496,29 +3981,65 @@ async fn test_grafana_validator_profiling_slow_vs_fast_node() {
     // Slow node should have higher avg_total_ms
     let slow_total = slow["avg_total_ms"].as_f64().unwrap();
     let fast_total = fast["avg_total_ms"].as_f64().unwrap();
-    assert!(slow_total > fast_total, "slow node should have higher avg_total_ms: {} vs {}", slow_total, fast_total);
+    assert!(
+        slow_total > fast_total,
+        "slow node should have higher avg_total_ms: {} vs {}",
+        slow_total,
+        fast_total
+    );
 
     // Network average should be between fast and slow
-    assert!(network_avg > fast_total, "network_avg should be > fast: {} vs {}", network_avg, fast_total);
-    assert!(network_avg < slow_total, "network_avg should be < slow: {} vs {}", network_avg, slow_total);
+    assert!(
+        network_avg > fast_total,
+        "network_avg should be > fast: {} vs {}",
+        network_avg,
+        fast_total
+    );
+    assert!(
+        network_avg < slow_total,
+        "network_avg should be < slow: {} vs {}",
+        network_avg,
+        slow_total
+    );
 
     // Slow node slowdown_factor > 1.0, fast node < 1.0
     let slow_factor = slow["slowdown_factor"].as_f64().unwrap();
     let fast_factor = fast["slowdown_factor"].as_f64().unwrap();
-    assert!(slow_factor > 1.0, "slow node slowdown_factor should be > 1.0: {}", slow_factor);
-    assert!(fast_factor < 1.0, "fast node slowdown_factor should be < 1.0: {}", fast_factor);
+    assert!(
+        slow_factor > 1.0,
+        "slow node slowdown_factor should be > 1.0: {}",
+        slow_factor
+    );
+    assert!(
+        fast_factor < 1.0,
+        "fast node slowdown_factor should be < 1.0: {}",
+        fast_factor
+    );
 
     // Test limit=1: should return only the slowest node, but network_avg reflects both
-    let path_limited = format!("/api/grafana/validator-profiling?{}&limit=1", time_range_params());
+    let path_limited = format!(
+        "/api/grafana/validator-profiling?{}&limit=1",
+        time_range_params()
+    );
     let response_limited = server.get(&path_limited).await;
     assert_eq!(response_limited.status_code(), StatusCode::OK);
     let json_limited: Value = response_limited.json();
-    let limited_avg = json_limited["network_avg_total_ms"].as_f64().expect("missing network_avg_total_ms");
-    let limited_nodes = json_limited["nodes"].as_array().expect("nodes should be an array");
+    let limited_avg = json_limited["network_avg_total_ms"]
+        .as_f64()
+        .expect("missing network_avg_total_ms");
+    let limited_nodes = json_limited["nodes"]
+        .as_array()
+        .expect("nodes should be an array");
     assert_eq!(limited_nodes.len(), 1, "limit=1 should return 1 node");
-    assert_eq!(limited_avg, network_avg, "network_avg should be the same regardless of limit");
+    assert_eq!(
+        limited_avg, network_avg,
+        "network_avg should be the same regardless of limit"
+    );
     // The one returned should be the slow node
-    assert!(limited_nodes[0]["avg_total_ms"].as_f64().unwrap() > fast_total, "limit=1 should return the slowest node");
+    assert!(
+        limited_nodes[0]["avg_total_ms"].as_f64().unwrap() > fast_total,
+        "limit=1 should return the slowest node"
+    );
 }
 
 #[tokio::test]
@@ -3565,8 +4086,15 @@ async fn test_grafana_validator_profiling_with_failures() {
     assert_eq!(entry["wp_count"].as_i64().unwrap(), 3);
     assert_eq!(entry["failures"].as_i64().unwrap(), 1);
     let failure_rate = entry["failure_rate"].as_f64().unwrap();
-    assert!((failure_rate - 1.0 / 3.0).abs() < 0.01, "failure_rate should be ~0.333: {}", failure_rate);
-    assert!(json["network_avg_total_ms"].is_number(), "missing network_avg_total_ms");
+    assert!(
+        (failure_rate - 1.0 / 3.0).abs() < 0.01,
+        "failure_rate should be ~0.333: {}",
+        failure_rate
+    );
+    assert!(
+        json["network_avg_total_ms"].is_number(),
+        "missing network_avg_total_ms"
+    );
 }
 
 #[tokio::test]
@@ -3606,7 +4134,10 @@ async fn test_grafana_validator_profiling_timeseries() {
     assert!(bucket.get("ts").is_some(), "missing ts");
     assert!(bucket.get("node_id").is_some(), "missing node_id");
     assert!(bucket.get("wp_count").is_some(), "missing wp_count");
-    assert!(bucket.get("avg_authorize_ms").is_some(), "missing avg_authorize_ms");
+    assert!(
+        bucket.get("avg_authorize_ms").is_some(),
+        "missing avg_authorize_ms"
+    );
     assert!(bucket.get("avg_total_ms").is_some(), "missing avg_total_ms");
     assert_eq!(bucket["wp_count"].as_i64().unwrap(), 1);
 }
@@ -3643,9 +4174,18 @@ async fn test_grafana_validator_profiling_failures_only_node() {
     assert_eq!(entry["failures"].as_i64().unwrap(), 3);
     assert_eq!(entry["failure_rate"].as_f64().unwrap(), 1.0);
     // No distributed WPs → all timing AVGs should be null
-    assert!(entry["avg_total_ms"].is_null(), "avg_total_ms should be null for failures-only node");
-    assert!(entry["avg_authorize_ms"].is_null(), "avg_authorize_ms should be null");
-    assert!(entry["slowdown_factor"].is_null(), "slowdown_factor should be null");
+    assert!(
+        entry["avg_total_ms"].is_null(),
+        "avg_total_ms should be null for failures-only node"
+    );
+    assert!(
+        entry["avg_authorize_ms"].is_null(),
+        "avg_authorize_ms should be null"
+    );
+    assert!(
+        entry["slowdown_factor"].is_null(),
+        "slowdown_factor should be null"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3663,31 +4203,59 @@ async fn test_grafana_bundle_latency() {
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     // Shard request 1: 10ms delay
-    send_events(&mut stream, &[
-        common::sending_bundle_shard_request_event(now, audit_id, assurer_peer, 0),  // event_id=0
-    ]).await;
+    send_events(
+        &mut stream,
+        &[
+            common::sending_bundle_shard_request_event(now, audit_id, assurer_peer, 0), // event_id=0
+        ],
+    )
+    .await;
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    send_events(&mut stream, &[
-        common::bundle_shard_transferred_event(now + 10_000, 0),  // +10ms
-    ]).await;
+    send_events(
+        &mut stream,
+        &[
+            common::bundle_shard_transferred_event(now + 10_000, 0), // +10ms
+        ],
+    )
+    .await;
 
     // Shard request 2: 50ms delay
-    send_events(&mut stream, &[
-        common::sending_bundle_shard_request_event(now + 100_000, audit_id, assurer_peer, 1),  // event_id=2
-    ]).await;
+    send_events(
+        &mut stream,
+        &[
+            common::sending_bundle_shard_request_event(now + 100_000, audit_id, assurer_peer, 1), // event_id=2
+        ],
+    )
+    .await;
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    send_events(&mut stream, &[
-        common::bundle_shard_transferred_event(now + 150_000, 2),  // +50ms
-    ]).await;
+    send_events(
+        &mut stream,
+        &[
+            common::bundle_shard_transferred_event(now + 150_000, 2), // +50ms
+        ],
+    )
+    .await;
 
     // Reconstruction: 5ms CPU
-    send_events(&mut stream, &[
-        common::reconstructing_bundle_event(now + 200_000, audit_id, ReconstructionKind::NonTrivial),  // event_id=4
-    ]).await;
+    send_events(
+        &mut stream,
+        &[
+            common::reconstructing_bundle_event(
+                now + 200_000,
+                audit_id,
+                ReconstructionKind::NonTrivial,
+            ), // event_id=4
+        ],
+    )
+    .await;
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    send_events(&mut stream, &[
-        common::bundle_reconstructed_event(now + 205_000, audit_id),  // +5ms reconstruction, completes e2e too
-    ]).await;
+    send_events(
+        &mut stream,
+        &[
+            common::bundle_reconstructed_event(now + 205_000, audit_id), // +5ms reconstruction, completes e2e too
+        ],
+    )
+    .await;
 
     common::flush_all(&telemetry).await;
 
@@ -3699,7 +4267,9 @@ async fn test_grafana_bundle_latency() {
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
-    let arr = json.as_array().expect("bundle-latency should return an array");
+    let arr = json
+        .as_array()
+        .expect("bundle-latency should return an array");
     assert!(!arr.is_empty(), "should have at least one time bucket");
 
     // Check shard requestor samples >= 2
@@ -3738,7 +4308,11 @@ async fn test_grafana_bundle_latency() {
     // p50 should be a reasonable number
     let row = &arr[0];
     if let Some(p50) = row["shard_req_p50"].as_i64() {
-        assert!(p50 > 0 && p50 < 1000, "expected shard_req_p50 in range (0-1000ms), got {}", p50);
+        assert!(
+            p50 > 0 && p50 < 1000,
+            "expected shard_req_p50 in range (0-1000ms), got {}",
+            p50
+        );
     }
 }
 
@@ -3757,13 +4331,21 @@ async fn test_grafana_segment_latency() {
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     // Segment shard request: 20ms delay
-    send_events(&mut stream, &[
-        common::sending_segment_shard_request_event(now, submission_id, assurer_peer),  // event_id=0
-    ]).await;
+    send_events(
+        &mut stream,
+        &[
+            common::sending_segment_shard_request_event(now, submission_id, assurer_peer), // event_id=0
+        ],
+    )
+    .await;
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    send_events(&mut stream, &[
-        common::segment_shards_transferred_event(now + 20_000, 0),  // +20ms
-    ]).await;
+    send_events(
+        &mut stream,
+        &[
+            common::segment_shards_transferred_event(now + 20_000, 0), // +20ms
+        ],
+    )
+    .await;
 
     common::flush_all(&telemetry).await;
 
@@ -3775,7 +4357,9 @@ async fn test_grafana_segment_latency() {
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
-    let arr = json.as_array().expect("segment-latency should return an array");
+    let arr = json
+        .as_array()
+        .expect("segment-latency should return an array");
     assert!(!arr.is_empty(), "should have at least one time bucket");
 
     let total_shard_req: i64 = arr
@@ -3804,13 +4388,21 @@ async fn test_grafana_preimage_latency() {
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     // Preimage request: 15ms delay
-    send_events(&mut stream, &[
-        common::sending_preimage_request_event(now, recipient, hash),  // event_id=0
-    ]).await;
+    send_events(
+        &mut stream,
+        &[
+            common::sending_preimage_request_event(now, recipient, hash), // event_id=0
+        ],
+    )
+    .await;
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    send_events(&mut stream, &[
-        common::preimage_transferred_event(now + 15_000, 0, 4096),  // +15ms
-    ]).await;
+    send_events(
+        &mut stream,
+        &[
+            common::preimage_transferred_event(now + 15_000, 0, 4096), // +15ms
+        ],
+    )
+    .await;
 
     common::flush_all(&telemetry).await;
 
@@ -3822,7 +4414,9 @@ async fn test_grafana_preimage_latency() {
     assert_eq!(response.status_code(), StatusCode::OK);
 
     let json: Value = response.json();
-    let arr = json.as_array().expect("preimage-latency should return an array");
+    let arr = json
+        .as_array()
+        .expect("preimage-latency should return an array");
     assert!(!arr.is_empty(), "should have at least one time bucket");
 
     let total_req: i64 = arr

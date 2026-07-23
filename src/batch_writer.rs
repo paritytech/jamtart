@@ -330,10 +330,16 @@ async fn writer_worker(
                 let t0 = std::time::Instant::now();
                 let result = flush_events(store, &mut event_batch).await;
                 let elapsed_us = t0.elapsed().as_micros() as u64;
-                flush_stats.total_events.fetch_add(batch_len, Ordering::Relaxed);
+                flush_stats
+                    .total_events
+                    .fetch_add(batch_len, Ordering::Relaxed);
                 flush_stats.total_flushes.fetch_add(1, Ordering::Relaxed);
-                flush_stats.total_flush_us.fetch_add(elapsed_us, Ordering::Relaxed);
-                flush_stats.max_flush_us.fetch_max(elapsed_us, Ordering::Relaxed);
+                flush_stats
+                    .total_flush_us
+                    .fetch_add(elapsed_us, Ordering::Relaxed);
+                flush_stats
+                    .max_flush_us
+                    .fetch_max(elapsed_us, Ordering::Relaxed);
                 if let Err(e) = result {
                     error!("Writer {} event flush error: {}", id, e);
                 }
@@ -576,9 +582,23 @@ async fn flush_events(store: &Arc<EventStore>, event_batch: &mut Vec<EventRecord
     trace!("Flushing {} events", event_count);
 
     // Collect event_services rows and node_stats rows before consuming the batch
-    let mut service_rows: Vec<(i64, String, i16, i32, Option<i64>, Option<i64>, Option<i64>)> = Vec::new();
-    let mut stats_rows: Vec<(i64, String, i32, i32, i32, i32, i64, i32, i32, i16, i16, f32, i16)> =
+    let mut service_rows: Vec<(i64, String, i16, i32, Option<i64>, Option<i64>, Option<i64>)> =
         Vec::new();
+    let mut stats_rows: Vec<(
+        i64,
+        String,
+        i32,
+        i32,
+        i32,
+        i32,
+        i64,
+        i32,
+        i32,
+        i16,
+        i16,
+        f32,
+        i16,
+    )> = Vec::new();
 
     for record in event_batch.iter() {
         let et = record.event.event_type() as u16;
@@ -684,7 +704,9 @@ async fn flush_events(store: &Arc<EventStore>, event_batch: &mut Vec<EventRecord
     if !service_rows.is_empty() {
         let refs: Vec<(i64, &str, i16, i32, Option<i64>, Option<i64>, Option<i64>)> = service_rows
             .iter()
-            .map(|(ts, nid, et, sid, g, elapsed, load)| (*ts, nid.as_str(), *et, *sid, *g, *elapsed, *load))
+            .map(|(ts, nid, et, sid, g, elapsed, load)| {
+                (*ts, nid.as_str(), *et, *sid, *g, *elapsed, *load)
+            })
             .collect();
         let t0 = std::time::Instant::now();
         if let Err(e) = store.store_event_services_batch(&refs).await {
@@ -699,13 +721,40 @@ async fn flush_events(store: &Arc<EventStore>, event_batch: &mut Vec<EventRecord
     let stats_count = stats_rows.len();
     let stats_ms;
     if !stats_rows.is_empty() {
-        let refs: Vec<(i64, &str, i32, i32, i32, i32, i64, i32, i32, i16, i16, f32, i16)> =
-            stats_rows
-                .iter()
-                .map(|(ts, nid, a, b, c, d, e, f, g, h, i, j, k)| {
-                    (*ts, nid.as_str(), *a, *b, *c, *d, *e, *f, *g, *h, *i, *j, *k)
-                })
-                .collect();
+        let refs: Vec<(
+            i64,
+            &str,
+            i32,
+            i32,
+            i32,
+            i32,
+            i64,
+            i32,
+            i32,
+            i16,
+            i16,
+            f32,
+            i16,
+        )> = stats_rows
+            .iter()
+            .map(|(ts, nid, a, b, c, d, e, f, g, h, i, j, k)| {
+                (
+                    *ts,
+                    nid.as_str(),
+                    *a,
+                    *b,
+                    *c,
+                    *d,
+                    *e,
+                    *f,
+                    *g,
+                    *h,
+                    *i,
+                    *j,
+                    *k,
+                )
+            })
+            .collect();
         let t0 = std::time::Instant::now();
         if let Err(e) = store.store_node_stats_batch(&refs).await {
             warn!("Failed to flush node_stats: {}", e);
@@ -720,7 +769,13 @@ async fn flush_events(store: &Arc<EventStore>, event_batch: &mut Vec<EventRecord
 
     debug!(
         "flush_events: total={:?} raw={}ms({} rows) svc={}ms({} rows) stats={}ms({} rows)",
-        start.elapsed(), raw_ms, batch_len, svc_ms, svc_count, stats_ms, stats_count,
+        start.elapsed(),
+        raw_ms,
+        batch_len,
+        svc_ms,
+        svc_count,
+        stats_ms,
+        stats_count,
     );
     Ok(())
 }
@@ -733,20 +788,30 @@ mod tests {
     use std::sync::Arc;
 
     fn zero_exec() -> ExecCost {
-        ExecCost { gas_used: 0, elapsed_ns: 0 }
+        ExecCost {
+            gas_used: 0,
+            elapsed_ns: 0,
+        }
     }
 
     fn zero_refine_host() -> RefineHostCallCost {
         RefineHostCallCost {
-            lookup: zero_exec(), vm: zero_exec(), mem: zero_exec(),
-            invoke: zero_exec(), other: zero_exec(),
+            lookup: zero_exec(),
+            vm: zero_exec(),
+            mem: zero_exec(),
+            invoke: zero_exec(),
+            other: zero_exec(),
         }
     }
 
     fn zero_accum_host() -> AccumulateHostCallCost {
         AccumulateHostCallCost {
-            state: zero_exec(), lookup: zero_exec(), preimage: zero_exec(),
-            service: zero_exec(), transfer: zero_exec(), transfer_dest_gas: 0,
+            state: zero_exec(),
+            lookup: zero_exec(),
+            preimage: zero_exec(),
+            service: zero_exec(),
+            transfer: zero_exec(),
+            transfer_dest_gas: 0,
             other: zero_exec(),
         }
     }
@@ -758,22 +823,43 @@ mod tests {
             timestamp: 1000,
             authoring_or_importing_id: 1,
             accumulate_costs: vec![
-                (10, AccumulateCost {
-                    num_calls: 1, num_transfers: 0, num_items: 1,
-                    total: ExecCost { gas_used: 500, elapsed_ns: 100 },
-                    load_ns: 50, host_call: zero_accum_host(),
-                }),
-                (20, AccumulateCost {
-                    num_calls: 2, num_transfers: 1, num_items: 3,
-                    total: ExecCost { gas_used: 1200, elapsed_ns: 200 },
-                    load_ns: 60, host_call: zero_accum_host(),
-                }),
+                (
+                    10,
+                    AccumulateCost {
+                        num_calls: 1,
+                        num_transfers: 0,
+                        num_items: 1,
+                        total: ExecCost {
+                            gas_used: 500,
+                            elapsed_ns: 100,
+                        },
+                        load_ns: 50,
+                        host_call: zero_accum_host(),
+                    },
+                ),
+                (
+                    20,
+                    AccumulateCost {
+                        num_calls: 2,
+                        num_transfers: 1,
+                        num_items: 3,
+                        total: ExecCost {
+                            gas_used: 1200,
+                            elapsed_ns: 200,
+                        },
+                        load_ns: 60,
+                        host_call: zero_accum_host(),
+                    },
+                ),
             ],
         };
 
         // Simulate the extraction pattern from flush_events
         let mut service_rows: Vec<(i32, Option<i64>)> = Vec::new();
-        if let Event::BlockExecuted { accumulate_costs, .. } = &event {
+        if let Event::BlockExecuted {
+            accumulate_costs, ..
+        } = &event
+        {
             for (service_id, cost) in accumulate_costs {
                 service_rows.push((*service_id as i32, Some(cost.total.gas_used as i64)));
             }
@@ -791,9 +877,15 @@ mod tests {
             timestamp: 1000,
             submission_or_share_id: 100,
             cost: IsAuthorizedCost {
-                total: ExecCost { gas_used: 999, elapsed_ns: 50 },
+                total: ExecCost {
+                    gas_used: 999,
+                    elapsed_ns: 50,
+                },
                 load_ns: 10,
-                host_call: ExecCost { gas_used: 100, elapsed_ns: 20 },
+                host_call: ExecCost {
+                    gas_used: 100,
+                    elapsed_ns: 20,
+                },
             },
         };
 
@@ -812,9 +904,15 @@ mod tests {
             timestamp: 1000,
             submission_or_share_id: 100,
             cost: IsAuthorizedCost {
-                total: ExecCost { gas_used: 999, elapsed_ns: 50 },
+                total: ExecCost {
+                    gas_used: 999,
+                    elapsed_ns: 50,
+                },
                 load_ns: 10,
-                host_call: ExecCost { gas_used: 100, elapsed_ns: 20 },
+                host_call: ExecCost {
+                    gas_used: 100,
+                    elapsed_ns: 20,
+                },
             },
         };
         let timing = auth.timing_per_service_item(3);
@@ -829,12 +927,18 @@ mod tests {
             submission_or_share_id: 200,
             costs: vec![
                 RefineCost {
-                    total: ExecCost { gas_used: 500, elapsed_ns: 1000 },
+                    total: ExecCost {
+                        gas_used: 500,
+                        elapsed_ns: 1000,
+                    },
                     load_ns: 100,
                     host_call: zero_refine_host(),
                 },
                 RefineCost {
-                    total: ExecCost { gas_used: 300, elapsed_ns: 600 },
+                    total: ExecCost {
+                        gas_used: 300,
+                        elapsed_ns: 600,
+                    },
                     load_ns: 80,
                     host_call: zero_refine_host(),
                 },
@@ -862,22 +966,43 @@ mod tests {
             timestamp: 1000,
             authoring_or_importing_id: 1,
             accumulate_costs: vec![
-                (10, AccumulateCost {
-                    num_calls: 1, num_transfers: 0, num_items: 1,
-                    total: ExecCost { gas_used: 500, elapsed_ns: 100 },
-                    load_ns: 50, host_call: zero_accum_host(),
-                }),
-                (20, AccumulateCost {
-                    num_calls: 2, num_transfers: 1, num_items: 3,
-                    total: ExecCost { gas_used: 1200, elapsed_ns: 200 },
-                    load_ns: 60, host_call: zero_accum_host(),
-                }),
+                (
+                    10,
+                    AccumulateCost {
+                        num_calls: 1,
+                        num_transfers: 0,
+                        num_items: 1,
+                        total: ExecCost {
+                            gas_used: 500,
+                            elapsed_ns: 100,
+                        },
+                        load_ns: 50,
+                        host_call: zero_accum_host(),
+                    },
+                ),
+                (
+                    20,
+                    AccumulateCost {
+                        num_calls: 2,
+                        num_transfers: 1,
+                        num_items: 3,
+                        total: ExecCost {
+                            gas_used: 1200,
+                            elapsed_ns: 200,
+                        },
+                        load_ns: 60,
+                        host_call: zero_accum_host(),
+                    },
+                ),
             ],
         };
 
         // Simulate the extraction pattern from flush_events
         let mut rows: Vec<(i32, Option<i64>, Option<i64>, Option<i64>)> = Vec::new();
-        if let Event::BlockExecuted { accumulate_costs, .. } = &event {
+        if let Event::BlockExecuted {
+            accumulate_costs, ..
+        } = &event
+        {
             for (service_id, cost) in accumulate_costs {
                 rows.push((
                     *service_id as i32,
@@ -910,17 +1035,23 @@ mod tests {
 
         // Simulate the extraction pattern from flush_events
         if let Event::Status {
-            num_peers, num_val_peers, num_sync_peers,
-            num_guarantees, num_shards, shards_size,
-            num_preimages, preimages_size, ..
-        } = &event {
+            num_peers,
+            num_val_peers,
+            num_sync_peers,
+            num_guarantees,
+            num_shards,
+            shards_size,
+            num_preimages,
+            preimages_size,
+            ..
+        } = &event
+        {
             let min_g = num_guarantees.iter().copied().min().unwrap_or(0) as i16;
             let max_g = num_guarantees.iter().copied().max().unwrap_or(0) as i16;
             let avg_g = if num_guarantees.is_empty() {
                 0.0
             } else {
-                num_guarantees.iter().map(|&v| v as f32).sum::<f32>()
-                    / num_guarantees.len() as f32
+                num_guarantees.iter().map(|&v| v as f32).sum::<f32>() / num_guarantees.len() as f32
             };
             let zero_g = num_guarantees.iter().filter(|&&v| v == 0).count() as i16;
 

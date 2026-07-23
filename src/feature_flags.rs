@@ -49,7 +49,10 @@ impl FeatureFlags {
         if disabled.is_empty() {
             tracing::info!("Feature flags: all subsystems ENABLED");
         } else {
-            tracing::warn!("Feature flags: DISABLED subsystems: {}", disabled.join(", "));
+            tracing::warn!(
+                "Feature flags: DISABLED subsystems: {}",
+                disabled.join(", ")
+            );
         }
     }
 }

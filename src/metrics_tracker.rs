@@ -172,9 +172,7 @@ impl TrackerState {
                 counts.blocks_announced += 1;
             }
             Event::BlockTransferred { slot, .. } => {
-                if let Some((announcer_node, announced_at)) =
-                    self.first_announcement.get(slot)
-                {
+                if let Some((announcer_node, announced_at)) = self.first_announcement.get(slot) {
                     if *announcer_node != event.node_id {
                         let propagation_ms =
                             event.wall_clock.duration_since(*announced_at).as_secs_f64() * 1000.0;
@@ -251,8 +249,10 @@ impl TrackerState {
                     entry.latest_stage_event_ts = *timestamp;
                     entry.latest_stage_wall = event.wall_clock;
                     entry.guarantee_built = true;
-                    let stats =
-                        self.core_stats.entry(entry.core).or_insert_with(CoreStats::new);
+                    let stats = self
+                        .core_stats
+                        .entry(entry.core)
+                        .or_insert_with(CoreStats::new);
                     stats.guarantees_built_1h += 1;
                     stats.last_activity = event.wall_clock;
                 }
@@ -271,8 +271,7 @@ impl TrackerState {
                     let start_micros = entry.received_event_ts;
                     let end_micros = *timestamp;
                     if end_micros > start_micros {
-                        let processing_ms_event =
-                            (end_micros - start_micros) as f64 / 1000.0;
+                        let processing_ms_event = (end_micros - start_micros) as f64 / 1000.0;
                         let processing_ms_wall = entry
                             .latest_stage_wall
                             .duration_since(entry.received_wall)
@@ -498,7 +497,8 @@ impl TrackerState {
             counts.blocks_announced = 0;
             counts.blocks_received = 0;
         }
-        self.node_block_counts.retain(|_, c| c.blocks_announced > 0 || c.blocks_received > 0);
+        self.node_block_counts
+            .retain(|_, c| c.blocks_announced > 0 || c.blocks_received > 0);
 
         // Clean WP entries: completed > 5min, all > 24h
         self.wp_entries.retain(|_, entry| {
@@ -566,11 +566,7 @@ pub async fn run(shared: Arc<MetricsTracker>, mut rx: mpsc::Receiver<MetricsEven
 
                 // Drain remaining buffered events
                 while let Ok(event) = rx.try_recv() {
-                    live_counters.record(
-                        now_secs(),
-                        event.event_type,
-                        extract_slot(&event.event),
-                    );
+                    live_counters.record(now_secs(), event.event_type, extract_slot(&event.event));
                     state.events_processed += 1;
                     state.process_event(event);
                 }
@@ -1037,7 +1033,11 @@ mod tests {
         let snapshot = state.shared.get_cores_status_snapshot();
         let obj = snapshot.as_object().expect("should be object");
 
-        let cores = obj.get("cores").expect("missing cores").as_array().expect("cores should be array");
+        let cores = obj
+            .get("cores")
+            .expect("missing cores")
+            .as_array()
+            .expect("cores should be array");
         assert!(!cores.is_empty());
 
         let core = &cores[0];

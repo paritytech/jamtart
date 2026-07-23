@@ -86,7 +86,6 @@ async fn connect_test_node_with_server(
     stream
 }
 
-
 #[tokio::test]
 async fn test_health_endpoint() {
     let (server, _, _) = setup_test_api().await;
@@ -140,8 +139,6 @@ async fn test_node_details_not_found() {
     assert_eq!(response.status_code(), StatusCode::NOT_FOUND);
 }
 
-
-
 // --- Metrics endpoints ---
 
 #[tokio::test]
@@ -161,7 +158,6 @@ async fn test_live_counters() {
     let json: Value = response.json();
     assert!(json.is_object());
 }
-
 
 // --- Other endpoints ---
 
@@ -258,9 +254,6 @@ async fn test_node_timeline() {
     assert!(json.is_object() || json.is_array());
 }
 
-
-
-
 // --- JAM RPC endpoints (no RPC configured → 503) ---
 
 #[tokio::test]
@@ -283,4 +276,3 @@ async fn test_jam_cores_no_rpc() {
     let response = server.get("/api/jam/cores").await;
     assert_eq!(response.status_code(), StatusCode::SERVICE_UNAVAILABLE);
 }
-

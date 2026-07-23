@@ -43,28 +43,18 @@ pub fn new_event_counter() -> EventCounter {
 /// Count tables are the single source for long-term aggregation.
 pub const PRE_AGGREGATED_TYPES: &[u16] = &[
     // status_counts (0, 10-13)
-    0, 10, 11, 12, 13,
-    // connection_counts (20-28)
-    20, 21, 22, 23, 24, 25, 26, 27, 28,
-    // block_counts (40-47)
-    40, 41, 42, 43, 44, 45, 46, 47,
-    // block_distribution (60-68)
-    60, 61, 62, 63, 64, 65, 66, 67, 68,
-    // ticket_low_counts (80-82)
-    80, 81, 82,
-    // tickets (83-84)
-    83, 84,
-    // wp_pipeline_counts (90-105)
+    0, 10, 11, 12, 13, // connection_counts (20-28)
+    20, 21, 22, 23, 24, 25, 26, 27, 28, // block_counts (40-47)
+    40, 41, 42, 43, 44, 45, 46, 47, // block_distribution (60-68)
+    60, 61, 62, 63, 64, 65, 66, 67, 68, // ticket_low_counts (80-82)
+    80, 81, 82, // tickets (83-84)
+    83, 84, // wp_pipeline_counts (90-105)
     90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105,
     // guarantee_sending (106-109) — includes GuaranteesDistributed (109)
-    106, 107, 108, 109,
-    // guarantee_receiving (110-113)
-    110, 111, 112, 113,
-    // shards (120-125)
-    120, 121, 122, 123, 124, 125,
-    // assurances (126-131)
-    126, 127, 128, 129, 130, 131,
-    // bundles (140-153)
+    106, 107, 108, 109, // guarantee_receiving (110-113)
+    110, 111, 112, 113, // shards (120-125)
+    120, 121, 122, 123, 124, 125, // assurances (126-131)
+    126, 127, 128, 129, 130, 131, // bundles (140-153)
     140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153,
     // segments (160-178)
     160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178,
@@ -412,9 +402,7 @@ async fn copy_to_count_table(
         _ => unreachable!(),
     };
 
-    let copy_sql = format!(
-        "COPY {table} ({columns}) FROM STDIN WITH (FORMAT binary)"
-    );
+    let copy_sql = format!("COPY {table} ({columns}) FROM STDIN WITH (FORMAT binary)");
 
     let mut buf = BytesMut::with_capacity(rows.len() * 128);
 
@@ -425,8 +413,8 @@ async fn copy_to_count_table(
 
     for (key, count) in rows {
         // key.bucket is already unix_micros (JCE_EPOCH + jce_timestamp), aligned to 30s
-        let timestamp = chrono::DateTime::from_timestamp_micros(key.bucket)
-            .unwrap_or_else(chrono::Utc::now);
+        let timestamp =
+            chrono::DateTime::from_timestamp_micros(key.bucket).unwrap_or_else(chrono::Utc::now);
         // PostgreSQL epoch is 2000-01-01, convert from unix epoch
         let pg_micros = (timestamp - pg_epoch()).num_microseconds().unwrap_or(0);
 

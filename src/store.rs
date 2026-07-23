@@ -9,7 +9,7 @@ use sqlx::{postgres::PgPoolOptions, Executor, PgPool, Row};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Shared string type for node IDs (matches batch_writer::NodeId).
 type NodeId = Arc<str>;
@@ -35,6 +35,19 @@ type NodeId = Arc<str>;
 /// # Ok(())
 /// # }
 /// ```
+/// True if a migration failed as a deadlock victim (SQLSTATE 40P01), e.g. by
+/// colliding with a TimescaleDB background policy job.
+fn is_deadlock(e: &sqlx::migrate::MigrateError) -> bool {
+    use sqlx::migrate::MigrateError;
+    match e {
+        MigrateError::Execute(sqlx::Error::Database(db_err))
+        | MigrateError::ExecuteMigration(sqlx::Error::Database(db_err), _) => {
+            db_err.code().as_deref() == Some("40P01")
+        }
+        _ => false,
+    }
+}
+
 pub struct EventStore {
     pool: PgPool,       // read pool — API queries + cache warmer
     write_pool: PgPool, // write pool — batch writer, node updates
@@ -83,8 +96,25 @@ impl EventStore {
 
         info!("Write pool connected (200 conns, no statement_timeout)");
 
-        // Run migrations (using write pool — no timeout constraint)
-        sqlx::migrate!("./migrations").run(&write_pool).await?;
+        // Run migrations (using write pool — no timeout constraint).
+        // Retry on deadlock: TimescaleDB background jobs (continuous aggregate
+        // refresh/retention policies created by earlier migrations) can collide
+        // with DROP MATERIALIZED VIEW in later migrations on a fresh database.
+        let mut attempt = 0;
+        loop {
+            match sqlx::migrate!("./migrations").run(&write_pool).await {
+                Ok(()) => break,
+                Err(e) if attempt < 5 && is_deadlock(&e) => {
+                    attempt += 1;
+                    warn!(
+                        "Migration deadlocked with a TimescaleDB background job, retrying ({}/5): {}",
+                        attempt, e
+                    );
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
 
         info!("Migrations applied successfully");
 
@@ -191,7 +221,6 @@ impl EventStore {
         tracing::trace!("Batch disconnected {} nodes", node_ids.len());
         Ok(())
     }
-
 
     /// Store events using PostgreSQL COPY BINARY for maximum throughput.
     /// COPY bypasses SQL parsing, and binary format eliminates CSV encoding/parsing
@@ -324,9 +353,8 @@ impl EventStore {
                     );
                     Utc::now()
                 });
-            let event_json: serde_json::Value =
-                serde_json::from_slice(&record.event_json)
-                    .map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
+            let event_json: serde_json::Value = serde_json::from_slice(&record.event_json)
+                .map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
             let slot = record.enriched.slot.map(|s| s as i32);
             let core = record.enriched.core.map(|c| c as i16);
             let submission_id = record.enriched.submission_id.map(|s| s as i64);
@@ -461,7 +489,21 @@ impl EventStore {
     /// Store node_stats rows using PostgreSQL COPY for Status event extraction.
     pub async fn store_node_stats_batch(
         &self,
-        rows: &[(i64, &str, i32, i32, i32, i32, i64, i32, i32, i16, i16, f32, i16)],
+        rows: &[(
+            i64,
+            &str,
+            i32,
+            i32,
+            i32,
+            i32,
+            i64,
+            i32,
+            i32,
+            i16,
+            i16,
+            f32,
+            i16,
+        )],
     ) -> Result<(), sqlx::Error> {
         if rows.is_empty() {
             return Ok(());
@@ -475,9 +517,21 @@ impl EventStore {
         buf.extend_from_slice(&0i32.to_be_bytes());
         buf.extend_from_slice(&0i32.to_be_bytes());
 
-        for (unix_micros, node_id, num_peers, num_val_peers, num_sync_peers,
-             num_shards, shards_size, num_preimages, preimages_size,
-             min_guarantees, max_guarantees, avg_guarantees, zero_guarantee_cores) in rows
+        for (
+            unix_micros,
+            node_id,
+            num_peers,
+            num_val_peers,
+            num_sync_peers,
+            num_shards,
+            shards_size,
+            num_preimages,
+            preimages_size,
+            min_guarantees,
+            max_guarantees,
+            avg_guarantees,
+            zero_guarantee_cores,
+        ) in rows
         {
             buf.extend_from_slice(&FIELD_COUNT.to_be_bytes());
 
@@ -643,7 +697,8 @@ impl EventStore {
     pub async fn cleanup_test_data(&self) -> Result<(), sqlx::Error> {
         // Use DO block with DELETE instead of TRUNCATE — TimescaleDB compressed
         // chunks may not be cleared by TRUNCATE, causing test data leaks.
-        sqlx::query(r#"
+        sqlx::query(
+            r#"
             DO $$ BEGIN
                 DELETE FROM ingested_raw_events;
                 DELETE FROM nodes;
@@ -676,9 +731,10 @@ impl EventStore {
                 DELETE FROM onchain_validator_stats;
                 DELETE FROM onchain_service_stats;
             END $$
-        "#)
-            .execute(&self.pool)
-            .await?;
+        "#,
+        )
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -725,7 +781,6 @@ impl EventStore {
             })
         }))
     }
-
 
     // ======================================================================
     // Analytics query methods (ported from v0.2.0 with column renames)
@@ -789,8 +844,6 @@ impl EventStore {
             "implementations": implementations,
         }))
     }
-
-
 
     /// Get per-node status including best/finalized block heights.
     pub async fn get_node_status(&self, node_id: &str) -> Result<serde_json::Value, sqlx::Error> {
@@ -1008,8 +1061,6 @@ impl EventStore {
         }))
     }
 
-
-
     /// Get real-time rolling metrics for the last N seconds.
     /// Returns per-second event counts for immediate display.
     pub async fn get_realtime_metrics(
@@ -1153,8 +1204,6 @@ impl EventStore {
             },
         }))
     }
-
-
 
     /// Get peer topology and traffic patterns from block announcements and transfers.
     pub async fn get_peer_topology(&self) -> Result<serde_json::Value, sqlx::Error> {
@@ -1393,12 +1442,6 @@ impl EventStore {
         Ok(enhanced)
     }
 
-
-
-
-
-
-
     /// Get aggregated metrics for WebSocket streaming.
     /// Lightweight query designed for frequent polling (1-second intervals).
     pub async fn get_aggregated_metrics(&self) -> Result<serde_json::Value, sqlx::Error> {
@@ -1610,12 +1653,6 @@ impl EventStore {
 
         Ok(alerts)
     }
-
-
-
-
-
-
 
     /// Get all events for a specific slot, grouped by node.
     pub async fn get_slot_events(
@@ -1899,5 +1936,4 @@ impl EventStore {
             "timestamp": chrono::Utc::now(),
         }))
     }
-
 }

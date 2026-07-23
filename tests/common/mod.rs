@@ -699,7 +699,12 @@ pub fn block_executed_event(ts: u64, authoring_id: u64, services: &[(u32, u64)])
 
 /// Construct a SendingShardRequest event (event_type=120).
 #[allow(dead_code)]
-pub fn sending_shard_request_event(ts: u64, guarantor: [u8; 32], erasure_root: [u8; 32], shard: u16) -> Event {
+pub fn sending_shard_request_event(
+    ts: u64,
+    guarantor: [u8; 32],
+    erasure_root: [u8; 32],
+    shard: u16,
+) -> Event {
     Event::SendingShardRequest {
         timestamp: ts,
         guarantor,
@@ -719,7 +724,12 @@ pub fn receiving_shard_request_event(ts: u64, assurer: [u8; 32]) -> Event {
 
 /// Construct a ShardRequestReceived event (event_type=124).
 #[allow(dead_code)]
-pub fn shard_request_received_event(ts: u64, request_id: u64, erasure_root: [u8; 32], shard: u16) -> Event {
+pub fn shard_request_received_event(
+    ts: u64,
+    request_id: u64,
+    erasure_root: [u8; 32],
+    shard: u16,
+) -> Event {
     Event::ShardRequestReceived {
         timestamp: ts,
         request_id,
@@ -770,7 +780,12 @@ pub fn guarantee_send_failed_event(ts: u64, sending_id: u64, reason: &str) -> Ev
 // DA latency tracker test helpers
 
 #[allow(dead_code)]
-pub fn sending_bundle_shard_request_event(ts: u64, audit_id: u64, assurer: [u8; 32], shard: u16) -> Event {
+pub fn sending_bundle_shard_request_event(
+    ts: u64,
+    audit_id: u64,
+    assurer: [u8; 32],
+    shard: u16,
+) -> Event {
     Event::SendingBundleShardRequest {
         timestamp: ts,
         audit_id,
@@ -805,7 +820,11 @@ pub fn bundle_reconstructed_event(ts: u64, audit_id: u64) -> Event {
 }
 
 #[allow(dead_code)]
-pub fn sending_segment_shard_request_event(ts: u64, submission_id: u64, assurer: [u8; 32]) -> Event {
+pub fn sending_segment_shard_request_event(
+    ts: u64,
+    submission_id: u64,
+    assurer: [u8; 32],
+) -> Event {
     Event::SendingSegmentShardRequest {
         timestamp: ts,
         submission_id,

@@ -111,8 +111,11 @@ core.
 ### 2.4 DA convergence
 
 The availability layer's equivalent of block convergence: how quickly
-guarantees propagate to the network, and how quickly assurances flow back for
-each anchor. Proof that the data-availability guarantee is actually being met.
+guarantees propagate from guarantors to the network
+(`GuaranteeReceived − GuaranteeBuilt` percentiles per slot), and how quickly
+assurances flow back to validators for each anchor block. Validators have a
+5-slot (30 s) availability window to assure before a report times out — these
+panels show how much of that window the two propagation legs actually consume.
 
 - Dashboard: **TART Data Availability** · Endpoints: `/api/grafana/guarantee-convergence`, `/api/grafana/assurance-convergence`
 
@@ -200,7 +203,12 @@ TCP :9000 (×8 SO_REUSEPORT ingestion runtimes, one OS thread each)
    - `ingested_raw_events` — the browsing store. **1h retention**, hot columns
      (`slot`, `core`, `submission_id`, `wp_hash`) populated at ingestion so
      drilldowns never parse JSONB. This is for "show me the raw events of this
-     WP", not for analytics.
+     WP", not for analytics. **Note: this table is a removal candidate.** It is
+     what remains of the design that caused the real problems described in §4,
+     and only a handful of drilldown endpoints (`/api/grafana/events`,
+     `/api/grafana/wp/{wp_hash}`, `/api/grafana/blocks/contents`) still read
+     it — everything else runs on the aggregated stores. It may be dropped
+     entirely in a future iteration.
    - **14 per-group count tables** (`status_counts`, `connection_counts`,
      `block_counts`, `block_distribution_counts`, `ticket_counts`,
      `ticket_low_counts`, `wp_pipeline_counts`, `guarantee_sending_counts`,
@@ -221,7 +229,7 @@ TCP :9000 (×8 SO_REUSEPORT ingestion runtimes, one OS thread each)
 
 | Store | Retention | Purpose |
 |---|---|---|
-| `ingested_raw_events` | 1 h | Raw-event browsing / drilldown only |
+| `ingested_raw_events` | 1 h | Raw-event browsing / drilldown only (removal candidate, see §3) |
 | 14 count tables (30s buckets) | 3 d | Fine-grained recent rates |
 | `_1m` continuous aggregates | 30 d | Standard dashboard range |
 | `_1h` continuous aggregates | 365 d | Long-term trends |

@@ -10,7 +10,10 @@ use crate::store::EventStore;
 
 /// Compute approximate percentiles (p50, p75, p95, p99, p100) from a merged DA histogram.
 /// Delegates to the shared `histogram::percentiles_from_histogram` with DA bounds.
-fn percentiles_from_histogram(buckets: &[u32; 14], total: u32) -> Option<(i32, i32, i32, i32, i32)> {
+fn percentiles_from_histogram(
+    buckets: &[u32; 14],
+    total: u32,
+) -> Option<(i32, i32, i32, i32, i32)> {
     crate::histogram::percentiles_from_histogram(buckets, total, &crate::histogram::DA_BOUNDS)
 }
 
@@ -122,9 +125,7 @@ impl EventStore {
         // Validate group_by
         if let Some(gb) = group_by {
             if !VALID_GROUP_BY.contains(&gb) {
-                return Err(sqlx::Error::Protocol(format!(
-                    "invalid group_by: {gb}"
-                )));
+                return Err(sqlx::Error::Protocol(format!("invalid group_by: {gb}")));
             }
         }
 
@@ -153,9 +154,7 @@ impl EventStore {
 
         // Safety: table is from a hardcoded set
         if !VALID_TABLES.contains(&table) {
-            return Err(sqlx::Error::Protocol(format!(
-                "invalid table: {table}"
-            )));
+            return Err(sqlx::Error::Protocol(format!("invalid table: {table}")));
         }
 
         // Build SELECT columns
@@ -170,10 +169,7 @@ impl EventStore {
         };
 
         // Build WHERE clauses
-        let mut wheres = vec![
-            "bucket >= $1".to_string(),
-            "bucket < $2".to_string(),
-        ];
+        let mut wheres = vec!["bucket >= $1".to_string(), "bucket < $2".to_string()];
         let mut bind_idx = 3u32;
 
         if node.is_some() && table != "all_core_stats_1m" {
@@ -207,9 +203,7 @@ impl EventStore {
             "#,
         );
 
-        let mut query = sqlx::query(&sql)
-            .bind(start)
-            .bind(end);
+        let mut query = sqlx::query(&sql).bind(start).bind(end);
 
         if let Some(n) = node {
             if table != "all_core_stats_1m" {
@@ -423,7 +417,11 @@ impl EventStore {
                 stage: row.get("stage"),
                 received_by: row.get("received_by"),
                 guaranteed_by: row.get("guaranteed_by"),
-                service_ids: row.get::<Vec<i32>, _>("service_ids").into_iter().map(DbServiceId).collect(),
+                service_ids: row
+                    .get::<Vec<i32>, _>("service_ids")
+                    .into_iter()
+                    .map(DbServiceId)
+                    .collect(),
                 received_at: row.get("received_at"),
                 authorized_at: row.get("authorized_at"),
                 refined_at: row.get("refined_at"),
@@ -1126,10 +1124,7 @@ impl EventStore {
         let limit = limit.min(2000);
 
         // Build WHERE clause dynamically based on provided filters
-        let mut conditions = vec![
-            "timestamp >= $1".to_string(),
-            "timestamp < $2".to_string(),
-        ];
+        let mut conditions = vec!["timestamp >= $1".to_string(), "timestamp < $2".to_string()];
         let mut param_idx = 3;
 
         if !event_types.is_empty() {
@@ -1163,7 +1158,9 @@ impl EventStore {
 
         // Build query with dynamic bindings
         let mut data_query = sqlx::query(&data_sql).bind(start).bind(end);
-        let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql).bind(start).bind(end);
+        let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql)
+            .bind(start)
+            .bind(end);
 
         if !event_types.is_empty() {
             data_query = data_query.bind(event_types);
@@ -1263,8 +1260,7 @@ impl EventStore {
             .iter()
             .map(|row| {
                 let slot: i32 = row.get("slot");
-                let slot_timestamp =
-                    crate::onchain_stats::slot_to_timestamp(slot as u32, 6);
+                let slot_timestamp = crate::onchain_stats::slot_to_timestamp(slot as u32, 6);
                 GuaranteeConvergenceSlotRow {
                     slot,
                     slot_timestamp,
@@ -1680,8 +1676,18 @@ impl EventStore {
 
             let entry = buckets.entry(ts).or_insert_with(|| ShardLatencyRow {
                 ts,
-                assurer_p50: None, assurer_p75: None, assurer_p95: None, assurer_p99: None, assurer_p100: None, assurer_samples: 0,
-                guarantor_p50: None, guarantor_p75: None, guarantor_p95: None, guarantor_p99: None, guarantor_p100: None, guarantor_samples: 0,
+                assurer_p50: None,
+                assurer_p75: None,
+                assurer_p95: None,
+                assurer_p99: None,
+                assurer_p100: None,
+                assurer_samples: 0,
+                guarantor_p50: None,
+                guarantor_p75: None,
+                guarantor_p95: None,
+                guarantor_p99: None,
+                guarantor_p100: None,
+                guarantor_samples: 0,
                 failed_count: 0,
             });
 
@@ -1878,7 +1884,11 @@ impl EventStore {
                     count += 1;
                 }
             }
-            if count > 0 { sum / count as f64 } else { 0.0 }
+            if count > 0 {
+                sum / count as f64
+            } else {
+                0.0
+            }
         };
 
         let mut result: Vec<ValidatorProfilingRow> = rows
@@ -1913,19 +1923,17 @@ impl EventStore {
             .collect();
 
         // Sort by avg_total_ms, NULLs always last
-        result.sort_by(|a, b| {
-            match (a.avg_total_ms, b.avg_total_ms) {
-                (Some(va), Some(vb)) => {
-                    if ascending {
-                        va.partial_cmp(&vb).unwrap_or(std::cmp::Ordering::Equal)
-                    } else {
-                        vb.partial_cmp(&va).unwrap_or(std::cmp::Ordering::Equal)
-                    }
+        result.sort_by(|a, b| match (a.avg_total_ms, b.avg_total_ms) {
+            (Some(va), Some(vb)) => {
+                if ascending {
+                    va.partial_cmp(&vb).unwrap_or(std::cmp::Ordering::Equal)
+                } else {
+                    vb.partial_cmp(&va).unwrap_or(std::cmp::Ordering::Equal)
                 }
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
             }
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
         });
 
         // Apply limit after sorting (network_avg already reflects all nodes)
@@ -1933,7 +1941,11 @@ impl EventStore {
             result.truncate(n as usize);
         }
 
-        let network_avg_total_ms = if network_avg > 0.0 { Some(network_avg) } else { None };
+        let network_avg_total_ms = if network_avg > 0.0 {
+            Some(network_avg)
+        } else {
+            None
+        };
 
         Ok(ValidatorProfilingResponse {
             network_avg_total_ms,
@@ -2002,10 +2014,7 @@ impl EventStore {
             "#,
         );
 
-        let query = sqlx::query(&sql)
-            .bind(start)
-            .bind(end)
-            .bind(core_filter);
+        let query = sqlx::query(&sql).bind(start).bind(end).bind(core_filter);
 
         let query = if let Some(node) = node_filter {
             query.bind(node)
@@ -2146,7 +2155,11 @@ impl EventStore {
                 category: name.to_string(),
                 attempts: cat_total,
                 failures: cat_failures,
-                rate: if cat_total > 0 { cat_failures as f64 / cat_total as f64 } else { 0.0 },
+                rate: if cat_total > 0 {
+                    cat_failures as f64 / cat_total as f64
+                } else {
+                    0.0
+                },
             });
         }
 
@@ -2207,9 +2220,9 @@ impl EventStore {
                 let data: serde_json::Value = row.get("data");
                 // Extract reason from JSONB — try common patterns
                 let reason = data.as_object().and_then(|obj| {
-                    obj.values().next().and_then(|v| {
-                        v.get("reason").and_then(|r| r.as_str().map(String::from))
-                    })
+                    obj.values()
+                        .next()
+                        .and_then(|v| v.get("reason").and_then(|r| r.as_str().map(String::from)))
                 });
                 RecentFailure {
                     event_type: et,
@@ -2225,7 +2238,11 @@ impl EventStore {
             overall: FailureOverall {
                 total_events: total,
                 failed_events: failures,
-                failure_rate: if total > 0 { failures as f64 / total as f64 } else { 0.0 },
+                failure_rate: if total > 0 {
+                    failures as f64 / total as f64
+                } else {
+                    0.0
+                },
             },
             by_category,
             by_node,
@@ -2287,7 +2304,11 @@ impl EventStore {
                     total_nodes: total,
                     synced_nodes: synced,
                     behind_nodes: total - synced,
-                    sync_percentage: if total > 0 { synced as f64 / total as f64 * 100.0 } else { 0.0 },
+                    sync_percentage: if total > 0 {
+                        synced as f64 / total as f64 * 100.0
+                    } else {
+                        0.0
+                    },
                     network_slot: row.get("network_slot"),
                 }
             })
@@ -2372,8 +2393,15 @@ impl EventStore {
         .await?;
 
         let mut totals = GuaranteeTotals {
-            built: 0, sending: 0, send_failed: 0, sent: 0, distributed: 0,
-            receiving: 0, receive_failed: 0, received: 0, discarded: 0,
+            built: 0,
+            sending: 0,
+            send_failed: 0,
+            sent: 0,
+            distributed: 0,
+            receiving: 0,
+            receive_failed: 0,
+            received: 0,
+            discarded: 0,
         };
         for row in &rows {
             let et: i16 = row.get("event_type");
@@ -2395,8 +2423,16 @@ impl EventStore {
         let send_total = totals.sending + totals.send_failed + totals.sent;
         let recv_total = totals.receiving + totals.receive_failed + totals.received;
         let success_rates = GuaranteeSuccessRates {
-            send_success_rate: if send_total > 0 { totals.sent as f64 / send_total as f64 } else { 1.0 },
-            receive_success_rate: if recv_total > 0 { totals.received as f64 / recv_total as f64 } else { 1.0 },
+            send_success_rate: if send_total > 0 {
+                totals.sent as f64 / send_total as f64
+            } else {
+                1.0
+            },
+            receive_success_rate: if recv_total > 0 {
+                totals.received as f64 / recv_total as f64
+            } else {
+                1.0
+            },
         };
 
         Ok(GuaranteesResponse {
@@ -2415,15 +2451,19 @@ impl EventStore {
         let mapping = self.node_core_mapping(start, end).await?;
 
         // Group by node_id to get primary core + all cores
-        let mut node_map: std::collections::HashMap<String, (Vec<i16>, i64, Option<DateTime<Utc>>)> =
-            std::collections::HashMap::new();
+        let mut node_map: std::collections::HashMap<
+            String,
+            (Vec<i16>, i64, Option<DateTime<Utc>>),
+        > = std::collections::HashMap::new();
         for row in &mapping {
             let entry = node_map
                 .entry(row.node_id.clone())
                 .or_insert_with(|| (Vec::new(), 0, None));
             entry.0.push(row.core);
             entry.1 += row.guarantee_count;
-            entry.2 = Some(entry.2.map_or(row.last_guarantee, |prev: DateTime<Utc>| prev.max(row.last_guarantee)));
+            entry.2 = Some(entry.2.map_or(row.last_guarantee, |prev: DateTime<Utc>| {
+                prev.max(row.last_guarantee)
+            }));
         }
 
         let mut guarantors: Vec<GuarantorRow> = node_map
@@ -2545,9 +2585,7 @@ impl EventStore {
         let mut node_map: std::collections::HashMap<String, (Option<i16>, i64)> =
             std::collections::HashMap::new();
         for row in &mapping {
-            let entry = node_map
-                .entry(row.node_id.clone())
-                .or_insert((None, 0));
+            let entry = node_map.entry(row.node_id.clone()).or_insert((None, 0));
             entry.1 += row.guarantee_count;
             // Primary = core with most guarantees
             if entry.0.is_none() || row.guarantee_count > 0 {
@@ -2632,9 +2670,10 @@ impl EventStore {
         // Get event counts for health scoring — only the types we actually use.
         // Restricting event_type lets the planner prune UNION view branches.
         let health_types: &[i16] = &[
-            41, 42, 44, 46, // block production (authored, importing-failed, imported-failed, executed-failed)
-            92, 94, 99,     // work packages (failed, received, duplicate)
-            122, 125,       // DA shards (failed, transferred)
+            41, 42, 44,
+            46, // block production (authored, importing-failed, imported-failed, executed-failed)
+            92, 94, 99, // work packages (failed, received, duplicate)
+            122, 125, // DA shards (failed, transferred)
         ];
         let counts = sqlx::query(
             r#"
@@ -2666,11 +2705,25 @@ impl EventStore {
         let authored = get(42);
         let auth_failed = get(41) + get(44) + get(46);
         let block_total = authored + auth_failed;
-        let block_score = if block_total > 0 { authored as f64 / block_total as f64 * 100.0 } else { 100.0 };
-        let block_status = if block_score >= 95.0 { "healthy" } else if block_score >= 80.0 { "degraded" } else { "unhealthy" };
+        let block_score = if block_total > 0 {
+            authored as f64 / block_total as f64 * 100.0
+        } else {
+            100.0
+        };
+        let block_status = if block_score >= 95.0 {
+            "healthy"
+        } else if block_score >= 80.0 {
+            "degraded"
+        } else {
+            "unhealthy"
+        };
         if block_score < 95.0 {
             alerts.push(HealthAlert {
-                severity: if block_score < 80.0 { "error".into() } else { "warning".into() },
+                severity: if block_score < 80.0 {
+                    "error".into()
+                } else {
+                    "warning".into()
+                },
                 message: format!("Block production success rate: {:.1}%", block_score),
                 component: "block_production".into(),
             });
@@ -2686,8 +2739,18 @@ impl EventStore {
         let wp_received = get(94);
         let wp_failed = get(92) + get(99);
         let wp_total = wp_received + wp_failed;
-        let wp_score = if wp_total > 0 { wp_received as f64 / wp_total as f64 * 100.0 } else { 100.0 };
-        let wp_status = if wp_score >= 95.0 { "healthy" } else if wp_score >= 80.0 { "degraded" } else { "unhealthy" };
+        let wp_score = if wp_total > 0 {
+            wp_received as f64 / wp_total as f64 * 100.0
+        } else {
+            100.0
+        };
+        let wp_status = if wp_score >= 95.0 {
+            "healthy"
+        } else if wp_score >= 80.0 {
+            "degraded"
+        } else {
+            "unhealthy"
+        };
         components.push(HealthComponent {
             name: "work_packages".into(),
             score: wp_score,
@@ -2699,8 +2762,18 @@ impl EventStore {
         let shard_ok = get(125);
         let shard_fail = get(122);
         let shard_total = shard_ok + shard_fail;
-        let da_score = if shard_total > 0 { shard_ok as f64 / shard_total as f64 * 100.0 } else { 100.0 };
-        let da_status = if da_score >= 95.0 { "healthy" } else if da_score >= 80.0 { "degraded" } else { "unhealthy" };
+        let da_score = if shard_total > 0 {
+            shard_ok as f64 / shard_total as f64 * 100.0
+        } else {
+            100.0
+        };
+        let da_status = if da_score >= 95.0 {
+            "healthy"
+        } else if da_score >= 80.0 {
+            "degraded"
+        } else {
+            "unhealthy"
+        };
         components.push(HealthComponent {
             name: "data_availability".into(),
             score: da_score,
@@ -2716,8 +2789,18 @@ impl EventStore {
         .await?;
         let total_nodes: i64 = conn_row.get("total");
         let connected: i64 = conn_row.get("connected");
-        let conn_score = if total_nodes > 0 { connected as f64 / total_nodes as f64 * 100.0 } else { 100.0 };
-        let conn_status = if conn_score >= 90.0 { "healthy" } else if conn_score >= 70.0 { "degraded" } else { "unhealthy" };
+        let conn_score = if total_nodes > 0 {
+            connected as f64 / total_nodes as f64 * 100.0
+        } else {
+            100.0
+        };
+        let conn_status = if conn_score >= 90.0 {
+            "healthy"
+        } else if conn_score >= 70.0 {
+            "degraded"
+        } else {
+            "unhealthy"
+        };
         components.push(HealthComponent {
             name: "connectivity".into(),
             score: conn_score,
@@ -2731,13 +2814,25 @@ impl EventStore {
         components.push(HealthComponent {
             name: "event_throughput".into(),
             score: throughput_score,
-            status: if throughput_score > 50.0 { "healthy" } else { "unhealthy" }.into(),
+            status: if throughput_score > 50.0 {
+                "healthy"
+            } else {
+                "unhealthy"
+            }
+            .into(),
             issues: Vec::new(),
         });
 
         // Overall: weighted average
-        let health_score = components.iter().map(|c| c.score).sum::<f64>() / components.len() as f64;
-        let overall_health = if health_score >= 90.0 { "healthy" } else if health_score >= 70.0 { "degraded" } else { "unhealthy" };
+        let health_score =
+            components.iter().map(|c| c.score).sum::<f64>() / components.len() as f64;
+        let overall_health = if health_score >= 90.0 {
+            "healthy"
+        } else if health_score >= 70.0 {
+            "degraded"
+        } else {
+            "unhealthy"
+        };
 
         Ok(NetworkHealthResponse {
             health_score,
@@ -2784,7 +2879,11 @@ impl EventStore {
                 wp_hash: row.get("wp_hash"),
                 core: row.get("core"),
                 node_id: row.get("node_id"),
-                service_ids: row.get::<Vec<i32>, _>("service_ids").into_iter().map(DbServiceId).collect(),
+                service_ids: row
+                    .get::<Vec<i32>, _>("service_ids")
+                    .into_iter()
+                    .map(DbServiceId)
+                    .collect(),
                 stage: row.get("stage"),
                 refine_gas_used: row.get("refine_gas_used"),
                 failure_reason: row.get("failure_reason"),
@@ -2933,7 +3032,11 @@ impl EventStore {
             stage: row.get("stage"),
             received_by: row.get("received_by"),
             guaranteed_by: row.get("guaranteed_by"),
-            service_ids: row.get::<Vec<i32>, _>("service_ids").into_iter().map(DbServiceId).collect(),
+            service_ids: row
+                .get::<Vec<i32>, _>("service_ids")
+                .into_iter()
+                .map(DbServiceId)
+                .collect(),
             received_at: row.get("received_at"),
             authorized_at: row.get("authorized_at"),
             refined_at: row.get("refined_at"),
@@ -3004,7 +3107,11 @@ impl EventStore {
                 stage: row.get("stage"),
                 received_by: row.get("received_by"),
                 guaranteed_by: row.get("guaranteed_by"),
-                service_ids: row.get::<Vec<i32>, _>("service_ids").into_iter().map(DbServiceId).collect(),
+                service_ids: row
+                    .get::<Vec<i32>, _>("service_ids")
+                    .into_iter()
+                    .map(DbServiceId)
+                    .collect(),
                 received_at: row.get("received_at"),
                 authorized_at: row.get("authorized_at"),
                 refined_at: row.get("refined_at"),
@@ -3078,7 +3185,7 @@ impl EventStore {
                 finalized_block_changes: totals_row.get("finalized_block_changes"),
             },
             chain: ChainState {
-                best_slot: None,  // Overlaid by handler from LiveCounters
+                best_slot: None, // Overlaid by handler from LiveCounters
                 finalized_slot: None,
             },
             authoring_by_node: node_rows
@@ -3283,7 +3390,8 @@ impl EventStore {
         use crate::histogram::CONVERGENCE_HIST_COLUMNS;
         let interval = snap_interval(interval);
         let pg_interval = interval_to_pg(interval);
-        let sum_cols: String = CONVERGENCE_HIST_COLUMNS.iter()
+        let sum_cols: String = CONVERGENCE_HIST_COLUMNS
+            .iter()
             .map(|c| format!("SUM({c})::INT AS {c}"))
             .collect::<Vec<_>>()
             .join(", ");
@@ -3302,27 +3410,41 @@ impl EventStore {
             .fetch_all(self.pool())
             .await?;
 
-        Ok(rows.iter().map(|row| {
-            let ts: DateTime<Utc> = row.get("bucket");
-            let side: i16 = row.get("side");
-            let hist = [
-                row.get::<i32, _>("h_0_2") as u32, row.get::<i32, _>("h_2_5") as u32,
-                row.get::<i32, _>("h_5_10") as u32, row.get::<i32, _>("h_10_15") as u32,
-                row.get::<i32, _>("h_15_20") as u32, row.get::<i32, _>("h_20_30") as u32,
-                row.get::<i32, _>("h_30_50") as u32, row.get::<i32, _>("h_50_75") as u32,
-                row.get::<i32, _>("h_75_100") as u32, row.get::<i32, _>("h_100_150") as u32,
-                row.get::<i32, _>("h_150_250") as u32, row.get::<i32, _>("h_250_500") as u32,
-                row.get::<i32, _>("h_500_1000") as u32, row.get::<i32, _>("h_1000_2000") as u32,
-                row.get::<i32, _>("h_2000_5000") as u32, row.get::<i32, _>("h_5000_10000") as u32,
-                row.get::<i32, _>("h_10000_15000") as u32, row.get::<i32, _>("h_15000_20000") as u32,
-                row.get::<i32, _>("h_20000_25000") as u32, row.get::<i32, _>("h_25000_30000") as u32,
-                row.get::<i32, _>("h_30000_60000") as u32, row.get::<i32, _>("h_60000_120000") as u32,
-                row.get::<i32, _>("h_120000_plus") as u32,
-            ];
-            let total: i32 = row.get("total_count");
-            let failed: i32 = row.get("failed_count");
-            (ts, side, hist, total, failed)
-        }).collect())
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let ts: DateTime<Utc> = row.get("bucket");
+                let side: i16 = row.get("side");
+                let hist = [
+                    row.get::<i32, _>("h_0_2") as u32,
+                    row.get::<i32, _>("h_2_5") as u32,
+                    row.get::<i32, _>("h_5_10") as u32,
+                    row.get::<i32, _>("h_10_15") as u32,
+                    row.get::<i32, _>("h_15_20") as u32,
+                    row.get::<i32, _>("h_20_30") as u32,
+                    row.get::<i32, _>("h_30_50") as u32,
+                    row.get::<i32, _>("h_50_75") as u32,
+                    row.get::<i32, _>("h_75_100") as u32,
+                    row.get::<i32, _>("h_100_150") as u32,
+                    row.get::<i32, _>("h_150_250") as u32,
+                    row.get::<i32, _>("h_250_500") as u32,
+                    row.get::<i32, _>("h_500_1000") as u32,
+                    row.get::<i32, _>("h_1000_2000") as u32,
+                    row.get::<i32, _>("h_2000_5000") as u32,
+                    row.get::<i32, _>("h_5000_10000") as u32,
+                    row.get::<i32, _>("h_10000_15000") as u32,
+                    row.get::<i32, _>("h_15000_20000") as u32,
+                    row.get::<i32, _>("h_20000_25000") as u32,
+                    row.get::<i32, _>("h_25000_30000") as u32,
+                    row.get::<i32, _>("h_30000_60000") as u32,
+                    row.get::<i32, _>("h_60000_120000") as u32,
+                    row.get::<i32, _>("h_120000_plus") as u32,
+                ];
+                let total: i32 = row.get("total_count");
+                let failed: i32 = row.get("failed_count");
+                (ts, side, hist, total, failed)
+            })
+            .collect())
     }
 
     pub async fn grafana_bundle_latency(
@@ -3332,30 +3454,83 @@ impl EventStore {
         interval: &str,
     ) -> Result<Vec<BundleLatencyRow>, sqlx::Error> {
         use crate::histogram::{percentiles_from_histogram as pfh, CONVERGENCE_BOUNDS};
-        let data = self.query_latency_hist("bundle_latency_hist", start, end, interval).await?;
+        let data = self
+            .query_latency_hist("bundle_latency_hist", start, end, interval)
+            .await?;
 
-        let mut buckets: std::collections::BTreeMap<DateTime<Utc>, BundleLatencyRow> = std::collections::BTreeMap::new();
+        let mut buckets: std::collections::BTreeMap<DateTime<Utc>, BundleLatencyRow> =
+            std::collections::BTreeMap::new();
         for (ts, side, hist, total, failed) in &data {
             let p = pfh(&hist[..], *total as u32, &CONVERGENCE_BOUNDS);
             let entry = buckets.entry(*ts).or_insert_with(|| BundleLatencyRow {
                 ts: *ts,
-                shard_req_p50: None, shard_req_p95: None, shard_req_p99: None, shard_req_samples: 0,
-                shard_resp_p50: None, shard_resp_p95: None, shard_resp_p99: None, shard_resp_samples: 0,
-                full_req_p50: None, full_req_p95: None, full_req_p99: None, full_req_samples: 0,
-                full_resp_p50: None, full_resp_p95: None, full_resp_p99: None, full_resp_samples: 0,
-                reconstruct_p50: None, reconstruct_p95: None, reconstruct_p99: None, reconstruct_samples: 0,
-                e2e_p50: None, e2e_p95: None, e2e_p99: None, e2e_p100: None, e2e_samples: 0,
+                shard_req_p50: None,
+                shard_req_p95: None,
+                shard_req_p99: None,
+                shard_req_samples: 0,
+                shard_resp_p50: None,
+                shard_resp_p95: None,
+                shard_resp_p99: None,
+                shard_resp_samples: 0,
+                full_req_p50: None,
+                full_req_p95: None,
+                full_req_p99: None,
+                full_req_samples: 0,
+                full_resp_p50: None,
+                full_resp_p95: None,
+                full_resp_p99: None,
+                full_resp_samples: 0,
+                reconstruct_p50: None,
+                reconstruct_p95: None,
+                reconstruct_p99: None,
+                reconstruct_samples: 0,
+                e2e_p50: None,
+                e2e_p95: None,
+                e2e_p99: None,
+                e2e_p100: None,
+                e2e_samples: 0,
                 failed_count: 0,
             });
             entry.failed_count += failed;
             if let Some((p50, _p75, p95, p99, p100)) = p {
                 match side {
-                    0 => { entry.shard_req_p50 = Some(p50); entry.shard_req_p95 = Some(p95); entry.shard_req_p99 = Some(p99); entry.shard_req_samples = *total; }
-                    1 => { entry.shard_resp_p50 = Some(p50); entry.shard_resp_p95 = Some(p95); entry.shard_resp_p99 = Some(p99); entry.shard_resp_samples = *total; }
-                    2 => { entry.full_req_p50 = Some(p50); entry.full_req_p95 = Some(p95); entry.full_req_p99 = Some(p99); entry.full_req_samples = *total; }
-                    3 => { entry.full_resp_p50 = Some(p50); entry.full_resp_p95 = Some(p95); entry.full_resp_p99 = Some(p99); entry.full_resp_samples = *total; }
-                    4 => { entry.reconstruct_p50 = Some(p50); entry.reconstruct_p95 = Some(p95); entry.reconstruct_p99 = Some(p99); entry.reconstruct_samples = *total; }
-                    5 => { entry.e2e_p50 = Some(p50); entry.e2e_p95 = Some(p95); entry.e2e_p99 = Some(p99); entry.e2e_p100 = Some(p100); entry.e2e_samples = *total; }
+                    0 => {
+                        entry.shard_req_p50 = Some(p50);
+                        entry.shard_req_p95 = Some(p95);
+                        entry.shard_req_p99 = Some(p99);
+                        entry.shard_req_samples = *total;
+                    }
+                    1 => {
+                        entry.shard_resp_p50 = Some(p50);
+                        entry.shard_resp_p95 = Some(p95);
+                        entry.shard_resp_p99 = Some(p99);
+                        entry.shard_resp_samples = *total;
+                    }
+                    2 => {
+                        entry.full_req_p50 = Some(p50);
+                        entry.full_req_p95 = Some(p95);
+                        entry.full_req_p99 = Some(p99);
+                        entry.full_req_samples = *total;
+                    }
+                    3 => {
+                        entry.full_resp_p50 = Some(p50);
+                        entry.full_resp_p95 = Some(p95);
+                        entry.full_resp_p99 = Some(p99);
+                        entry.full_resp_samples = *total;
+                    }
+                    4 => {
+                        entry.reconstruct_p50 = Some(p50);
+                        entry.reconstruct_p95 = Some(p95);
+                        entry.reconstruct_p99 = Some(p99);
+                        entry.reconstruct_samples = *total;
+                    }
+                    5 => {
+                        entry.e2e_p50 = Some(p50);
+                        entry.e2e_p95 = Some(p95);
+                        entry.e2e_p99 = Some(p99);
+                        entry.e2e_p100 = Some(p100);
+                        entry.e2e_samples = *total;
+                    }
                     _ => {}
                 }
             }
@@ -3370,28 +3545,71 @@ impl EventStore {
         interval: &str,
     ) -> Result<Vec<SegmentLatencyRow>, sqlx::Error> {
         use crate::histogram::{percentiles_from_histogram as pfh, CONVERGENCE_BOUNDS};
-        let data = self.query_latency_hist("segment_latency_hist", start, end, interval).await?;
+        let data = self
+            .query_latency_hist("segment_latency_hist", start, end, interval)
+            .await?;
 
-        let mut buckets: std::collections::BTreeMap<DateTime<Utc>, SegmentLatencyRow> = std::collections::BTreeMap::new();
+        let mut buckets: std::collections::BTreeMap<DateTime<Utc>, SegmentLatencyRow> =
+            std::collections::BTreeMap::new();
         for (ts, side, hist, total, failed) in &data {
             let p = pfh(&hist[..], *total as u32, &CONVERGENCE_BOUNDS);
             let entry = buckets.entry(*ts).or_insert_with(|| SegmentLatencyRow {
                 ts: *ts,
-                shard_req_p50: None, shard_req_p95: None, shard_req_p99: None, shard_req_samples: 0,
-                shard_resp_p50: None, shard_resp_p95: None, shard_resp_p99: None, shard_resp_samples: 0,
-                full_req_p50: None, full_req_p95: None, full_req_p99: None, full_req_samples: 0,
-                full_resp_p50: None, full_resp_p95: None, full_resp_p99: None, full_resp_samples: 0,
-                reconstruct_p50: None, reconstruct_p95: None, reconstruct_p99: None, reconstruct_samples: 0,
+                shard_req_p50: None,
+                shard_req_p95: None,
+                shard_req_p99: None,
+                shard_req_samples: 0,
+                shard_resp_p50: None,
+                shard_resp_p95: None,
+                shard_resp_p99: None,
+                shard_resp_samples: 0,
+                full_req_p50: None,
+                full_req_p95: None,
+                full_req_p99: None,
+                full_req_samples: 0,
+                full_resp_p50: None,
+                full_resp_p95: None,
+                full_resp_p99: None,
+                full_resp_samples: 0,
+                reconstruct_p50: None,
+                reconstruct_p95: None,
+                reconstruct_p99: None,
+                reconstruct_samples: 0,
                 failed_count: 0,
             });
             entry.failed_count += failed;
             if let Some((p50, _p75, p95, p99, _p100)) = p {
                 match side {
-                    0 => { entry.shard_req_p50 = Some(p50); entry.shard_req_p95 = Some(p95); entry.shard_req_p99 = Some(p99); entry.shard_req_samples = *total; }
-                    1 => { entry.shard_resp_p50 = Some(p50); entry.shard_resp_p95 = Some(p95); entry.shard_resp_p99 = Some(p99); entry.shard_resp_samples = *total; }
-                    2 => { entry.full_req_p50 = Some(p50); entry.full_req_p95 = Some(p95); entry.full_req_p99 = Some(p99); entry.full_req_samples = *total; }
-                    3 => { entry.full_resp_p50 = Some(p50); entry.full_resp_p95 = Some(p95); entry.full_resp_p99 = Some(p99); entry.full_resp_samples = *total; }
-                    4 => { entry.reconstruct_p50 = Some(p50); entry.reconstruct_p95 = Some(p95); entry.reconstruct_p99 = Some(p99); entry.reconstruct_samples = *total; }
+                    0 => {
+                        entry.shard_req_p50 = Some(p50);
+                        entry.shard_req_p95 = Some(p95);
+                        entry.shard_req_p99 = Some(p99);
+                        entry.shard_req_samples = *total;
+                    }
+                    1 => {
+                        entry.shard_resp_p50 = Some(p50);
+                        entry.shard_resp_p95 = Some(p95);
+                        entry.shard_resp_p99 = Some(p99);
+                        entry.shard_resp_samples = *total;
+                    }
+                    2 => {
+                        entry.full_req_p50 = Some(p50);
+                        entry.full_req_p95 = Some(p95);
+                        entry.full_req_p99 = Some(p99);
+                        entry.full_req_samples = *total;
+                    }
+                    3 => {
+                        entry.full_resp_p50 = Some(p50);
+                        entry.full_resp_p95 = Some(p95);
+                        entry.full_resp_p99 = Some(p99);
+                        entry.full_resp_samples = *total;
+                    }
+                    4 => {
+                        entry.reconstruct_p50 = Some(p50);
+                        entry.reconstruct_p95 = Some(p95);
+                        entry.reconstruct_p99 = Some(p99);
+                        entry.reconstruct_samples = *total;
+                    }
                     _ => {}
                 }
             }
@@ -3406,22 +3624,41 @@ impl EventStore {
         interval: &str,
     ) -> Result<Vec<PreimageLatencyRow>, sqlx::Error> {
         use crate::histogram::{percentiles_from_histogram as pfh, CONVERGENCE_BOUNDS};
-        let data = self.query_latency_hist("preimage_latency_hist", start, end, interval).await?;
+        let data = self
+            .query_latency_hist("preimage_latency_hist", start, end, interval)
+            .await?;
 
-        let mut buckets: std::collections::BTreeMap<DateTime<Utc>, PreimageLatencyRow> = std::collections::BTreeMap::new();
+        let mut buckets: std::collections::BTreeMap<DateTime<Utc>, PreimageLatencyRow> =
+            std::collections::BTreeMap::new();
         for (ts, side, hist, total, failed) in &data {
             let p = pfh(&hist[..], *total as u32, &CONVERGENCE_BOUNDS);
             let entry = buckets.entry(*ts).or_insert_with(|| PreimageLatencyRow {
                 ts: *ts,
-                req_p50: None, req_p95: None, req_p99: None, req_samples: 0,
-                resp_p50: None, resp_p95: None, resp_p99: None, resp_samples: 0,
+                req_p50: None,
+                req_p95: None,
+                req_p99: None,
+                req_samples: 0,
+                resp_p50: None,
+                resp_p95: None,
+                resp_p99: None,
+                resp_samples: 0,
                 failed_count: 0,
             });
             entry.failed_count += failed;
             if let Some((p50, _p75, p95, p99, _p100)) = p {
                 match side {
-                    0 => { entry.req_p50 = Some(p50); entry.req_p95 = Some(p95); entry.req_p99 = Some(p99); entry.req_samples = *total; }
-                    1 => { entry.resp_p50 = Some(p50); entry.resp_p95 = Some(p95); entry.resp_p99 = Some(p99); entry.resp_samples = *total; }
+                    0 => {
+                        entry.req_p50 = Some(p50);
+                        entry.req_p95 = Some(p95);
+                        entry.req_p99 = Some(p99);
+                        entry.req_samples = *total;
+                    }
+                    1 => {
+                        entry.resp_p50 = Some(p50);
+                        entry.resp_p95 = Some(p95);
+                        entry.resp_p99 = Some(p99);
+                        entry.resp_samples = *total;
+                    }
                     _ => {}
                 }
             }
@@ -3432,32 +3669,47 @@ impl EventStore {
 
 fn rows_to_convergence_timeseries(rows: &[sqlx::postgres::PgRow]) -> Vec<ConvergenceTimeseriesRow> {
     use crate::histogram::{percentiles_from_histogram, CONVERGENCE_BOUNDS};
-    rows.iter().map(|row| {
-        let ts: DateTime<Utc> = row.get("ts");
-        let hist = [
-            row.get::<i32, _>("h_0_2") as u32, row.get::<i32, _>("h_2_5") as u32,
-            row.get::<i32, _>("h_5_10") as u32, row.get::<i32, _>("h_10_15") as u32,
-            row.get::<i32, _>("h_15_20") as u32, row.get::<i32, _>("h_20_30") as u32,
-            row.get::<i32, _>("h_30_50") as u32, row.get::<i32, _>("h_50_75") as u32,
-            row.get::<i32, _>("h_75_100") as u32, row.get::<i32, _>("h_100_150") as u32,
-            row.get::<i32, _>("h_150_250") as u32, row.get::<i32, _>("h_250_500") as u32,
-            row.get::<i32, _>("h_500_1000") as u32, row.get::<i32, _>("h_1000_2000") as u32,
-            row.get::<i32, _>("h_2000_5000") as u32, row.get::<i32, _>("h_5000_10000") as u32,
-            row.get::<i32, _>("h_10000_15000") as u32, row.get::<i32, _>("h_15000_20000") as u32,
-            row.get::<i32, _>("h_20000_25000") as u32, row.get::<i32, _>("h_25000_30000") as u32,
-            row.get::<i32, _>("h_30000_60000") as u32, row.get::<i32, _>("h_60000_120000") as u32,
-            row.get::<i32, _>("h_120000_plus") as u32,
-        ];
-        let total: i32 = row.get("hist_total");
-        let p = percentiles_from_histogram(&hist, total as u32, &CONVERGENCE_BOUNDS);
-        ConvergenceTimeseriesRow {
-            ts,
-            p50_ms: p.map(|p| p.0), p75_ms: p.map(|p| p.1),
-            p95_ms: p.map(|p| p.2), p99_ms: p.map(|p| p.3),
-            p100_ms: p.map(|p| p.4),
-            sample_count: total,
-        }
-    }).collect()
+    rows.iter()
+        .map(|row| {
+            let ts: DateTime<Utc> = row.get("ts");
+            let hist = [
+                row.get::<i32, _>("h_0_2") as u32,
+                row.get::<i32, _>("h_2_5") as u32,
+                row.get::<i32, _>("h_5_10") as u32,
+                row.get::<i32, _>("h_10_15") as u32,
+                row.get::<i32, _>("h_15_20") as u32,
+                row.get::<i32, _>("h_20_30") as u32,
+                row.get::<i32, _>("h_30_50") as u32,
+                row.get::<i32, _>("h_50_75") as u32,
+                row.get::<i32, _>("h_75_100") as u32,
+                row.get::<i32, _>("h_100_150") as u32,
+                row.get::<i32, _>("h_150_250") as u32,
+                row.get::<i32, _>("h_250_500") as u32,
+                row.get::<i32, _>("h_500_1000") as u32,
+                row.get::<i32, _>("h_1000_2000") as u32,
+                row.get::<i32, _>("h_2000_5000") as u32,
+                row.get::<i32, _>("h_5000_10000") as u32,
+                row.get::<i32, _>("h_10000_15000") as u32,
+                row.get::<i32, _>("h_15000_20000") as u32,
+                row.get::<i32, _>("h_20000_25000") as u32,
+                row.get::<i32, _>("h_25000_30000") as u32,
+                row.get::<i32, _>("h_30000_60000") as u32,
+                row.get::<i32, _>("h_60000_120000") as u32,
+                row.get::<i32, _>("h_120000_plus") as u32,
+            ];
+            let total: i32 = row.get("hist_total");
+            let p = percentiles_from_histogram(&hist, total as u32, &CONVERGENCE_BOUNDS);
+            ConvergenceTimeseriesRow {
+                ts,
+                p50_ms: p.map(|p| p.0),
+                p75_ms: p.map(|p| p.1),
+                p95_ms: p.map(|p| p.2),
+                p99_ms: p.map(|p| p.3),
+                p100_ms: p.map(|p| p.4),
+                sample_count: total,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -3581,10 +3833,10 @@ mod tests {
     fn hist_percentiles_spread() {
         // Spread across multiple buckets — verify ordering
         let mut buckets = [0u32; 14];
-        buckets[0] = 5;   // [0,1)
-        buckets[2] = 10;  // [2,5)
-        buckets[5] = 20;  // [25,50)
-        buckets[8] = 15;  // [250,500)
+        buckets[0] = 5; // [0,1)
+        buckets[2] = 10; // [2,5)
+        buckets[5] = 20; // [25,50)
+        buckets[8] = 15; // [250,500)
         buckets[11] = 10; // [2000,3000)
         let total = 5 + 10 + 20 + 15 + 10;
         let (p50, p75, p95, p99, p100) = percentiles_from_histogram(&buckets, total).unwrap();

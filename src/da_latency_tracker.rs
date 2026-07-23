@@ -14,7 +14,9 @@ use dashmap::DashMap;
 use sqlx::PgPool;
 use tracing::{debug, warn};
 
-use crate::histogram::{convergence_bucket_index, CONVERGENCE_BUCKET_COUNT, CONVERGENCE_HIST_COLUMNS};
+use crate::histogram::{
+    convergence_bucket_index, CONVERGENCE_BUCKET_COUNT, CONVERGENCE_HIST_COLUMNS,
+};
 use crate::types::JCE_EPOCH_UNIX_MICROS;
 
 // ---------------------------------------------------------------------------
@@ -138,7 +140,8 @@ impl LatencyFlow {
     /// Evict stale pending entries older than PENDING_TTL_US. Returns count evicted.
     pub fn evict_stale(&mut self, now_us: u64) -> usize {
         let before = self.pending.len();
-        self.pending.retain(|_, &mut ts| now_us.saturating_sub(ts) < PENDING_TTL_US);
+        self.pending
+            .retain(|_, &mut ts| now_us.saturating_sub(ts) < PENDING_TTL_US);
         let after = self.pending.len();
         // Cap enforcement
         if after > PENDING_CAP {
@@ -321,35 +324,113 @@ pub async fn flush_da_latency_tracker(tracker: &DaLatencyTracker, pool: &PgPool)
 
             // Bundle flows
             let snap = state.bundle_shard_req.snapshot_and_reset();
-            if snap.total > 0 { flows.push(FlowToFlush { table: "bundle_latency_hist", side: 0, snap }); }
+            if snap.total > 0 {
+                flows.push(FlowToFlush {
+                    table: "bundle_latency_hist",
+                    side: 0,
+                    snap,
+                });
+            }
             let snap = state.bundle_shard_resp.snapshot_and_reset();
-            if snap.total > 0 { flows.push(FlowToFlush { table: "bundle_latency_hist", side: 1, snap }); }
+            if snap.total > 0 {
+                flows.push(FlowToFlush {
+                    table: "bundle_latency_hist",
+                    side: 1,
+                    snap,
+                });
+            }
             let snap = state.bundle_full_req.snapshot_and_reset();
-            if snap.total > 0 { flows.push(FlowToFlush { table: "bundle_latency_hist", side: 2, snap }); }
+            if snap.total > 0 {
+                flows.push(FlowToFlush {
+                    table: "bundle_latency_hist",
+                    side: 2,
+                    snap,
+                });
+            }
             let snap = state.bundle_full_resp.snapshot_and_reset();
-            if snap.total > 0 { flows.push(FlowToFlush { table: "bundle_latency_hist", side: 3, snap }); }
+            if snap.total > 0 {
+                flows.push(FlowToFlush {
+                    table: "bundle_latency_hist",
+                    side: 3,
+                    snap,
+                });
+            }
             let snap = state.bundle_reconstruct.snapshot_and_reset();
-            if snap.total > 0 { flows.push(FlowToFlush { table: "bundle_latency_hist", side: 4, snap }); }
+            if snap.total > 0 {
+                flows.push(FlowToFlush {
+                    table: "bundle_latency_hist",
+                    side: 4,
+                    snap,
+                });
+            }
             let snap = state.bundle_e2e.snapshot_and_reset();
-            if snap.total > 0 { flows.push(FlowToFlush { table: "bundle_latency_hist", side: 5, snap }); }
+            if snap.total > 0 {
+                flows.push(FlowToFlush {
+                    table: "bundle_latency_hist",
+                    side: 5,
+                    snap,
+                });
+            }
 
             // Segment flows
             let snap = state.seg_shard_req.snapshot_and_reset();
-            if snap.total > 0 { flows.push(FlowToFlush { table: "segment_latency_hist", side: 0, snap }); }
+            if snap.total > 0 {
+                flows.push(FlowToFlush {
+                    table: "segment_latency_hist",
+                    side: 0,
+                    snap,
+                });
+            }
             let snap = state.seg_shard_resp.snapshot_and_reset();
-            if snap.total > 0 { flows.push(FlowToFlush { table: "segment_latency_hist", side: 1, snap }); }
+            if snap.total > 0 {
+                flows.push(FlowToFlush {
+                    table: "segment_latency_hist",
+                    side: 1,
+                    snap,
+                });
+            }
             let snap = state.seg_full_req.snapshot_and_reset();
-            if snap.total > 0 { flows.push(FlowToFlush { table: "segment_latency_hist", side: 2, snap }); }
+            if snap.total > 0 {
+                flows.push(FlowToFlush {
+                    table: "segment_latency_hist",
+                    side: 2,
+                    snap,
+                });
+            }
             let snap = state.seg_full_resp.snapshot_and_reset();
-            if snap.total > 0 { flows.push(FlowToFlush { table: "segment_latency_hist", side: 3, snap }); }
+            if snap.total > 0 {
+                flows.push(FlowToFlush {
+                    table: "segment_latency_hist",
+                    side: 3,
+                    snap,
+                });
+            }
             let snap = state.seg_reconstruct.snapshot_and_reset();
-            if snap.total > 0 { flows.push(FlowToFlush { table: "segment_latency_hist", side: 4, snap }); }
+            if snap.total > 0 {
+                flows.push(FlowToFlush {
+                    table: "segment_latency_hist",
+                    side: 4,
+                    snap,
+                });
+            }
 
             // Preimage flows
             let snap = state.preimage_req.snapshot_and_reset();
-            if snap.total > 0 { flows.push(FlowToFlush { table: "preimage_latency_hist", side: 0, snap }); }
+            if snap.total > 0 {
+                flows.push(FlowToFlush {
+                    table: "preimage_latency_hist",
+                    side: 0,
+                    snap,
+                });
+            }
             let snap = state.preimage_resp.snapshot_and_reset();
-            if snap.total > 0 { flows.push(FlowToFlush { table: "preimage_latency_hist", side: 1, snap }); }
+            if snap.total > 0 {
+                flows.push(FlowToFlush {
+                    table: "preimage_latency_hist",
+                    side: 1,
+                    snap,
+                });
+            }
 
             // Reset counters
             state.bundle_trivial = 0;
@@ -379,7 +460,10 @@ pub async fn flush_da_latency_tracker(tracker: &DaLatencyTracker, pool: &PgPool)
             state.preimage_resp.evict_stale(now_jce_approx);
 
             if !flows.is_empty() {
-                snapshots.push(NodeSnapshot { node_id: node_id.clone(), flows });
+                snapshots.push(NodeSnapshot {
+                    node_id: node_id.clone(),
+                    flows,
+                });
             }
         }
 
@@ -394,7 +478,16 @@ pub async fn flush_da_latency_tracker(tracker: &DaLatencyTracker, pool: &PgPool)
 
     for node_snap in &snapshots {
         for flow in &node_snap.flows {
-            match write_hist_row(pool, flow.table, ts, node_snap.node_id.as_ref(), flow.side, &flow.snap).await {
+            match write_hist_row(
+                pool,
+                flow.table,
+                ts,
+                node_snap.node_id.as_ref(),
+                flow.side,
+                &flow.snap,
+            )
+            .await
+            {
                 Ok(_) => total_rows += 1,
                 Err(e) => warn!(
                     "{} (side={}) insert failed for {}: {e}",
@@ -414,7 +507,9 @@ pub async fn flush_da_latency_tracker(tracker: &DaLatencyTracker, pool: &PgPool)
     if total_rows > 0 || nodes_evicted > 0 {
         debug!(
             "da_latency_tracker flush: {} hist rows, {} nodes evicted, {} tracked",
-            total_rows, nodes_evicted, tracker.len(),
+            total_rows,
+            nodes_evicted,
+            tracker.len(),
         );
     }
 }
@@ -488,8 +583,8 @@ mod tests {
         assert_eq!(snap.failed, 1);
         assert_eq!(snap.latency_samples, 2);
         assert!(snap.avg_latency_ms.is_some());
-        assert_eq!(snap.hist[2], 1);  // 5ms bucket
-        assert_eq!(snap.hist[9], 1);  // 100ms bucket
+        assert_eq!(snap.hist[2], 1); // 5ms bucket
+        assert_eq!(snap.hist[9], 1); // 100ms bucket
 
         // After reset
         assert_eq!(flow.total, 0);
@@ -545,14 +640,16 @@ mod tests {
         resp_flow.start(200, 2_000_000);
 
         // Failure with request_id=100 → found in req, not resp
-        let delta = req_flow.fail(100, 1_100_000)
+        let delta = req_flow
+            .fail(100, 1_100_000)
             .or_else(|| resp_flow.fail(100, 1_100_000));
         assert_eq!(delta, Some(100_000));
         assert_eq!(req_flow.failed, 1);
         assert_eq!(resp_flow.failed, 0);
 
         // Failure with request_id=200 → not in req, found in resp
-        let delta = req_flow.fail(200, 2_200_000)
+        let delta = req_flow
+            .fail(200, 2_200_000)
             .or_else(|| resp_flow.fail(200, 2_200_000));
         assert_eq!(delta, Some(200_000));
         assert_eq!(req_flow.failed, 1);

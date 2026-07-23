@@ -1181,8 +1181,9 @@ impl Event {
     /// Extract core from events that have a direct core field.
     pub fn core(&self) -> Option<u16> {
         match self {
-            Event::WorkPackageReceived { core, .. }
-            | Event::DuplicateWorkPackage { core, .. } => Some(*core),
+            Event::WorkPackageReceived { core, .. } | Event::DuplicateWorkPackage { core, .. } => {
+                Some(*core)
+            }
             _ => None,
         }
     }
@@ -1191,16 +1192,38 @@ impl Event {
     pub fn submission_id(&self) -> Option<u64> {
         match self {
             // submission_or_share_id events
-            Event::WorkPackageFailed { submission_or_share_id, .. }
-            | Event::DuplicateWorkPackage { submission_or_share_id, .. }
-            | Event::WorkPackageReceived { submission_or_share_id, .. }
-            | Event::Authorized { submission_or_share_id, .. }
-            | Event::ExtrinsicDataReceived { submission_or_share_id, .. }
-            | Event::ImportsReceived { submission_or_share_id, .. }
-            | Event::Refined { submission_or_share_id, .. }
-            | Event::WorkReportBuilt { submission_or_share_id, .. } => {
-                Some(*submission_or_share_id)
+            Event::WorkPackageFailed {
+                submission_or_share_id,
+                ..
             }
+            | Event::DuplicateWorkPackage {
+                submission_or_share_id,
+                ..
+            }
+            | Event::WorkPackageReceived {
+                submission_or_share_id,
+                ..
+            }
+            | Event::Authorized {
+                submission_or_share_id,
+                ..
+            }
+            | Event::ExtrinsicDataReceived {
+                submission_or_share_id,
+                ..
+            }
+            | Event::ImportsReceived {
+                submission_or_share_id,
+                ..
+            }
+            | Event::Refined {
+                submission_or_share_id,
+                ..
+            }
+            | Event::WorkReportBuilt {
+                submission_or_share_id,
+                ..
+            } => Some(*submission_or_share_id),
             // submission_id events
             Event::SharingWorkPackage { submission_id, .. }
             | Event::WorkPackageSharingFailed { submission_id, .. }
@@ -1245,9 +1268,10 @@ impl Event {
     /// For Authorized: WP-level auth gas to first service only (prevents SUM overcounting).
     pub fn gas_per_service_item(&self, service_count: usize) -> Vec<Option<i64>> {
         match self {
-            Event::Refined { costs, .. } => {
-                costs.iter().map(|c| Some(c.total.gas_used as i64)).collect()
-            }
+            Event::Refined { costs, .. } => costs
+                .iter()
+                .map(|c| Some(c.total.gas_used as i64))
+                .collect(),
             Event::Authorized { cost, .. } => {
                 let mut result = Vec::with_capacity(service_count);
                 if service_count > 0 {
@@ -1267,13 +1291,17 @@ impl Event {
     /// For Authorized: WP-level timing to first service only (prevents SUM overcounting).
     pub fn timing_per_service_item(&self, service_count: usize) -> Vec<(Option<i64>, Option<i64>)> {
         match self {
-            Event::Refined { costs, .. } => {
-                costs.iter().map(|c| (Some(c.total.elapsed_ns as i64), Some(c.load_ns as i64))).collect()
-            }
+            Event::Refined { costs, .. } => costs
+                .iter()
+                .map(|c| (Some(c.total.elapsed_ns as i64), Some(c.load_ns as i64)))
+                .collect(),
             Event::Authorized { cost, .. } => {
                 let mut result = Vec::with_capacity(service_count);
                 if service_count > 0 {
-                    result.push((Some(cost.total.elapsed_ns as i64), Some(cost.load_ns as i64)));
+                    result.push((
+                        Some(cost.total.elapsed_ns as i64),
+                        Some(cost.load_ns as i64),
+                    ));
                     for _ in 1..service_count {
                         result.push((None, None));
                     }
@@ -1607,9 +1635,7 @@ impl Encode for Event {
                 submission_or_share_id.encode(buf)?;
                 outline.encode(buf)?;
             }
-            Event::GuaranteesDistributed {
-                submission_id, ..
-            } => {
+            Event::GuaranteesDistributed { submission_id, .. } => {
                 submission_id.encode(buf)?;
             }
             Event::WorkPackageFailed {
@@ -1727,15 +1753,11 @@ impl Encode for Event {
             } => {
                 distributing_id.encode(buf)?;
             }
-            Event::AssuranceReceiveFailed {
-                sender, reason, ..
-            } => {
+            Event::AssuranceReceiveFailed { sender, reason, .. } => {
                 sender.encode(buf)?;
                 reason.encode(buf)?;
             }
-            Event::AssuranceReceived {
-                sender, anchor, ..
-            } => {
+            Event::AssuranceReceived { sender, anchor, .. } => {
                 sender.encode(buf)?;
                 anchor.encode(buf)?;
             }
@@ -1750,13 +1772,23 @@ impl Encode for Event {
                 work_package_hash.encode(buf)?;
                 segments_root.encode(buf)?;
             }
-            Event::SegmentsRootMapped { submission_id, segments_root, erasure_root, .. } => {
+            Event::SegmentsRootMapped {
+                submission_id,
+                segments_root,
+                erasure_root,
+                ..
+            } => {
                 submission_id.encode(buf)?;
                 segments_root.encode(buf)?;
                 erasure_root.encode(buf)?;
             }
             // Bundle reconstruction (140-153)
-            Event::SendingBundleShardRequest { audit_id, assurer, shard, .. } => {
+            Event::SendingBundleShardRequest {
+                audit_id,
+                assurer,
+                shard,
+                ..
+            } => {
                 audit_id.encode(buf)?;
                 assurer.encode(buf)?;
                 shard.encode(buf)?;
@@ -1764,14 +1796,21 @@ impl Encode for Event {
             Event::ReceivingBundleShardRequest { auditor, .. } => {
                 auditor.encode(buf)?;
             }
-            Event::BundleShardRequestFailed { request_id, reason, .. } => {
+            Event::BundleShardRequestFailed {
+                request_id, reason, ..
+            } => {
                 request_id.encode(buf)?;
                 reason.encode(buf)?;
             }
             Event::BundleShardRequestSent { request_id, .. } => {
                 request_id.encode(buf)?;
             }
-            Event::BundleShardRequestReceived { request_id, erasure_root, shard, .. } => {
+            Event::BundleShardRequestReceived {
+                request_id,
+                erasure_root,
+                shard,
+                ..
+            } => {
                 request_id.encode(buf)?;
                 erasure_root.encode(buf)?;
                 shard.encode(buf)?;
@@ -1786,21 +1825,31 @@ impl Encode for Event {
             Event::BundleReconstructed { audit_id, .. } => {
                 audit_id.encode(buf)?;
             }
-            Event::SendingBundleRequest { audit_id, guarantor, .. } => {
+            Event::SendingBundleRequest {
+                audit_id,
+                guarantor,
+                ..
+            } => {
                 audit_id.encode(buf)?;
                 guarantor.encode(buf)?;
             }
             Event::ReceivingBundleRequest { auditor, .. } => {
                 auditor.encode(buf)?;
             }
-            Event::BundleRequestFailed { request_id, reason, .. } => {
+            Event::BundleRequestFailed {
+                request_id, reason, ..
+            } => {
                 request_id.encode(buf)?;
                 reason.encode(buf)?;
             }
             Event::BundleRequestSent { request_id, .. } => {
                 request_id.encode(buf)?;
             }
-            Event::BundleRequestReceived { request_id, erasure_root, .. } => {
+            Event::BundleRequestReceived {
+                request_id,
+                erasure_root,
+                ..
+            } => {
                 request_id.encode(buf)?;
                 erasure_root.encode(buf)?;
             }
@@ -1808,7 +1857,13 @@ impl Encode for Event {
                 request_id.encode(buf)?;
             }
             // Segment fetching (162-178)
-            Event::SendingSegmentShardRequest { submission_id, assurer, proofs, shards, .. } => {
+            Event::SendingSegmentShardRequest {
+                submission_id,
+                assurer,
+                proofs,
+                shards,
+                ..
+            } => {
                 submission_id.encode(buf)?;
                 assurer.encode(buf)?;
                 proofs.encode(buf)?;
@@ -1823,42 +1878,71 @@ impl Encode for Event {
                 sender.encode(buf)?;
                 proofs.encode(buf)?;
             }
-            Event::SegmentShardRequestFailed { request_id, reason, .. } => {
+            Event::SegmentShardRequestFailed {
+                request_id, reason, ..
+            } => {
                 request_id.encode(buf)?;
                 reason.encode(buf)?;
             }
             Event::SegmentShardRequestSent { request_id, .. } => {
                 request_id.encode(buf)?;
             }
-            Event::SegmentShardRequestReceived { request_id, num, .. } => {
+            Event::SegmentShardRequestReceived {
+                request_id, num, ..
+            } => {
                 request_id.encode(buf)?;
                 num.encode(buf)?;
             }
             Event::SegmentShardsTransferred { request_id, .. } => {
                 request_id.encode(buf)?;
             }
-            Event::ReconstructingSegments { submission_id, segments, kind, .. } => {
+            Event::ReconstructingSegments {
+                submission_id,
+                segments,
+                kind,
+                ..
+            } => {
                 submission_id.encode(buf)?;
                 segments.encode(buf)?;
                 (*kind as u8).encode(buf)?;
             }
-            Event::SegmentReconstructionFailed { reconstructing_id, reason, .. } => {
+            Event::SegmentReconstructionFailed {
+                reconstructing_id,
+                reason,
+                ..
+            } => {
                 reconstructing_id.encode(buf)?;
                 reason.encode(buf)?;
             }
-            Event::SegmentsReconstructed { reconstructing_id, .. } => {
+            Event::SegmentsReconstructed {
+                reconstructing_id, ..
+            } => {
                 reconstructing_id.encode(buf)?;
             }
-            Event::SegmentVerificationFailed { submission_id, segments, reason, .. } => {
+            Event::SegmentVerificationFailed {
+                submission_id,
+                segments,
+                reason,
+                ..
+            } => {
                 submission_id.encode(buf)?;
                 segments.encode(buf)?;
                 reason.encode(buf)?;
             }
-            Event::SegmentsVerified { submission_id, segments, .. } => {
+            Event::SegmentsVerified {
+                submission_id,
+                segments,
+                ..
+            } => {
                 submission_id.encode(buf)?;
                 segments.encode(buf)?;
             }
-            Event::SendingSegmentRequest { submission_id, prev_guarantor, segments, .. } => {
+            Event::SendingSegmentRequest {
+                submission_id,
+                prev_guarantor,
+                segments,
+                ..
+            } => {
                 submission_id.encode(buf)?;
                 prev_guarantor.encode(buf)?;
                 segments.encode(buf)?;
@@ -1866,14 +1950,18 @@ impl Encode for Event {
             Event::ReceivingSegmentRequest { guarantor, .. } => {
                 guarantor.encode(buf)?;
             }
-            Event::SegmentRequestFailed { request_id, reason, .. } => {
+            Event::SegmentRequestFailed {
+                request_id, reason, ..
+            } => {
                 request_id.encode(buf)?;
                 reason.encode(buf)?;
             }
             Event::SegmentRequestSent { request_id, .. } => {
                 request_id.encode(buf)?;
             }
-            Event::SegmentRequestReceived { request_id, num, .. } => {
+            Event::SegmentRequestReceived {
+                request_id, num, ..
+            } => {
                 request_id.encode(buf)?;
                 num.encode(buf)?;
             }
@@ -1881,47 +1969,78 @@ impl Encode for Event {
                 request_id.encode(buf)?;
             }
             // Preimage events (190-199)
-            Event::PreimageAnnouncementFailed { peer, announcer, reason, .. } => {
+            Event::PreimageAnnouncementFailed {
+                peer,
+                announcer,
+                reason,
+                ..
+            } => {
                 peer.encode(buf)?;
                 (*announcer as u8).encode(buf)?;
                 reason.encode(buf)?;
             }
-            Event::PreimageAnnounced { peer, announcer, service, hash, length, .. } => {
+            Event::PreimageAnnounced {
+                peer,
+                announcer,
+                service,
+                hash,
+                length,
+                ..
+            } => {
                 peer.encode(buf)?;
                 (*announcer as u8).encode(buf)?;
                 service.encode(buf)?;
                 hash.encode(buf)?;
                 length.encode(buf)?;
             }
-            Event::AnnouncedPreimageForgotten { service, hash, length, reason, .. } => {
+            Event::AnnouncedPreimageForgotten {
+                service,
+                hash,
+                length,
+                reason,
+                ..
+            } => {
                 service.encode(buf)?;
                 hash.encode(buf)?;
                 length.encode(buf)?;
                 (*reason as u8).encode(buf)?;
             }
-            Event::SendingPreimageRequest { recipient, hash, .. } => {
+            Event::SendingPreimageRequest {
+                recipient, hash, ..
+            } => {
                 recipient.encode(buf)?;
                 hash.encode(buf)?;
             }
             Event::ReceivingPreimageRequest { sender, .. } => {
                 sender.encode(buf)?;
             }
-            Event::PreimageRequestFailed { request_id, reason, .. } => {
+            Event::PreimageRequestFailed {
+                request_id, reason, ..
+            } => {
                 request_id.encode(buf)?;
                 reason.encode(buf)?;
             }
             Event::PreimageRequestSent { request_id, .. } => {
                 request_id.encode(buf)?;
             }
-            Event::PreimageRequestReceived { request_id, hash, .. } => {
+            Event::PreimageRequestReceived {
+                request_id, hash, ..
+            } => {
                 request_id.encode(buf)?;
                 hash.encode(buf)?;
             }
-            Event::PreimageTransferred { request_id, length, .. } => {
+            Event::PreimageTransferred {
+                request_id, length, ..
+            } => {
                 request_id.encode(buf)?;
                 length.encode(buf)?;
             }
-            Event::PreimageDiscarded { hash, length, reason, .. } => {
+            Event::PreimageDiscarded {
+                hash,
+                length,
+                reason,
+                ..
+            } => {
                 hash.encode(buf)?;
                 length.encode(buf)?;
                 (*reason as u8).encode(buf)?;
@@ -1995,12 +2114,12 @@ impl Encode for Event {
             Event::ReceivingGuarantee { .. } => 32, // sender (PeerId)
             Event::GuaranteeReceiveFailed { reason, .. } => 8 + reason.encoded_size(),
             Event::GuaranteeReceived { outline, .. } => 8 + outline.encoded_size(),
-            Event::GuaranteeDiscarded { outline, reason, .. } => {
-                outline.encoded_size() + reason.encoded_size()
-            }
+            Event::GuaranteeDiscarded {
+                outline, reason, ..
+            } => outline.encoded_size() + reason.encoded_size(),
             // Shards (120-125)
             Event::SendingShardRequest { .. } => 32 + 32 + 2, // guarantor + erasure_root + shard
-            Event::ReceivingShardRequest { .. } => 32, // assurer
+            Event::ReceivingShardRequest { .. } => 32,        // assurer
             Event::ShardRequestFailed { reason, .. } => 8 + reason.encoded_size(),
             Event::ShardRequestSent { .. } => 8,
             Event::ShardRequestReceived { .. } => 8 + 32 + 2, // request_id + erasure_root + shard
@@ -2016,7 +2135,7 @@ impl Encode for Event {
             Event::WorkPackageHashMapped { .. } => 8 + 32 + 32, // submission_id + wp_hash + segments_root
             // Bundle reconstruction (140-153)
             Event::SendingBundleShardRequest { .. } => 8 + 32 + 2, // audit_id + assurer + shard
-            Event::ReceivingBundleShardRequest { .. } => 32, // auditor
+            Event::ReceivingBundleShardRequest { .. } => 32,       // auditor
             Event::BundleShardRequestFailed { reason, .. } => 8 + reason.encoded_size(),
             Event::BundleShardRequestSent { .. } => 8,
             Event::BundleShardRequestReceived { .. } => 8 + 32 + 2, // request_id + erasure_root + shard
@@ -2024,7 +2143,7 @@ impl Encode for Event {
             Event::ReconstructingBundle { .. } => 8 + 1, // audit_id + kind
             Event::BundleReconstructed { .. } => 8,
             Event::SendingBundleRequest { .. } => 8 + 32, // audit_id + guarantor
-            Event::ReceivingBundleRequest { .. } => 32, // auditor
+            Event::ReceivingBundleRequest { .. } => 32,   // auditor
             Event::BundleRequestFailed { reason, .. } => 8 + reason.encoded_size(),
             Event::BundleRequestSent { .. } => 8,
             Event::BundleRequestReceived { .. } => 8 + 32, // request_id + erasure_root
@@ -2040,7 +2159,9 @@ impl Encode for Event {
             Event::ReconstructingSegments { segments, .. } => 8 + segments.encoded_size() + 1,
             Event::SegmentReconstructionFailed { reason, .. } => 8 + reason.encoded_size(),
             Event::SegmentsReconstructed { .. } => 8,
-            Event::SegmentVerificationFailed { segments, reason, .. } => 8 + segments.encoded_size() + reason.encoded_size(),
+            Event::SegmentVerificationFailed {
+                segments, reason, ..
+            } => 8 + segments.encoded_size() + reason.encoded_size(),
             Event::SegmentsVerified { segments, .. } => 8 + segments.encoded_size(),
             Event::SendingSegmentRequest { segments, .. } => 8 + 32 + segments.encoded_size(),
             Event::ReceivingSegmentRequest { .. } => 32,
@@ -2052,13 +2173,13 @@ impl Encode for Event {
             Event::PreimageAnnouncementFailed { reason, .. } => 32 + 1 + reason.encoded_size(),
             Event::PreimageAnnounced { .. } => 32 + 1 + 4 + 32 + 4, // peer + announcer + service + hash + length
             Event::AnnouncedPreimageForgotten { .. } => 4 + 32 + 4 + 1, // service + hash + length + reason
-            Event::SendingPreimageRequest { .. } => 32 + 32, // recipient + hash
-            Event::ReceivingPreimageRequest { .. } => 32, // sender
+            Event::SendingPreimageRequest { .. } => 32 + 32,            // recipient + hash
+            Event::ReceivingPreimageRequest { .. } => 32,               // sender
             Event::PreimageRequestFailed { reason, .. } => 8 + reason.encoded_size(),
             Event::PreimageRequestSent { .. } => 8,
             Event::PreimageRequestReceived { .. } => 8 + 32, // request_id + hash
-            Event::PreimageTransferred { .. } => 8 + 4, // request_id + length
-            Event::PreimageDiscarded { .. } => 32 + 4 + 1, // hash + length + reason
+            Event::PreimageTransferred { .. } => 8 + 4,      // request_id + length
+            Event::PreimageDiscarded { .. } => 32 + 4 + 1,   // hash + length + reason
             _ => todo!(
                 "Event::encoded_size not implemented for {:?}",
                 self.event_type()
