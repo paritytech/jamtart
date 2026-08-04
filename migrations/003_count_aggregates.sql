@@ -493,15 +493,27 @@ SELECT add_continuous_aggregate_policy('wp_pipeline_counts_1h',
 SELECT add_retention_policy('wp_pipeline_counts_1h', INTERVAL '365 days');
 
 -- ============================================================
--- Real-time aggregation (materialized_only = false): the query planner
--- appends a live tail scan over the un-materialized window (last 2-4 min),
--- so recent data is visible in Grafana panels.
+-- Real-time aggregation (materialized_only = false) on all 28 aggregates:
+-- the query planner appends a live tail scan over the un-materialized
+-- window (last 2-4 min), so recent data is visible in Grafana panels and
+-- every branch of the all_event_stats_* UNION views has the same freshness.
 --
--- Deliberately NOT set on the status/connection/block/ticket_low/wp_pipeline
--- aggregates: they were created after the historical migration that enabled
--- real-time mode and have always run with the default (materialized_only =
--- true). Preserved as-is by the squash; revisit as an explicit change.
+-- PERFORMANCE WARNING (1024-validator networks): the tail scan reads the
+-- raw count table for the un-materialized window on every query. If
+-- aggregate queries become slow, this setting is the first thing to check.
+-- To revert a single aggregate:
+--   ALTER MATERIALIZED VIEW <view_name> SET (timescaledb.materialized_only = true);
 -- ============================================================
+ALTER MATERIALIZED VIEW status_counts_1m SET (timescaledb.materialized_only = false);
+ALTER MATERIALIZED VIEW status_counts_1h SET (timescaledb.materialized_only = false);
+ALTER MATERIALIZED VIEW connection_counts_1m SET (timescaledb.materialized_only = false);
+ALTER MATERIALIZED VIEW connection_counts_1h SET (timescaledb.materialized_only = false);
+ALTER MATERIALIZED VIEW block_counts_1m SET (timescaledb.materialized_only = false);
+ALTER MATERIALIZED VIEW block_counts_1h SET (timescaledb.materialized_only = false);
+ALTER MATERIALIZED VIEW ticket_low_counts_1m SET (timescaledb.materialized_only = false);
+ALTER MATERIALIZED VIEW ticket_low_counts_1h SET (timescaledb.materialized_only = false);
+ALTER MATERIALIZED VIEW wp_pipeline_counts_1m SET (timescaledb.materialized_only = false);
+ALTER MATERIALIZED VIEW wp_pipeline_counts_1h SET (timescaledb.materialized_only = false);
 ALTER MATERIALIZED VIEW block_distribution_counts_1m SET (timescaledb.materialized_only = false);
 ALTER MATERIALIZED VIEW block_distribution_counts_1h SET (timescaledb.materialized_only = false);
 ALTER MATERIALIZED VIEW ticket_counts_1m SET (timescaledb.materialized_only = false);
