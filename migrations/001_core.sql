@@ -78,15 +78,6 @@ CREATE INDEX IF NOT EXISTS idx_events_slot ON ingested_raw_events (slot, timesta
 CREATE INDEX IF NOT EXISTS idx_events_core ON ingested_raw_events (core, timestamp DESC) WHERE core IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_events_submission_id ON ingested_raw_events (node_id, submission_id, timestamp DESC) WHERE submission_id IS NOT NULL;
 
--- Compression (compress chunks older than 2 hours)
-ALTER TABLE ingested_raw_events SET (
-    timescaledb.compress,
-    timescaledb.compress_segmentby = 'node_id, event_type',
-    timescaledb.compress_orderby = 'timestamp DESC'
-);
-
-SELECT add_compression_policy('ingested_raw_events', INTERVAL '2 hours', if_not_exists => TRUE);
-
 -- Pure browsing store — aggressive 1h retention, checked every 5 minutes
 SELECT add_retention_policy('ingested_raw_events', INTERVAL '1 hour', schedule_interval => INTERVAL '5 minutes');
 
