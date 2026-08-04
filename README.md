@@ -1574,10 +1574,13 @@ jamtart/
 │   └── bin/
 │       └── tart-dash.rs        # Terminal UI dashboard
 ├── migrations/
-│   ├── 001_postgres_schema.sql             # Initial schema
-│   ├── 002_performance_indexes.sql         # Performance indexes
-│   ├── 003_frontend_analytics_indexes.sql  # Analytics indexes
-│   └── 004_frontend_search_indexes.sql     # Search indexes
+│   ├── 001_core.sql                # Extensions, raw events hypertable, nodes, event_types
+│   ├── 002_count_tables.sql        # 14 per-group count tables (all 115 event types)
+│   ├── 003_count_aggregates.sql    # _1m/_1h continuous aggregates over count tables
+│   ├── 004_union_views.sql         # all_event_stats_30s/1m/1h + all_core_stats_1m
+│   ├── 005_node_stats_services.sql # node_stats + event_services + their aggregates
+│   ├── 006_trackers.sql            # convergence, wp_tracking, DA stats & latency hists
+│   └── 007_onchain.sql             # on-chain core/service/validator stats
 ├── tests/
 │   ├── types_tests.rs          # Type system tests
 │   ├── events_tests.rs         # Event encoding tests
