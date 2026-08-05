@@ -37,6 +37,9 @@ docker-compose up -d postgres
 # Create test database and run migrations
 cargo sqlx database create
 cargo sqlx migrate run
+# NOTE: if your tart_test predates the migration squash (2026-08), drop it once
+# first (`cargo sqlx database drop -y && cargo sqlx database create`) — the old
+# _sqlx_migrations ledger doesn't match the squashed migration set.
 
 # Run integration tests SERIALLY
 cargo test --test api_tests --test integration_tests --test optimized_server_tests -- --test-threads=1

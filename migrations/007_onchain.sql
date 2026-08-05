@@ -105,19 +105,3 @@ CREATE TABLE onchain_finalization (
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 INSERT INTO onchain_finalization DEFAULT VALUES;
-
--- TODO: No continuous aggregates yet.
---
--- On-chain stats produce ~1,400 rows/block (341 cores + ~50 services +
--- 1024 validators). A 24h query scans ~14,400 rows per entity — fast for
--- Postgres even without pre-computation. Compare to telemetry at 3M events/s
--- where aggregates are essential. Also, different fields need different
--- aggregation functions (SUM for gas, AVG for popularity, MAX for cumulative
--- validators), so we want to see real usage patterns before committing to a
--- schema.
---
--- If Grafana queries get slow for large time ranges (>7d), add:
---   onchain_core_stats_1m (SUM gas/da/imports/exports/bundle, AVG popularity)
---   onchain_service_stats_1m (SUM all fields)
---   onchain_validator_stats_1m (MAX all fields — epoch-cumulative)
--- Non-breaking change: swap which table the query reads from.

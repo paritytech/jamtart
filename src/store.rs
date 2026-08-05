@@ -9,7 +9,7 @@ use sqlx::{postgres::PgPoolOptions, Executor, PgPool, Row};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Shared string type for node IDs (matches batch_writer::NodeId).
 type NodeId = Arc<str>;
@@ -64,19 +64,6 @@ pub type NodeStatsRow<'a> = (
     i16,
 );
 
-/// True if a migration failed as a deadlock victim (SQLSTATE 40P01), e.g. by
-/// colliding with a TimescaleDB background policy job.
-fn is_deadlock(e: &sqlx::migrate::MigrateError) -> bool {
-    use sqlx::migrate::MigrateError;
-    match e {
-        MigrateError::Execute(sqlx::Error::Database(db_err))
-        | MigrateError::ExecuteMigration(sqlx::Error::Database(db_err), _) => {
-            db_err.code().as_deref() == Some("40P01")
-        }
-        _ => false,
-    }
-}
-
 pub struct EventStore {
     pool: PgPool,       // read pool — API queries + cache warmer
     write_pool: PgPool, // write pool — batch writer, node updates
@@ -125,25 +112,8 @@ impl EventStore {
 
         info!("Write pool connected (200 conns, no statement_timeout)");
 
-        // Run migrations (using write pool — no timeout constraint).
-        // Retry on deadlock: TimescaleDB background jobs (continuous aggregate
-        // refresh/retention policies created by earlier migrations) can collide
-        // with DROP MATERIALIZED VIEW in later migrations on a fresh database.
-        let mut attempt = 0;
-        loop {
-            match sqlx::migrate!("./migrations").run(&write_pool).await {
-                Ok(()) => break,
-                Err(e) if attempt < 5 && is_deadlock(&e) => {
-                    attempt += 1;
-                    warn!(
-                        "Migration deadlocked with a TimescaleDB background job, retrying ({}/5): {}",
-                        attempt, e
-                    );
-                    tokio::time::sleep(Duration::from_secs(2)).await;
-                }
-                Err(e) => return Err(e.into()),
-            }
-        }
+        // Run migrations (using write pool — no timeout constraint)
+        sqlx::migrate!("./migrations").run(&write_pool).await?;
 
         info!("Migrations applied successfully");
 
