@@ -52,14 +52,13 @@ CREATE VIEW all_event_stats_1h AS
   UNION ALL SELECT bucket, node_id, event_type, event_count FROM segment_counts_1h
   UNION ALL SELECT bucket, node_id, event_type, event_count FROM preimage_counts_1h;
 
--- Core-aware UNION view (for timeseries?group_by=core and core=X filter)
--- Only tables with a core column participate.
--- Uses raw count tables (not _1m aggregates) because the continuous aggregates
--- with node_id GROUP BY would double-count; the raw tables carry core directly.
+-- Core-aware UNION view (for timeseries?group_by=core and core=X filter).
+-- Only the three groups carrying a core dimension participate. Reads the
+-- _1m aggregates, so core queries get their 30-day retention.
 CREATE VIEW all_core_stats_1m AS
   SELECT bucket, event_type, core, event_count
-    FROM guarantee_sending_counts WHERE core IS NOT NULL
+    FROM guarantee_sending_counts_1m WHERE core IS NOT NULL
   UNION ALL SELECT bucket, event_type, core, event_count
-    FROM segment_counts WHERE core IS NOT NULL
+    FROM segment_counts_1m WHERE core IS NOT NULL
   UNION ALL SELECT bucket, event_type, core, event_count
-    FROM wp_pipeline_counts WHERE core IS NOT NULL;
+    FROM wp_pipeline_counts_1m WHERE core IS NOT NULL;

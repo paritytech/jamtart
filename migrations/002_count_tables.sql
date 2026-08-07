@@ -114,9 +114,6 @@ CREATE TABLE wp_pipeline_counts (
 SELECT create_hypertable('wp_pipeline_counts', 'bucket', chunk_time_interval => INTERVAL '1 day');
 ALTER TABLE wp_pipeline_counts ADD CHECK (event_type BETWEEN 90 AND 105);
 CREATE INDEX ON wp_pipeline_counts (node_id, event_type, bucket DESC);
--- all_core_stats_1m queries raw tables with core filter (partial: many rows have NULL core)
-CREATE INDEX IF NOT EXISTS idx_wp_pipeline_counts_core
-    ON wp_pipeline_counts (core, event_type, bucket DESC) WHERE core IS NOT NULL;
 ALTER TABLE wp_pipeline_counts SET (
     timescaledb.compress,
     timescaledb.compress_segmentby = 'node_id, event_type',
@@ -184,9 +181,6 @@ CREATE TABLE guarantee_sending_counts (
 SELECT create_hypertable('guarantee_sending_counts', 'bucket', chunk_time_interval => INTERVAL '1 day');
 ALTER TABLE guarantee_sending_counts ADD CHECK (event_type BETWEEN 106 AND 109);
 CREATE INDEX ON guarantee_sending_counts (node_id, event_type, bucket DESC);
--- all_core_stats_1m queries raw tables with core filter (partial: many rows have NULL core)
-CREATE INDEX IF NOT EXISTS idx_guarantee_sending_counts_core
-    ON guarantee_sending_counts (core, event_type, bucket DESC) WHERE core IS NOT NULL;
 ALTER TABLE guarantee_sending_counts SET (
     timescaledb.compress,
     timescaledb.compress_segmentby = 'node_id, event_type',
@@ -298,9 +292,6 @@ CREATE TABLE segment_counts (
 SELECT create_hypertable('segment_counts', 'bucket', chunk_time_interval => INTERVAL '1 day');
 ALTER TABLE segment_counts ADD CHECK (event_type BETWEEN 160 AND 178);
 CREATE INDEX ON segment_counts (node_id, event_type, bucket DESC);
--- all_core_stats_1m queries raw tables with core filter (partial: many rows have NULL core)
-CREATE INDEX IF NOT EXISTS idx_segment_counts_core
-    ON segment_counts (core, event_type, bucket DESC) WHERE core IS NOT NULL;
 ALTER TABLE segment_counts SET (
     timescaledb.compress,
     timescaledb.compress_segmentby = 'node_id, event_type',

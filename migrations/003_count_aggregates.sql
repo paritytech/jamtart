@@ -1,6 +1,7 @@
 -- Hierarchical continuous aggregates over the count tables:
 -- <group>_1m (from raw, 30d retention) and <group>_1h (from _1m, 365d retention).
--- guarantee_sending and segment aggregates keep the `core` dimension.
+-- guarantee_sending, segment, and wp_pipeline aggregates keep the `core`
+-- dimension (all_core_stats_1m reads them).
 
 -- ============================================================
 -- block_distribution_counts
@@ -464,10 +465,10 @@ CREATE MATERIALIZED VIEW wp_pipeline_counts_1m
 WITH (timescaledb.continuous) AS
 SELECT
     time_bucket('1 minute', bucket) AS bucket,
-    node_id, event_type,
+    node_id, event_type, core,
     SUM(event_count) AS event_count
 FROM wp_pipeline_counts
-GROUP BY 1, node_id, event_type
+GROUP BY 1, node_id, event_type, core
 WITH NO DATA;
 
 SELECT add_continuous_aggregate_policy('wp_pipeline_counts_1m',
@@ -480,10 +481,10 @@ CREATE MATERIALIZED VIEW wp_pipeline_counts_1h
 WITH (timescaledb.continuous) AS
 SELECT
     time_bucket('1 hour', bucket) AS bucket,
-    node_id, event_type,
+    node_id, event_type, core,
     SUM(event_count) AS event_count
 FROM wp_pipeline_counts_1m
-GROUP BY 1, node_id, event_type
+GROUP BY 1, node_id, event_type, core
 WITH NO DATA;
 
 SELECT add_continuous_aggregate_policy('wp_pipeline_counts_1h',
@@ -593,3 +594,11 @@ CREATE INDEX IF NOT EXISTS idx_wp_pipeline_counts_1m_et
     ON wp_pipeline_counts_1m (event_type, bucket DESC);
 CREATE INDEX IF NOT EXISTS idx_wp_pipeline_counts_1h_et
     ON wp_pipeline_counts_1h (event_type, bucket DESC);
+
+-- all_core_stats_1m filters these aggregates by core (partial: NULL-core rows excluded)
+CREATE INDEX IF NOT EXISTS idx_guarantee_sending_counts_1m_core
+    ON guarantee_sending_counts_1m (core, event_type, bucket DESC) WHERE core IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_segment_counts_1m_core
+    ON segment_counts_1m (core, event_type, bucket DESC) WHERE core IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_wp_pipeline_counts_1m_core
+    ON wp_pipeline_counts_1m (core, event_type, bucket DESC) WHERE core IS NOT NULL;
