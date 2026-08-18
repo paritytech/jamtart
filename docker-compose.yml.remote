@@ -133,6 +133,8 @@ services:
   grafana:
     image: grafana/grafana:12.3.3
     container_name: tart-grafana
+    extra_hosts:
+      - "tart-backend:host-gateway"
     ports:
       - "3001:3000"
     environment:
