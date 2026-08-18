@@ -134,12 +134,24 @@ services:
     image: grafana/grafana:12.3.3
     container_name: tart-grafana
     ports:
-      - "3001:3000"      
+      - "3001:3000"
     environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      # Public read-only exposure — see docs/grafana-public-exposure.md
+      - GF_SERVER_ROOT_URL=${GF_PUBLIC_URL:-http://192.168.20.84:3001/}
+      - GF_SECURITY_ADMIN_USER=${GF_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_ADMIN_PASSWORD:?set a strong password in .env}
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_USERS_ALLOW_ORG_CREATE=false
+      - GF_USERS_VIEWERS_CAN_EDIT=false
+      - GF_EXPLORE_ENABLED=false
+      - GF_SNAPSHOTS_EXTERNAL_ENABLED=false
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+      - GF_SECURITY_STRICT_TRANSPORT_SECURITY=true
+      - GF_SECURITY_CONTENT_SECURITY_POLICY=true
+      - GF_SECURITY_DISABLE_GRAVATAR=true
       - GF_INSTALL_PLUGINS=yesoreyeram-infinity-datasource
     volumes:
       - grafana-data:/var/lib/grafana

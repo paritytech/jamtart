@@ -11,4 +11,3 @@ datasources:
       global_queries: []
       allowedHosts:
         - http://tart-backend:8080
-        - http://tart-backend:8080
