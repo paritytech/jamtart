@@ -719,21 +719,28 @@ async fn blocks_contents(
         .map_err(|e| map_sqlx_error("grafana/blocks/contents", e))
 }
 
-/// Per-service activity and gas usage totals.
+/// What each service did in the range, and the gas it spent doing it.
 ///
-/// Queries `service_stats_1m` continuous aggregate (rollup of `event_services`
-/// join table). Counts and gas are computed via `SUM FILTER` for event types
-/// as defined in JIP-3: WorkPackageReceived (94), Authorized (95),
-/// Refined (101), BlockExecuted (47). Service IDs are hex-encoded in the
-/// response (JAM uses u32 service IDs, stored as signed i32 in PostgreSQL).
-/// The `service` parameter accepts decimal or `0x` hex IDs with Grafana
-/// `{a,b}` multi-select syntax.
+/// One row per service that any node attributed work to. The counters are
+/// event attributions, not distinct work packages or blocks: a service is
+/// counted once for every WorkPackageReceived(94), Authorized(95),
+/// Refined(101) and BlockExecuted(47) report that names it, and since each
+/// guarantor and each node executing a block reports for itself, one work
+/// package or block contributes once per reporting node. The gas figures are
+/// the reported costs of the service's own code — the is-authorized call for
+/// Authorized(95), the per-work-item refine calls for Refined(101) and the
+/// per-service accumulate calls for BlockExecuted(47). Service IDs come back
+/// zero-padded hex; the `service` filter accepts decimal or `0x` hex IDs and
+/// Grafana `{a,b}` multi-select syntax.
+///
+/// Answers: which services are consuming the network's compute, and how much
+/// gas does each spend on authorization, refinement and accumulation?
 #[utoipa::path(
     get,
     path = "/api/grafana/services",
     params(ServiceQuery),
     responses(
-        (status = 200, description = "Per-service totals", body = [ServiceRow]),
+        (status = 200, description = "Array with one row per service, ascending by service ID, each with the service's work-package, authorization, refinement and accumulation counters and the gas consumed in each of the three phases.", body = [ServiceRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -751,19 +758,27 @@ async fn services(
         .map_err(|e| map_sqlx_error("grafana/services", e))
 }
 
-/// Time-bucketed per-service metrics (WP counts and gas usage).
+/// Per-service work-package load and gas usage over time.
 ///
-/// Same `service_stats_1m` aggregate as `/services`, re-bucketed via
-/// `time_bucket()` to the requested interval (default 1 m). Returns per-bucket
-/// work package counts and gas consumed split by type: authorization (95),
-/// refinement (101), execution (47) — event types as defined in JIP-3.
-/// Service IDs are hex-encoded. Supports Grafana `{a,b}` multi-select.
+/// The same per-service attribution as `/services`, split into buckets of the
+/// requested `interval` (default 1 minute, snapped to the nearest supported
+/// width from 6s up to 1d). Each bucket carries the WorkPackageReceived(94)
+/// count for the service and the gas its code used in each phase —
+/// Authorized(95) for authorization, Refined(101) for refinement,
+/// BlockExecuted(47) for accumulation. The counts behind it have one-minute
+/// resolution, so 1 minute is the finest interval that carries real detail;
+/// shorter buckets land everything on the minute boundaries. Service IDs come
+/// back zero-padded hex and the `service` filter takes Grafana `{a,b}`
+/// multi-select syntax.
+///
+/// Answers: how does each service's work-package load and gas consumption
+/// evolve over time?
 #[utoipa::path(
     get,
     path = "/api/grafana/services/timeseries",
     params(ServiceTimeseriesQuery),
     responses(
-        (status = 200, description = "Service time-series", body = [ServiceTimeseriesRow]),
+        (status = 200, description = "Array of rows, one per time bucket and service, ascending by bucket and then service ID, each with the bucket's work-package count and its authorization, refinement and accumulation gas.", body = [ServiceTimeseriesRow]),
         (status = 400, description = "Invalid interval"),
         (status = 500, description = "Database error"),
     ),
@@ -2133,24 +2148,27 @@ async fn core_validators(
 
 // ── Phase 5: Hard rewrites ──────────────────────────────────────────────
 
-/// Execution performance metrics — gas and timing per processing phase.
+/// Gas and execution time for each of the three service-execution phases.
 ///
-/// **Question answered:** "How much gas and time does each execution phase use?"
+/// The phases are the three points where service code actually runs: the
+/// is-authorized call of a work package, reported by Authorized(95); the
+/// refine call of each work item, reported by Refined(101); and the
+/// accumulate call of each service touched by a block, reported by
+/// BlockExecuted(47). Each phase gives how many executions were reported,
+/// their total and mean gas, and the mean wall-clock and code-load times.
+/// `by_service` splits the same numbers per service and phase, highest gas
+/// first. Guarantors and block-executing nodes report independently, so an
+/// execution is counted once per reporting node rather than once per work
+/// package or block. Only about the last week of executions is kept.
 ///
-/// **Data source:** `event_services` table (7-day retention) with pre-extracted
-/// gas and timing columns from three event types:
-/// - Authorized (type 95): `is_authorized` PVM call cost
-/// - Refined (type 101): per-item `refine` PVM call costs
-/// - BlockExecuted (type 47): per-service `accumulate` PVM call costs
-///
-/// Per-service gas/timing breakdown available for all three phases.
-/// Each `by_service` entry includes a `phase` field.
+/// Answers: which execution phase and which services dominate gas usage and
+/// execution time?
 #[utoipa::path(
     get,
     path = "/api/grafana/execution",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Execution performance by phase", body = ExecutionMetricsResponse),
+        (status = 200, description = "Single object with a gas and timing summary for each of the authorization, refinement and accumulation phases, plus the 50 highest-gas service-and-phase combinations.", body = ExecutionMetricsResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"

@@ -309,52 +309,53 @@ pub struct BlockContentsRow {
 
 // ── /api/grafana/services ───────────────────────────────────────────────
 
-/// Per-service activity and gas usage totals.
+/// One service's activity and gas usage over the whole queried range.
 ///
-/// **Data source:** `service_stats_1m` continuous aggregate over the
-/// `event_services` join table. This aggregate tracks per-service event counts
-/// and gas consumption. Event types: 94 (WorkPackageReceived) for WP counts,
-/// 101 (Refined) for refinement gas, 95 (Authorized) for authorization gas,
-/// 47 (BlockExecuted) for execution gas.
+/// Every counter counts event attributions rather than distinct work packages
+/// or blocks: each guarantor and each block-executing node reports for itself,
+/// so the same work item or accumulated service is counted once per reporting
+/// node.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ServiceRow {
     /// Service ID (hex-formatted, e.g. "0x000000ff")
     pub service_id: DbServiceId,
-    /// Total WorkPackageReceived events
+    /// WorkPackageReceived(94) reports naming this service
     pub work_packages: i64,
-    /// Total Refined events
+    /// Work items of this service refined, from Refined(101)
     pub refinements: i64,
-    /// Total refinement gas consumed
+    /// Gas used by those refine calls
     pub refinement_gas: i64,
-    /// Total Authorized events
+    /// Authorized(95) reports naming this service
     pub authorizations: i64,
-    /// Total authorization gas consumed
+    /// Gas used by the is-authorized calls of Authorized(95). The cost is
+    /// reported once per work package and booked to the first service of the
+    /// package, so it is not spread across the package's other services.
     pub authorization_gas: i64,
-    /// Total BlockExecuted events
+    /// Times this service was accumulated, from the per-service accumulate
+    /// entries of BlockExecuted(47)
     pub executions: i64,
-    /// Total execution gas consumed
+    /// Gas used by those accumulate calls
     pub execution_gas: i64,
 }
 
 // ── /api/grafana/services/timeseries ────────────────────────────────────
 
-/// Time-bucketed per-service metrics.
+/// One service's activity and gas usage inside one time bucket.
 ///
-/// **Data source:** Same `service_stats_1m` continuous aggregate as `/services`,
-/// re-bucketed via `time_bucket()` to the requested interval.
+/// Same per-service attribution as `ServiceRow`, restricted to the bucket.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ServiceTimeseriesRow {
-    /// Bucket start timestamp
+    /// Start of the time bucket
     pub ts: DateTime<Utc>,
     /// Service ID (hex-formatted, same encoding as ServiceRow)
     pub service_id: DbServiceId,
-    /// WorkPackageReceived count in bucket
+    /// WorkPackageReceived(94) reports naming this service in the bucket
     pub work_packages: i64,
-    /// Authorization gas in bucket
+    /// Gas used by the service's is-authorized calls, from Authorized(95)
     pub authorization_gas: i64,
-    /// Refinement gas in bucket
+    /// Gas used by the service's refine calls, from Refined(101)
     pub refinement_gas: i64,
-    /// Execution gas in bucket
+    /// Gas used by the service's accumulate calls, from BlockExecuted(47)
     pub execution_gas: i64,
 }
 
@@ -1663,58 +1664,62 @@ pub struct CoreMetricsResponse {
 
 // ── /api/grafana/execution ──────────────────────────────────────────────
 
-/// Execution performance metrics — gas and timing per processing phase.
+/// Gas and timing for the three phases in which service code runs, plus the
+/// heaviest services in each.
 ///
-/// **Question answered:** "How much gas and time does each execution phase use?"
-///
-/// **Data source:** `event_services` table (7-day retention) with pre-extracted
-/// timing columns. Three phases measured:
-/// - Authorization (Authorized event, type 95): `is_authorized` PVM call
-/// - Refinement (Refined event, type 101): `refine` PVM call per work item
-/// - Accumulation (BlockExecuted event, type 47): `accumulate` PVM call per service
-///
-/// Per-service breakdown includes all three phases (each row has a `phase` field).
+/// The phases are the is-authorized call of a work package, the refine call of
+/// each of its work items, and the accumulate call of each service touched by
+/// a block.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ExecutionMetricsResponse {
-    /// Authorization phase (Authorized event)
+    /// Authorization phase, as reported by Authorized(95)
     pub authorization: ExecutionPhaseStats,
-    /// Refinement phase (Refined event)
+    /// Refinement phase, as reported by Refined(101)
     pub refinement: ExecutionPhaseStats,
-    /// Accumulation phase (BlockExecuted event)
+    /// Accumulation phase, as reported by BlockExecuted(47)
     pub accumulation: ExecutionPhaseStats,
-    /// Per-service gas and timing breakdown across all phases
+    /// The 50 service-and-phase combinations with the highest total gas,
+    /// heaviest first
     pub by_service: Vec<ServiceExecutionRow>,
 }
 
-/// Stats for a single execution phase.
+/// Gas and timing summary for one execution phase.
+///
+/// The averages cover only the executions that came with a cost figure. For
+/// authorization the cost is reported once per work package, so `count` can
+/// exceed the number of executions the averages are taken over.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ExecutionPhaseStats {
-    /// Number of events in this phase
+    /// Executions reported in this phase, counted once per reporting node
     pub count: i64,
-    /// Total gas consumed
+    /// Total gas used by those executions
     pub total_gas: i64,
-    /// Average gas per event
+    /// Mean gas per execution
     pub avg_gas: f64,
-    /// Average execution time in nanoseconds
+    /// Mean wall-clock execution time in nanoseconds
     pub avg_time_ns: f64,
-    /// Average PVM code load/compile time in nanoseconds
+    /// Mean time to load and compile the service code, in nanoseconds
     pub avg_load_ns: f64,
 }
 
-/// Per-service execution stats for a single phase.
+/// One service's gas and timing in one execution phase.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ServiceExecutionRow {
-    /// Service ID
+    /// Service ID as a plain signed number, not the hex encoding used
+    /// elsewhere. IDs from 2^31 up therefore appear negative — including
+    /// 0xffffffff, which BlockExecuted(47) uses to report the combined cost of
+    /// the lowest-gas services when a block accumulates more than 500 of them.
     pub service_id: i32,
     /// Execution phase: "authorization", "refinement", or "accumulation"
     pub phase: String,
     /// Total gas used by this service in this phase
     pub total_gas: i64,
-    /// Number of events
+    /// Executions reported for this service in this phase, counted once per
+    /// reporting node
     pub count: i64,
-    /// Average execution time in nanoseconds
+    /// Mean wall-clock execution time in nanoseconds
     pub avg_time_ns: f64,
-    /// Average PVM code load/compile time in nanoseconds
+    /// Mean time to load and compile the service code, in nanoseconds
     pub avg_load_ns: f64,
 }
 
