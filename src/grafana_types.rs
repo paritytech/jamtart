@@ -167,47 +167,40 @@ pub struct TimeseriesRow {
 
 // ── /api/grafana/cores ──────────────────────────────────────────────────
 
-/// Per-core activity summary.
-///
-/// **Data source:** `all_core_stats_1m` UNION view (backed by count tables after
-/// migration 020). Counts filtered by event type: 94 (WorkPackageReceived),
-/// 105 (GuaranteeBuilt), 92 (WorkPackageFailed). `last_activity` from correlated
-/// subquery on `wp_tracking` table.
+/// One core's work-package activity over the time range.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct CoreSummary {
     /// Core index
     pub core: i16,
-    /// WorkPackageReceived events (type 94 as defined in JIP-3)
+    /// WorkPackageReceived(94) reports for this core — one per guarantor that
+    /// received a work package, so higher than the number of distinct work packages
     pub work_packages: i64,
-    /// GuaranteeBuilt events (type 105 as defined in JIP-3)
+    /// GuaranteeBuilt(105) reports for this core, one per guarantor per work report
     pub guarantees: i64,
-    /// WorkPackageFailed events (type 92 as defined in JIP-3)
+    /// WorkPackageFailed(92) reports for this core
     pub failures: i64,
-    /// When the last work package was seen on this core (from wp_tracking.first_seen).
-    /// NULL for cores with no WP activity in the queried time range.
+    /// When the newest work package on this core was first observed. Counts every
+    /// work package seen since the range start, so it can lie beyond the range end.
+    /// Null for a core with no work-package activity since the range start.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_activity: Option<DateTime<Utc>>,
 }
 
-/// Single core detail with recent work packages.
-///
-/// **Data source:** Same as `CoreSummary` for counters. The `recent_work_packages`
-/// come from the `wp_tracking` table, which is populated by the enricher
-/// (`src/enricher.rs`) correlating WP pipeline events (types 90–109 as defined
-/// in JIP-3) across nodes — tracking each work package from submission through
-/// authorization, refinement, report building, guarantee building, distribution,
-/// or failure.
+/// One core's work-package activity, with the pipeline timelines of its most
+/// recent work packages.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct CoreDetail {
     /// Core index
     pub core: i16,
-    /// WorkPackageReceived events (type 94 as defined in JIP-3)
+    /// WorkPackageReceived(94) reports for this core — one per guarantor that
+    /// received a work package, so higher than the number of distinct work packages
     pub work_packages: i64,
-    /// GuaranteeBuilt events (type 105 as defined in JIP-3)
+    /// GuaranteeBuilt(105) reports for this core, one per guarantor per work report
     pub guarantees: i64,
-    /// WorkPackageFailed events (type 92 as defined in JIP-3)
+    /// WorkPackageFailed(92) reports for this core
     pub failures: i64,
-    /// Up to 100 most recent work packages for this core
+    /// Up to 100 work packages first observed on this core in the range, newest
+    /// first, each with its pipeline timeline
     pub recent_work_packages: Vec<WpTrackingRow>,
 }
 
@@ -935,93 +928,88 @@ pub struct BottlenecksTimeseriesRow {
 
 // ── /api/grafana/validator-profiling ────────────────────────────────────
 
-/// Per-validator pipeline performance profiling row.
-///
-/// **Data source pipeline:** JIP-3 telemetry events flow through the in-memory
-/// `WpTracker` into the `wp_tracking` table. Each work package is identified by
-/// its `wp_hash` (primary key) and tracked through 6 pipeline stages:
-///
-/// | Stage          | Source event              | Type ID | Column             |
-/// |----------------|---------------------------|---------|--------------------|
-/// | Received       | WorkPackageReceived       | 94      | `received_at`      |
-/// | Authorized     | WorkPackageAuthorized     | 95      | `authorized_at`    |
-/// | Refined        | Refined                   | 101     | `refined_at`       |
-/// | Report built   | WorkReportBuilt           | 102     | `report_built_at`  |
-/// | Guarantee built| GuaranteeBuilt            | 105     | `guarantee_built_at`|
-/// | Distributed    | GuaranteesDistributed     | 109     | `distributed_at`   |
-///
-/// `node_id` is set from the WorkPackageReceived (94) event — the node that
-/// first received the WP. All subsequent stages execute on the same node.
-///
-/// The query computes `AVG(stage_n+1 - stage_n)` in milliseconds per node via
-/// `GROUP BY node_id`. `slowdown_factor` is computed in Rust as
-/// `node_avg_total_ms / network_avg_total_ms`.
-///
-/// Returned inside [`ValidatorProfilingResponse`] which also carries
-/// `network_avg_total_ms` for threshold/baseline rendering.
+/// Work-package pipeline performance of every guarantor, with the network-wide
+/// baseline to compare each of them against.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ValidatorProfilingResponse {
-    /// Network-wide average total pipeline latency (ms) across all nodes.
-    /// Useful as a baseline/threshold line in outlier charts.
+    /// Unweighted mean of the per-guarantor `avg_total_ms` values, in milliseconds
+    /// — the baseline `slowdown_factor` is measured against. Null when no work
+    /// package reached distribution in the range.
     pub network_avg_total_ms: Option<f64>,
-    /// Per-node profiling rows, sorted by `avg_total_ms` DESC (slowest first).
-    /// When `limit` is specified, only the top-N slowest nodes are included;
-    /// `network_avg_total_ms` still reflects all nodes.
+    /// One row per guarantor, sorted by `avg_total_ms` (slowest first by default,
+    /// fastest first with `sort=asc`), guarantors with no distributed work package
+    /// last. `limit` truncates this list only; `network_avg_total_ms` still covers
+    /// every guarantor.
     pub nodes: Vec<ValidatorProfilingRow>,
 }
 
+/// One guarantor's average progress through the work-package pipeline.
+///
+/// The work packages counted here are those attributed to this guarantor — it was
+/// the first to report WorkPackageReceived(94) for them — that finished, meaning
+/// they reached GuaranteesDistributed(109) or WorkPackageFailed(92).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ValidatorProfilingRow {
     /// Node identifier (hex-encoded 32-byte public key)
     pub node_id: String,
-    /// Total work packages processed by this node in the time range
+    /// Finished work packages attributed to this guarantor in the range
     pub wp_count: i64,
-    /// Number of WPs that failed (failed_at IS NOT NULL)
+    /// How many of them reported WorkPackageFailed(92)
     pub failures: i64,
-    /// Failure rate: failures / wp_count (0.0–1.0)
+    /// `failures` / `wp_count`, between 0.0 and 1.0
     pub failure_rate: f64,
-    /// Average received → authorized latency (ms)
+    /// Average WorkPackageReceived(94) → Authorized(95) duration in milliseconds,
+    /// over the work packages that reached distribution
     pub avg_authorize_ms: Option<f64>,
-    /// Average authorized → refined latency (ms)
+    /// Average Authorized(95) → Refined(101) duration in milliseconds
     pub avg_refine_ms: Option<f64>,
-    /// Average refined → report_built latency (ms)
+    /// Average Refined(101) → WorkReportBuilt(102) duration in milliseconds
     pub avg_report_ms: Option<f64>,
-    /// Average report_built → guarantee_built latency (ms)
+    /// Average WorkReportBuilt(102) → GuaranteeBuilt(105) duration in milliseconds
     pub avg_guarantee_ms: Option<f64>,
-    /// Average guarantee_built → distributed latency (ms)
+    /// Average GuaranteeBuilt(105) → GuaranteesDistributed(109) duration in
+    /// milliseconds
     pub avg_distribute_ms: Option<f64>,
-    /// Average total pipeline latency: received → COALESCE(distributed, failed) (ms)
+    /// Average WorkPackageReceived(94) → GuaranteesDistributed(109) duration in
+    /// milliseconds. Null when none of this guarantor's work packages reached
+    /// distribution — failed ones do not contribute.
     pub avg_total_ms: Option<f64>,
-    /// Node's avg_total_ms / network avg_total_ms. Values > 1.5 indicate underperformers.
+    /// This guarantor's `avg_total_ms` divided by `network_avg_total_ms`; above
+    /// roughly 1.5 the guarantor is an outlier
     pub slowdown_factor: Option<f64>,
 }
 
-/// Per-validator pipeline performance over time.
+/// One guarantor's average pipeline progress within one time bucket.
 ///
-/// Time-bucketed variant of [`ValidatorProfilingRow`]. Same source events and
-/// processing pipeline — results are grouped by `time_bucket(interval, first_seen)`
-/// and `node_id`.
+/// Work packages are placed in the bucket in which they were first observed, and
+/// attributed to the guarantor that first reported WorkPackageReceived(94) for
+/// them.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ValidatorProfilingTimeseriesRow {
-    /// Bucket start timestamp
+    /// Start of the time bucket
     pub ts: DateTime<Utc>,
-    /// Node identifier
+    /// Node identifier (hex-encoded 32-byte public key)
     pub node_id: String,
-    /// Work packages in this bucket for this node
+    /// Work packages attributed to this guarantor in this bucket, including ones
+    /// still in flight
     pub wp_count: i64,
-    /// Failed WPs in this bucket for this node
+    /// How many of them reported WorkPackageFailed(92)
     pub failures: i64,
-    /// Average received → authorized latency (ms)
+    /// Average WorkPackageReceived(94) → Authorized(95) duration in milliseconds,
+    /// over the bucket's work packages that reached distribution
     pub avg_authorize_ms: Option<f64>,
-    /// Average authorized → refined latency (ms)
+    /// Average Authorized(95) → Refined(101) duration in milliseconds
     pub avg_refine_ms: Option<f64>,
-    /// Average refined → report_built latency (ms)
+    /// Average Refined(101) → WorkReportBuilt(102) duration in milliseconds
     pub avg_report_ms: Option<f64>,
-    /// Average report_built → guarantee_built latency (ms)
+    /// Average WorkReportBuilt(102) → GuaranteeBuilt(105) duration in milliseconds
     pub avg_guarantee_ms: Option<f64>,
-    /// Average guarantee_built → distributed latency (ms)
+    /// Average GuaranteeBuilt(105) → GuaranteesDistributed(109) duration in
+    /// milliseconds
     pub avg_distribute_ms: Option<f64>,
-    /// Average total pipeline latency (ms)
+    /// Average WorkPackageReceived(94) → GuaranteesDistributed(109) duration in
+    /// milliseconds. Null in buckets where none of this guarantor's work packages
+    /// reached distribution.
     pub avg_total_ms: Option<f64>,
 }
 
@@ -1336,62 +1324,56 @@ pub struct WpCoreCount {
 
 // ── /api/grafana/validators/cores ───────────────────────────────────────
 
-/// Node→core mapping based on observed guarantee behavior.
+/// One guaranteeing node and a core it was seen guaranteeing for.
 ///
-/// **Data source:** `guarantee_convergence` table (builder_node_id + core).
-/// Shares `node_core_mapping()` helper with `/guarantees/by-guarantor`.
-///
-/// **Caveat:** This mapping reflects observed guarantee behavior, not
-/// protocol-level validator→core assignment. Telemetry does not transmit
-/// `validator_index` — there is no way to map node_id → validator_index
-/// without upstream JIP-3 changes.
+/// The association is observed from GuaranteeBuilt(105) reports, not the
+/// protocol's validator→core assignment, which telemetry does not carry — JIP-3
+/// events identify a node by its public key and never by validator index.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ValidatorCoreRow {
     /// Node identifier (Ed25519 public key hex)
     pub node_id: String,
-    /// Core this node most frequently guarantees for (by count). NULL if no core data.
+    /// A core this node built guarantees for in the range. Only one core is
+    /// reported even when the node guaranteed for several, so treat it as
+    /// indicative unless the range is shorter than one 10-slot core rotation. Null
+    /// when no core could be determined.
     pub primary_core: Option<i16>,
-    /// Total guarantees built by this node in the time range
+    /// Guarantees this node built in the range, across all cores
     pub guarantee_count: i64,
 }
 
 // ── /api/grafana/cores/{id}/validators ───────────────────────────────────
 
-/// Per-core validator (guarantor) list with node metadata.
+/// The nodes observed guaranteeing for one core.
 ///
-/// **Question answered:** "Which validators are active guarantors for this core?"
-///
-/// **Data source:** `guarantee_convergence` table (builder_node_id + core, 90d
-/// retention) filtered by core. JOINed with `nodes` table for implementation
-/// details (name, version). Shares `node_core_mapping()` helper.
-///
-/// **Limitation:** Only includes validators who actually built guarantees.
-/// Validators assigned to a core but inactive (no guarantees built) won't appear.
-/// Telemetry does not transmit `validator_index`.
+/// Membership comes from GuaranteeBuilt(105) reports, so a validator assigned to
+/// the core that built no guarantee in the range is absent; this is the observed
+/// guarantor set, not the protocol's validator→core assignment.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct CoreValidatorsResponse {
     /// Core index
     pub core: i16,
-    /// Active validators on this core
+    /// One row per node that built guarantees for this core, most guarantees first
     pub validators: Vec<CoreValidatorRow>,
-    /// Number of active validators
+    /// Number of rows in `validators`
     pub total_active: i64,
 }
 
-/// A validator active on a specific core.
+/// One node's guaranteeing activity for a single core, with its node metadata.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct CoreValidatorRow {
     /// Node identifier (Ed25519 public key hex)
     pub node_id: String,
-    /// Number of guarantees built for this core
+    /// GuaranteeBuilt(105) reports from this node for this core in the range
     pub guarantee_count: i64,
-    /// When this node last guaranteed on this core
+    /// When this node last built a guarantee for this core
     pub last_guarantee: Option<DateTime<Utc>>,
-    /// Node implementation name (from nodes table, e.g. "polkajam")
+    /// Node implementation name as announced at handshake (e.g. "polkajam"). Null
+    /// for a node that has not connected to telemetry.
     pub implementation_name: Option<String>,
-    /// Node implementation version
+    /// Node implementation version as announced at handshake
     pub implementation_version: Option<String>,
-    /// Whether the node is currently connected
+    /// Whether the node's telemetry connection is open right now
     pub is_connected: Option<bool>,
 }
 
@@ -1652,28 +1634,28 @@ pub struct AuthoringByNode {
 
 // ── /api/grafana/cores/{id}/metrics ─────────────────────────────────────
 
-/// Core performance metrics — efficiency, latency, throughput, gas.
-///
-/// **Question answered:** "How is this core performing?"
-///
-/// **Data source:** `all_core_stats_1m` for event counts (efficiency ratios).
-/// `wp_tracking` for pipeline latency percentiles (same approach as `/bottlenecks`).
-/// `refine_gas_used` from wp_tracking for gas utilization.
+/// One core's work-package throughput, pipeline latency and gas usage.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct CoreMetricsResponse {
     /// Core index
     pub core: i16,
-    /// Refined / (Refined + Failed) as percentage
+    /// Share of Refined(101) among Refined(101) plus WorkPackageFailed(92) reports
+    /// on this core, as a percentage. 100 when neither was reported.
     pub processing_efficiency_pct: f64,
-    /// Pipeline p50 latency (received → distributed) in milliseconds
+    /// Median WorkPackageReceived(94) → GuaranteesDistributed(109) duration in
+    /// milliseconds, over the work packages first observed on this core in the
+    /// range. Ones that never got distributed contribute the time up to their last
+    /// observed pipeline event.
     pub p50_latency_ms: Option<f64>,
-    /// Pipeline p95 latency in milliseconds
+    /// The same measurement at the 95th percentile, in milliseconds
     pub p95_latency_ms: Option<f64>,
-    /// Average completion time (received → distributed) in milliseconds
+    /// Average WorkPackageReceived(94) → GuaranteesDistributed(109) duration in
+    /// milliseconds, over only the work packages that reached distribution
     pub average_completion_time_ms: Option<f64>,
-    /// Total gas used by refined WPs on this core
+    /// Total refine gas reported in Refined(101) for this core's work packages
     pub total_gas_used: i64,
-    /// Work packages processed in the time range
+    /// WorkPackageReceived(94) reports for this core — one per guarantor, so higher
+    /// than the number of distinct work packages
     pub work_packages_processed: i64,
 }
 

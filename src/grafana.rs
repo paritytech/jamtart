@@ -453,8 +453,8 @@ pub struct ValidatorProfilingTimeseriesQuery {
     /// Filter to a single core index
     pub core: Option<i16>,
     /// Filter to a single node (hex-encoded 32-byte public key). When provided,
-    /// returns per-bucket timeseries for that node only. When omitted, returns
-    /// top ~20 slowest nodes.
+    /// returns every bucket for that guarantor only. When omitted, returns the 20
+    /// guarantors with the highest average total pipeline duration over the range.
     pub node: Option<String>,
 }
 
@@ -579,17 +579,24 @@ async fn stats(
     Ok(Json(result))
 }
 
-/// Per-core activity summary: work packages, guarantees, and failures.
+/// Per-core work-package activity: receptions, guarantees and failures.
 ///
-/// Queries `core_stats_1m` continuous aggregate using `SUM(event_count) FILTER`
-/// for three event types as defined in JIP-3: WorkPackageReceived (94),
-/// GuaranteeBuilt (105), WorkPackageFailed (92). Grouped by core index.
+/// One row per core that saw any core-attributed activity in the range, counting
+/// WorkPackageReceived(94), GuaranteeBuilt(105) and WorkPackageFailed(92). These
+/// are event counts, not distinct work packages — every guarantor of a work
+/// package reports its own reception and guarantee, so one work package
+/// contributes once per guarantor. `last_activity` is the newest work package
+/// first observed on the core since the range start and is not capped at the
+/// range end.
+///
+/// Answers: which cores are carrying work-package load, and where are work
+/// packages failing?
 #[utoipa::path(
     get,
     path = "/api/grafana/cores",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Per-core summary", body = [CoreSummary]),
+        (status = 200, description = "Array of per-core rows, ascending by core index, each with the core's work-package reception, guarantee and failure counts plus its last observed work-package activity.", body = [CoreSummary]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -606,13 +613,17 @@ async fn cores_summary(
         .map_err(|e| map_sqlx_error("grafana/cores", e))
 }
 
-/// Single core detail with recent work packages from the enricher pipeline.
+/// One core's work-package activity, with its most recent work-package timelines.
 ///
-/// Returns the same summary counters as `/cores` (from `core_stats_1m`) plus
-/// the 100 most recent work packages from `wp_tracking` for this core. The
-/// `wp_tracking` table is populated by the enricher, which correlates WP
-/// pipeline events (types 90–109 as defined in JIP-3) across nodes, tracking
-/// each work package from submission through distribution or failure.
+/// The same counters as `/cores` for this core — WorkPackageReceived(94),
+/// GuaranteeBuilt(105) and WorkPackageFailed(92) event counts — plus up to 100
+/// work packages first observed on the core in the range, newest first, each with
+/// its pipeline timeline from reception through guarantee distribution or failure.
+/// A core with no activity in the range comes back with zero counters and an empty
+/// list.
+///
+/// Answers: what is this one core doing, and how far did its most recent work
+/// packages get?
 #[utoipa::path(
     get,
     path = "/api/grafana/cores/{core_id}",
@@ -621,7 +632,7 @@ async fn cores_summary(
         TimeRangeQuery,
     ),
     responses(
-        (status = 200, description = "Core detail with recent WPs", body = CoreDetail),
+        (status = 200, description = "Single object with the core's activity counters and up to 100 of its recent work-package pipeline timelines, newest first.", body = CoreDetail),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1366,35 +1377,35 @@ async fn bottlenecks_timeseries(
         .map_err(|e| map_sqlx_error("grafana/bottlenecks-timeseries", e))
 }
 
-/// Per-guarantor pipeline performance — which guarantors are slow or failing?
+/// Per-guarantor work-package pipeline performance.
 ///
-/// Profiles the guarantor-side work-package pipeline: from receiving a WP
-/// through authorization, refinement, report building, guarantee building,
-/// to distribution. All stages execute on the same guarantor node. Only WPs
-/// that completed the pipeline (distributed or failed) are included —
-/// in-flight WPs are excluded.
+/// One row per guarantor, over the work packages first observed in the range that
+/// finished — reached GuaranteesDistributed(109) or WorkPackageFailed(92); ones
+/// still in flight are left out. Each stage average is the duration between two
+/// consecutive pipeline stages (WorkPackageReceived(94) → Authorized(95) →
+/// Refined(101) → WorkReportBuilt(102) → GuaranteeBuilt(105) →
+/// GuaranteesDistributed(109)) in milliseconds, taken only over the work packages
+/// that did get distributed, while `failure_rate` covers every finished one.
+/// `slowdown_factor` is the guarantor's average total divided by
+/// `network_avg_total_ms`, itself the unweighted mean of the per-guarantor
+/// averages; above roughly 1.5 the guarantor is an outlier. `core` narrows to the
+/// work packages on one core, `sort` picks slowest-first (default) or
+/// fastest-first, and `limit` truncates after sorting.
 ///
-/// | Pipeline stage  | Source event              | Type ID | Ordinal | wp_tracking column    |
-/// |-----------------|---------------------------|---------|---------|-----------------------|
-/// | Received        | WorkPackageReceived       | 94      | 0       | `received_at`         |
-/// | Authorized      | WorkPackageAuthorized     | 95      | 1       | `authorized_at`       |
-/// | Refined         | Refined                   | 101     | 2       | `refined_at`          |
-/// | Report built    | WorkReportBuilt           | 102     | 3       | `report_built_at`     |
-/// | Guarantee built | GuaranteeBuilt            | 105     | 4       | `guarantee_built_at`  |
-/// | Distributed     | GuaranteesDistributed     | 109     | 5       | `distributed_at`      |
-/// | Failed          | WorkPackageFailed         | 92      | —       | `failed_at`           |
+/// **Caveat:** a work package is attributed to the guarantor that first reported
+/// WorkPackageReceived(94) for it, but every later stage timestamp is the earliest
+/// report from *any* of its guarantors. A row therefore measures the fastest
+/// observed progress of that guarantor's work packages, which can blend several
+/// guarantors, rather than that one node's own processing.
 ///
-/// `node_id` identifies the guarantor — set from WorkPackageReceived (94).
-/// All subsequent stages execute on the same node.
-///
-/// `slowdown_factor` = `node_avg_total_ms / network_avg_total_ms` (>1.5 = underperformer).
-/// Guarantors rotate across cores, so `core` is an optional drill-down filter.
+/// Answers: which guarantors are slow or failing compared with the rest of the
+/// network?
 #[utoipa::path(
     get,
     path = "/api/grafana/validator-profiling",
     params(ValidatorProfilingQuery),
     responses(
-        (status = 200, description = "Per-guarantor pipeline performance. `nodes` sorted by avg_total_ms (slowest first by default). Only guarantors with completed WPs (distributed or failed) are included. `network_avg_total_ms` reflects all completed guarantors regardless of `limit`.", body = ValidatorProfilingResponse),
+        (status = 200, description = "Single object with the network-wide average total pipeline duration and the per-guarantor rows, sorted by average total duration, slowest first unless `sort=asc`. The network average always reflects every guarantor with finished work packages, not just the rows returned under `limit`.", body = ValidatorProfilingResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1412,21 +1423,29 @@ async fn validator_profiling(
         .map_err(|e| map_sqlx_error("grafana/validator-profiling", e))
 }
 
-/// Per-guarantor pipeline performance over time.
+/// Per-guarantor work-package pipeline performance over time.
 ///
-/// Time-bucketed variant of `/api/grafana/validator-profiling`. Same guarantor
-/// pipeline stages (see that endpoint's docs for the full event→column mapping).
-/// Results are grouped by `time_bucket(interval, first_seen)` and `node_id`.
+/// The time-bucketed form of `/validator-profiling`: one row per bucket and
+/// guarantor, with each work package placed in the bucket in which it was first
+/// observed. `wp_count` here counts every work package attributed to that
+/// guarantor in the bucket, including ones still in flight, while the stage
+/// averages (WorkPackageReceived(94) → Authorized(95) → Refined(101) →
+/// WorkReportBuilt(102) → GuaranteeBuilt(105) → GuaranteesDistributed(109)) cover
+/// only those that reached distribution. With `node` set, every bucket for that
+/// one guarantor is returned; without it, the 20 guarantors with the highest
+/// average total duration over the whole range are chosen once and all their
+/// buckets returned, so the same nodes appear throughout.
 ///
-/// When `node` is provided, returns per-bucket averages for that single guarantor
-/// (suitable for sparklines / per-node detail charts). When omitted, returns
-/// only the top ~20 slowest guarantors per bucket to avoid 1024×N result explosion.
+/// The attribution caveat of `/validator-profiling` applies here too: stage
+/// timestamps are the earliest report from any of a work package's guarantors.
+///
+/// Answers: when did a guarantor start slowing down, and at which stage?
 #[utoipa::path(
     get,
     path = "/api/grafana/validator-profiling-timeseries",
     params(ValidatorProfilingTimeseriesQuery),
     responses(
-        (status = 200, description = "Per-guarantor pipeline performance per time bucket. When node is provided: one row per bucket for that guarantor. When omitted: top ~20 slowest guarantors per bucket.", body = [ValidatorProfilingTimeseriesRow]),
+        (status = 200, description = "Array of rows, one per time bucket and guarantor, ascending by bucket and then node, each with the bucket's work-package and failure counts and its per-stage average durations in milliseconds. With `node`: only that guarantor; without it: the 20 slowest guarantors over the whole range.", body = [ValidatorProfilingTimeseriesRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1787,24 +1806,28 @@ async fn wp_stats(
         .map_err(|e| map_sqlx_error("grafana/wp-stats", e))
 }
 
-/// Node→core mapping based on observed guarantee behavior.
+/// Which core each guaranteeing node was seen working on.
 ///
-/// **Question answered:** "Which node is active on which core?"
+/// One row per node that emitted GuaranteeBuilt(105) in the range, with the total
+/// number of guarantees it built across all cores; a node that built none does not
+/// appear. `primary_core` names a single core even when the node guaranteed for
+/// several, so it is only meaningful over ranges shorter than one core rotation —
+/// use `/guarantees/by-guarantor` for a node's full core set, or
+/// `/cores/{core_id}/validators` for the view from one core. Guarantee propagation
+/// records are kept for 7 days, which bounds how far back the range can reach.
 ///
-/// **Data source:** `guarantee_convergence` table (builder_node_id + core, 90d
-/// retention). Returns primary core (most guarantees built) per node, plus total
-/// guarantee count. Shares `node_core_mapping()` helper with
-/// `/guarantees/by-guarantor`.
+/// **Caveat:** the node→core association is observed from guaranteeing behaviour,
+/// not the protocol's validator→core assignment. JAM rotates core assignments
+/// every 10 slots and reshuffles them each epoch, so a node legitimately shows up
+/// on several cores over any range longer than one rotation.
 ///
-/// **Caveat:** Reflects observed guarantee behavior, not protocol-level
-/// validator→core assignment. Nodes that haven't built any guarantees in the
-/// time range won't appear. See `/guarantees/by-guarantor` for the same caveat.
+/// Answers: which node is active on which core?
 #[utoipa::path(
     get,
     path = "/api/grafana/validators/cores",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Node to core mapping", body = [ValidatorCoreRow]),
+        (status = 200, description = "Array of one row per guaranteeing node, ordered by guarantees built with the most active first, each naming a core the node was seen guaranteeing for.", body = [ValidatorCoreRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -2027,12 +2050,19 @@ async fn blocks_summary(
     Ok(Json(result))
 }
 
-/// Core performance metrics — efficiency, latency, throughput, gas.
+/// One core's work-package throughput, latency and gas usage.
 ///
-/// **Question answered:** "How is this core performing?"
+/// `processing_efficiency_pct` is the share of Refined(101) among Refined(101)
+/// plus WorkPackageFailed(92) reports on the core, and is 100 when neither was
+/// reported. The latency percentiles run from WorkPackageReceived(94) to
+/// GuaranteesDistributed(109) over the work packages first observed on this core in
+/// the range, falling back to the last pipeline event seen for ones that never got
+/// distributed, whereas `average_completion_time_ms` averages only the ones that
+/// did. `total_gas_used` sums the refine gas reported in Refined(101), and
+/// `work_packages_processed` counts WorkPackageReceived(94) reports, one per
+/// guarantor.
 ///
-/// **Data source:** `all_core_stats_1m` for event counts (processing efficiency).
-/// `wp_tracking` for pipeline latency percentiles and gas totals.
+/// Answers: is this core keeping up, and is it slow, failing or gas-heavy?
 #[utoipa::path(
     get,
     path = "/api/grafana/cores/{core_id}/metrics",
@@ -2041,7 +2071,7 @@ async fn blocks_summary(
         TimeRangeQuery,
     ),
     responses(
-        (status = 200, description = "Core performance metrics", body = CoreMetricsResponse),
+        (status = 200, description = "Single object with this core's processing efficiency, pipeline latency percentiles, average completion time, refine gas total and work-package reception count.", body = CoreMetricsResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -2059,17 +2089,22 @@ async fn core_metrics(
         .map_err(|e| map_sqlx_error("grafana/cores/{id}/metrics", e))
 }
 
-/// Per-core validator (guarantor) list with node metadata.
+/// Which nodes built guarantees for one core, and what software they run.
 ///
-/// **Question answered:** "Which validators are active guarantors for this core?"
+/// One row per node that emitted GuaranteeBuilt(105) for this core in the range,
+/// with how many guarantees it built, when it last built one, and the node's
+/// implementation name, version and current connection state. A validator assigned
+/// to the core that never built a guarantee does not appear, and `total_active`
+/// counts only the nodes that did. Guarantee propagation records are kept for
+/// 7 days, which bounds how far back the range can reach. Per-guarantor data
+/// availability figures come from `/da-stats?node=…` instead.
 ///
-/// **Data source:** `guarantee_convergence` table filtered by core, JOINed with
-/// `nodes` table for implementation details. Only includes validators who actually
-/// built guarantees — inactive validators don't appear. Shares `node_core_mapping()`
-/// infrastructure.
+/// **Caveat:** this is the observed guarantor set, not the protocol's
+/// validator→core assignment. JAM rotates core assignments every 10 slots and
+/// reshuffles them each epoch, so over a longer range more nodes appear here than
+/// are assigned to the core at any one time.
 ///
-/// Also replaces legacy `/api/cores/{id}/guarantors` and `/guarantors/enhanced`.
-/// DA metrics per guarantor available separately from `/api/grafana/da-stats?node=X`.
+/// Answers: which nodes are actually guaranteeing for this core?
 #[utoipa::path(
     get,
     path = "/api/grafana/cores/{core_id}/validators",
@@ -2078,7 +2113,7 @@ async fn core_metrics(
         TimeRangeQuery,
     ),
     responses(
-        (status = 200, description = "Validators active on this core", body = CoreValidatorsResponse),
+        (status = 200, description = "Single object with the core index, how many nodes built guarantees for it, and the per-node rows ordered by guarantees built with the most active first.", body = CoreValidatorsResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
