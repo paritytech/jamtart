@@ -211,43 +211,45 @@ pub struct CoreDetail {
     pub recent_work_packages: Vec<WpTrackingRow>,
 }
 
-/// A work package lifecycle record from `wp_tracking`.
+/// One work package's pipeline timeline, from reception to guarantee distribution.
 ///
-/// **Data source:** `wp_tracking` hypertable, populated by the `wp_tracker`
-/// module which correlates WP pipeline events (as defined in JIP-3) across
-/// multiple nodes: 94 (WorkPackageReceived), 95 (Authorized), 101 (Refined),
-/// 102 (WorkReportBuilt), 105 (GuaranteeBuilt), 109 (GuaranteeDistributed),
-/// 92 (WorkPackageFailed). Each row tracks one work package through its entire
-/// lifecycle with timestamps for each pipeline stage.
+/// Each stage timestamp is the first time any guarantor reported that stage for
+/// this work package: WorkPackageReceived(94), Authorized(95), Refined(101),
+/// WorkReportBuilt(102), GuaranteeBuilt(105), GuaranteesDistributed(109), and
+/// WorkPackageFailed(92) if it failed. The first four are reported by both the
+/// primary and the secondary guarantors, so the timeline follows whichever
+/// guarantor reached each stage first.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct WpTrackingRow {
     /// Hex-encoded work package hash
     pub wp_hash: String,
-    /// When this WP was first seen by any node
+    /// When this work package was first reported by any node
     pub first_seen: DateTime<Utc>,
-    /// Last time any stage was updated
+    /// When the most recent pipeline event for this work package arrived
     pub last_updated: DateTime<Utc>,
-    /// Current pipeline stage (numeric)
+    /// Furthest pipeline stage reached: 0 received, 1 authorized, 2 refined,
+    /// 3 work report built, 4 guarantee built, 5 guarantees distributed
     pub stage: i16,
-    /// Node that first received this WP
+    /// How many distinct guarantors reported WorkPackageReceived(94) for it
     pub received_by: i16,
-    /// Node that built the guarantee
+    /// How many distinct guarantors reported GuaranteeBuilt(105) for it
     pub guaranteed_by: i16,
-    /// Service IDs involved in this WP (hex-formatted)
+    /// Services whose work items this work package carries (hex-formatted)
     pub service_ids: Vec<DbServiceId>,
-    /// Timestamp when received
+    /// When the first guarantor reported WorkPackageReceived(94)
     pub received_at: Option<DateTime<Utc>>,
-    /// Timestamp when authorization completed
+    /// When the first guarantor reported Authorized(95)
     pub authorized_at: Option<DateTime<Utc>>,
-    /// Timestamp when refinement completed
+    /// When the first guarantor reported Refined(101)
     pub refined_at: Option<DateTime<Utc>>,
-    /// Timestamp when work report was built
+    /// When the first guarantor reported WorkReportBuilt(102)
     pub report_built_at: Option<DateTime<Utc>>,
-    /// Timestamp when guarantee was built
+    /// When the primary guarantor reported GuaranteeBuilt(105)
     pub guarantee_built_at: Option<DateTime<Utc>>,
-    /// Timestamp when guarantee was distributed
+    /// When the primary guarantor reported GuaranteesDistributed(109), having
+    /// finished sending the guarantee to the other validators
     pub distributed_at: Option<DateTime<Utc>>,
-    /// Timestamp when WP failed (null if successful)
+    /// When WorkPackageFailed(92) was reported (null if no failure was reported)
     pub failed_at: Option<DateTime<Utc>>,
 }
 
@@ -545,30 +547,27 @@ pub struct CompressionInfo {
 
 // ── /api/grafana/bottlenecks ────────────────────────────────────────────
 
-/// Work package pipeline bottleneck analysis.
+/// Stage-by-stage latency of the guarantor work-package pipeline over a time range.
 ///
-/// **Data source:** `wp_tracking` table, populated by the `wp_tracker` module
-/// correlating JIP-3 events 94→95→101→102→105→109 (and 92 for failures).
-/// Stage timings are computed via `percentile_cont(0.5/0.95)` on the
-/// inter-stage timestamp deltas (received→authorized→refined→report_built→
-/// guarantee_built→distributed). The pipeline_total measures received_at to
-/// distributed_at (or last_updated for incomplete WPs). Failure rate is the
-/// ratio of WPs with `failed_at` set.
+/// Covers the work packages first observed in the range that reached at least
+/// WorkPackageReceived(94). Stage latencies are percentiles of the per-work-package
+/// durations between consecutive pipeline events, so a slow stage stands out
+/// directly.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct BottlenecksResponse {
-    /// Percentile timings for each pipeline stage
+    /// Latency percentiles for each pipeline stage
     pub stage_timing: StageTiming,
-    /// Fraction of WPs that failed (0.0 to 1.0)
+    /// Share of the work packages for which WorkPackageFailed(92) was reported (0.0 to 1.0)
     pub failure_rate: f64,
-    /// Total work packages analyzed
+    /// Work packages the percentiles were taken over
     pub total_wps: i64,
-    /// Number of failed work packages
+    /// How many of them reported WorkPackageFailed(92)
     pub failed_wps: i64,
-    /// Average total pipeline time in milliseconds
+    /// Mean reception-to-distribution duration in milliseconds
     pub avg_pipeline_ms: Option<f64>,
 }
 
-/// Percentile timing pair for a single pipeline stage.
+/// Median and 95th-percentile duration of one pipeline stage.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct Percentiles {
     /// 50th percentile (median) in milliseconds
@@ -577,51 +576,49 @@ pub struct Percentiles {
     pub p95_ms: Option<f64>,
 }
 
-/// All pipeline stage timings.
+/// Latency of every stage of the guarantor work-package pipeline, in milliseconds.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct StageTiming {
-    /// received_at → authorized_at
+    /// WorkPackageReceived(94) → Authorized(95)
     pub authorize: Percentiles,
-    /// authorized_at → refined_at
+    /// Authorized(95) → Refined(101)
     pub refine: Percentiles,
-    /// refined_at → report_built_at
+    /// Refined(101) → WorkReportBuilt(102)
     pub report: Percentiles,
-    /// report_built_at → guarantee_built_at
+    /// WorkReportBuilt(102) → GuaranteeBuilt(105)
     pub guarantee: Percentiles,
-    /// guarantee_built_at → distributed_at
+    /// GuaranteeBuilt(105) → GuaranteesDistributed(109)
     pub distribute: Percentiles,
-    /// received_at → distributed_at (or last_updated)
+    /// WorkPackageReceived(94) → GuaranteesDistributed(109), or to the last
+    /// pipeline event seen for work packages that never got distributed
     pub pipeline_total: Percentiles,
 }
 
 // ── /api/grafana/wp-funnel ──────────────────────────────────────────────
 
-/// Work package pipeline funnel — how many WPs reached each stage.
+/// How many work packages reached each stage of the guarantor pipeline.
 ///
-/// **Data source:** `wp_tracking` table, populated by the `wp_tracker` module
-/// which correlates WP pipeline events (as defined in JIP-3) across nodes:
-/// 94 (WorkPackageReceived) → received, 95 (Authorized) → authorized,
-/// 101 (Refined) → refined, 102 (WorkReportBuilt) → report_built,
-/// 105 (GuaranteeBuilt) → guarantee_built, 109 (GuaranteeDistributed) →
-/// distributed, 92 (WorkPackageFailed) → failed. Each count represents WPs
-/// that have a non-null timestamp for that stage.
+/// Counted over the work packages first observed in the time range. A work package
+/// counts towards a stage once any of its guarantors reported the corresponding
+/// event, so the drop between two consecutive counts is the number that stopped
+/// progressing there.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct WpFunnelResponse {
-    /// Total work packages in range
+    /// Work packages first observed in the range
     pub total: i64,
-    /// WPs that were received
+    /// Reached reception — WorkPackageReceived(94)
     pub received: i64,
-    /// WPs that passed authorization
+    /// Passed the authorization check — Authorized(95)
     pub authorized: i64,
-    /// WPs that completed refinement
+    /// Were refined — Refined(101)
     pub refined: i64,
-    /// WPs with work report built
+    /// Had a work report built — WorkReportBuilt(102)
     pub report_built: i64,
-    /// WPs with guarantee built
+    /// Had a guarantee built — GuaranteeBuilt(105)
     pub guarantee_built: i64,
-    /// WPs fully distributed
+    /// Had their guarantee distributed to the other validators — GuaranteesDistributed(109)
     pub distributed: i64,
-    /// WPs that hit a failure at any stage
+    /// Failed at any point in the pipeline — WorkPackageFailed(92)
     pub failed: i64,
 }
 
@@ -867,86 +864,73 @@ pub struct ShardLatencyRow {
 
 // ── /api/grafana/wp-funnel-timeseries ────────────────────────────────────
 
-/// Work package pipeline funnel bucketed over time — how many WPs reached
-/// each stage per time bucket.
+/// One time bucket of the work-package pipeline funnel.
 ///
-/// **Data source:** `wp_tracking` table, same as `/wp-funnel` but with
-/// `time_bucket` grouping. Each row represents one time bucket containing
-/// the count of WPs whose `first_seen` falls in that bucket, broken down
-/// by pipeline stage (non-null stage timestamps).
-///
-/// Events: 94 (WorkPackageReceived) → received, 95 (Authorized) → authorized,
-/// 101 (Refined) → refined, 102 (WorkReportBuilt) → report_built,
-/// 105 (GuaranteeBuilt) → guarantee_built, 109 (GuaranteeDistributed) →
-/// distributed, 92 (WorkPackageFailed) → failed.
+/// Each work package is counted in the bucket in which it was first observed, with
+/// all the pipeline stages it eventually reached, so its later stages land in that
+/// same bucket even when they happened afterwards.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct WpFunnelTimeseriesRow {
     /// Bucket start timestamp
     pub ts: DateTime<Utc>,
-    /// Total work packages in bucket
+    /// Work packages first observed in this bucket
     pub total: i64,
-    /// WPs that were received (WorkPackageReceived)
+    /// Reached reception — WorkPackageReceived(94)
     pub received: i64,
-    /// WPs that passed authorization (Authorized)
+    /// Passed the authorization check — Authorized(95)
     pub authorized: i64,
-    /// WPs that completed refinement (Refined)
+    /// Were refined — Refined(101)
     pub refined: i64,
-    /// WPs with work report built (WorkReportBuilt)
+    /// Had a work report built — WorkReportBuilt(102)
     pub report_built: i64,
-    /// WPs with guarantee built (GuaranteeBuilt)
+    /// Had a guarantee built — GuaranteeBuilt(105)
     pub guarantee_built: i64,
-    /// WPs fully distributed (GuaranteesDistributed)
+    /// Had their guarantee distributed to the other validators — GuaranteesDistributed(109)
     pub distributed: i64,
-    /// WPs that hit a failure at any stage (WorkPackageFailed)
+    /// Failed at any point in the pipeline — WorkPackageFailed(92)
     pub failed: i64,
 }
 
 // ── /api/grafana/bottlenecks-timeseries ─────────────────────────────────
 
-/// Work package pipeline bottleneck analysis bucketed over time.
+/// One time bucket of stage-by-stage work-package pipeline latency.
 ///
-/// **Data source:** `wp_tracking` table, same as `/bottlenecks` but with
-/// `time_bucket` grouping. Per bucket: `percentile_cont(0.5)` and
-/// `percentile_cont(0.95)` on inter-stage timestamp deltas.
-///
-/// Stages: authorize (received→authorized), refine (authorized→refined),
-/// report (refined→report_built), guarantee (report_built→guarantee_built),
-/// distribute (guarantee_built→distributed), pipeline_total
-/// (received→COALESCE(distributed, last_updated)).
-///
-/// NULL stage timestamps are ignored by `percentile_cont`, so columns
-/// may be NULL if no WPs in the bucket reached that stage.
+/// Each work package is attributed to the bucket in which it was first observed,
+/// and only those that reached WorkPackageReceived(94) are counted. A stage's
+/// percentiles are null when no work package in the bucket reached that stage.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct BottlenecksTimeseriesRow {
     /// Bucket start timestamp
     pub ts: DateTime<Utc>,
-    /// received → authorized p50 (ms)
+    /// WorkPackageReceived(94) → Authorized(95), p50 in milliseconds
     pub authorize_p50: Option<f64>,
-    /// received → authorized p95 (ms)
+    /// WorkPackageReceived(94) → Authorized(95), p95 in milliseconds
     pub authorize_p95: Option<f64>,
-    /// authorized → refined p50 (ms)
+    /// Authorized(95) → Refined(101), p50 in milliseconds
     pub refine_p50: Option<f64>,
-    /// authorized → refined p95 (ms)
+    /// Authorized(95) → Refined(101), p95 in milliseconds
     pub refine_p95: Option<f64>,
-    /// refined → report_built p50 (ms)
+    /// Refined(101) → WorkReportBuilt(102), p50 in milliseconds
     pub report_p50: Option<f64>,
-    /// refined → report_built p95 (ms)
+    /// Refined(101) → WorkReportBuilt(102), p95 in milliseconds
     pub report_p95: Option<f64>,
-    /// report_built → guarantee_built p50 (ms)
+    /// WorkReportBuilt(102) → GuaranteeBuilt(105), p50 in milliseconds
     pub guarantee_p50: Option<f64>,
-    /// report_built → guarantee_built p95 (ms)
+    /// WorkReportBuilt(102) → GuaranteeBuilt(105), p95 in milliseconds
     pub guarantee_p95: Option<f64>,
-    /// guarantee_built → distributed p50 (ms)
+    /// GuaranteeBuilt(105) → GuaranteesDistributed(109), p50 in milliseconds
     pub distribute_p50: Option<f64>,
-    /// guarantee_built → distributed p95 (ms)
+    /// GuaranteeBuilt(105) → GuaranteesDistributed(109), p95 in milliseconds
     pub distribute_p95: Option<f64>,
-    /// received → distributed (or last_updated) p50 (ms)
+    /// Reception to distribution (or to the last pipeline event seen for work
+    /// packages that never got distributed), p50 in milliseconds
     pub pipeline_p50: Option<f64>,
-    /// received → distributed (or last_updated) p95 (ms)
+    /// Reception to distribution (or to the last pipeline event seen for work
+    /// packages that never got distributed), p95 in milliseconds
     pub pipeline_p95: Option<f64>,
-    /// Total WPs in bucket (with received_at IS NOT NULL)
+    /// Work packages in this bucket that reached WorkPackageReceived(94)
     pub total_wps: i64,
-    /// Failed WPs in bucket
+    /// How many of them reported WorkPackageFailed(92)
     pub failed_wps: i64,
 }
 
@@ -1058,24 +1042,22 @@ pub struct GuaranteeDiscardRow {
 
 // ── /api/grafana/events ─────────────────────────────────────────────────
 
-/// Raw event record from `ingested_raw_events` (1h retention browsing store).
+/// One raw telemetry event exactly as a node reported it.
 ///
-/// **Data source:** `ingested_raw_events` hypertable. All 115 event types are
-/// written to this table at ingestion time (after migration 020). The `data`
-/// field contains the full event-specific JSONB payload which varies by type.
-/// Hot columns (`slot`, `core`, `submission_id`, `wp_hash`) enable fast filtered
-/// queries without JSONB extraction.
+/// Every JIP-3 event type can appear here, and the payload carries the fields
+/// that JIP-3 defines for that type. Raw events are retained for about an hour,
+/// so only recent activity can be browsed this way.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct EventRow {
-    /// Event timestamp (when the event occurred on the node)
+    /// When the event occurred on the reporting node
     pub ts: DateTime<Utc>,
     /// Node that reported this event
     pub node_id: String,
     /// Event type code as defined in JIP-3
     pub event_type: i16,
-    /// Full event payload (structure varies by event type)
+    /// Full event payload; its fields depend on the event type
     pub data: serde_json::Value,
-    /// When the event was ingested into the database
+    /// When the event reached the telemetry backend
     pub created_at: DateTime<Utc>,
 }
 
@@ -1310,47 +1292,49 @@ pub struct GuarantorRow {
 
 // ── /api/grafana/wp-stats ───────────────────────────────────────────────
 
-/// Work package pipeline summary — counts per stage, by core.
-///
-/// **Data source:** `wp_tracking` table for pipeline stage counts
-/// (received → distributed/failed) + by-core breakdown. `all_event_stats_1m`
-/// for pre-pipeline event counts (types 90 submissions, 91 being_shared,
-/// 93 duplicates).
+/// Work-package traffic and pipeline progress over a time range, plus its spread
+/// across cores.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct WpStatsResponse {
     pub totals: WpStageTotals,
     pub by_core: Vec<WpCoreCount>,
 }
 
+/// Work-package counts before and along the guarantor pipeline.
+///
+/// The first three are counts of events reported by all nodes, not of distinct work
+/// packages; the rest count distinct work packages that reached each stage.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct WpStageTotals {
-    /// WorkPackageSubmission events (pre-pipeline, from aggregates)
+    /// WorkPackageSubmission(90) events — builders opening a submission stream to a guarantor
     pub submissions: i64,
-    /// WorkPackageBeingShared events (pre-pipeline, from aggregates)
+    /// WorkPackageBeingShared(91) events — secondary guarantors accepting a share from a primary
     pub being_shared: i64,
-    /// DuplicateWorkPackage events (pre-pipeline, from aggregates)
+    /// DuplicateWorkPackage(93) events — a work package already seen was offered again;
+    /// it is reported instead of a reception, so it never enters the stage counts below
     pub duplicates: i64,
-    /// WPs that reached "received" stage (WorkPackageReceived, from wp_tracking)
+    /// Work packages that reached reception — WorkPackageReceived(94)
     pub received: i64,
-    /// WPs that reached "authorized" stage (Authorized, from wp_tracking)
+    /// Passed the authorization check — Authorized(95)
     pub authorized: i64,
-    /// WPs that reached "refined" stage (Refined, from wp_tracking)
+    /// Were refined — Refined(101)
     pub refined: i64,
-    /// WPs that reached "report_built" stage (WorkReportBuilt, from wp_tracking)
+    /// Had a work report built — WorkReportBuilt(102)
     pub report_built: i64,
-    /// WPs that reached "guarantee_built" stage (GuaranteeBuilt, from wp_tracking)
+    /// Had a guarantee built — GuaranteeBuilt(105)
     pub guarantee_built: i64,
-    /// WPs that completed pipeline (GuaranteesDistributed, from wp_tracking)
+    /// Had their guarantee distributed to the other validators — GuaranteesDistributed(109)
     pub distributed: i64,
-    /// WPs that failed at any stage (WorkPackageFailed, from wp_tracking)
+    /// Failed at any point in the pipeline — WorkPackageFailed(92)
     pub failed: i64,
 }
 
+/// Work packages assigned to one core.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct WpCoreCount {
     /// Core index
     pub core: i16,
-    /// Total WPs on this core in the time range
+    /// Work packages first observed in the time range on this core
     pub count: i64,
 }
 
@@ -1469,55 +1453,51 @@ pub struct NodeCoreRow {
 
 // ── /api/grafana/wp-active ──────────────────────────────────────────────
 
-/// Active (in-flight) work packages with pipeline health summary.
+/// Recent work packages plus pipeline health for the whole time range.
 ///
-/// **Question answered:** "What WPs are currently in-flight and what's the pipeline health?"
-///
-/// **Data source:** `wp_tracking WHERE distributed_at IS NULL AND failed_at IS NULL`.
-/// Returns the WP list plus aggregate summaries (stage counts, cumulative funnel,
-/// stage duration percentiles, failure breakdown) all computed from the same
-/// filtered set.
-///
-/// **Deliberately dropped legacy stages:** The telemetry-visible pipeline ends at
-/// `distributed_at`. Legacy "included" (GuaranteeDiscarded with PackageReportedOnChain),
-/// "available" (shard events), and "superseded" stages were pool cleanup events,
-/// not real pipeline stages — they are not included.
+/// The listed work packages are only the most recent ones; every summary beside
+/// them covers all work packages first observed in the range, whether they are
+/// still progressing, distributed or failed. The telemetry-visible pipeline ends at
+/// GuaranteesDistributed(109) — what happens to the work report on chain afterwards
+/// is not part of these stages.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct WpActiveResponse {
-    /// Individual in-flight work packages (max 200, ordered by first_seen DESC)
+    /// The most recently started work packages of the range (at most 200, newest first)
     pub work_packages: Vec<WpActiveRow>,
-    /// Per-stage counts of in-flight WPs
+    /// How many work packages stopped at each stage
     pub summary: WpActiveSummary,
-    /// Cumulative funnel: how many WPs reached each stage
+    /// How many work packages ever reached each stage
     pub reached: WpReachedCounts,
-    /// Pipeline stage latency percentiles (p50, p95) for in-flight WPs
+    /// Median and p95 duration of each pipeline stage, in milliseconds
     pub stage_duration_percentiles: WpStageDurations,
-    /// Failure reason breakdown (count per distinct reason)
+    /// Failures grouped by the reason reported in WorkPackageFailed(92)
     pub failure_breakdown: Vec<FailureBreakdownEntry>,
 }
 
-/// Single in-flight work package row.
+/// One work package and how far it got through the guarantor pipeline.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct WpActiveRow {
     /// Hex-encoded work package hash
     pub wp_hash: String,
-    /// Core index
+    /// Core this work package was submitted for
     pub core: i16,
-    /// Node that first received this WP
+    /// First guarantor that reported WorkPackageReceived(94) for it
     pub node_id: Option<String>,
-    /// Service IDs involved
+    /// Services whose work items this work package carries (hex-formatted)
     pub service_ids: Vec<DbServiceId>,
-    /// Current pipeline stage ordinal (0=received through 5=distributed)
+    /// Furthest pipeline stage reached: 0 received, 1 authorized, 2 refined,
+    /// 3 work report built, 4 guarantee built, 5 guarantees distributed
     pub stage: i16,
-    /// Total gas used during refinement
+    /// Gas the work items consumed during refinement, as reported by Refined(101)
     pub refine_gas_used: Option<i64>,
-    /// Failure reason (if failed)
+    /// Reason reported in WorkPackageFailed(92), if it failed
     pub failure_reason: Option<String>,
-    /// When the WP was first seen
+    /// When this work package was first reported by any node
     pub first_seen: DateTime<Utc>,
-    /// Last stage update time
+    /// When the most recent pipeline event for it arrived
     pub last_updated: DateTime<Utc>,
-    /// Pipeline stage timestamps (null = not reached yet)
+    /// Pipeline stage timestamps: reception, authorization, refinement, work report,
+    /// guarantee, distribution and failure (null = the stage was never reported)
     pub received_at: Option<DateTime<Utc>>,
     pub authorized_at: Option<DateTime<Utc>>,
     pub refined_at: Option<DateTime<Utc>>,
@@ -1525,80 +1505,93 @@ pub struct WpActiveRow {
     pub guarantee_built_at: Option<DateTime<Utc>>,
     pub distributed_at: Option<DateTime<Utc>>,
     pub failed_at: Option<DateTime<Utc>>,
-    /// How many distinct nodes received this WP
+    /// How many distinct guarantors reported WorkPackageReceived(94) for it
     pub received_by: i16,
-    /// How many distinct nodes guaranteed this WP
+    /// How many distinct guarantors reported GuaranteeBuilt(105) for it
     pub guaranteed_by: i16,
-    /// Elapsed time from first_seen to last_updated (milliseconds)
+    /// Milliseconds from the first to the most recent pipeline event for it
     pub elapsed_ms: f64,
 }
 
+/// Where work packages stopped: counts of those whose furthest reached stage is
+/// each stage, so anything still progressing or stuck shows up here while
+/// distributed ones do not.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct WpActiveSummary {
-    /// Total in-flight WPs
+    /// Work packages first observed in the range
     pub total: i64,
-    /// Count per stage
+    /// Got no further than reception — WorkPackageReceived(94)
     pub at_received: i64,
+    /// Got no further than authorization — Authorized(95)
     pub at_authorized: i64,
+    /// Got no further than refinement — Refined(101)
     pub at_refined: i64,
+    /// Got no further than the work report — WorkReportBuilt(102)
     pub at_report_built: i64,
+    /// Got no further than the guarantee — GuaranteeBuilt(105)
     pub at_guarantee_built: i64,
 }
 
+/// How many work packages ever reached each stage; a work package counts for every
+/// stage it passed, so these counts overlap.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct WpReachedCounts {
-    /// WPs that reached each stage (cumulative, not exclusive)
+    /// Reached reception — WorkPackageReceived(94)
     pub received: i64,
+    /// Passed the authorization check — Authorized(95)
     pub authorized: i64,
+    /// Were refined — Refined(101)
     pub refined: i64,
+    /// Had a work report built — WorkReportBuilt(102)
     pub report_built: i64,
+    /// Had a guarantee built — GuaranteeBuilt(105)
     pub guarantee_built: i64,
+    /// Had their guarantee distributed — GuaranteesDistributed(109)
     pub distributed: i64,
+    /// Failed at any point in the pipeline — WorkPackageFailed(92)
     pub failed: i64,
 }
 
+/// Duration of each guarantor pipeline stage, in milliseconds.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct WpStageDurations {
-    /// authorize: received_at → authorized_at (milliseconds)
+    /// WorkPackageReceived(94) → Authorized(95), p50
     pub authorize_p50_ms: Option<f64>,
+    /// WorkPackageReceived(94) → Authorized(95), p95
     pub authorize_p95_ms: Option<f64>,
-    /// refine: authorized_at → refined_at
+    /// Authorized(95) → Refined(101), p50
     pub refine_p50_ms: Option<f64>,
+    /// Authorized(95) → Refined(101), p95
     pub refine_p95_ms: Option<f64>,
-    /// report: refined_at → report_built_at
+    /// Refined(101) → WorkReportBuilt(102), p50
     pub report_p50_ms: Option<f64>,
+    /// Refined(101) → WorkReportBuilt(102), p95
     pub report_p95_ms: Option<f64>,
-    /// guarantee: report_built_at → guarantee_built_at
+    /// WorkReportBuilt(102) → GuaranteeBuilt(105), p50
     pub guarantee_p50_ms: Option<f64>,
+    /// WorkReportBuilt(102) → GuaranteeBuilt(105), p95
     pub guarantee_p95_ms: Option<f64>,
 }
 
+/// One distinct failure reason and how often it occurred.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct FailureBreakdownEntry {
-    /// Failure reason text
+    /// Reason text as reported in WorkPackageFailed(92)
     pub reason: String,
-    /// Number of WPs with this reason
+    /// Work packages that failed for this reason
     pub count: i64,
 }
 
 // ── /api/grafana/wp/{hash} ──────────────────────────────────────────────
 
-/// Work package detail — summary from wp_tracking + raw event drilldown.
-///
-/// **Question answered:** "Full lifecycle detail for a specific work package."
-///
-/// **Data source:** Two queries:
-/// 1. `wp_tracking WHERE wp_hash = $1` → pipeline summary (always available)
-/// 2. `ingested_raw_events WHERE wp_hash = $1` → full event list (1h retention,
-///    uses wp_hash hot column from migration 020)
-///
-/// If the WP is older than 1h, only the summary is available — the raw event
-/// timeline is empty. This is acceptable for real-time investigation.
+/// Everything known about one work package: its pipeline timeline and, while they
+/// are still retained, the raw telemetry events behind it.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct WpDetailResponse {
-    /// Pipeline summary from wp_tracking (always available)
+    /// This work package's pipeline timeline; null if the hash is unknown
     pub summary: Option<WpTrackingRow>,
-    /// Raw events for this WP (empty if WP older than 1h retention)
+    /// Every raw event reported for this work package, oldest first; empty once the
+    /// events have aged out of the roughly one-hour retention window
     pub events: Vec<EventRow>,
 }
 

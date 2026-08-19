@@ -872,21 +872,27 @@ async fn db_stats(State(state): State<ApiState>) -> Result<impl IntoResponse, St
         .map_err(|e| map_sqlx_error("grafana/db-stats", e))
 }
 
-/// Work package pipeline bottleneck analysis with percentile timings.
+/// Where time goes inside the guarantor work-package pipeline.
 ///
-/// Queries `wp_tracking` table using `percentile_cont(0.5)` and
-/// `percentile_cont(0.95)` on the inter-stage timestamp deltas for each
-/// pipeline stage: authorize (received→authorized), refine (authorized→refined),
-/// report (refined→report_built), guarantee (report_built→guarantee_built),
-/// distribute (guarantee_built→distributed), and pipeline_total
-/// (received→distributed or last_updated). Failure rate is the ratio of WPs
-/// with `failed_at IS NOT NULL`. Optional `core` filter narrows to a single core.
+/// Median and 95th-percentile durations of each stage a work package passes
+/// through on its guarantors: authorize (WorkPackageReceived(94) →
+/// Authorized(95)), refine (→ Refined(101)), report (→ WorkReportBuilt(102)),
+/// guarantee (→ GuaranteeBuilt(105)), distribute (→ GuaranteesDistributed(109)),
+/// plus the total from reception to distribution. Work packages are selected by
+/// when they were first observed anywhere in the network; one that never reached
+/// distribution contributes the time up to its last observed pipeline event.
+/// `failure_rate` is the share of them for which a WorkPackageFailed(92) was
+/// reported. The optional `core` filter narrows to the work packages assigned to
+/// one core.
+///
+/// Answers: which pipeline stage dominates work-package latency, and how often do
+/// work packages fail outright?
 #[utoipa::path(
     get,
     path = "/api/grafana/bottlenecks",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Pipeline bottleneck analysis", body = [BottlenecksResponse]),
+        (status = 200, description = "Array holding a single object: per-stage median and p95 durations in milliseconds, the number of work packages considered, how many of them failed, and the resulting failure rate.", body = [BottlenecksResponse]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -903,19 +909,24 @@ async fn bottlenecks(
         .map_err(|e| map_sqlx_error("grafana/bottlenecks", e))
 }
 
-/// Work package pipeline funnel — counts how many WPs reached each stage.
+/// How many work packages reached each stage of the guarantor pipeline.
 ///
-/// Queries `wp_tracking` with `COUNT(*) FILTER (WHERE stage_timestamp IS NOT NULL)`
-/// for each pipeline stage: received, authorized, refined, report_built,
-/// guarantee_built, distributed, and failed. A WP counted as "distributed" has
-/// successfully completed the entire pipeline. "failed" counts WPs with
-/// `failed_at` set at any stage.
+/// Counts over the work packages first observed in the range: received
+/// (WorkPackageReceived(94)), authorized (Authorized(95)), refined (Refined(101)),
+/// report_built (WorkReportBuilt(102)), guarantee_built (GuaranteeBuilt(105)),
+/// distributed (GuaranteesDistributed(109)) and failed (WorkPackageFailed(92)).
+/// A work package counts towards a stage as soon as any of its guarantors reported
+/// that stage, so the gap between two consecutive counts is the number that
+/// stopped progressing there. `distributed` means the primary guarantor finished
+/// sending the guarantee out.
+///
+/// Answers: at which pipeline stage do work packages get stuck or lost?
 #[utoipa::path(
     get,
     path = "/api/grafana/wp-funnel",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Pipeline funnel counts", body = WpFunnelResponse),
+        (status = 200, description = "Single object with one work-package count per pipeline stage for the whole range.", body = WpFunnelResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1278,17 +1289,22 @@ async fn preimage_latency(
         .map_err(|e| map_sqlx_error("grafana/preimage-latency", e))
 }
 
-/// Work package pipeline funnel bucketed over time.
+/// Work-package pipeline funnel over time, one row per time bucket.
 ///
-/// Same data as `/wp-funnel` but bucketed by `time_bucket` on `first_seen`.
-/// Each row contains per-stage counts for WPs whose `first_seen` falls in
-/// that bucket. Optional `core` filter narrows to a single core.
+/// The same per-stage counts as `/wp-funnel` — WorkPackageReceived(94),
+/// Authorized(95), Refined(101), WorkReportBuilt(102), GuaranteeBuilt(105),
+/// GuaranteesDistributed(109) and WorkPackageFailed(92) — with each work package
+/// attributed to the bucket in which it was first observed, so its later stages
+/// are counted in that same bucket even if they happened afterwards. The optional
+/// `core` filter narrows to one core.
+///
+/// Answers: when did the pipeline start losing work packages, and at which stage?
 #[utoipa::path(
     get,
     path = "/api/grafana/wp-funnel-timeseries",
     params(WpTimeseriesQuery),
     responses(
-        (status = 200, description = "Pipeline stage counts per time bucket (one row per bucket, ASC). Per-stage COUNT of WPs reaching each stage. Optional core filter. Source: wp_tracking table, time_bucket on first_seen.", body = [WpFunnelTimeseriesRow]),
+        (status = 200, description = "Array of rows, one per time bucket in ascending order, each with the per-stage work-package counts for that bucket. Narrowed by the optional core filter.", body = [WpFunnelTimeseriesRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1306,18 +1322,22 @@ async fn wp_funnel_timeseries(
         .map_err(|e| map_sqlx_error("grafana/wp-funnel-timeseries", e))
 }
 
-/// Work package pipeline bottleneck analysis bucketed over time.
+/// Per-stage work-package pipeline durations over time, one row per time bucket.
 ///
-/// Same data as `/bottlenecks` but bucketed by `time_bucket` on `first_seen`.
-/// Per bucket: `percentile_cont(0.5)` and `percentile_cont(0.95)` on
-/// inter-stage timestamp deltas for each pipeline stage. Optional `core`
-/// filter narrows to a single core.
+/// The same stage measurements as `/bottlenecks` — authorize
+/// (WorkPackageReceived(94) → Authorized(95)) through distribute
+/// (GuaranteeBuilt(105) → GuaranteesDistributed(109)), plus the total from
+/// reception to distribution — with each work package attributed to the bucket in
+/// which it was first observed. A stage's percentiles are null in buckets where no
+/// work package reached that stage. The optional `core` filter narrows to one core.
+///
+/// Answers: when did a pipeline stage start slowing down, and which one?
 #[utoipa::path(
     get,
     path = "/api/grafana/bottlenecks-timeseries",
     params(WpTimeseriesQuery),
     responses(
-        (status = 200, description = "Pipeline bottleneck percentiles per time bucket (one row per bucket). percentile_cont(0.5/0.95) on inter-stage deltas. Only WPs with received_at IS NOT NULL. Optional core filter. Source: wp_tracking.", body = [BottlenecksTimeseriesRow]),
+        (status = 200, description = "Array of rows, one per time bucket in ascending order, each with the per-stage median and p95 durations in milliseconds plus the bucket's work-package and failure counts. Narrowed by the optional core filter.", body = [BottlenecksTimeseriesRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1717,24 +1737,26 @@ async fn guarantees_by_guarantor(
         .map_err(|e| map_sqlx_error("grafana/guarantees/by-guarantor", e))
 }
 
-/// Work package pipeline summary — counts per stage, by core.
+/// Work-package pipeline totals for the range, with a per-core breakdown.
 ///
-/// **Question answered:** "How many work packages are at each pipeline stage?"
+/// `totals` combines two views. The stage counts say how many work packages
+/// reached each guarantor pipeline stage, from received (WorkPackageReceived(94))
+/// through distributed (GuaranteesDistributed(109)) and failed
+/// (WorkPackageFailed(92)). The pre-pipeline figures count the
+/// WorkPackageSubmission(90), WorkPackageBeingShared(91) and
+/// DuplicateWorkPackage(93) events reported by all nodes — these are event counts,
+/// not distinct work packages, and a duplicate is reported instead of a reception,
+/// so duplicates never appear in the stage counts. `by_core` counts the work
+/// packages first observed in the range per core they were assigned to.
 ///
-/// **Data source:** Two sources combined:
-/// - `wp_tracking` table for pipeline stage counts: received (WorkPackageReceived),
-///   authorized (Authorized), refined (Refined), report_built (WorkReportBuilt),
-///   guarantee_built (GuaranteeBuilt), distributed (GuaranteesDistributed),
-///   failed (WorkPackageFailed). Plus by-core breakdown.
-/// - `all_event_stats_1m` for pre-pipeline event counts: WorkPackageSubmission,
-///   WorkPackageBeingShared, DuplicateWorkPackage — these occur before the WP
-///   enters wp_tracking.
+/// Answers: how much work-package traffic did the network handle, how far did it
+/// get, and how is it spread across cores?
 #[utoipa::path(
     get,
     path = "/api/grafana/wp-stats",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "WP pipeline summary", body = WpStatsResponse),
+        (status = 200, description = "Single object with the pre-pipeline and per-stage totals for the range plus one count per core.", body = WpStatsResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1828,24 +1850,28 @@ async fn network_health(
 
 // ── Phase 4: Moderate endpoints ──────────────────────────────────────────
 
-/// Recent work packages with pipeline health summary.
+/// Recent work packages, with a pipeline health summary of the whole range.
 ///
-/// **Question answered:** "What WPs have been processed recently, and what's the pipeline health?"
+/// `work_packages` lists the most recently started work packages of the range (at
+/// most 200, newest first), each with its stage timestamps from
+/// WorkPackageReceived(94) through GuaranteesDistributed(109), the gas its
+/// Refined(101) reported, how many guarantors received it and how many built a
+/// guarantee for it, and the reason from WorkPackageFailed(92) where one was
+/// reported. The summaries alongside cover every work package first observed in the
+/// range, not only the listed ones: `summary` counts the work packages whose
+/// furthest reached stage is each stage, so it shows where work stalled; `reached`
+/// counts those that ever reached each stage; `stage_duration_percentiles` gives
+/// per-stage median and p95 durations; `failure_breakdown` groups failures by
+/// reported reason.
 ///
-/// **Data source:** `wp_tracking` for the given time range (all WPs, not just
-/// in-flight — matches legacy `/api/workpackages/active` behavior). Returns WP list
-/// (max 200, ordered by first_seen DESC) plus aggregates: summary (per-stage counts),
-/// reached (cumulative funnel), stage_duration_percentiles (p50/p95 for each
-/// inter-stage transition), failure_breakdown (count per distinct failure_reason).
-///
-/// **Deliberately dropped stages:** included, available, superseded from legacy
-/// are not real pipeline stages — see migration plan deep-dive Section 8.
+/// Answers: which work packages ran recently, where are they stalling, and why are
+/// they failing?
 #[utoipa::path(
     get,
     path = "/api/grafana/wp-active",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Active work packages with pipeline health", body = WpActiveResponse),
+        (status = 200, description = "Single object with the recent work-package list and the range-wide stage counts, per-stage duration percentiles and failure-reason breakdown.", body = WpActiveResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1862,13 +1888,18 @@ async fn wp_active(
         .map_err(|e| map_sqlx_error("grafana/wp-active", e))
 }
 
-/// Work package detail — pipeline summary + raw event drilldown.
+/// Everything known about one work package, looked up by its hash.
 ///
-/// **Question answered:** "Full lifecycle detail for a specific work package."
+/// `summary` is that work package's pipeline timeline — the timestamps of
+/// WorkPackageReceived(94), Authorized(95), Refined(101), WorkReportBuilt(102),
+/// GuaranteeBuilt(105), GuaranteesDistributed(109) and WorkPackageFailed(92), the
+/// services it touched, and how many guarantors received and guaranteed it — and
+/// stays available long after the work package finished. `events` is the raw
+/// telemetry timeline for the same work package in emission order; raw events are
+/// retained for about an hour, so for older work packages this array is empty while
+/// the summary remains. The hash is hex-encoded, with or without a `0x` prefix.
 ///
-/// **Data source:** `wp_tracking` for pipeline summary (always available).
-/// `ingested_raw_events` via `wp_hash` hot column for full event list (1h
-/// retention — if WP is older than 1h, events array is empty but summary persists).
+/// Answers: what exactly happened to this one work package, and where did it stop?
 #[utoipa::path(
     get,
     path = "/api/grafana/wp/{wp_hash}",
@@ -1876,8 +1907,8 @@ async fn wp_active(
         ("wp_hash" = String, Path, description = "Work package hash (hex-encoded)")
     ),
     responses(
-        (status = 200, description = "WP detail with events", body = WpDetailResponse),
-        (status = 400, description = "Invalid hash"),
+        (status = 200, description = "Single object with the work package's pipeline timeline (null if the hash is unknown) and its raw event timeline, oldest event first.", body = WpDetailResponse),
+        (status = 400, description = "Work package hash is not valid hex"),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1897,16 +1928,23 @@ async fn wp_detail(
         .map_err(|e| map_sqlx_error("grafana/wp/{hash}", e))
 }
 
-/// Batch WP summary lookup by multiple hashes.
+/// Pipeline timelines for several work packages in one request.
 ///
-/// **Data source:** `wp_tracking WHERE wp_hash = ANY($1)`.
-/// Returns pipeline summary for each requested WP.
+/// The request body is a JSON array of hex-encoded work-package hashes, with or
+/// without `0x` prefixes. Each response row is one work package's pipeline
+/// timeline, the same summary `/wp/{wp_hash}` returns: the stage timestamps from
+/// WorkPackageReceived(94) through GuaranteesDistributed(109), WorkPackageFailed(92)
+/// where reported, and the guarantor counts. Hashes that are unknown or not valid
+/// hex are simply absent, so the response can be shorter than the request.
+///
+/// Answers: how far through the pipeline did each of these specific work packages
+/// get?
 #[utoipa::path(
     post,
     path = "/api/grafana/wp/batch",
     request_body = Vec<String>,
     responses(
-        (status = 200, description = "Batch WP summaries", body = [WpTrackingRow]),
+        (status = 200, description = "Array of pipeline timelines, one per work package that was found, newest first.", body = [WpTrackingRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
