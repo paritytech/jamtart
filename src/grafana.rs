@@ -384,7 +384,7 @@ pub struct AssuranceConvergenceSendersQuery {
     pub anchor: Option<String>,
     /// Filter to a single sender node_id
     pub node: Option<String>,
-    /// Bucket width for histogram mode. When present, returns percentile timeseries from merged histograms instead of per-sender rows.
+    /// Bucket width. When present, the response becomes one percentile row per bucket instead of one row per sender, and the anchor filter is ignored.
     pub interval: Option<String>,
 }
 
@@ -1006,21 +1006,25 @@ async fn guarantee_convergence_detail(
         .map_err(|e| map_sqlx_error("grafana/guarantee-convergence/detail", e))
 }
 
-/// Assurance convergence overview — per-anchor summary.
+/// How fast assurances reach the validator set, summarised per assurance anchor.
 ///
-/// Each row represents one block anchor, showing how quickly assurances
-/// from all senders propagated to receiving validators. Also includes
-/// distribution start spread (how quickly validators begin distributing).
+/// One row per anchor — the header hash of the block an availability statement
+/// refers to. Reception latency runs from DistributingAssurance(126) on a sender
+/// to AssuranceReceived(131) on each validator that received that sender's
+/// assurance; the latencies of every sender for the anchor are pooled before the
+/// percentiles are taken. A second set of percentiles gives the distribution
+/// start spread — how much later the remaining validators began distributing for
+/// this anchor than the first one did. Assurances only count towards
+/// availability while the report is still pending, a 5-slot (30 s) window.
 ///
-/// Anchor: DistributingAssurance(126) per sender.
-/// Measured: AssuranceReceived(131) on receiving validators.
-/// Availability window: 5 slots (30 seconds).
+/// Answers: do assurances for a block reach the validator set well inside the
+/// 5-slot availability window, and which anchors converge slowly?
 #[utoipa::path(
     get,
     path = "/api/grafana/assurance-convergence",
     params(ConvergenceQuery),
     responses(
-        (status = 200, description = "Per-anchor assurance convergence. Without interval: per-anchor rows from assurance_convergence. With interval: percentile timeseries from merged histograms.", body = [AssuranceConvergenceRow]),
+        (status = 200, description = "Array of per-anchor rows, ascending by slot, each with the pooled DistributingAssurance(126) → AssuranceReceived(131) percentiles and the distribution start spread for that anchor. With `interval`: one row per time bucket instead, with percentiles over the latencies of all assurances in the bucket (approximate, latency-histogram based).", body = [AssuranceConvergenceRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1046,16 +1050,22 @@ async fn assurance_convergence(
     }
 }
 
-/// Assurance convergence per-sender detail — for debugging individual node propagation.
+/// Per-sender assurance propagation — drill-down behind the per-anchor summary.
 ///
-/// Returns one row per (anchor, sender), showing how quickly this sender's
-/// assurance reached other validators. Filter by anchor or node for drill-down.
+/// One row per (anchor, sender): the validator that emitted
+/// DistributingAssurance(126) for that anchor, how many validators received its
+/// assurance, and the spread of latencies until AssuranceReceived(131) on them.
+/// Optional `anchor` and `node` filters isolate a single block or a single
+/// suspect validator.
+///
+/// Answers: which validator's assurances propagate slowly, and to how many of
+/// its peers?
 #[utoipa::path(
     get,
     path = "/api/grafana/assurance-convergence/senders",
     params(AssuranceConvergenceSendersQuery),
     responses(
-        (status = 200, description = "Per-sender assurance detail. Without interval: per-sender rows. With interval: percentile timeseries from merged histograms. Optional anchor/node filters.", body = [AssuranceConvergenceSenderRow]),
+        (status = 200, description = "Array of rows, one per anchor and sender, ascending by the time that sender started distributing, each with its receiving-validator count and DistributingAssurance(126) → AssuranceReceived(131) latency percentiles. With `interval`: one row per time bucket instead, with percentiles over all sender latencies in the bucket, and the anchor filter no longer applies.", body = [AssuranceConvergenceSenderRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1087,20 +1097,27 @@ async fn assurance_convergence_senders(
     }
 }
 
-/// Per-node DA operational stats — shard event counts, latency averages,
-/// shard inventory. Aggregated over the requested time range.
+/// Per-node data-availability activity: shard request counts, average shard
+/// latency and shard inventory over the requested time range.
 ///
-/// Replaces the disabled `get_da_stats_enhanced` legacy endpoint.
-/// Events tracked: SendingShardRequest(120), ReceivingShardRequest(121),
-/// ShardRequestFailed(122), ShardRequestSent(123), ShardRequestReceived(124),
-/// ShardsTransferred(125), PreimageAnnouncementFailed(190),
-/// PreimageAnnounced(191), AnnouncedPreimageForgotten(192).
+/// One row per node, totalled over the range. Shard work is counted from both
+/// ends: requests the node made as an assurer fetching its shards
+/// (SendingShardRequest(120), ShardRequestSent(123), ShardsTransferred(125)) and
+/// requests it took in as a guarantor holding them (ReceivingShardRequest(121),
+/// ShardRequestReceived(124)), alongside failures (ShardRequestFailed(122)) and
+/// preimage announcement activity (PreimageAnnouncementFailed(190),
+/// PreimageAnnounced(191), AnnouncedPreimageForgotten(192)). The two average
+/// latencies cover the same two perspectives and include requests that ended in
+/// failure, measured up to the failure.
+///
+/// Answers: which nodes carry the data-availability load, and which are slow or
+/// failing at serving shards?
 #[utoipa::path(
     get,
     path = "/api/grafana/da-stats",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Per-node DA operational stats (one row per node, ordered by shards_transferred DESC). SUMmed event counts, weighted AVG latency, MAX active shards. Source: da_node_stats hypertable.", body = [DaStatsRow]),
+        (status = 200, description = "Array of per-node rows, busiest shard transferrer first, each with its shard and preimage event totals, sample-weighted average latency per perspective in milliseconds, and peak distinct-shard count.", body = [DaStatsRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1117,21 +1134,26 @@ async fn da_stats(
         .map_err(|e| map_sqlx_error("grafana/da-stats", e))
 }
 
-/// Shard latency timeseries — approximate percentiles from merged histograms.
+/// Shard transfer latency percentiles over time, seen from both ends of the
+/// transfer.
 ///
-/// Latency measured from two perspectives:
-/// - Assurer round-trip: SendingShardRequest(120) → ShardsTransferred(125)
-/// - Guarantor processing: ReceivingShardRequest(121) → ShardRequestReceived(124)
+/// One row per time bucket, with the two perspectives measured separately: the
+/// assurer's round-trip from SendingShardRequest(120) to ShardsTransferred(125),
+/// and the guarantor's time to take the request in, ReceivingShardRequest(121) to
+/// ShardRequestReceived(124). Latencies from all reporting nodes are pooled per
+/// bucket, so the percentiles are network-wide and approximate: values are
+/// rounded up to a latency-bucket edge and saturate at 5 s. Requests that ended
+/// in ShardRequestFailed(122) are included, measured up to the failure, and also
+/// reported as a separate count.
 ///
-/// Histograms (14 buckets, ms: 0-1-2-5-10-25-50-100-250-500-1000-2000-3000-5000-∞)
-/// are merged across nodes per time bucket. Percentiles are interpolated
-/// from the cumulative distribution.
+/// Answers: is shard fetching slow because assurers are waiting on the network,
+/// or because guarantors are slow to serve their shards?
 #[utoipa::path(
     get,
     path = "/api/grafana/shard-latency",
     params(WpTimeseriesQuery),
     responses(
-        (status = 200, description = "Shard latency percentile timeseries (one row per time bucket). Assurer round-trip (120→125) + guarantor processing (121→124). Approximate p50/p95/p99/p100 interpolated from merged 14-bucket histograms. Source: shard_latency_hist hypertable.", body = [ShardLatencyRow]),
+        (status = 200, description = "Array of rows, one per time bucket, each with approximate p50/p75/p95/p99/p100 latencies in milliseconds for the assurer round-trip and the guarantor request-intake side, their sample counts, and how many measurements ended in failure.", body = [ShardLatencyRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1149,16 +1171,27 @@ async fn shard_latency(
         .map_err(|e| map_sqlx_error("grafana/shard-latency", e))
 }
 
-/// Bundle reconstruction latency percentiles over time.
+/// Audit bundle recovery latency percentiles over time.
 ///
-/// Tracks audit data recovery across six measurement sides — see BundleLatencyRow for details.
-/// Histograms (23-bucket CONVERGENCE_BOUNDS, 0–120s) merged across nodes per time bucket.
+/// One row per time bucket. Auditors fetch erasure-coded shards from assurers
+/// and reconstruct the original work-package bundle; each leg of that recovery is
+/// reported separately — requesting and serving shards
+/// (SendingBundleShardRequest(140) / ReceivingBundleShardRequest(141) →
+/// BundleShardTransferred(145)), requesting and serving a whole bundle
+/// (SendingBundleRequest(148) / ReceivingBundleRequest(149) →
+/// BundleTransferred(153)), local reconstruction (ReconstructingBundle(146) →
+/// BundleReconstructed(147)) and end-to-end recovery per audit. Latencies from
+/// all reporting nodes are pooled per bucket; see BundleLatencyRow for the exact
+/// event pairing behind each field.
+///
+/// Answers: how long does recovering an audit bundle take, and which leg of the
+/// recovery dominates?
 #[utoipa::path(
     get,
     path = "/api/grafana/bundle-latency",
     params(WpTimeseriesQuery),
     responses(
-        (status = 200, description = "Bundle reconstruction latency timeseries. Shard req/resp, full req/resp, reconstruction CPU, and e2e recovery percentiles.", body = [BundleLatencyRow]),
+        (status = 200, description = "Array of rows, one per time bucket, each with approximate percentiles in milliseconds for shard request and serve, full-bundle request and serve, reconstruction and end-to-end recovery, their sample counts, and how many measurements ended in failure.", body = [BundleLatencyRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1176,16 +1209,26 @@ async fn bundle_latency(
         .map_err(|e| map_sqlx_error("grafana/bundle-latency", e))
 }
 
-/// Segment fetching latency percentiles over time.
+/// Import segment fetching latency percentiles over time.
 ///
-/// Tracks import segment fetching during WP processing — see SegmentLatencyRow for details.
-/// Slow segments directly delay the WP pipeline (fetched before refinement).
+/// One row per time bucket. A guarantor fetches a work package's import segments
+/// before refinement, so these latencies sit directly in the work-package
+/// pipeline. Each leg is reported separately — requesting and serving segment
+/// shards (SendingSegmentShardRequest(162) / ReceivingSegmentShardRequest(163) →
+/// SegmentShardsTransferred(167)), requesting and serving whole segments
+/// (SendingSegmentRequest(173) / ReceivingSegmentRequest(174) →
+/// SegmentsTransferred(178)) and local reconstruction
+/// (ReconstructingSegments(168) → SegmentsReconstructed(170)). Latencies from all
+/// reporting nodes are pooled per bucket.
+///
+/// Answers: is import segment fetching delaying refinement, and is the delay in
+/// the network or in reconstruction?
 #[utoipa::path(
     get,
     path = "/api/grafana/segment-latency",
     params(WpTimeseriesQuery),
     responses(
-        (status = 200, description = "Segment fetching latency timeseries. Shard req/resp, full req/resp, and reconstruction CPU percentiles.", body = [SegmentLatencyRow]),
+        (status = 200, description = "Array of rows, one per time bucket, each with approximate percentiles in milliseconds for segment shard request and serve, whole-segment request and serve, and reconstruction, their sample counts, and how many measurements ended in failure.", body = [SegmentLatencyRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1205,13 +1248,19 @@ async fn segment_latency(
 
 /// Preimage transfer latency percentiles over time.
 ///
-/// Tracks preimage (service blob) fetching — see PreimageLatencyRow for details.
+/// One row per time bucket, split by role: the requestor's round-trip from
+/// SendingPreimageRequest(193) to PreimageTransferred(198), and the responder's
+/// local handling from ReceivingPreimageRequest(194) to PreimageTransferred(198).
+/// Latencies from all reporting nodes are pooled per bucket.
+///
+/// Answers: how quickly do nodes obtain the preimages a service needs, and is a
+/// slow transfer the requestor's or the responder's problem?
 #[utoipa::path(
     get,
     path = "/api/grafana/preimage-latency",
     params(WpTimeseriesQuery),
     responses(
-        (status = 200, description = "Preimage transfer latency timeseries. Requestor and responder percentiles.", body = [PreimageLatencyRow]),
+        (status = 200, description = "Array of rows, one per time bucket, each with approximate requestor-side and responder-side percentiles in milliseconds, their sample counts, and how many transfers ended in failure.", body = [PreimageLatencyRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"

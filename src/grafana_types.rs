@@ -696,81 +696,75 @@ pub struct GuaranteeConvergenceDetailRow {
 
 // ── /api/grafana/assurance-convergence ───────────────────────────────────
 
-/// Per-anchor assurance convergence summary.
+/// One assurance anchor: how quickly assurances for that block reached the
+/// validator set.
 ///
-/// **Data source:** `assurance_convergence` table, populated by the
-/// convergence_tracker flush. Each row represents one block anchor,
-/// aggregating all senders' assurance propagation for that block.
-///
-/// Reception convergence: DistributingAssurance(126) → AssuranceReceived(131)
-/// deltas, clamped to max(0, delta).
-///
-/// Distribution start spread: how quickly validators begin distributing
-/// assurances (relative to the first distributor for this anchor).
+/// The reception percentiles pool the DistributingAssurance(126) →
+/// AssuranceReceived(131) latencies of every sender for this anchor (negative
+/// deltas from clock skew are treated as zero). The `dist_start_*` percentiles
+/// describe something different: when validators *started* distributing, relative
+/// to the first validator to do so for this anchor.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct AssuranceConvergenceRow {
-    /// Block anchor (hex-encoded HeaderHash)
+    /// Assurance anchor — hex-encoded header hash of the block the availability statement refers to
     pub anchor: String,
-    /// Slot number
+    /// Slot of the anchored block, when known
     pub slot: Option<i32>,
-    /// Slot timestamp (for Grafana X-axis)
+    /// Wall-clock start of that slot, for plotting on a time axis
     pub slot_timestamp: Option<DateTime<Utc>>,
-    /// Number of senders (validators distributing assurances)
+    /// Validators seen distributing an assurance for this anchor
     pub sender_count: i16,
-    /// Total receiver count across all senders
+    /// Reception measurements pooled here — one per receiving validator per sender
     pub receiver_count: i32,
-    /// p50 reception convergence (ms)
+    /// Median milliseconds from DistributingAssurance(126) to AssuranceReceived(131)
     pub p50_ms: i32,
-    /// p75 reception convergence (ms)
+    /// 75th-percentile milliseconds from DistributingAssurance(126) to AssuranceReceived(131)
     pub p75_ms: Option<i32>,
-    /// p95 reception convergence (ms)
+    /// 95th-percentile milliseconds from DistributingAssurance(126) to AssuranceReceived(131)
     pub p95_ms: Option<i32>,
-    /// p99 reception convergence (ms)
+    /// 99th-percentile milliseconds from DistributingAssurance(126) to AssuranceReceived(131)
     pub p99_ms: i32,
-    /// p100 reception convergence (ms)
+    /// Slowest observed milliseconds from DistributingAssurance(126) to AssuranceReceived(131)
     pub p100_ms: i32,
-    /// Distribution start spread p50 (ms)
+    /// Median milliseconds by which a validator started distributing later than the first one to do so
     pub dist_start_p50_ms: Option<i32>,
-    /// Distribution start spread p95 (ms)
+    /// 95th-percentile lateness in starting to distribute, in milliseconds
     pub dist_start_p95_ms: Option<i32>,
-    /// Distribution start spread p99 (ms)
+    /// 99th-percentile lateness in starting to distribute, in milliseconds
     pub dist_start_p99_ms: Option<i32>,
-    /// Distribution start spread p100 (ms)
+    /// Lateness of the last validator to start distributing, in milliseconds
     pub dist_start_p100_ms: Option<i32>,
-    /// Earliest distribution start
+    /// When the first validator emitted DistributingAssurance(126) for this anchor
     pub first_distributed_at: Option<DateTime<Utc>>,
-    /// Latest distribution start
+    /// When the last validator emitted DistributingAssurance(126) for this anchor
     pub last_distributed_at: Option<DateTime<Utc>>,
 }
 
 // ── /api/grafana/assurance-convergence/senders ──────────────────────────
 
-/// Per-sender assurance convergence detail (for debugging individual nodes).
-///
-/// **Data source:** `assurance_convergence_senders` hypertable.
-/// One row per (anchor, sender). Shows how quickly this sender's assurance
-/// propagated to receiving validators.
+/// One (anchor, sender) pair: how quickly a single validator's assurance reached
+/// the validators that received it.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct AssuranceConvergenceSenderRow {
-    /// Block anchor (hex-encoded)
+    /// Assurance anchor — hex-encoded header hash of the block the availability statement refers to
     pub anchor: String,
-    /// Slot number
+    /// Slot of the anchored block, when known
     pub slot: Option<i32>,
-    /// Sender node ID
+    /// Validator that emitted DistributingAssurance(126) for this anchor
     pub sender_node_id: String,
-    /// Number of receiving validators
+    /// Validators whose AssuranceReceived(131) was matched to this sender's assurance
     pub node_count: i16,
-    /// p50 propagation latency (ms)
+    /// Median milliseconds from this sender's DistributingAssurance(126) to AssuranceReceived(131)
     pub p50_ms: i32,
-    /// p75 propagation latency (ms)
+    /// 75th-percentile milliseconds until AssuranceReceived(131) on the receiving validators
     pub p75_ms: Option<i32>,
-    /// p95 propagation latency (ms)
+    /// 95th-percentile milliseconds until AssuranceReceived(131) on the receiving validators
     pub p95_ms: Option<i32>,
-    /// p99 propagation latency (ms)
+    /// 99th-percentile milliseconds until AssuranceReceived(131) on the receiving validators
     pub p99_ms: i32,
-    /// p100 propagation latency (ms)
+    /// Slowest observed milliseconds until AssuranceReceived(131) on a receiving validator
     pub p100_ms: i32,
-    /// When this sender started distributing
+    /// When this sender emitted DistributingAssurance(126) for this anchor
     pub distributed_at: DateTime<Utc>,
 }
 
@@ -801,37 +795,58 @@ pub struct ConvergenceTimeseriesRow {
 
 // ── /api/grafana/da-stats ────────────────────────────────────────────────
 
-/// Per-node DA operational stats aggregated over a time range.
+/// One node's data-availability activity over the requested time range.
 ///
-/// **Data source:** `da_node_stats` hypertable, populated by da_tracker flush.
-/// One row per node with summed event counts, weighted avg latency, and
-/// max active shard count.
+/// Counts are totals over the range. The two average latencies are weighted by
+/// sample count and include requests that ended in ShardRequestFailed(122),
+/// measured up to the failure.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct DaStatsRow {
+    /// Node that reported the events
     pub node_id: String,
+    /// Shard requests this node issued as an assurer — SendingShardRequest(120)
     pub shard_requests_sent: i64,
+    /// Shard requests this node was asked to serve — ReceivingShardRequest(121)
     pub shard_requests_received: i64,
+    /// Shard requests fully sent to the guarantor — ShardRequestSent(123)
     pub shard_sent_confirmed: i64,
+    /// Shard requests fully taken in as a guarantor — ShardRequestReceived(124)
     pub shard_received_confirmed: i64,
+    /// Completed shard transfers — ShardsTransferred(125)
     pub shards_transferred: i64,
+    /// Shard requests that failed — ShardRequestFailed(122)
     pub shard_failures: i64,
+    /// Preimage announcements that failed — PreimageAnnouncementFailed(190)
     pub preimage_ann_failures: i64,
+    /// Preimages announced to peers — PreimageAnnounced(191)
     pub preimages_announced: i64,
+    /// Announced preimages later dropped — AnnouncedPreimageForgotten(192)
     pub preimages_forgotten: i64,
+    /// Mean milliseconds from SendingShardRequest(120) to ShardsTransferred(125)
     pub assurer_avg_latency_ms: Option<f32>,
+    /// Measurements behind the assurer-side average
     pub assurer_latency_samples: i64,
+    /// Mean milliseconds from ReceivingShardRequest(121) to ShardRequestReceived(124)
     pub guarantor_avg_latency_ms: Option<f32>,
+    /// Measurements behind the guarantor-side average
     pub guarantor_latency_samples: i64,
+    /// Peak number of distinct shard indices this node served within a single sampling window
     pub active_shards: i32,
 }
 
 // ── /api/grafana/shard-latency ──────────────────────────────────────────
 
-/// Shard latency percentiles per time bucket (computed from merged histograms).
+/// Shard transfer latency percentiles for one time bucket, pooled across all
+/// reporting nodes. All percentiles are milliseconds.
 ///
-/// **Data source:** `shard_latency_hist` hypertable. Histograms are summed
-/// across nodes per time bucket, then percentiles are interpolated from the
-/// cumulative distribution in Rust.
+/// The `assurer_*` fields measure the requesting side end to end,
+/// SendingShardRequest(120) → ShardsTransferred(125); the `guarantor_*` fields
+/// measure how long the serving side took to take the request in,
+/// ReceivingShardRequest(121) → ShardRequestReceived(124). Values are
+/// approximate: they are rounded up to a latency-bucket edge and saturate at 5 s.
+/// Requests that ended in ShardRequestFailed(122) are part of the percentiles,
+/// measured up to the failure, and `failed_count` says how many of the pooled
+/// measurements those were.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ShardLatencyRow {
     pub ts: DateTime<Utc>,
@@ -1735,19 +1750,22 @@ pub struct ServiceExecutionRow {
 
 // ── /api/grafana/bundle-latency ─────────────────────────────────────────
 
-/// Bundle reconstruction latency percentiles per time bucket.
+/// Audit bundle recovery latency percentiles for one time bucket.
 ///
 /// Tracks audit data recovery: auditors fetch erasure-coded shards from assurers
 /// to reconstruct the original bundle. Six measurement sides:
-/// - **shard_req** (side=0): Requestor round-trip: SendingBundleShardRequest(140) → BundleShardTransferred(145)
-/// - **shard_resp** (side=1): Responder local work: ReceivingBundleShardRequest(141) → BundleShardTransferred(145)
-/// - **full_req** (side=2): Requestor round-trip for full bundle: SendingBundleRequest(148) → BundleTransferred(153)
-/// - **full_resp** (side=3): Responder local work for full bundle: ReceivingBundleRequest(149) → BundleTransferred(153)
-/// - **reconstruct** (side=4): Pure CPU reconstruction: ReconstructingBundle(146) → BundleReconstructed(147)
-/// - **e2e** (side=5): End-to-end recovery: first SendingBundleShardRequest(140) → BundleReconstructed(147) per audit_id
+/// - **shard_req**: Requestor round-trip: SendingBundleShardRequest(140) → BundleShardTransferred(145)
+/// - **shard_resp**: Responder local work: ReceivingBundleShardRequest(141) → BundleShardTransferred(145)
+/// - **full_req**: Requestor round-trip for full bundle: SendingBundleRequest(148) → BundleTransferred(153)
+/// - **full_resp**: Responder local work for full bundle: ReceivingBundleRequest(149) → BundleTransferred(153)
+/// - **reconstruct**: Local reconstruction work: ReconstructingBundle(146) → BundleReconstructed(147)
+/// - **e2e**: End-to-end recovery per audit: first SendingBundleShardRequest(140) → BundleReconstructed(147)
 ///
-/// **Data source:** `bundle_latency_hist` hypertable. Histograms (23-bucket CONVERGENCE_BOUNDS)
-/// are summed across nodes per time bucket, then percentiles are interpolated in Rust.
+/// Latencies from all reporting nodes are pooled per time bucket. Values are
+/// milliseconds and approximate: rounded up to a latency-bucket edge, saturating
+/// at 120 s. Measurements that ended in a failure event — BundleShardRequestFailed(142)
+/// or BundleRequestFailed(150) — are included, measured up to the failure;
+/// `failed_count` totals them across all sides of the bucket.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct BundleLatencyRow {
     pub ts: DateTime<Utc>,
@@ -1781,17 +1799,22 @@ pub struct BundleLatencyRow {
 
 // ── /api/grafana/segment-latency ────────────────────────────────────────
 
-/// Segment fetching latency percentiles per time bucket.
+/// Import segment fetching latency percentiles for one time bucket.
 ///
-/// Tracks import segment fetching during WP processing (before refinement).
-/// Five measurement sides:
-/// - **shard_req** (side=0): Requestor round-trip: SendingSegmentShardRequest(162) → SegmentShardsTransferred(167)
-/// - **shard_resp** (side=1): Responder local work: ReceivingSegmentShardRequest(163) → SegmentShardsTransferred(167)
-/// - **full_req** (side=2): Requestor round-trip: SendingSegmentRequest(173) → SegmentsTransferred(178)
-/// - **full_resp** (side=3): Responder local work: ReceivingSegmentRequest(174) → SegmentsTransferred(178)
-/// - **reconstruct** (side=4): Pure CPU reconstruction: ReconstructingSegments(168) → SegmentsReconstructed(170)
+/// Tracks the import segments a guarantor fetches while processing a work package,
+/// before refinement. Five measurement sides:
+/// - **shard_req**: Requestor round-trip: SendingSegmentShardRequest(162) → SegmentShardsTransferred(167)
+/// - **shard_resp**: Responder local work: ReceivingSegmentShardRequest(163) → SegmentShardsTransferred(167)
+/// - **full_req**: Requestor round-trip: SendingSegmentRequest(173) → SegmentsTransferred(178)
+/// - **full_resp**: Responder local work: ReceivingSegmentRequest(174) → SegmentsTransferred(178)
+/// - **reconstruct**: Local reconstruction work: ReconstructingSegments(168) → SegmentsReconstructed(170)
 ///
-/// **Data source:** `segment_latency_hist` hypertable.
+/// Latencies from all reporting nodes are pooled per time bucket. Values are
+/// milliseconds and approximate: rounded up to a latency-bucket edge, saturating
+/// at 120 s. Measurements that ended in SegmentShardRequestFailed(164),
+/// SegmentRequestFailed(175) or SegmentReconstructionFailed(169) are included,
+/// measured up to the failure; `failed_count` totals them across all sides of the
+/// bucket.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SegmentLatencyRow {
     pub ts: DateTime<Utc>,
@@ -1820,13 +1843,16 @@ pub struct SegmentLatencyRow {
 
 // ── /api/grafana/preimage-latency ───────────────────────────────────────
 
-/// Preimage transfer latency percentiles per time bucket.
+/// Preimage transfer latency percentiles for one time bucket.
 ///
 /// Tracks preimage (service blob) fetching. Two measurement sides:
-/// - **req** (side=0): Requestor round-trip: SendingPreimageRequest(193) → PreimageTransferred(198)
-/// - **resp** (side=1): Responder local work: ReceivingPreimageRequest(194) → PreimageTransferred(198)
+/// - **req**: Requestor round-trip: SendingPreimageRequest(193) → PreimageTransferred(198)
+/// - **resp**: Responder local work: ReceivingPreimageRequest(194) → PreimageTransferred(198)
 ///
-/// **Data source:** `preimage_latency_hist` hypertable.
+/// Latencies from all reporting nodes are pooled per time bucket. Values are
+/// milliseconds and approximate: rounded up to a latency-bucket edge, saturating
+/// at 120 s. Transfers that ended in PreimageRequestFailed(195) are included,
+/// measured up to the failure, and counted in `failed_count`.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PreimageLatencyRow {
     pub ts: DateTime<Utc>,
