@@ -639,20 +639,27 @@ async fn core_detail(
         .map_err(|e| map_sqlx_error("grafana/cores/detail", e))
 }
 
-/// Block propagation convergence percentiles per slot.
+/// How fast a newly authored block reaches the rest of the network, per slot.
 ///
-/// Reads the `slot_convergence` table, populated by the enricher which measures
-/// the time between block authoring on the author node and reception across all
-/// other nodes. Returns pre-computed p50, p99, and p100 propagation delays in
-/// milliseconds, along with the node count that reported each event type.
-/// Use the `event_type` filter to select BestBlock (11), Finalized (12), or
-/// Importing (43) convergence — event types as defined in JIP-3.
+/// One row per slot and per block event. Every offset is measured from
+/// Authored(42) on the block's author to the same slot's event on each other
+/// node, and the offsets of all reporting nodes are pooled before the
+/// percentiles are taken, so they are percentiles over nodes. The `event_type`
+/// filter picks which step to look at — BestBlockChanged(11),
+/// FinalizedBlockChanged(12), Authoring(40), Authored(42) or Importing(43);
+/// without it every step observed for the slot is returned. Authoring(40) and
+/// Authored(42) come from the author itself, so their offsets sit at or below
+/// zero. A slot whose author never reported Authored(42) has no rows at all,
+/// and a slot's rows keep being refined while late reports for it arrive.
+///
+/// Answers: how quickly does a new block propagate across the network, and in
+/// which slots does propagation degrade?
 #[utoipa::path(
     get,
     path = "/api/grafana/blocks/convergence",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Convergence percentiles per slot", body = [BlockConvergenceRow]),
+        (status = 200, description = "Array of per-slot rows, ascending by slot and then by event type, each carrying the propagation-offset percentiles across the nodes that reported that block event for the slot.", body = [BlockConvergenceRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -669,18 +676,22 @@ async fn blocks_convergence(
         .map_err(|e| map_sqlx_error("grafana/blocks/convergence", e))
 }
 
-/// Block contents extracted from BlockAuthored events.
+/// What each authored block contained, one row per authored block.
 ///
-/// Queries the raw `events` hypertable for BlockAuthored events (type 42 as
-/// defined in JIP-3), extracting extrinsic breakdown from the JSONB `data`
-/// column via `data->'Authored'->'outline'` — counts of guarantees, assurances,
-/// preimages, tickets, dispute verdicts, and total extrinsic size in bytes.
+/// Each row is one Authored(42) report from the node that authored the block:
+/// the slot, the author, and the block outline it reported — how many
+/// guarantees, assurances, preimages, tickets and dispute verdicts the block
+/// carried, plus the block's size in bytes. Built from recent raw events, which
+/// are retained for about an hour, so older parts of a range come back empty.
+///
+/// Answers: how full are the blocks being authored, and which extrinsic types
+/// are actually making it on chain?
 #[utoipa::path(
     get,
     path = "/api/grafana/blocks/contents",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Block contents per slot", body = [BlockContentsRow]),
+        (status = 200, description = "Array of rows, one per authored block, ascending by slot, each with the author and the per-extrinsic-type counts from the block outline. Only covers the ~1 hour raw-event retention window.", body = [BlockContentsRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1598,23 +1609,26 @@ async fn failure_rates(
         .map_err(|e| map_sqlx_error("grafana/failure-rates", e))
 }
 
-/// Network sync status over time — how many nodes are synced vs behind.
+/// How much of the network is keeping up with the chain tip, over time.
 ///
-/// **Question answered:** "Is the network in sync? Which nodes are falling behind?"
+/// One row per time bucket. Each node's highest best-block slot in the bucket
+/// comes from its BestBlockChanged(11) reports; `network_slot` is the highest
+/// slot any node reported, and a node counts as synced when its own best slot is
+/// within 2 slots (about 12 s) of it. Only nodes that reported
+/// BestBlockChanged(11) in the bucket are counted, so a node that stops
+/// reporting disappears from the row instead of showing up as behind. This is an
+/// observed measure and is independent of the node's own subjective
+/// SyncStatusChanged(13) flag. `interval` defaults to 5m and is snapped to a
+/// supported bucket width.
 ///
-/// **Data source:** `status_counts` table for BestBlockChanged events with
-/// `slot` dimension preserved in pre-aggregation.
-///
-/// **Algorithm:** For each time bucket, finds the network max slot (highest slot
-/// reported by any node). Nodes whose max slot is within 2 of the network max
-/// are considered "synced"; the rest are "behind." Returns per-bucket:
-/// total_nodes, synced_nodes, behind_nodes, sync_percentage, network_slot.
+/// Answers: is the network in sync, and how many nodes are lagging behind the
+/// chain tip?
 #[utoipa::path(
     get,
     path = "/api/grafana/sync-timeline",
     params(TimeseriesQuery),
     responses(
-        (status = 200, description = "Sync status timeline", body = [SyncTimelineRow]),
+        (status = 200, description = "Array of per-bucket rows, ascending by time, each with the highest best-block slot seen in the network and how many reporting nodes were at the tip versus behind it.", body = [SyncTimelineRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1969,19 +1983,26 @@ async fn wp_batch(
         .map_err(|e| map_sqlx_error("grafana/wp/batch", e))
 }
 
-/// Block production overview — totals, authoring by node.
+/// Block production and import health for the range, plus the current chain tips.
 ///
-/// **Question answered:** "What's the block production health?"
+/// `totals` counts the block lifecycle events reported by the whole network in
+/// the range: Authoring(40), AuthoringFailed(41), Authored(42), Importing(43),
+/// BlockVerificationFailed(44), BlockVerified(45), BlockExecutionFailed(46),
+/// BlockExecuted(47), plus BestBlockChanged(11) and FinalizedBlockChanged(12).
+/// Every node reports its own import of a block, so the import-side counts scale
+/// with the number of nodes, while `authored` is one per block. `chain` gives the
+/// current best and finalized slot as of the request, not over the range, and is
+/// null when live chain tracking is unavailable. `authoring_by_node` ranks the 50
+/// most active authors by Authored(42) count.
 ///
-/// **Data source:** `all_event_stats_1m` for block event totals (Authoring through
-/// BlockExecuted, BestBlockChanged, FinalizedBlockChanged). Per-node authoring
-/// counts from the same aggregate. Best/finalized slot from LiveCounters overlay.
+/// Answers: are blocks being produced, verified and executed successfully, and
+/// which nodes are authoring them?
 #[utoipa::path(
     get,
     path = "/api/grafana/blocks/summary",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Block production summary", body = BlocksSummaryResponse),
+        (status = 200, description = "Single object with the range-wide block-event totals, the current best and finalized slot, and the 50 most active authoring nodes.", body = BlocksSummaryResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"

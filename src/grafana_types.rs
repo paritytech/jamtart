@@ -255,63 +255,62 @@ pub struct WpTrackingRow {
 
 // ── /api/grafana/blocks/convergence ─────────────────────────────────────
 
-/// Block propagation convergence percentiles per slot.
+/// How one step of a block's lifecycle spread across the network for one slot.
 ///
-/// **Data source:** `slot_convergence` table, populated by the enricher which
-/// measures the time between block authoring (on the author node) and reception
-/// across all other nodes. Percentiles (p50/p99/p100) represent network-wide
-/// propagation latency in milliseconds.
+/// All offsets are measured from Authored(42) on the block's author to the same
+/// slot's event on each reporting node, pooled over nodes.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct BlockConvergenceRow {
-    /// Slot number
+    /// Slot of the block these offsets refer to
     pub slot: i32,
-    /// Event type used for convergence measurement
+    /// JIP-3 event id whose spread this row measures — BestBlockChanged(11),
+    /// FinalizedBlockChanged(12), Authoring(40), Authored(42) or Importing(43)
     pub event_type: i16,
-    /// Human-readable event type name
+    /// Canonical JIP-3 name of that event
     #[sqlx(skip)]
     pub event_type_name: &'static str,
-    /// Number of nodes that reported this event
+    /// How many node reports the percentiles were computed from
     pub node_count: i16,
-    /// 50th percentile propagation delay (ms)
+    /// Median offset from Authored(42) on the author to this event on the
+    /// reporting nodes, in milliseconds
     pub p50_ms: i32,
-    /// 75th percentile propagation delay (ms)
+    /// 75th-percentile offset in milliseconds
     pub p75_ms: Option<i32>,
-    /// 95th percentile propagation delay (ms)
+    /// 95th-percentile offset in milliseconds
     pub p95_ms: Option<i32>,
-    /// 99th percentile propagation delay (ms)
+    /// 99th-percentile offset in milliseconds
     pub p99_ms: i32,
-    /// Maximum propagation delay (ms)
+    /// Largest offset in milliseconds — the slowest reporting node
     pub p100_ms: i32,
-    /// When the block was authored
+    /// When the author reported Authored(42); the reference point for all offsets
     pub authored_at: DateTime<Utc>,
 }
 
 // ── /api/grafana/blocks/contents ────────────────────────────────────────
 
-/// Block contents extracted from BlockAuthored events.
+/// The contents of one authored block, as reported in the block outline of
+/// Authored(42).
 ///
-/// **Data source:** Raw `events` hypertable, filtered to event_type=42
-/// (BlockAuthored). The extrinsic breakdown (guarantees, assurances, etc.)
-/// is extracted from the JSONB `data` column → `Authored.outline` fields.
+/// Every count is null if the author's report did not carry that field.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct BlockContentsRow {
-    /// Slot number
+    /// Slot the block was authored for
     pub slot: i32,
-    /// When the block was authored
+    /// When the author reported Authored(42)
     pub timestamp: DateTime<Utc>,
     /// Node that authored the block
     pub node_id: String,
-    /// Number of guarantees in the block
+    /// Guarantees included in the block
     pub num_guarantees: Option<i32>,
-    /// Number of assurances in the block
+    /// Availability assurances included in the block
     pub num_assurances: Option<i32>,
-    /// Number of preimages in the block
+    /// Preimages included in the block
     pub num_preimages: Option<i32>,
-    /// Number of tickets in the block
+    /// Safrole tickets included in the block
     pub num_tickets: Option<i32>,
-    /// Number of dispute verdicts in the block
+    /// Dispute verdicts included in the block
     pub num_disputes: Option<i32>,
-    /// Total extrinsic size in bytes
+    /// Size of the block in bytes, as reported in the block outline
     pub extrinsic_size: Option<i32>,
 }
 
@@ -1158,24 +1157,21 @@ pub struct RecentFailure {
 
 // ── /api/grafana/sync-timeline ──────────────────────────────────────────
 
-/// Network sync status over time — how many nodes are synced vs behind.
-///
-/// **Data source:** `status_counts` table for BestBlockChanged events with
-/// `slot` dimension. Network slot = MAX(slot) per bucket across all nodes.
-/// A node is "synced" if its max slot is within 2 of the network max.
+/// One time bucket's view of how much of the network was at the chain tip,
+/// derived from the best-block slots nodes reported in BestBlockChanged(11).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SyncTimelineRow {
     /// Bucket start timestamp
     pub ts: DateTime<Utc>,
-    /// Total distinct nodes that reported BestBlockChanged in this bucket
+    /// Nodes that reported BestBlockChanged(11) in this bucket
     pub total_nodes: i64,
-    /// Nodes whose max slot is within 2 of the network max slot
+    /// Nodes whose best slot was within 2 slots of the network's highest
     pub synced_nodes: i64,
-    /// Nodes whose max slot is more than 2 behind the network max
+    /// Nodes whose best slot was more than 2 slots behind the network's highest
     pub behind_nodes: i64,
-    /// Sync percentage: synced_nodes / total_nodes * 100 (0.0 to 100.0)
+    /// Share of reporting nodes that were synced, in percent (0.0 to 100.0)
     pub sync_percentage: f64,
-    /// Highest slot reported by any node in this bucket
+    /// Highest best-block slot any node reported in this bucket
     pub network_slot: i32,
 }
 
@@ -1597,61 +1593,60 @@ pub struct WpDetailResponse {
 
 // ── /api/grafana/blocks/summary ─────────────────────────────────────────
 
-/// Block production overview — totals, recent blocks, propagation.
-///
-/// **Question answered:** "What's the block production health?"
-///
-/// **Data source:** `all_event_stats_1m` for block event totals (Authoring through
-/// BlockExecuted, BestBlockChanged, FinalizedBlockChanged). LiveCounters for
-/// current best/finalized slot. Raw events (1h) for recent block hashes.
-/// `slot_convergence` for propagation percentiles.
+/// Block production and import health over the queried range, plus the chain
+/// tips as of the request.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct BlocksSummaryResponse {
-    /// Per-event-type counts for block-related events
+    /// Network-wide counts of the block lifecycle events in the range
     pub totals: BlockTotals,
-    /// Current chain state
+    /// Best and finalized slot right now, not over the range
     pub chain: ChainState,
-    /// Per-node block authoring counts
+    /// The most active block authors in the range
     pub authoring_by_node: Vec<AuthoringByNode>,
 }
 
+/// Network-wide counts of each block lifecycle event in the range. The
+/// import-side counts are reported once per node per block, while `authored` is
+/// reported once per block by its author.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct BlockTotals {
-    /// Authoring events started
+    /// Authoring(40) — block authoring attempts started
     pub authoring_started: i64,
-    /// AuthoringFailed events
+    /// AuthoringFailed(41) — authoring attempts that failed
     pub authoring_failed: i64,
-    /// Successfully authored blocks (Authored)
+    /// Authored(42) — blocks successfully authored
     pub authored: i64,
-    /// Blocks being imported (Importing)
+    /// Importing(43) — block imports started by non-authoring nodes
     pub importing: i64,
-    /// Block verification failures (BlockVerificationFailed)
+    /// BlockVerificationFailed(44) — imported blocks that failed verification
     pub verification_failed: i64,
-    /// Blocks verified (BlockVerified)
+    /// BlockVerified(45) — imported blocks that passed verification
     pub verified: i64,
-    /// Block execution failures (BlockExecutionFailed)
+    /// BlockExecutionFailed(46) — blocks whose execution failed
     pub execution_failed: i64,
-    /// Blocks executed (BlockExecuted)
+    /// BlockExecuted(47) — blocks executed successfully
     pub executed: i64,
-    /// BestBlockChanged events
+    /// BestBlockChanged(11) — best-block changes reported by nodes
     pub best_block_changes: i64,
-    /// FinalizedBlockChanged events
+    /// FinalizedBlockChanged(12) — finalized-block changes reported by nodes
     pub finalized_block_changes: i64,
 }
 
+/// The chain tips as currently observed across the network.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ChainState {
-    /// Current best (highest) slot number
+    /// Highest best-block slot currently seen; null if live tracking is off
     pub best_slot: Option<i32>,
-    /// Current finalized slot number
+    /// Highest finalized slot currently seen; null if live tracking is off
     pub finalized_slot: Option<i32>,
 }
 
+/// How many blocks one node authored in the range.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct AuthoringByNode {
     /// Node identifier
     pub node_id: String,
-    /// Number of blocks authored by this node
+    /// Authored(42) reports from this node
     pub blocks_authored: i64,
 }
 
