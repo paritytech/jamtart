@@ -799,18 +799,24 @@ async fn services_timeseries(
         .map_err(|e| map_sqlx_error("grafana/services/timeseries", e))
 }
 
-/// All known nodes with metadata.
+/// Every node that has ever reported telemetry, with its identity and current session state.
 ///
-/// Returns every node that has ever connected, from the `nodes` table (updated
-/// on TCP connect/disconnect and status events). Sorted by `is_connected DESC,
-/// last_seen_at DESC` (connected nodes first). `total_event_count` is the sum
-/// of the current-session counter and the historical total across reconnects.
-/// No time range required.
+/// One row per node, whether or not it is still reporting. The connection state
+/// (`is_connected`, `connected_at`, `disconnected_at`, `last_seen_at`) describes the
+/// node's telemetry session with this collector, not its JAM peer connections — for
+/// those see `/connections-timeline`. Identity, implementation and protocol
+/// parameters come from the JIP-3 node information message sent at handshake, and
+/// `total_event_count` covers every event the node has reported across all of its
+/// sessions. Nodes currently reporting come first, then the most recently heard from.
+/// Takes no time range: the answer is always the present state.
+///
+/// Answers: which nodes are reporting right now, what software are they running,
+/// and when was each one last heard from?
 #[utoipa::path(
     get,
     path = "/api/grafana/nodes",
     responses(
-        (status = 200, description = "All known nodes", body = [NodeRow]),
+        (status = 200, description = "Array with one row per known node, the ones currently reporting first and then the most recently seen, each with the node's identity, implementation, session timestamps and lifetime event count.", body = [NodeRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -824,19 +830,25 @@ async fn nodes(State(state): State<ApiState>) -> Result<impl IntoResponse, Statu
         .map_err(|e| map_sqlx_error("grafana/nodes", e))
 }
 
-/// Raw node status rows at ~2 s granularity.
+/// Individual node status snapshots, exactly as reported in Status(10).
 ///
-/// Reads the `node_stats` hypertable directly (not an aggregate). Each row is
-/// inserted from a Status event (type 10, as defined in JIP-3) that nodes send
-/// periodically. Contains peer counts, DA shard/preimage storage metrics, and
-/// guarantee distribution across cores. The `node` parameter accepts a
-/// comma-separated list with Grafana `{a,b}` multi-select syntax.
+/// One row per Status(10) event. Nodes emit one roughly every 2 seconds, so an
+/// unfiltered query over a wide range returns a great many rows — use
+/// `/node-stats-aggregate` when a trend is enough. Each row carries the reporting
+/// node's peer counts, its availability-store shard holdings and preimage pool, and
+/// how many guarantees its guarantee pool held per core, summarised as the minimum,
+/// maximum and mean across cores plus the number of cores holding none. The `node`
+/// parameter accepts a comma-separated list with Grafana `{a,b}` multi-select
+/// syntax; without it, every reporting node is included.
+///
+/// Answers: what did a specific node's peer count, availability-store occupancy and
+/// guarantee pool look like at each moment?
 #[utoipa::path(
     get,
     path = "/api/grafana/node-stats",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Raw node status snapshots", body = [NodeStatsRow]),
+        (status = 200, description = "Array of one row per Status(10) report in the range, ascending by time, each with the reporting node's peer counts, shard and preimage holdings and per-core guarantee-pool summary.", body = [NodeStatsRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -854,19 +866,26 @@ async fn node_stats(
         .map_err(|e| map_sqlx_error("grafana/node-stats", e))
 }
 
-/// 1-minute aggregated node stats from `node_stats_1m`.
+/// Node status metrics from Status(10), condensed into 1-minute buckets.
 ///
-/// Without a node filter, returns **network-wide** aggregates per 1-minute
-/// bucket: AVG/MIN/MAX across all nodes for each metric (peers, shards,
-/// preimages, guarantees). With a node filter, returns per-node aggregate
-/// rows. The `node` parameter accepts comma-separated IDs with Grafana
-/// `{a,b}` multi-select syntax.
+/// The same measurements as `/node-stats`, pre-aggregated to one row per minute so
+/// that long ranges stay cheap. Without a `node` filter each row is network-wide:
+/// the mean of the per-node means, and the lowest and highest value any reporting
+/// node showed in that minute. With a `node` filter each row is one node in one
+/// minute. `status_count` is how many Status(10) reports went into the row, which
+/// distinguishes a fully reported minute from a partial one. One minute is the
+/// finest resolution available here — use `/node-stats` for individual reports. The
+/// `node` parameter accepts comma-separated IDs with Grafana `{a,b}` multi-select
+/// syntax.
+///
+/// Answers: how are peer counts, availability-store occupancy and guarantee-pool
+/// depth trending, network-wide or for particular nodes?
 #[utoipa::path(
     get,
     path = "/api/grafana/node-stats-aggregate",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Aggregated node stats (network-wide or per-node)", body = [NodeStatsAggregateRow]),
+        (status = 200, description = "Array of rows, one per minute bucket network-wide, or one per minute and node when a node filter is given, ascending by time, each with mean/lowest/highest peer, shard, preimage and guarantee-pool figures and the number of Status(10) reports behind them.", body = [NodeStatsAggregateRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1601,32 +1620,44 @@ async fn guarantee_discards(
 
 // ── Phase 3: New grafana endpoints ───────────────────────────────────────
 
-/// Network failure rates with per-category, per-node breakdown and recent failures.
+/// How often each part of the protocol is failing, network-wide, per node, and most recently.
 ///
-/// **Question answered:** "What's failing across the network, how badly, and where?"
+/// Six categories, each weighing the failures a node reported against the
+/// corresponding successes over the time range:
 ///
-/// **Data source:** `all_event_stats_1m` UNION view for aggregate counts.
-/// `ingested_raw_events` (1h retention) for recent failure details with reason
-/// text extracted from JSONB.
+/// - **block_authoring** — AuthoringFailed(41), BlockVerificationFailed(44),
+///   BlockExecutionFailed(46) against Authoring(40) and Authored(42)
+/// - **tickets** — TicketGenerationFailed(81), TicketTransferFailed(83) against
+///   GeneratingTickets(80), TicketsGenerated(82), TicketTransferred(84)
+/// - **work_packages** — WorkPackageFailed(92), WorkPackageSharingFailed(99) against
+///   WorkPackageReceived(94)
+/// - **guarantees** — GuaranteeSendFailed(107), GuaranteeReceiveFailed(111),
+///   GuaranteeDiscarded(113) against GuaranteeBuilt(105), GuaranteeSent(108),
+///   GuaranteesDistributed(109)
+/// - **shards** — ShardRequestFailed(122) against SendingShardRequest(120) and
+///   ShardsTransferred(125)
+/// - **assurances** — AssuranceSendFailed(127) against DistributingAssurance(126)
 ///
-/// **Categories and their failure event types (JIP-3):**
-/// - block_authoring: AuthoringFailed, BlockVerificationFailed, BlockExecutionFailed
-/// - tickets: TicketGenerationFailed, TicketTransferFailed
-/// - work_packages: WorkPackageFailed, WorkPackageSharingFailed
-/// - guarantees: GuaranteeSendFailed, GuaranteeReceiveFailed, GuaranteeDiscarded
-/// - shards: ShardRequestFailed
-/// - assurances: AssuranceSendFailed
+/// Each rate is failures over all events counted for the category, so it is a share
+/// of observed events, not of distinct protocol operations — one block or work
+/// package normally reports several events on its way through. `overall` pools the
+/// same failure events across all six categories, but its denominator leaves out
+/// TicketsGenerated(82) and TicketTransferred(84), so it is not exactly the sum of
+/// the per-category figures. `by_node` names the 20 nodes with the most failures.
+/// Note that GuaranteeDiscarded(113) counts as a failure here even though its most
+/// common reason is the work package already being reported on-chain — see
+/// `/guarantee-discards` for the reason split. `recent_failures` lists the last 20
+/// individual failure events from the last 5 minutes only, regardless of the
+/// requested range, since individual events are retained for about an hour.
 ///
-/// Each category's rate = failures / (successes + failures). Overall rate spans
-/// all categories. `by_node` returns the top 20 nodes by failure count.
-/// `recent_failures` returns the last 20 failure events from the past 5 minutes
-/// with reason text from JSONB and human-readable event name.
+/// Answers: what is failing across the network, in which part of the protocol, and
+/// on which nodes?
 #[utoipa::path(
     get,
     path = "/api/grafana/failure-rates",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Failure rates with breakdown", body = FailureRatesResponse),
+        (status = 200, description = "Single object with the pooled failure rate for the range, one entry per failure category, the 20 nodes with the most failures, and a short list of the most recent individual failure events.", body = FailureRatesResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1680,23 +1711,27 @@ async fn sync_timeline(
         .map_err(|e| map_sqlx_error("grafana/sync-timeline", e))
 }
 
-/// Network connection activity over time.
+/// Peer connections established and dropped across the network, over time.
 ///
-/// **Question answered:** "How are node connections changing over time?"
+/// One row per time bucket, counting the peer links nodes reported completing —
+/// ConnectedIn(23) for inbound plus ConnectedOut(26) for outbound — against
+/// Disconnected(27), together with how many distinct nodes reported any of those
+/// three in the bucket. Attempts that never completed are not counted here:
+/// ConnectionRefused(20), ConnectingIn(21), ConnectInFailed(22), ConnectingOut(24)
+/// and ConnectOutFailed(25) are excluded. `health_stats` is not part of the
+/// timeline and ignores the time range — it is the current tally of nodes ever seen
+/// by telemetry and how many are reporting right now. `interval` defaults to 5m and
+/// snaps to a supported width; the underlying counts have 30-second resolution, so
+/// 30s is the finest interval that carries real detail.
 ///
-/// **Data source:** `all_event_stats_30s` for ConnectedIn, ConnectedOut, and
-/// Disconnected events. `nodes` table for overall health stats (maintained by
-/// batch_writer on connect/disconnect).
-///
-/// Timeline shows per-bucket: connections (ConnectedIn + ConnectedOut),
-/// disconnections (Disconnected), and active_nodes (distinct node_ids).
-/// Health stats show total_nodes_seen and currently_connected from the nodes table.
+/// Answers: is peer connectivity across the network stable, or are nodes churning
+/// connections?
 #[utoipa::path(
     get,
     path = "/api/grafana/connections-timeline",
     params(TimeseriesQuery),
     responses(
-        (status = 200, description = "Connection activity timeline", body = ConnectionsTimelineResponse),
+        (status = 200, description = "Single object with an array of per-bucket connection, disconnection and active-node counts ascending by time, plus a current, range-independent tally of known and reporting nodes.", body = ConnectionsTimelineResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1859,31 +1894,34 @@ async fn validators_cores(
         .map_err(|e| map_sqlx_error("grafana/validators/cores", e))
 }
 
-/// Multi-signal network health score with per-component breakdown.
+/// One network health score for the range, broken down into five protocol subsystems.
 ///
-/// **Question answered:** "Is the network healthy? Which subsystems are degraded?"
+/// Each component is a success share over the requested range, scored 0–100:
 ///
-/// **Data source:** `all_event_stats_1m` for event counts. `nodes` table for
-/// connectivity. Each component scored 0-100:
+/// - **block_production** — Authored(42) over Authored(42) plus AuthoringFailed(41),
+///   BlockVerificationFailed(44) and BlockExecutionFailed(46). Healthy at 95 and above.
+/// - **work_packages** — WorkPackageReceived(94) over that plus WorkPackageFailed(92)
+///   and WorkPackageSharingFailed(99). Healthy at 95 and above.
+/// - **data_availability** — ShardsTransferred(125) over that plus
+///   ShardRequestFailed(122). Healthy at 95 and above.
+/// - **connectivity** — the share of all nodes ever seen by telemetry that are
+///   reporting right now; this one ignores the time range. Healthy at 90 and above.
+/// - **event_throughput** — 100 if any of the above events arrived at all in the
+///   range, 0 if none did.
 ///
-/// - **block_production:** Authored / (Authored + AuthoringFailed +
-///   BlockVerificationFailed + BlockExecutionFailed). Healthy >= 95%.
-/// - **work_packages:** WorkPackageReceived / (Received + WorkPackageFailed +
-///   WorkPackageSharingFailed). Healthy >= 95%.
-/// - **data_availability:** ShardsTransferred / (Transferred + ShardRequestFailed).
-///   Healthy >= 95%.
-/// - **connectivity:** connected_nodes / total_nodes from `nodes` table.
-///   Healthy >= 90%.
-/// - **event_throughput:** non-zero total events = 100, zero = 0.
+/// A component with no activity at all scores 100 rather than 0, so an idle network
+/// looks healthy. The overall score is the plain mean of the five: healthy at 90 and
+/// above, degraded from 70, unhealthy below that. Only block_production raises
+/// alerts — a warning below 95 and an error below 80.
 ///
-/// Overall health_score = average of 5 component scores. Status: healthy >= 90,
-/// degraded >= 70, unhealthy < 70.
+/// Answers: is the network healthy overall, and which subsystem is dragging the
+/// score down?
 #[utoipa::path(
     get,
     path = "/api/grafana/network-health",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Network health score and breakdown", body = NetworkHealthResponse),
+        (status = 200, description = "Single object with the overall score and status label, one entry per health component, and any alerts raised.", body = NetworkHealthResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"

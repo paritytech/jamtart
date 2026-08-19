@@ -361,136 +361,130 @@ pub struct ServiceTimeseriesRow {
 
 // ── /api/grafana/nodes ──────────────────────────────────────────────────
 
-/// Node metadata record.
-///
-/// **Data source:** `nodes` table, updated on TCP connect/disconnect and
-/// Status events (type 10 as defined in JIP-3). `total_event_count` is computed
-/// as `event_count` (current session) + `total_events` (historical, accumulated
-/// across reconnects).
+/// One node known to telemetry: who it is and the state of its reporting session.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct NodeRow {
-    /// Unique node identifier (64-char hex)
+    /// Node's JIP-3 peer ID — its Ed25519 public key, hex-encoded (64 characters)
     pub node_id: String,
-    /// libp2p peer ID
+    /// Same Ed25519 public key as `node_id`, hex-encoded
     pub peer_id: String,
-    /// Implementation name (e.g. "polkajam", "jamtart")
+    /// Implementation name the node reported at handshake (e.g. "polkajam")
     pub implementation_name: String,
-    /// Implementation version
+    /// Implementation version the node reported at handshake
     pub implementation_version: String,
-    /// Additional node metadata (JSONB)
+    /// The node's full JIP-3 node information message: protocol parameters, genesis
+    /// header hash, peer details, flags, Gray Paper version and free-form note
     pub node_info: serde_json::Value,
-    /// When the node first connected
+    /// When the node was first seen reporting; not reset when it reconnects
     pub connected_at: DateTime<Utc>,
-    /// When the node disconnected (null if still connected)
+    /// When the node's reporting session ended; null while it is still reporting
     pub disconnected_at: Option<DateTime<Utc>>,
-    /// Most recent activity timestamp
+    /// When the node was last heard from
     pub last_seen_at: DateTime<Utc>,
-    /// Whether the node is currently connected
+    /// Whether the node is reporting telemetry right now
     pub is_connected: bool,
-    /// Total events received across all sessions (event_count + total_events)
+    /// Events this node has reported across all of its sessions
     pub total_event_count: i64,
-    /// TCP address
+    /// Network address the node's telemetry session came from
     pub address: Option<String>,
 }
 
 // ── /api/grafana/node-stats ─────────────────────────────────────────────
 
-/// Raw node status snapshot (~2s granularity).
+/// One node's state at one moment, as reported in a single Status(10) event.
 ///
-/// **Data source:** `node_stats` hypertable, inserted from Status events
-/// (type 10) which each node sends periodically. Contains peer counts,
-/// shard/preimage storage metrics, and guarantee distribution across cores.
+/// Nodes emit Status(10) roughly every 2 seconds, so consecutive rows for the same
+/// node are about that far apart.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct NodeStatsRow {
-    /// Timestamp of the status report
+    /// When the node reported this status
     pub timestamp: DateTime<Utc>,
     /// Node that reported this status
     pub node_id: String,
-    /// Total connected peers
+    /// Total peers the node was connected to
     pub num_peers: i32,
-    /// Validator peers
+    /// Peers that are validators
     pub num_val_peers: i32,
-    /// Sync peers
+    /// Peers with a block announcement stream open
     pub num_sync_peers: i32,
-    /// Number of DA shards held
+    /// Erasure-coded shards in the node's availability store
     pub num_shards: i32,
-    /// Total shard storage in bytes
+    /// Total size of those shards, in bytes
     pub shards_size: i64,
-    /// Number of preimages held
+    /// Preimages in the node's pool, ready for inclusion in a block
     pub num_preimages: i32,
-    /// Total preimage storage in bytes
+    /// Total size of those preimages, in bytes
     pub preimages_size: i32,
-    /// Minimum guarantees across cores
+    /// Fewest guarantees any single core held in the node's guarantee pool
     pub min_guarantees: i16,
-    /// Maximum guarantees across cores
+    /// Most guarantees any single core held in the node's guarantee pool
     pub max_guarantees: i16,
-    /// Average guarantees per core
+    /// Mean guarantees per core in the node's guarantee pool
     pub avg_guarantees: f32,
-    /// Number of cores with zero guarantees
+    /// Cores for which the node held no guarantees at all
     pub zero_guarantee_cores: i16,
 }
 
 // ── /api/grafana/node-stats-aggregate ───────────────────────────────────
 
-/// 1-minute aggregated node stats.
+/// One minute's worth of Status(10) reports, condensed into a single row.
 ///
-/// **Data source:** `node_stats_1m` continuous aggregate (1-minute rollup of
-/// `node_stats`). In **network-wide** mode (no node filter), values are
-/// aggregated across all nodes: `avg_*` = AVG of per-node averages,
-/// `min_*` = global MIN, `max_*` = global MAX per bucket. In **per-node**
-/// mode, returns the raw per-node aggregate rows with `node_id` populated.
+/// Without a node filter the row is network-wide and `node_id` is absent: each
+/// `avg_*` is the mean of the per-node means, each `min_*`/`max_*` the lowest and
+/// highest value any reporting node showed in that minute. With a node filter the
+/// row covers one node in one minute and `node_id` names it.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct NodeStatsAggregateRow {
-    /// Bucket start timestamp
+    /// Start of the one-minute bucket this row covers
     pub bucket: DateTime<Utc>,
-    /// Node ID (present only when filtering by specific nodes)
+    /// The node this row is about; absent in network-wide mode
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node_id: Option<String>,
-    /// Average total peers
+    /// Mean total peers
     pub avg_peers: i32,
-    /// Minimum total peers
+    /// Lowest total peers seen
     pub min_peers: i32,
-    /// Maximum total peers
+    /// Highest total peers seen
     pub max_peers: i32,
-    /// Average validator peers
+    /// Mean peers that are validators
     pub avg_val_peers: i32,
-    /// Minimum validator peers
+    /// Lowest validator-peer count seen
     pub min_val_peers: i32,
-    /// Maximum validator peers
+    /// Highest validator-peer count seen
     pub max_val_peers: i32,
-    /// Average sync peers
+    /// Mean peers with a block announcement stream open
     pub avg_sync_peers: i32,
-    /// Minimum sync peers
+    /// Lowest count of peers with a block announcement stream open
     pub min_sync_peers: i32,
-    /// Maximum sync peers
+    /// Highest count of peers with a block announcement stream open
     pub max_sync_peers: i32,
-    /// Average shards
+    /// Mean shards held in the availability store
     pub avg_shards: i32,
-    /// Minimum shards
+    /// Fewest shards held in the availability store
     pub min_shards: i32,
-    /// Maximum shards
+    /// Most shards held in the availability store
     pub max_shards: i32,
-    /// Average shard storage (bytes)
+    /// Mean total size of stored shards, in bytes
     pub avg_shards_size: i64,
-    /// Maximum shard storage (bytes)
+    /// Largest total size of stored shards, in bytes
     pub max_shards_size: i64,
-    /// Average preimages
+    /// Mean preimages held in the pool
     pub avg_preimages: i32,
-    /// Maximum preimages
+    /// Most preimages held in the pool
     pub max_preimages: i32,
-    /// Average preimage storage (bytes)
+    /// Mean total size of pooled preimages, in bytes
     pub avg_preimages_size: i32,
-    /// Maximum preimage storage (bytes)
+    /// Largest total size of pooled preimages, in bytes
     pub max_preimages_size: i32,
-    /// Average guarantees per core
+    /// Mean guarantees per core in the guarantee pool
     pub avg_guarantees: f64,
-    /// Minimum guarantees across cores
+    /// Fewest guarantees any single core held
     pub min_guarantees: i16,
-    /// Maximum guarantees across cores
+    /// Most guarantees any single core held
     pub max_guarantees: i16,
-    /// Maximum cores with zero guarantees
+    /// Most cores seen holding no guarantees at all
     pub max_zero_guarantee_cores: i16,
-    /// Number of status reports in this bucket
+    /// Status(10) reports that went into this row
     pub status_count: i64,
 }
 
@@ -1079,68 +1073,72 @@ pub struct PaginationMeta {
 
 // ── /api/grafana/failure-rates ──────────────────────────────────────────
 
-/// Network failure rates with per-category and per-node breakdown.
-///
-/// **Data source:** `all_event_stats_1m` UNION view for aggregate failure
-/// counts across 6 categories. `ingested_raw_events` (1h retention) for
-/// recent failure details with reason text from JSONB.
+/// How much of the network's reported activity failed, over the requested range.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct FailureRatesResponse {
-    /// Overall failure rate across all categories
+    /// Failure rate with all six categories pooled together
     pub overall: FailureOverall,
-    /// Per-category breakdown: block_authoring, tickets, work_packages, guarantees, shards, assurances
+    /// One entry per category: block_authoring, tickets, work_packages, guarantees,
+    /// shards, assurances
     pub by_category: Vec<FailureCategory>,
-    /// Top 20 nodes by failure count
+    /// The 20 nodes that reported the most failures, worst first
     pub by_node: Vec<FailureByNode>,
-    /// Last 20 failure events from past 5 minutes with reason text
+    /// The last 20 individual failure events from the last 5 minutes, newest first;
+    /// this list ignores the requested time range
     pub recent_failures: Vec<RecentFailure>,
 }
 
+/// The pooled failure figure across every category.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct FailureOverall {
-    /// Total events (successes + failures) across all monitored types
+    /// Successes and failures counted together across all categories
     pub total_events: i64,
-    /// Failed events count
+    /// How many of those were failures
     pub failed_events: i64,
-    /// Failure rate: failed_events / total_events (0.0 to 1.0)
+    /// Failures as a fraction of all counted events (0.0 to 1.0)
     pub failure_rate: f64,
 }
 
+/// One protocol subsystem's failure figure.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct FailureCategory {
-    /// Category name: block_authoring, tickets, work_packages, guarantees, shards, assurances
+    /// Category name: block_authoring, tickets, work_packages, guarantees, shards,
+    /// assurances
     pub category: String,
-    /// Total attempts (successes + failures) in this category
+    /// Successes and failures counted together for this category; a share of observed
+    /// events, not of distinct protocol operations
     pub attempts: i64,
-    /// Failed event count in this category
+    /// How many of those were failures
     pub failures: i64,
-    /// Failure rate: failures / attempts (0.0 to 1.0)
+    /// Failures as a fraction of the counted events (0.0 to 1.0)
     pub rate: f64,
 }
 
+/// One node's share of the network's failures.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct FailureByNode {
-    /// Node identifier (Ed25519 public key hex)
+    /// Node's peer ID — its Ed25519 public key, hex-encoded
     pub node_id: String,
-    /// Total events from this node across all monitored types
+    /// Successes and failures this node reported across all categories
     pub total_events: i64,
-    /// Failed events from this node
+    /// How many of those were failures
     pub failures: i64,
-    /// Per-node failure rate (0.0 to 1.0)
+    /// Failures as a fraction of this node's counted events (0.0 to 1.0)
     pub failure_rate: f64,
 }
 
+/// A single failure a node reported, with its reason where the event carries one.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RecentFailure {
-    /// JIP-3 event type code
+    /// JIP-3 event type ID, e.g. 92 for WorkPackageFailed
     pub event_type: i16,
-    /// Human-readable event name (e.g. "WorkPackageFailed")
+    /// The event's canonical JIP-3 name, e.g. "WorkPackageFailed"
     pub event_name: String,
     /// Node that reported this failure
     pub node_id: String,
-    /// When the failure occurred
+    /// When the node reported the failure
     pub timestamp: DateTime<Utc>,
-    /// Failure reason extracted from event JSONB (may be null if not present)
+    /// Reason string carried in the event payload; null for events that carry none
     pub reason: Option<String>,
 }
 
@@ -1166,36 +1164,34 @@ pub struct SyncTimelineRow {
 
 // ── /api/grafana/connections-timeline ────────────────────────────────────
 
-/// Network connection activity over time.
-///
-/// **Data source:** `all_event_stats_30s` for types 23 (ConnectedIn),
-/// 26 (ConnectedOut), 27 (Disconnected). `nodes` table for per-node
-/// uptime and health stats (maintained by batch_writer).
+/// Peer connection churn over the requested range, plus the current node tally.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ConnectionsTimelineResponse {
-    /// Time-bucketed connection counts
+    /// One entry per time bucket, ascending by time
     pub timeline: Vec<ConnectionsBucket>,
-    /// Overall connection health stats
+    /// Present-moment node counts; not affected by the requested time range
     pub health_stats: ConnectionHealthStats,
 }
 
+/// Peer connections opened and closed within one time bucket.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ConnectionsBucket {
-    /// Bucket start timestamp
+    /// Start of the bucket
     pub ts: DateTime<Utc>,
-    /// ConnectedIn + ConnectedOut events in this bucket
+    /// Peer links completed: ConnectedIn(23) plus ConnectedOut(26)
     pub connections: i64,
-    /// Disconnected events in this bucket
+    /// Peer links dropped: Disconnected(27)
     pub disconnections: i64,
-    /// Distinct nodes with any connection event in this bucket
+    /// Distinct nodes that reported any of those three events in the bucket
     pub active_nodes: i64,
 }
 
+/// Present-moment count of nodes known to telemetry.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ConnectionHealthStats {
-    /// Total nodes ever seen in the `nodes` table
+    /// Nodes that have ever reported telemetry
     pub total_nodes_seen: i64,
-    /// Nodes currently connected (is_connected = true)
+    /// Nodes reporting telemetry right now
     pub currently_connected: i64,
 }
 
@@ -1380,39 +1376,46 @@ pub struct CoreValidatorRow {
 
 // ── /api/grafana/network-health ─────────────────────────────────────────
 
-/// Multi-signal network health score with per-component breakdown.
-///
-/// **Data source:** `all_event_stats_1m` UNION view for 5-component health
-/// scoring (connectivity, block production, DA, work packages, throughput).
-/// LiveCounters for real-time throughput overlay. `node_stats` for peer counts.
-/// Scoring logic (~200 LOC) ported from legacy `store.rs`.
+/// The network's health over the requested range, as one score plus five subsystem scores.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct NetworkHealthResponse {
+    /// Plain mean of the five component scores (0.0 to 100.0)
     pub health_score: f64,
+    /// Label for the overall score: healthy (90 and above), degraded (70 and above),
+    /// unhealthy (below 70)
     pub overall_health: String,
+    /// One entry per component: block_production, work_packages, data_availability,
+    /// connectivity, event_throughput
     pub components: Vec<HealthComponent>,
+    /// Alerts raised by components that scored below their healthy threshold
     pub alerts: Vec<HealthAlert>,
 }
 
+/// One protocol subsystem's health score.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct HealthComponent {
-    /// Component name: block_production, work_packages, data_availability, connectivity, event_throughput
+    /// Component name: block_production, work_packages, data_availability,
+    /// connectivity, event_throughput
     pub name: String,
-    /// Component health score (0.0 to 100.0)
+    /// Share of the component's activity that succeeded, scaled 0.0 to 100.0;
+    /// 100.0 when the component saw no activity at all
     pub score: f64,
-    /// Component status: healthy (>= 95/90%), degraded (>= 80/70%), unhealthy (below)
+    /// Label for the score: healthy, degraded or unhealthy. Thresholds are 95 and 80
+    /// for block_production, work_packages and data_availability, 90 and 70 for
+    /// connectivity; event_throughput is simply healthy or unhealthy
     pub status: String,
-    /// Specific issues detected (empty when healthy)
+    /// Specific issues detected; currently always empty
     pub issues: Vec<String>,
 }
 
+/// A warning about one component that scored below its healthy threshold.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct HealthAlert {
-    /// Alert severity: "warning" or "error"
+    /// Severity: "warning", or "error" for a severely degraded component
     pub severity: String,
-    /// Human-readable alert message
+    /// Human-readable message naming the score that triggered the alert
     pub message: String,
-    /// Which health component generated this alert
+    /// Component that raised it; only block_production raises alerts at present
     pub component: String,
 }
 
