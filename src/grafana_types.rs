@@ -627,68 +627,70 @@ pub struct WpFunnelResponse {
 
 // ── /api/grafana/guarantee-convergence ───────────────────────────────────
 
-/// Per-slot guarantee convergence summary (overview).
+/// Guarantee propagation for one slot, pooled across every guarantee built in it.
 ///
-/// **Data source:** `guarantee_convergence_slots` table, populated by the
-/// convergence_tracker flush. Aggregates all guarantees in a slot: flattens
-/// received_timestamps across all work_report_hashes for that slot and computes
-/// true cross-core percentiles of (received - built_at) latency.
+/// Percentiles are taken over the individual GuaranteeBuilt(105) →
+/// GuaranteeReceived(112) latencies of all guarantees in the slot, so they are
+/// true cross-core percentiles rather than an average of per-guarantee ones.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct GuaranteeConvergenceSlotRow {
-    /// Slot number
+    /// Slot the guarantees were built in
     pub slot: i32,
-    /// Slot timestamp (for Grafana X-axis)
+    /// Wall-clock start of the slot, derived from the slot number
     pub slot_timestamp: DateTime<Utc>,
-    /// Number of guarantees in this slot
+    /// Guarantees built in this slot that were seen received by at least one validator
     pub guarantee_count: i16,
-    /// Minimum receiver count across guarantees
+    /// Fewest receiving validators any one guarantee in this slot reached — the
+    /// worst-covered guarantee, not the slot average
     pub node_count: i16,
-    /// p50 propagation latency (ms)
+    /// Median milliseconds from GuaranteeBuilt(105) to GuaranteeReceived(112)
     pub p50_ms: Option<i32>,
-    /// p75 propagation latency (ms)
+    /// 75th-percentile milliseconds from GuaranteeBuilt(105) to GuaranteeReceived(112)
     pub p75_ms: Option<i32>,
-    /// p95 propagation latency (ms)
+    /// 95th-percentile milliseconds from GuaranteeBuilt(105) to GuaranteeReceived(112)
     pub p95_ms: Option<i32>,
-    /// p99 propagation latency (ms)
+    /// 99th-percentile milliseconds from GuaranteeBuilt(105) to GuaranteeReceived(112)
     pub p99_ms: Option<i32>,
-    /// p100 propagation latency (ms)
+    /// Slowest observed milliseconds from GuaranteeBuilt(105) to GuaranteeReceived(112)
     pub p100_ms: Option<i32>,
-    /// Earliest built_at across guarantees in slot
+    /// Earliest GuaranteeBuilt(105) time among the guarantees in this slot
     pub built_at: DateTime<Utc>,
 }
 
 // ── /api/grafana/guarantee-convergence/detail ────────────────────────────
 
-/// Per-guarantee convergence detail (drill-down by core or wp_hash).
+/// Propagation of one work report's guarantee across the validators that received it.
 ///
-/// **Data source:** `guarantee_convergence` table, one row per work_report_hash.
-/// Measures: GuaranteeBuilt(105) anchor → GuaranteeReceived(112) reception
-/// latency percentiles across all receiving validators.
+/// Percentiles are taken over the GuaranteeBuilt(105) → GuaranteeReceived(112)
+/// latencies reported by each receiving validator for this one work report.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct GuaranteeConvergenceDetailRow {
-    /// Work report hash (hex-encoded)
+    /// Hash of the guaranteed work report (hex-encoded)
     pub work_report_hash: String,
-    /// Slot number
+    /// Slot the guarantee was built in
     pub slot: i32,
-    /// Core index (NULL if guarantor not connected)
+    /// Core the work report was built for; null when the guarantor is not
+    /// reporting telemetry, so its core could not be attributed
     pub core: Option<i16>,
-    /// Work package hash (hex-encoded, NULL if guarantor not connected)
+    /// Hash of the work package behind the report (hex-encoded); null when the
+    /// guarantor is not reporting telemetry
     pub wp_hash: Option<String>,
-    /// Node ID of the guarantor that built this guarantee
+    /// Node that emitted GuaranteeBuilt(105) for this report; null when that
+    /// guarantor is not reporting telemetry
     pub builder_node_id: Option<String>,
-    /// Number of receiving validators
+    /// Validators that reported GuaranteeReceived(112) for this report
     pub node_count: i16,
-    /// p50 propagation latency (ms)
+    /// Median milliseconds from GuaranteeBuilt(105) to GuaranteeReceived(112)
     pub p50_ms: i32,
-    /// p75 propagation latency (ms)
+    /// 75th-percentile milliseconds from GuaranteeBuilt(105) to GuaranteeReceived(112)
     pub p75_ms: Option<i32>,
-    /// p95 propagation latency (ms)
+    /// 95th-percentile milliseconds from GuaranteeBuilt(105) to GuaranteeReceived(112)
     pub p95_ms: Option<i32>,
-    /// p99 propagation latency (ms)
+    /// 99th-percentile milliseconds from GuaranteeBuilt(105) to GuaranteeReceived(112)
     pub p99_ms: i32,
-    /// p100 propagation latency (ms)
+    /// Slowest observed milliseconds from GuaranteeBuilt(105) to GuaranteeReceived(112)
     pub p100_ms: i32,
-    /// When the guarantee was built
+    /// When the guarantor emitted GuaranteeBuilt(105)
     pub built_at: DateTime<Utc>,
 }
 
@@ -1027,18 +1029,15 @@ pub struct ValidatorProfilingTimeseriesRow {
 
 // ── /api/grafana/guarantee-discards ──────────────────────────────────────
 
-/// Time-bucketed guarantee discard counts grouped by reason.
-///
-/// **Data source:** `guarantee_receiving_counts` table (pre-aggregated at
-/// ingestion). Queries event_type=113 (GuaranteeDiscarded) rows where
-/// reason IS NOT NULL, grouped by (bucket, reason).
+/// GuaranteeDiscarded(113) events for one time bucket and one discard reason.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct GuaranteeDiscardRow {
-    /// Bucket start timestamp
+    /// Start of the time bucket
     pub ts: DateTime<Utc>,
-    /// Discard reason (e.g. "ReplacedByBetter(1)", "TooManyGuarantees(3)")
+    /// JIP-3 discard reason, name and code (e.g. "ReplacedByBetter(1)",
+    /// "TooManyGuarantees(3)")
     pub reason: String,
-    /// Number of discards in this bucket with this reason
+    /// Guarantees discarded for this reason within this bucket, across all validators
     pub count: i64,
 }
 
@@ -1220,77 +1219,77 @@ pub struct ConnectionHealthStats {
 
 // ── /api/grafana/guarantees ─────────────────────────────────────────────
 
-/// Guarantee pipeline totals and success rates.
-///
-/// **Data source:** `all_event_stats_1m` UNION view for types 105-113.
-/// Count tables provide correct data for types 106-113 (which were
-/// previously returning 0 from raw events — this fixes a legacy bug).
+/// Network-wide guaranteeing activity over the requested time range.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct GuaranteesResponse {
-    /// Per-type event counts
+    /// One count per guaranteeing event type
     pub totals: GuaranteeTotals,
-    /// Send and receive success rates
+    /// Fraction of guarantee transfers that succeeded on each side
     pub success_rates: GuaranteeSuccessRates,
 }
 
+/// Counts of each guaranteeing event across all reporting nodes.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct GuaranteeTotals {
-    /// GuaranteeBuilt — guarantor built a guarantee proof for a work report
+    /// GuaranteeBuilt(105) — a primary guarantor assembled a guarantee for a work report
     pub built: i64,
-    /// SendingGuarantee — guarantor is sending the guarantee to peers
+    /// SendingGuarantee(106) — a guarantor started sending a guarantee to another validator
     pub sending: i64,
-    /// GuaranteeSendFailed — guarantee send attempt failed
+    /// GuaranteeSendFailed(107) — sending a guarantee to another validator failed
     pub send_failed: i64,
-    /// GuaranteeSent — guarantee successfully sent to a peer
+    /// GuaranteeSent(108) — a guarantee was successfully sent to another validator
     pub sent: i64,
-    /// GuaranteesDistributed — all guarantees for a WP distributed to all peers
+    /// GuaranteesDistributed(109) — a primary guarantor finished distributing a
+    /// work report's guarantees, successfully or not
     pub distributed: i64,
-    /// ReceivingGuarantee — node receiving a guarantee from a peer
+    /// ReceivingGuarantee(110) — a validator started receiving a guarantee
     pub receiving: i64,
-    /// GuaranteeReceiveFailed — guarantee receive failed (invalid, etc.)
+    /// GuaranteeReceiveFailed(111) — receiving a guarantee failed
     pub receive_failed: i64,
-    /// GuaranteeReceived — guarantee received and validated
+    /// GuaranteeReceived(112) — a guarantee was fully received, before validity checks
     pub received: i64,
-    /// GuaranteeDiscarded — guarantee removed from local pool (various reasons)
+    /// GuaranteeDiscarded(113) — a guarantee was dropped from a validator's local pool
     pub discarded: i64,
 }
 
+/// Share of guarantee transfers that completed, on each side of the transfer.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct GuaranteeSuccessRates {
-    /// Sent / (Sending + SendFailed + Sent). 1.0 when no sending activity.
+    /// GuaranteeSent(108) as a fraction of all send attempts (106 + 107 + 108).
+    /// 1.0 when nothing was sent in the range.
     pub send_success_rate: f64,
-    /// Received / (Receiving + ReceiveFailed + Received). 1.0 when no receiving activity.
+    /// GuaranteeReceived(112) as a fraction of all receive attempts (110 + 111 + 112).
+    /// 1.0 when nothing was received in the range.
     pub receive_success_rate: f64,
 }
 
 // ── /api/grafana/guarantees/by-guarantor ────────────────────────────────
 
-/// Per-guarantor breakdown with node→core mapping.
+/// The set of nodes seen building guarantees in the requested time range.
 ///
-/// **Data source:** `guarantee_convergence` table for observed node→core
-/// mapping (builder_node_id + core, 90d retention). `all_event_stats_1m`
-/// for per-node success rates (types 105, 107, 109).
-///
-/// **Caveat:** Node→core mapping reflects observed guarantee behavior, not
-/// protocol-level validator→core assignment. Telemetry does not transmit
-/// `validator_index`. See deep-dive Section 5.
+/// The core association per node is observed guaranteeing behaviour, not the
+/// protocol's validator→core assignment, which rotates every 10 slots and
+/// reshuffles each epoch.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct GuarantorBreakdownResponse {
+    /// One row per guarantor node, most guarantees built first
     pub guarantors: Vec<GuarantorRow>,
+    /// Number of rows in `guarantors`
     pub total_guarantors: i64,
 }
 
+/// One node's guaranteeing activity and the cores it was seen guaranteeing for.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct GuarantorRow {
-    /// Node identifier (Ed25519 public key hex)
+    /// Node identifier (Ed25519 public key, hex-encoded)
     pub node_id: String,
-    /// Core this node most frequently guarantees for (by count)
+    /// Lowest core index in `cores_active`, used as a stable label for the node
     pub primary_core: Option<i16>,
-    /// Total guarantees built by this node in the time range
+    /// GuaranteeBuilt(105) events this node emitted in the time range
     pub guarantee_count: i64,
-    /// Timestamp of this node's most recent guarantee
+    /// When this node last emitted GuaranteeBuilt(105)
     pub last_guarantee: Option<DateTime<Utc>>,
-    /// All cores this node has guaranteed for (sorted, deduplicated)
+    /// Every core this node built a guarantee for, ascending and deduplicated
     pub cores_active: Vec<i16>,
 }
 

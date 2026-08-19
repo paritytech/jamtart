@@ -932,17 +932,22 @@ async fn wp_funnel(
         .map_err(|e| map_sqlx_error("grafana/wp-funnel", e))
 }
 
-/// Guarantee convergence overview — per-slot summary.
+/// How fast guarantees reach the validator set, summarised per slot.
 ///
-/// Aggregates all guarantees per slot: flattens received_timestamps across all
-/// work_report_hashes for a slot and computes true cross-core percentiles of
-/// (GuaranteeReceived - GuaranteeBuilt) propagation latency. One row per slot.
+/// One row per slot. The latency measured is GuaranteeBuilt(105) on the
+/// guarantor until GuaranteeReceived(112) on each validator that received the
+/// guarantee. Latencies for every guarantee built in the slot are pooled before
+/// the percentiles are taken, so they are true cross-core percentiles and not an
+/// average of per-guarantee ones.
+///
+/// Answers: how quickly does a guarantee propagate to the rest of the validator
+/// set, and in which slots does propagation degrade?
 #[utoipa::path(
     get,
     path = "/api/grafana/guarantee-convergence",
     params(ConvergenceQuery),
     responses(
-        (status = 200, description = "Per-slot guarantee convergence (one row per slot, ASC). Without interval: per-slot rows from guarantee_convergence_slots. With interval: percentile timeseries from merged histograms.", body = [GuaranteeConvergenceSlotRow]),
+        (status = 200, description = "Array of per-slot rows, ascending by slot, each carrying the propagation-latency percentiles for that slot. With `interval`: one row per time bucket instead, with percentiles taken over the latencies of all guarantees in the bucket.", body = [GuaranteeConvergenceSlotRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -968,17 +973,22 @@ async fn guarantee_convergence(
     }
 }
 
-/// Guarantee convergence detail — per-guarantee rows for drill-down.
+/// Per-work-report guarantee propagation — drill-down behind the per-slot summary.
 ///
-/// Returns one row per work_report_hash, filtered by optional core or wp_hash.
-/// Each row shows how quickly GuaranteeReceived(112) propagated across the
-/// validator network after GuaranteeBuilt(105).
+/// One row per work report, identified by its work-report hash. Each row names
+/// the guarantor that emitted GuaranteeBuilt(105) and the core the report was
+/// built for, and gives the spread of latencies until GuaranteeReceived(112) on
+/// the validators that received it. Optional `core` and `wp_hash` filters narrow
+/// the drill-down.
+///
+/// Answers: which individual guarantees propagated slowly, and which guarantor
+/// and core produced them?
 #[utoipa::path(
     get,
     path = "/api/grafana/guarantee-convergence/detail",
     params(GuaranteeConvergenceDetailQuery),
     responses(
-        (status = 200, description = "Per-guarantee drill-down (one row per work_report_hash, by slot ASC). GuaranteeBuilt(105) → GuaranteeReceived(112) propagation latency. Optional core/wp_hash filters. Source: guarantee_convergence table.", body = [GuaranteeConvergenceDetailRow]),
+        (status = 200, description = "Array of rows, one per work report, ascending by slot, each with its guarantor, core and GuaranteeBuilt(105) → GuaranteeReceived(112) latency percentiles. Narrowed by the optional core and work-package-hash filters.", body = [GuaranteeConvergenceDetailRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1441,18 +1451,22 @@ async fn events(
         .map_err(|e| map_sqlx_error("grafana/events", e))
 }
 
-/// Time-bucketed guarantee discard counts grouped by reason.
+/// Guarantees dropped from validators' local guarantee pools over time, split by reason.
 ///
-/// Queries the pre-aggregated `guarantee_receiving_counts` table for
-/// GuaranteeDiscarded events (type 113), grouped by discard reason.
-/// Reasons are enum variants: PackageReportedOnChain(0), ReplacedByBetter(1),
-/// CannotReportOnChain(2), TooManyGuarantees(3), Other(4).
+/// Counts GuaranteeDiscarded(113) per time bucket and per reason. The reasons are
+/// the JIP-3 discard reasons: PackageReportedOnChain(0) — the work package was
+/// already reported on-chain, ReplacedByBetter(1), CannotReportOnChain(2),
+/// TooManyGuarantees(3), Other(4). Only reason 0 means the guarantee reached its
+/// intended end; the others mean guarantor work was thrown away.
+///
+/// Answers: why are guarantees leaving the pool without being reported on-chain,
+/// and is that getting worse over time?
 #[utoipa::path(
     get,
     path = "/api/grafana/guarantee-discards",
     params(GuaranteeDiscardsQuery),
     responses(
-        (status = 200, description = "Guarantee discards by reason", body = [GuaranteeDiscardRow]),
+        (status = 200, description = "Array of (bucket timestamp, discard reason, count) rows, ordered by bucket then reason; one row per reason seen in each bucket.", body = [GuaranteeDiscardRow]),
         (status = 400, description = "Invalid interval"),
         (status = 500, description = "Database error"),
     ),
@@ -1583,24 +1597,24 @@ async fn connections_timeline(
         .map_err(|e| map_sqlx_error("grafana/connections-timeline", e))
 }
 
-/// Guarantee pipeline totals and success rates.
+/// Network-wide guarantee counts for every stage of guarantee distribution, plus success rates.
 ///
-/// **Question answered:** "How many guarantees are being built, sent, received,
-/// and discarded across the network?"
+/// Counts each guaranteeing event over the time range: GuaranteeBuilt(105),
+/// SendingGuarantee(106), GuaranteeSendFailed(107), GuaranteeSent(108),
+/// GuaranteesDistributed(109) on the guarantor side, and ReceivingGuarantee(110),
+/// GuaranteeReceiveFailed(111), GuaranteeReceived(112), GuaranteeDiscarded(113)
+/// on the receiving side. Send success is GuaranteeSent(108) over all send
+/// attempts (106 + 107 + 108), receive success is GuaranteeReceived(112) over all
+/// receive attempts (110 + 111 + 112); both are 1.0 when there was no activity.
 ///
-/// **Data source:** `all_event_stats_1m` UNION view for all guarantee event types:
-/// GuaranteeBuilt, SendingGuarantee, GuaranteeSendFailed, GuaranteeSent,
-/// GuaranteesDistributed, ReceivingGuarantee, GuaranteeReceiveFailed,
-/// GuaranteeReceived, GuaranteeDiscarded.
-///
-/// Success rates: send = GuaranteeSent / (Sending + SendFailed + Sent),
-/// receive = GuaranteeReceived / (Receiving + ReceiveFailed + Received).
+/// Answers: how much guaranteeing traffic is the network carrying, and what
+/// fraction of guarantee transfers succeeds?
 #[utoipa::path(
     get,
     path = "/api/grafana/guarantees",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Guarantee totals and success rates", body = GuaranteesResponse),
+        (status = 200, description = "Single object with a per-event-type count block and a send/receive success-rate block for the whole time range.", body = GuaranteesResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1617,26 +1631,27 @@ async fn guarantees(
         .map_err(|e| map_sqlx_error("grafana/guarantees", e))
 }
 
-/// Per-guarantor breakdown with observed node→core mapping.
+/// Guaranteeing activity per guarantor node, with the cores each one was seen guaranteeing for.
 ///
-/// **Question answered:** "Which validators are building guarantees, for which cores,
-/// and how actively?"
+/// One row per node that emitted GuaranteeBuilt(105) in the time range, with how
+/// many guarantees it built, when it last built one, and the set of cores those
+/// guarantees were for. Nodes that built no guarantees do not appear. Guarantee
+/// propagation records are retained for 90 days, which bounds how far back the
+/// time range can reach.
 ///
-/// **Data source:** `guarantee_convergence` table for observed node→core mapping
-/// (builder_node_id + core, 90d retention). Groups by node_id, returns primary
-/// core (most guaranteed), all active cores, guarantee count, and last guarantee
-/// timestamp.
+/// **Caveat:** the node→core association is what was observed, not the protocol's
+/// validator→core assignment. JAM rotates core assignments every 10 slots and
+/// reshuffles them each epoch, so a node legitimately appears on several cores
+/// over any range longer than one rotation.
 ///
-/// **Caveat:** Node→core mapping reflects observed guarantee behavior, not
-/// protocol-level validator→core assignment. JAM rotates assignments every 10 slots
-/// and reshuffles per epoch. Telemetry does not transmit `validator_index` —
-/// there is no way to map node_id → validator_index without upstream JIP-3 changes.
+/// Answers: which nodes are actually guaranteeing, for which cores, and how
+/// evenly is guaranteeing work spread across them?
 #[utoipa::path(
     get,
     path = "/api/grafana/guarantees/by-guarantor",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Per-guarantor breakdown", body = GuarantorBreakdownResponse),
+        (status = 200, description = "Single object holding the guarantor count and an array of per-node rows, ordered by guarantees built, most active first.", body = GuarantorBreakdownResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
