@@ -1738,7 +1738,7 @@ async fn guarantees(
 /// One row per node that emitted GuaranteeBuilt(105) in the time range, with how
 /// many guarantees it built, when it last built one, and the set of cores those
 /// guarantees were for. Nodes that built no guarantees do not appear. Guarantee
-/// propagation records are retained for 90 days, which bounds how far back the
+/// propagation records are retained for 7 days, which bounds how far back the
 /// time range can reach.
 ///
 /// **Caveat:** the node→core association is what was observed, not the protocol's
