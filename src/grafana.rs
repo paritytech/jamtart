@@ -181,7 +181,7 @@ use crate::onchain_types::*;
     )),
     tags(
         (name = "grafana", description = "Grafana dashboard API — time-series, aggregates, and metadata"),
-        (name = "onchain", description = "On-chain statistics API — per-block data from JAM RPC statistics()")
+        (name = "onchain", description = "On-chain statistics API — the chain's own per-block activity statistics for cores, services and validators")
     )
 )]
 pub struct GrafanaApiDoc;
@@ -2297,17 +2297,28 @@ pub struct OnchainServiceTimeseriesQuery {
 
 // ── On-chain cores ──────────────────────────────────────────────────────
 
-/// Per-core on-chain activity summary (all 341 cores).
+/// What each core did on chain over a time range, one row per core.
 ///
-/// Fields from Gray Paper `CoreActivityRecord`, SUMmed over range except
-/// popularity (AVG). Data source: `onchain_core_stats` hypertable.
+/// The JAM chain keeps per-core activity statistics in every block: the gas
+/// consumed by the work reported on the core, the segments its work items
+/// imported and exported, the extrinsics they referenced, the work-bundle bytes
+/// and the total bytes the core placed into data availability, and how many
+/// validators assured the core. Those are per-block figures in the protocol, so
+/// each row adds them up over every block of the range — `popularity_avg`
+/// excepted, which is a mean. Statistics are read from the chain once per block,
+/// blocks that later lost to a fork are left out, and history reaches back
+/// 90 days.
+///
+/// Answers: how is reported work spread across cores, and which cores carry the
+/// most gas and data-availability load?
 #[utoipa::path(
     get,
     path = "/api/grafana/onchain/cores",
     params(OnchainTimeRangeQuery),
     responses(
-        (status = 200, description = "Per-core on-chain activity summary (all 341 cores). \
-            Fields from Gray Paper CoreActivityRecord, SUMmed over range except popularity (AVG).",
+        (status = 200, description = "Array with one row per core, ascending by core index, \
+            each totalling the core's gas, imports, exports, extrinsic and data-availability \
+            figures over the range, plus its mean assurance popularity.",
             body = [OnchainCoreSummary]),
         (status = 500, description = "Database error"),
     ),
@@ -2325,23 +2336,25 @@ async fn onchain_cores_summary(
         .map_err(|e| map_sqlx_error("onchain/cores", e))
 }
 
-/// Time-bucketed on-chain core stats.
+/// Per-core on-chain activity over time.
 ///
-/// Without `core` filter: network-wide aggregate — one row per time bucket
-/// with SUMmed fields across all cores (AVG for popularity).
+/// The same per-block core statistics as `/onchain/cores`, split into buckets of
+/// the requested `interval` (default 1 minute; widths outside the supported set
+/// are snapped up to the nearest supported one, between 6 s — one slot — and
+/// 1 day). Without a `core` filter each row covers all cores together, with
+/// popularity averaged; with one, each row covers that single core and carries
+/// its index.
 ///
-/// With `core` filter: per-core timeseries — one row per time bucket for
-/// the specified core.
-///
-/// Data source: `onchain_core_stats` with `time_bucket()` aggregation.
+/// Answers: how does core load develop over time, and when did gas or
+/// data-availability usage spike?
 #[utoipa::path(
     get,
     path = "/api/grafana/onchain/cores/timeseries",
     params(OnchainCoreTimeseriesQuery),
     responses(
-        (status = 200, description = "Without core filter: network-wide aggregate — one row \
-            per time bucket with SUMmed fields across all cores. \
-            With core filter: per-core timeseries for the specified core.",
+        (status = 200, description = "Array of rows ascending by bucket: without the core \
+            filter, one row per bucket covering all cores together; with it, one row per bucket \
+            for the requested core.",
             body = [OnchainCoreTimeseriesAgg]),
         (status = 400, description = "Invalid interval"),
         (status = 500, description = "Database error"),
@@ -2370,20 +2383,25 @@ async fn onchain_cores_timeseries(
     }
 }
 
-/// Raw per-block on-chain stats for a single core.
+/// One core's on-chain activity block by block.
 ///
-/// No aggregation — each row is one block. Max 1000 rows, newest first.
-/// Data source: `onchain_core_stats` filtered by core.
+/// One row per block in which the chain reported statistics for this core,
+/// newest first, capped at 1000 rows and never aggregated — each row is what the
+/// core did in that single block: gas, imports, exports, extrinsics, work-bundle
+/// bytes, bytes placed into data availability, and the number of validators
+/// assuring it.
+///
+/// Answers: what exactly did this core do in each recent block?
 #[utoipa::path(
     get,
     path = "/api/grafana/onchain/cores/{core_id}",
     params(
-        ("core_id" = i16, Path, description = "Core index (0–340)"),
+        ("core_id" = i16, Path, description = "Core index (0-based)"),
         OnchainTimeRangeQuery,
     ),
     responses(
-        (status = 200, description = "Raw per-block on-chain stats for a single core. \
-            No aggregation — each row is one block. Max 1000 rows, newest first.",
+        (status = 200, description = "Array of per-block rows for this core, newest first, \
+            at most 1000 rows.",
             body = [OnchainCoreDetail]),
         (status = 500, description = "Database error"),
     ),
@@ -2404,19 +2422,28 @@ async fn onchain_core_detail(
 
 // ── On-chain services ───────────────────────────────────────────────────
 
-/// Per-service on-chain activity summary.
+/// What each service did on chain over a time range, one row per service.
 ///
-/// Only services with non-zero activity are returned.
-/// Fields from Gray Paper `ServiceActivityRecord`, all SUMmed.
-/// Data source: `onchain_service_stats` hypertable.
+/// The JAM chain keeps per-service activity statistics in every block: preimages
+/// provided to the service and their total size, work items refined for it and
+/// the refinement gas they used, work items accumulated and the accumulation gas,
+/// the segments its work items imported and exported, and the extrinsics they
+/// referenced. Those are per-block figures, so each row adds them up over the
+/// range, and only services that were active somewhere in the range appear. The
+/// `service` filter takes decimal or 0x-hex service IDs and Grafana `{a,b}`
+/// multi-select syntax. Statistics are read from the chain once per block, blocks
+/// that later lost to a fork are left out, and history reaches back 90 days.
+///
+/// Answers: which services are consuming the network's gas and
+/// data-availability capacity?
 #[utoipa::path(
     get,
     path = "/api/grafana/onchain/services",
     params(OnchainServiceQuery),
     responses(
-        (status = 200, description = "Per-service on-chain activity summary. \
-            Only services with non-zero activity are returned. \
-            Fields from Gray Paper ServiceActivityRecord, all SUMmed.",
+        (status = 200, description = "Array with one row per service that was active in the \
+            range, ascending by service ID, each totalling its preimage, refinement, \
+            accumulation, segment and extrinsic figures.",
             body = [OnchainServiceSummary]),
         (status = 500, description = "Database error"),
     ),
@@ -2435,15 +2462,25 @@ async fn onchain_services_summary(
         .map_err(|e| map_sqlx_error("onchain/services", e))
 }
 
-/// Time-bucketed per-service on-chain stats.
+/// Per-service on-chain activity over time.
 ///
-/// Data source: `onchain_service_stats` with `time_bucket()` aggregation.
+/// The same per-block service statistics as `/onchain/services`, split into
+/// buckets of the requested `interval` (default 1 minute; unsupported widths are
+/// snapped up to the nearest supported one, between 6 s — one slot — and 1 day).
+/// One row per bucket and service; without a `service` filter every service
+/// active in the bucket is returned, so the response grows with the number of
+/// active services.
+///
+/// Answers: how do a service's refinement and accumulation gas and its
+/// data-availability traffic develop over time?
 #[utoipa::path(
     get,
     path = "/api/grafana/onchain/services/timeseries",
     params(OnchainServiceTimeseriesQuery),
     responses(
-        (status = 200, description = "Time-bucketed per-service on-chain stats.",
+        (status = 200, description = "Array of rows, one per time bucket and service, \
+            ascending by bucket and then service ID, each with that service's figures for \
+            the bucket.",
             body = [OnchainServiceTimeseries]),
         (status = 400, description = "Invalid interval"),
         (status = 500, description = "Database error"),
@@ -2464,10 +2501,14 @@ async fn onchain_services_timeseries(
         .map_err(|e| map_sqlx_error("onchain/services/timeseries", e))
 }
 
-/// Raw per-block on-chain stats for a single service.
+/// One service's on-chain activity block by block.
 ///
-/// Max 1000 rows, newest first.
-/// Data source: `onchain_service_stats` filtered by service_id.
+/// One row per block in which the chain reported statistics for this service,
+/// newest first, capped at 1000 rows and never aggregated. The path accepts the
+/// service ID in decimal or 0x-hex form.
+///
+/// Answers: in which blocks was this service refined or accumulated, and what
+/// did each of those blocks cost it in gas?
 #[utoipa::path(
     get,
     path = "/api/grafana/onchain/services/{service_id}",
@@ -2476,8 +2517,8 @@ async fn onchain_services_timeseries(
         OnchainTimeRangeQuery,
     ),
     responses(
-        (status = 200, description = "Raw per-block on-chain stats for a single service. \
-            Max 1000 rows, newest first.",
+        (status = 200, description = "Array of per-block rows for this service, newest first, \
+            at most 1000 rows.",
             body = [OnchainServiceDetail]),
         (status = 400, description = "Invalid service ID"),
         (status = 500, description = "Database error"),
@@ -2501,19 +2542,26 @@ async fn onchain_service_detail(
 
 // ── On-chain validators ─────────────────────────────────────────────────
 
-/// Per-validator on-chain stats (all 1024 validators).
+/// Each validator's on-chain activity tallies, at their peak within a time range.
 ///
-/// Fields from Gray Paper `ValActivityRecord`. Values are epoch-cumulative —
-/// MAX is used to get peak value in the requested range.
-/// Data source: `onchain_validator_stats` hypertable.
+/// The JAM chain accumulates six tallies per validator over an epoch — blocks
+/// authored, tickets introduced, preimages introduced and their total size, work
+/// reports guaranteed, and availability assurances made — and resets them when
+/// the next epoch starts. Each field is the highest value that tally reached
+/// inside the requested range, so a range that sits inside one epoch shows that
+/// epoch's progress, while a range crossing an epoch boundary shows the older
+/// epoch's final value. Statistics are read from the chain once per block, blocks
+/// that later lost to a fork are left out, and history reaches back 90 days.
+///
+/// Answers: which validators are authoring blocks, guaranteeing reports and
+/// assuring availability, and which are contributing nothing?
 #[utoipa::path(
     get,
     path = "/api/grafana/onchain/validators",
     params(OnchainTimeRangeQuery),
     responses(
-        (status = 200, description = "Per-validator on-chain stats (all 1024 validators). \
-            Fields from Gray Paper ValActivityRecord. Values are epoch-cumulative — \
-            MAX is used to get peak value in the requested range.",
+        (status = 200, description = "Array with one row per validator, ascending by validator \
+            index, each holding the peak of that validator's epoch tallies within the range.",
             body = [OnchainValidatorSummary]),
         (status = 500, description = "Database error"),
     ),
@@ -2531,23 +2579,29 @@ async fn onchain_validators_summary(
         .map_err(|e| map_sqlx_error("onchain/validators", e))
 }
 
-/// Time-bucketed on-chain validator stats.
+/// Validator activity tallies over time.
 ///
-/// Without `validator` filter: network-wide aggregate — one row per time bucket
-/// with SUMmed fields across all validators.
+/// With a `validator` filter (comma-separated indices, Grafana `{a,b}`
+/// multi-select syntax): one row per bucket and validator, holding the highest
+/// value that validator's epoch tallies reached in the bucket, so each series
+/// steps up through an epoch and falls back to zero at the epoch boundary.
+/// Without the filter: one row per bucket adding up the tallies every validator
+/// reported in every block of the bucket — since those tallies are
+/// epoch-cumulative, that sum is a relative measure of participation, not a count
+/// of what happened during the bucket. Bucket width comes from `interval`
+/// (default 1 minute, snapped up to the nearest supported width between 6 s —
+/// one slot — and 1 day).
 ///
-/// With `validator` filter: per-validator timeseries — one row per time bucket
-/// for the specified validator(s). MAX aggregation (epoch-cumulative values).
-///
-/// Data source: `onchain_validator_stats` with `time_bucket()` aggregation.
+/// Answers: how does validator participation build up through an epoch, and
+/// which validators stop making progress?
 #[utoipa::path(
     get,
     path = "/api/grafana/onchain/validators/timeseries",
     params(OnchainValidatorTimeseriesQuery),
     responses(
-        (status = 200, description = "Without validator filter: network-wide aggregate — one row \
-            per time bucket with SUMmed fields across all validators. \
-            With validator filter: per-validator timeseries with MAX aggregation (epoch-cumulative).",
+        (status = 200, description = "Array of rows ascending by bucket: without the validator \
+            filter, one row per bucket adding up all validators' tallies; with it, one row per \
+            bucket and selected validator holding that validator's peak tallies for the bucket.",
             body = [OnchainValidatorTimeseriesAgg]),
         (status = 400, description = "Invalid interval"),
         (status = 500, description = "Database error"),
@@ -2577,20 +2631,24 @@ async fn onchain_validators_timeseries(
     }
 }
 
-/// Raw per-block on-chain stats for a single validator.
+/// One validator's activity tallies block by block.
 ///
-/// Shows epoch-cumulative values growing block by block. Max 1000 rows.
-/// Data source: `onchain_validator_stats` filtered by validator_index.
+/// One row per block, newest first, capped at 1000 rows, each holding the
+/// validator's epoch tallies as of that block. The values climb block by block
+/// through the epoch and restart at zero once the next epoch begins.
+///
+/// Answers: block by block, when did this validator author, guarantee or assure,
+/// and at which block did its tallies stop advancing?
 #[utoipa::path(
     get,
     path = "/api/grafana/onchain/validators/{validator_idx}",
     params(
-        ("validator_idx" = i16, Path, description = "Validator index (0–1023)"),
+        ("validator_idx" = i16, Path, description = "Validator index (0-based)"),
         OnchainTimeRangeQuery,
     ),
     responses(
-        (status = 200, description = "Raw per-block on-chain stats for a single validator. \
-            Shows epoch-cumulative values growing block by block. Max 1000 rows.",
+        (status = 200, description = "Array of per-block rows for this validator, newest first, \
+            at most 1000 rows, each with the epoch tallies as of that block.",
             body = [OnchainValidatorDetail]),
         (status = 500, description = "Database error"),
     ),
