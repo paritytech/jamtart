@@ -341,7 +341,8 @@ pub struct EventTypesParams {
     pub group: Option<String>,
 }
 
-/// Parameters for raw events query with optional filtering and pagination.
+/// Parameters for browsing individual telemetry events, with optional filtering
+/// and pagination.
 #[derive(Deserialize, IntoParams)]
 pub struct EventsQuery {
     /// Start of time range (ISO 8601)
@@ -356,9 +357,9 @@ pub struct EventsQuery {
     pub offset: Option<i64>,
     /// Filter to a single node_id
     pub node: Option<String>,
-    /// Filter to a single core index (uses hot column)
+    /// Filter to a single core index
     pub core: Option<i16>,
-    /// Filter to a single work package hash (hex-encoded, uses hot column)
+    /// Filter to a single work package hash (hex-encoded, with or without `0x`)
     pub wp_hash: Option<String>,
 }
 
@@ -485,25 +486,35 @@ fn parse_node_list(s: &str) -> Vec<String> {
 
 // ── Handlers ───────────────────────────────────────────────────────────
 
-/// Time-series event counts with automatic aggregate table selection.
+/// Telemetry event counts over time, grouped by event type, core or node.
 ///
-/// Queries TimescaleDB continuous aggregates, auto-selecting by interval:
-/// `event_stats_30s` (< 60 s), `event_stats_1m` (< 1 h), `event_stats_1h` (>= 1 h),
-/// or `core_stats_1m` when `group_by=core`. Aggregation uses
-/// `time_bucket(interval, bucket)` with `SUM(event_count)`.
+/// One row per time bucket and group value. Exactly one of `event_type`, `core`
+/// or `node_id` is populated, following the `group_by` parameter (default
+/// `event_type`; also accepts `core` and `node_id`/`node`). Counts are
+/// pre-aggregated and the bucket resolution is chosen from the interval: 30 s
+/// for intervals below one minute, 1 min below one hour, 1 h from there on;
+/// core grouping and the `core` filter always read 1-minute resolution.
+/// Requesting a finer interval than the available resolution adds no detail,
+/// and older ranges only have coarser resolution left — from roughly 3 days
+/// back the finest is 1 min, from roughly 30 days back 1 h. Interval values
+/// outside the supported set (6 s up to 1 d) snap to the nearest supported one.
 ///
-/// Exactly one grouping column is populated per row — `event_type`, `core`, or
-/// `node_id` — depending on the `group_by` parameter (default: `event_type`).
-/// Event type IDs follow the JIP-3 telemetry specification; the `event_types`
-/// parameter accepts numeric codes, group names (e.g. `wp_pipeline`), or event
-/// names, and supports Grafana `{a,b}` multi-select syntax.
+/// The `event_types` parameter takes a comma-separated mix of numeric JIP-3
+/// event IDs, canonical event names such as `Authored`, and event group names
+/// (the `wp_pipeline` group, for instance), with Grafana `{a,b}` multi-select
+/// syntax; entries it does not recognise are ignored. The `node` filter has no
+/// effect once `group_by=core` or a `core` filter is in play, since only
+/// core-attributed events are counted there.
+///
+/// Answers: how did telemetry volume develop over the range, and which event
+/// types, cores or nodes account for it?
 #[utoipa::path(
     get,
     path = "/api/grafana/timeseries",
     params(TimeseriesQuery),
     responses(
-        (status = 200, description = "Time-bucketed event counts", body = [TimeseriesRow]),
-        (status = 400, description = "Invalid interval or group_by"),
+        (status = 200, description = "Array of rows, one per time bucket and group value, ascending by bucket, each with the bucket start, the event count and the single populated grouping field.", body = [TimeseriesRow]),
+        (status = 400, description = "`group_by` is not one of `event_type`, `core`, `node_id`"),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -534,22 +545,29 @@ async fn timeseries(
         .map_err(|e| map_sqlx_error("grafana/timeseries", e))
 }
 
-/// Dashboard summary counters for the given time range.
+/// Headline network counters for a dashboard summary row.
 ///
-/// Database counters from `event_stats_1m`: slot events (BlockAuthored, type 42),
-/// guarantees (GuaranteeBuilt, 105), failures (WorkPackageFailed, 92), WP events
-/// (WorkPackageReceived, 94). Connected nodes from the `nodes` table.
-/// Event type IDs as defined in JIP-3.
+/// Over the requested range: how many GuaranteeBuilt(105), WorkPackageFailed(92)
+/// and WorkPackageReceived(94) reports arrived, plus `slot_events` — the largest
+/// number of Authored(42) reports seen in any single minute of the range, so the
+/// busiest minute of block authoring rather than a total.
 ///
-/// Real-time fields are overlaid from in-memory `LiveCounters`: events/blocks per
-/// second (10 s rolling average), best and finalized slot numbers, and active TCP
-/// connection count. These fields are absent when the metrics tracker is disabled.
+/// The remaining fields describe the present moment and ignore the time range:
+/// how many nodes are currently connected to the telemetry collector, telemetry
+/// events and BestBlockChanged(11) reports per second over the last 10 s, the
+/// highest slot numbers seen in BestBlockChanged(11) and
+/// FinalizedBlockChanged(12) reports so far, and the number of open node
+/// connections. Everything except the connected-node count is absent when live
+/// metrics collection is switched off.
+///
+/// Answers: is the network alive right now, and how much block, guarantee and
+/// work-package activity did the range see?
 #[utoipa::path(
     get,
     path = "/api/grafana/stats",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Dashboard stats", body = StatsResponse),
+        (status = 200, description = "Single object with the range's authoring, guarantee, failure and work-package counters plus the live rate, slot and connection fields when available.", body = StatsResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -903,18 +921,24 @@ async fn node_stats_aggregate(
         .map_err(|e| map_sqlx_error("grafana/node-stats-aggregate", e))
 }
 
-/// TimescaleDB internal metadata: table sizes, row counts, compression.
+/// Storage state of the telemetry collector itself — an operational endpoint.
 ///
-/// Queries three TimescaleDB internal functions: `hypertable_detailed_size()`
-/// for table/index/toast byte breakdown, `approximate_row_count()` for fast
-/// row estimates on hypertables (exact `COUNT(*)` for smaller tables like
-/// `wp_tracking`, `slot_convergence`, `nodes`), and `chunk_compression_stats()`
-/// for compression ratios. No parameters required.
+/// Reports jam-tart's own TimescaleDB state for running the collector; it says
+/// nothing about the JAM network. For a fixed set of tables it returns the byte
+/// breakdown (total, table, index, toast) from `hypertable_detailed_size()`, row
+/// counts — estimated via `approximate_row_count()` on the hypertables, exact on
+/// the small tables such as `wp_tracking`, `slot_convergence` and `nodes` — and
+/// the chunk compression totals before and after compression, from
+/// `chunk_compression_stats()`, for the raw event and node status hypertables.
+/// It takes no parameters and always describes the current state.
+///
+/// Answers: how much storage is the collector using, and is compression keeping
+/// up?
 #[utoipa::path(
     get,
     path = "/api/grafana/db-stats",
     responses(
-        (status = 200, description = "TimescaleDB metadata", body = DbStatsResponse),
+        (status = 200, description = "Single object with per-table byte sizes, row counts and compression figures for the collector's own storage.", body = DbStatsResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1497,19 +1521,29 @@ async fn validator_profiling_timeseries(
         .map_err(|e| map_sqlx_error("grafana/validator-profiling-timeseries", e))
 }
 
-/// Static metadata for all telemetry event types (as defined in JIP-3).
+/// Catalogue of the 115 JIP-3 telemetry event types this API understands.
 ///
-/// Returns in-memory metadata for all 115 event types — no database query.
-/// Each entry includes the numeric ID, human-readable name, and group. Use
-/// the `group` parameter to filter by group name (e.g. `blocks`, `wp_pipeline`,
-/// `failures`). The `failures` group is a virtual group spanning all
-/// Failed/Discarded/Duplicate events across categories.
+/// One entry per event type: its numeric ID as defined in JIP-3, its canonical
+/// name — `Authored` for 42, for instance — and the event group it belongs to.
+/// The event groups are `wp_pipeline`, `guarantee_receiving`, `assurances`,
+/// `shards`, `segments`, `bundles`, `preimages`, `blocks`,
+/// `block_distribution`, `tickets`, `connections`, `status` and `system`, plus
+/// the virtual group `failures`, which gathers every failure, discard and
+/// duplicate event from across the others. The `group` parameter narrows the
+/// listing to one of them.
+///
+/// The IDs, names and group names listed here are exactly the values that the
+/// `event_types` parameter of the other endpoints accepts. The catalogue is
+/// fixed and describes no observed traffic.
+///
+/// Answers: which telemetry event types exist, what are they called, and which
+/// group does each belong to?
 #[utoipa::path(
     get,
     path = "/api/grafana/event-types",
     params(EventTypesParams),
     responses(
-        (status = 200, description = "Event type metadata", body = [crate::event_type_meta::EventTypeMeta]),
+        (status = 200, description = "Array of event type entries — numeric ID, canonical name and event group — covering every type, or only the requested group.", body = [crate::event_type_meta::EventTypeMeta]),
     ),
     tag = "grafana"
 )]
@@ -1528,23 +1562,31 @@ async fn event_types(Query(params): Query<EventTypesParams>) -> impl IntoRespons
     }
 }
 
-/// Search raw events from `ingested_raw_events` with filtering and pagination.
+/// Individual telemetry events exactly as the nodes reported them, newest first.
 ///
-/// Returns events matching the given filters, ordered by timestamp DESC. All 115
-/// event types are browsable (1h retention after migration 020). Supports filtering
-/// by event type, node, core (hot column), and wp_hash (hot column). Returns
-/// paginated response with total count for UI pagination controls.
+/// Every one of the 115 JIP-3 event types is browsable here, each with the full
+/// payload the reporting node sent. Raw events are retained for about an hour,
+/// so a range reaching further back returns nothing for the older part. Filters
+/// narrow by event type, reporting node, core and work-package hash (hex, with
+/// or without `0x`); the core and work-package filters only match events whose
+/// core or work package could be determined.
 ///
-/// The `event_types` parameter is optional — if omitted, returns all types. When
-/// provided, accepts numeric IDs (as defined in JIP-3), group names (e.g.
-/// `wp_pipeline`, `failures`), or event names (e.g. `Authored`), expanded
-/// server-side via `expand_event_types()`.
+/// The `event_types` parameter is optional — omitted, every type is returned.
+/// It takes a comma-separated mix of numeric JIP-3 event IDs, canonical event
+/// names such as `Authored`, and event group names such as `wp_pipeline`, with
+/// Grafana `{a,b}` multi-select syntax; entries it does not recognise are
+/// ignored. Results are paginated: `limit` defaults to 500 and is capped at
+/// 2000, `offset` skips ahead, and the response reports how many events match
+/// in total.
+///
+/// Answers: what exactly did the nodes report in the last hour, for a given
+/// event type, node, core or work package?
 #[utoipa::path(
     get,
     path = "/api/grafana/events",
     params(EventsQuery),
     responses(
-        (status = 200, description = "Paginated event records with total count", body = EventsSearchResponse),
+        (status = 200, description = "Single object with one page of matching events, newest first, plus pagination metadata carrying the total number of matches.", body = EventsSearchResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"

@@ -93,68 +93,64 @@ impl From<u32> for DbServiceId {
 
 // ── /api/grafana/stats ──────────────────────────────────────────────────
 
-/// Dashboard summary counters.
+/// Headline network counters for a dashboard summary row.
 ///
-/// **Data source:** Event counts from the `event_stats_1m` continuous aggregate
-/// (TimescaleDB rollup of the raw `events` hypertable, 1-minute buckets).
-/// Queries specific event types: 42 (BlockAuthored) for slot events,
-/// 105 (GuaranteeBuilt) for guarantees, 92 (WorkPackageFailed) for failures,
-/// 94 (WorkPackageReceived) for WP events. Connected node count comes from
-/// the `nodes` table (updated on TCP connect/disconnect).
-///
-/// The handler overlays real-time fields from in-memory `LiveCounters`:
-/// events/blocks per second (10s rolling average), best/finalized slot numbers,
-/// and active TCP connection count.
+/// The four event counters cover the requested time range; the rest describe the
+/// present moment. The rate, slot and open-connection fields are absent when
+/// live metrics collection is switched off.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct StatsResponse {
-    /// Number of currently connected nodes (from `nodes` table)
+    /// Nodes currently reporting telemetry to the collector
     pub connected_nodes: i32,
-    /// Max BlockAuthored event count in range
+    /// Largest number of Authored(42) reports seen in any single minute of the
+    /// range — the busiest authoring minute, not a total
     pub slot_events: i64,
-    /// Total GuaranteeBuilt events in range
+    /// GuaranteeBuilt(105) reports in the range
     pub guarantees: i64,
-    /// Total WorkPackageFailed events in range
+    /// WorkPackageFailed(92) reports in the range
     pub failures: i64,
-    /// Total WorkPackageReceived events in range
+    /// WorkPackageReceived(94) reports in the range
     pub wp_events: i64,
-    /// Events per second, 10s rolling average (from LiveCounters, may be absent)
+    /// Telemetry events of all types received per second over the last 10 s
+    /// (absent when live metrics are off)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub events_per_sec_10s: Option<f64>,
-    /// Blocks per second, 10s rolling average (from LiveCounters, may be absent)
+    /// BestBlockChanged(11) reports per second across the network over the last
+    /// 10 s — how fast nodes are adopting new best blocks, not the authoring
+    /// rate (absent when live metrics are off)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocks_per_sec_10s: Option<f64>,
-    /// Latest best slot number (from LiveCounters, may be absent)
+    /// Highest slot number seen in a BestBlockChanged(11) report so far (absent
+    /// when live metrics are off)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub best_slot: Option<u32>,
-    /// Latest finalized slot number (from LiveCounters, may be absent)
+    /// Highest slot number seen in a FinalizedBlockChanged(12) report so far
+    /// (absent when live metrics are off)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finalized_slot: Option<u32>,
-    /// Currently active TCP connections (from LiveCounters, may be absent)
+    /// Node connections currently open to the collector (absent when live
+    /// metrics are off)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_nodes: Option<usize>,
 }
 
 // ── /api/grafana/timeseries ─────────────────────────────────────────────
 
-/// Time-bucketed event count row.
+/// One time bucket's event count for one group value.
 ///
-/// **Data source:** Auto-selected TimescaleDB continuous aggregate based on
-/// requested interval: `event_stats_30s` (intervals < 60s), `event_stats_1m`
-/// (< 3600s), `event_stats_1h` (>= 3600s), or `core_stats_1m` (when
-/// group_by=core). These aggregates roll up the raw `events` hypertable.
-///
-/// Exactly one of `event_type`, `core`, or `node_id` will be populated,
-/// depending on the `group_by` parameter.
+/// Exactly one of `event_type`, `core` or `node_id` is populated, depending on
+/// the `group_by` parameter. Bucket width follows the requested interval, capped
+/// by the resolution available for the range.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct TimeseriesRow {
     /// Bucket start timestamp
     pub ts: DateTime<Utc>,
-    /// Aggregated event count for this bucket + group
+    /// Events reported in this bucket for this group value
     pub count: i64,
     /// Numeric event type code as defined in JIP-3 (present only when group_by=event_type)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event_type: Option<i16>,
-    /// Human-readable event type name, resolved from event_type_meta (present only when group_by=event_type)
+    /// Canonical event name for that ID (present only when group_by=event_type)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event_type_name: Option<&'static str>,
     /// Core index (present only when group_by=core)
@@ -490,45 +486,58 @@ pub struct NodeStatsAggregateRow {
 
 // ── /api/grafana/db-stats ───────────────────────────────────────────────
 
-/// TimescaleDB metadata: table sizes, row counts, compression stats.
+/// Storage footprint of the collector's own database.
 ///
-/// **Data source:** TimescaleDB internal functions:
-/// `hypertable_detailed_size()` for table/index/toast byte breakdown,
-/// `approximate_row_count()` for fast row estimates,
-/// `hypertable_compression_stats()` for compression ratios.
+/// Sizes come from `hypertable_detailed_size()` for the hypertables and from
+/// `pg_total_relation_size()` for the plain tables, row counts from
+/// `approximate_row_count()` on the hypertables and exact counts on the small
+/// tables, and compression figures from `chunk_compression_stats()`. Only a
+/// fixed set of tables is reported.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct DbStatsResponse {
-    /// Per-table size breakdown
+    /// Byte breakdown, one entry per reported table
     pub tables: Vec<TableSize>,
-    /// Approximate row counts
+    /// Row count, one entry per reported table
     pub row_counts: Vec<RowCount>,
-    /// Compression statistics
+    /// Compression figures for the compressed hypertables
     pub compression: Vec<CompressionInfo>,
 }
 
-/// Byte breakdown for a single hypertable.
+/// Byte breakdown for one stored table.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct TableSize {
+    /// Table the figures refer to
     pub table_name: String,
+    /// Data, indexes and out-of-line storage together
     pub total_bytes: i64,
+    /// Bytes held by the table's own rows
     pub table_bytes: i64,
+    /// Bytes held by the table's indexes
     pub index_bytes: i64,
+    /// Bytes held in out-of-line (toast) storage; 0 for the plain tables
     pub toast_bytes: i64,
 }
 
-/// Approximate row count for a table.
+/// Row count for one stored table.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct RowCount {
+    /// Table the count refers to
     pub table_name: String,
+    /// Rows stored — an estimate for the large time-series tables, exact for
+    /// the small ones
     pub row_count: i64,
 }
 
-/// Compression statistics for a hypertable.
+/// Compression figures for one hypertable.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct CompressionInfo {
+    /// Hypertable the figures refer to
     pub table_name: String,
+    /// Chunks currently held in compressed form
     pub compressed_chunks: i64,
+    /// Bytes those chunks occupied before being compressed
     pub before_compression_bytes: i64,
+    /// Bytes they occupy now
     pub after_compression_bytes: i64,
 }
 
@@ -754,11 +763,11 @@ pub struct AssuranceConvergenceSenderRow {
 
 // ── /api/grafana/convergence-timeseries ──────────────────────────────────
 
-/// Convergence percentile timeseries row (from merged histograms).
+/// Propagation-latency percentiles for one time bucket.
 ///
-/// **Data source:** Histogram columns on `guarantee_convergence`,
-/// `assurance_convergence`, or `assurance_convergence_senders` tables,
-/// SUMmed per time_bucket and converted to percentiles in Rust.
+/// The guarantee or assurance propagation latencies observed in the bucket are
+/// pooled and reduced to percentiles; `sample_count` is how many observations
+/// stand behind them.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ConvergenceTimeseriesRow {
     /// Bucket start timestamp
@@ -1043,14 +1052,13 @@ pub struct EventRow {
     pub created_at: DateTime<Utc>,
 }
 
-/// Paginated event search response.
+/// One page of individual telemetry events, newest first.
 ///
-/// **Data source:** `ingested_raw_events` hypertable (1h retention). Supports
-/// filtering by event type, node, core, and wp_hash. All 115 event types are
-/// browsable after migration 020.
+/// Raw events are retained for about an hour, so the page only covers the part
+/// of the requested range that falls inside that window.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct EventsSearchResponse {
-    /// Event records matching the query
+    /// Matching events, newest first
     pub events: Vec<EventRow>,
     /// Pagination metadata
     pub pagination: PaginationMeta,
