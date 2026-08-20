@@ -112,6 +112,26 @@ curl -s "$BASE/grafana/stats?start=$(date -u -d '5 min ago' +%FT%TZ)&end=$(date 
   filterable by type, node, core, work package
 - `/grafana/timeseries` — event counts over time, grouped by type, core or node
 
+## Digging deeper: the JIP-3 spec
+
+The telemetry protocol itself is specified in **JIP-3**:
+https://github.com/polkadot-fellows/JIPs/blob/main/JIP-3.md
+(raw: https://raw.githubusercontent.com/polkadot-fellows/JIPs/main/JIP-3.md; often
+also checked out locally as a `JIPs/` sibling of this repo).
+
+Don't read it up front — the endpoint docs and `/grafana/event-types` cover normal
+debugging. Reach for it when the question moves from "which endpoint" to "what does
+this event actually mean":
+
+- exact payload fields of an event and their encoding
+- when and by which node an event is emitted (author vs importer, primary vs
+  secondary guarantor, sender vs receiver side of a transfer)
+- semantics of enum values, e.g. guarantee discard reasons or failure kinds
+- handshake / node-information fields, universal event fields (slot, timestamps)
+
+The emitting side is implemented in polkajam (`crates/jam-std-common/src/telemetry.rs`)
+if you need to confirm what a node really sends.
+
 ## Gotchas
 
 - **Raw events are retained ~1 hour.** `/grafana/events` and the event drill-down in
