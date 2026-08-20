@@ -1,0 +1,186 @@
+services:
+  # TimescaleDB database
+  postgres:
+    image: timescale/timescaledb:latest-pg17
+    container_name: tart-timescaledb
+    shm_size: 16gb
+    environment:
+      # WARNING: Default credentials for LOCAL DEVELOPMENT only
+      # For production, override these with strong passwords via environment variables or secrets
+      - POSTGRES_USER=${POSTGRES_USER:-tart}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-tart_password}
+      - POSTGRES_DB=${POSTGRES_DB:-tart_telemetry}
+      - POSTGRES_INITDB_ARGS=-E UTF8 --locale=C
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    command:
+      - postgres
+      - -c
+      - shared_buffers=2GB
+      - -c
+      - max_connections=250
+      - -c
+      - effective_cache_size=8GB
+      - -c
+      - maintenance_work_mem=512MB
+      - -c
+      - checkpoint_completion_target=0.95
+      - -c
+      - wal_buffers=64MB
+      - -c
+      - default_statistics_target=100
+      - -c
+      - random_page_cost=1.0
+      - -c
+      - effective_io_concurrency=200
+      - -c
+      - work_mem=16MB
+      - -c
+      - min_wal_size=8GB
+      - -c
+      - max_wal_size=32GB
+      - -c
+      - statement_timeout=500000
+      - -c
+      - idle_in_transaction_session_timeout=30000
+      - -c
+      - autovacuum_vacuum_cost_delay=2
+      - -c
+      - autovacuum_vacuum_cost_limit=1000
+      - -c
+      - jit=on
+      - -c
+      - log_min_duration_statement=1000
+      # Telemetry data is replaceable — no need to fsync every commit.
+      # Trades ~last 200ms of data on crash for massive write throughput gain.
+      - -c
+      - synchronous_commit=off
+      # Compress WAL pages — cuts I/O ~50% for COPY-heavy workloads (PG15+)
+      - -c
+      - wal_compression=zstd
+      # TimescaleDB has ~30+ background jobs (14 count tables × 2 aggregate levels + retention + compression).
+      # Make sure it has enough worker slots.
+      - -c
+      - max_worker_processes=64
+      - -c
+      - timescaledb.max_background_workers=48
+
+
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tart -d tart_telemetry"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # TART Backend
+  tart-backend:
+    build: .
+    container_name: tart-backend
+    ports:
+      - "9000:9000"  # Telemetry port
+      - "8080:8080"  # API port
+    deploy:
+      resources:
+        limits:
+          cpus: '64'
+          memory: 196G
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+    environment:
+      # WARNING: Default credentials for LOCAL DEVELOPMENT only
+      # For production, set DATABASE_URL via environment variable with strong password
+      - DATABASE_URL=${DATABASE_URL:-postgres://tart:tart_password@postgres:5432/tart_telemetry}
+      - TELEMETRY_BIND=${TELEMETRY_BIND:-0.0.0.0:9000}
+      - API_BIND=${API_BIND:-0.0.0.0:8080}
+      - RUST_LOG=${RUST_LOG:-info}
+      # JAM RPC URL for fetching service/core data (connects to any validator's RPC)
+      # Ports start at 19800 and increment per validator (19800, 19801, 19802, ...)
+      - JAM_RPC_URL=${JAM_RPC_URL:-ws://host.docker.internal:19800}
+    #command: ["/app/tart-backend", "--no-rate-limit"]
+    #command: ["/app/tart-backend", "--disable-legacy-endpoints"]        
+    command:
+        - /app/tart-backend
+        - --no-rate-limit
+          # - --disable-slot-tracker
+          # - --disable-wp-tracker
+          # - --disable-convergence
+          # - --disable-da-tracker
+          # - --disable-event-counter
+          # - --disable-ws-broadcast
+          # - --disable-metrics-tracker
+        - --disable-cache-warmer      
+          #- --disable-onchain
+          #- --disable-db-writes
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # Optional: Grafana dashboards
+  grafana:
+    image: grafana/grafana:12.3.3
+    container_name: tart-grafana
+    extra_hosts:
+      - "tart-backend:host-gateway"
+    ports:
+      - "3001:3000"
+    environment:
+      # Public read-only exposure — see docs/grafana-public-exposure.md
+      - GF_SERVER_ROOT_URL=${GF_PUBLIC_URL:-http://192.168.20.84:3001/}
+      - GF_SECURITY_ADMIN_USER=${GF_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_ADMIN_PASSWORD:?set a strong password in .env}
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_USERS_ALLOW_ORG_CREATE=false
+      - GF_USERS_VIEWERS_CAN_EDIT=false
+      - GF_EXPLORE_ENABLED=false
+      - GF_SNAPSHOTS_EXTERNAL_ENABLED=false
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+      - GF_SECURITY_STRICT_TRANSPORT_SECURITY=true
+      - GF_SECURITY_CONTENT_SECURITY_POLICY=true
+      - GF_SECURITY_DISABLE_GRAVATAR=true
+      - GF_INSTALL_PLUGINS=yesoreyeram-infinity-datasource
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    restart: unless-stopped
+    profiles:
+      - with-grafana
+
+  # Optional: JAM validator node
+  jam-validator-0:
+    image: polkajam:latest
+    container_name: jam-validator-0
+    command: >
+      --chain dev
+      run
+      --telemetry tart-backend:9000
+      --dev-validator 0
+      --temp
+    depends_on:
+      tart-backend:
+        condition: service_healthy
+    restart: unless-stopped
+    profiles:
+      - with-validator
+
+volumes:
+  postgres-data:
+    driver: local
+  grafana-data:
+    driver: local
