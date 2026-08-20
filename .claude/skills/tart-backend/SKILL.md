@@ -57,7 +57,6 @@ curl -s "$BASE/grafana/stats?start=$(date -u -d '5 min ago' +%FT%TZ)&end=$(date 
   description states which JIP-3 events feed it and ends with the question it answers.
 - Event catalogue: `/grafana/event-types` (id, name, group). Docs and API use
   `EventName(ID)` naming, e.g. `WorkPackageReceived(94)`.
-- `playground/tart-cli.py` in the jamtart repo is an interactive explorer for all endpoints.
 
 ## Endpoint index — pick by the question you're asking
 
