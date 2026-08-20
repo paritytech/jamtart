@@ -98,8 +98,9 @@ build/
 docs/_build/
 docs/build/
 
-# Markdown files (except README and docs/)
+# Markdown files (except README, docs/ and skills)
 *.md
 !README.md
 !docs/*.md
+!.claude/skills/**/*.md
 *log*.txt
