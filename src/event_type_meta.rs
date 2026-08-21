@@ -3,14 +3,14 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 use utoipa::ToSchema;
 
-/// Metadata for a single telemetry event type.
+/// One JIP-3 telemetry event type.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct EventTypeMeta {
-    /// Numeric event type ID
+    /// Numeric event type ID as defined in JIP-3
     pub id: i16,
-    /// Human-readable event name (e.g. "Authored", "WorkPackageFailed")
+    /// Canonical event name (e.g. "Authored", "WorkPackageFailed")
     pub name: &'static str,
-    /// Event group (e.g. "blocks", "wp_pipeline", "failures")
+    /// Event group this type belongs to (e.g. "blocks", "wp_pipeline", "failures")
     pub group: &'static str,
 }
 

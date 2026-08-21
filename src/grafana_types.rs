@@ -93,68 +93,64 @@ impl From<u32> for DbServiceId {
 
 // ── /api/grafana/stats ──────────────────────────────────────────────────
 
-/// Dashboard summary counters.
+/// Headline network counters for a dashboard summary row.
 ///
-/// **Data source:** Event counts from the `event_stats_1m` continuous aggregate
-/// (TimescaleDB rollup of the raw `events` hypertable, 1-minute buckets).
-/// Queries specific event types: 42 (BlockAuthored) for slot events,
-/// 105 (GuaranteeBuilt) for guarantees, 92 (WorkPackageFailed) for failures,
-/// 94 (WorkPackageReceived) for WP events. Connected node count comes from
-/// the `nodes` table (updated on TCP connect/disconnect).
-///
-/// The handler overlays real-time fields from in-memory `LiveCounters`:
-/// events/blocks per second (10s rolling average), best/finalized slot numbers,
-/// and active TCP connection count.
+/// The four event counters cover the requested time range; the rest describe the
+/// present moment. The rate, slot and open-connection fields are absent when
+/// live metrics collection is switched off.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct StatsResponse {
-    /// Number of currently connected nodes (from `nodes` table)
+    /// Nodes currently reporting telemetry to the collector
     pub connected_nodes: i32,
-    /// Max BlockAuthored event count in range
+    /// Largest number of Authored(42) reports seen in any single minute of the
+    /// range — the busiest authoring minute, not a total
     pub slot_events: i64,
-    /// Total GuaranteeBuilt events in range
+    /// GuaranteeBuilt(105) reports in the range
     pub guarantees: i64,
-    /// Total WorkPackageFailed events in range
+    /// WorkPackageFailed(92) reports in the range
     pub failures: i64,
-    /// Total WorkPackageReceived events in range
+    /// WorkPackageReceived(94) reports in the range
     pub wp_events: i64,
-    /// Events per second, 10s rolling average (from LiveCounters, may be absent)
+    /// Telemetry events of all types received per second over the last 10 s
+    /// (absent when live metrics are off)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub events_per_sec_10s: Option<f64>,
-    /// Blocks per second, 10s rolling average (from LiveCounters, may be absent)
+    /// BestBlockChanged(11) reports per second across the network over the last
+    /// 10 s — how fast nodes are adopting new best blocks, not the authoring
+    /// rate (absent when live metrics are off)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocks_per_sec_10s: Option<f64>,
-    /// Latest best slot number (from LiveCounters, may be absent)
+    /// Highest slot number seen in a BestBlockChanged(11) report so far (absent
+    /// when live metrics are off)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub best_slot: Option<u32>,
-    /// Latest finalized slot number (from LiveCounters, may be absent)
+    /// Highest slot number seen in a FinalizedBlockChanged(12) report so far
+    /// (absent when live metrics are off)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finalized_slot: Option<u32>,
-    /// Currently active TCP connections (from LiveCounters, may be absent)
+    /// Node connections currently open to the collector (absent when live
+    /// metrics are off)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_nodes: Option<usize>,
 }
 
 // ── /api/grafana/timeseries ─────────────────────────────────────────────
 
-/// Time-bucketed event count row.
+/// One time bucket's event count for one group value.
 ///
-/// **Data source:** Auto-selected TimescaleDB continuous aggregate based on
-/// requested interval: `event_stats_30s` (intervals < 60s), `event_stats_1m`
-/// (< 3600s), `event_stats_1h` (>= 3600s), or `core_stats_1m` (when
-/// group_by=core). These aggregates roll up the raw `events` hypertable.
-///
-/// Exactly one of `event_type`, `core`, or `node_id` will be populated,
-/// depending on the `group_by` parameter.
+/// Exactly one of `event_type`, `core` or `node_id` is populated, depending on
+/// the `group_by` parameter. Bucket width follows the requested interval, capped
+/// by the resolution available for the range.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct TimeseriesRow {
     /// Bucket start timestamp
     pub ts: DateTime<Utc>,
-    /// Aggregated event count for this bucket + group
+    /// Events reported in this bucket for this group value
     pub count: i64,
     /// Numeric event type code as defined in JIP-3 (present only when group_by=event_type)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event_type: Option<i16>,
-    /// Human-readable event type name, resolved from event_type_meta (present only when group_by=event_type)
+    /// Canonical event name for that ID (present only when group_by=event_type)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event_type_name: Option<&'static str>,
     /// Core index (present only when group_by=core)
@@ -167,408 +163,407 @@ pub struct TimeseriesRow {
 
 // ── /api/grafana/cores ──────────────────────────────────────────────────
 
-/// Per-core activity summary.
-///
-/// **Data source:** `all_core_stats_1m` UNION view (backed by count tables after
-/// migration 020). Counts filtered by event type: 94 (WorkPackageReceived),
-/// 105 (GuaranteeBuilt), 92 (WorkPackageFailed). `last_activity` from correlated
-/// subquery on `wp_tracking` table.
+/// One core's work-package activity over the time range.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct CoreSummary {
     /// Core index
     pub core: i16,
-    /// WorkPackageReceived events (type 94 as defined in JIP-3)
+    /// WorkPackageReceived(94) reports for this core — one per guarantor that
+    /// received a work package, so higher than the number of distinct work packages
     pub work_packages: i64,
-    /// GuaranteeBuilt events (type 105 as defined in JIP-3)
+    /// GuaranteeBuilt(105) reports for this core, one per guarantor per work report
     pub guarantees: i64,
-    /// WorkPackageFailed events (type 92 as defined in JIP-3)
+    /// WorkPackageFailed(92) reports for this core
     pub failures: i64,
-    /// When the last work package was seen on this core (from wp_tracking.first_seen).
-    /// NULL for cores with no WP activity in the queried time range.
+    /// When the newest work package on this core was first observed. Counts every
+    /// work package seen since the range start, so it can lie beyond the range end.
+    /// Null for a core with no work-package activity since the range start.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_activity: Option<DateTime<Utc>>,
 }
 
-/// Single core detail with recent work packages.
-///
-/// **Data source:** Same as `CoreSummary` for counters. The `recent_work_packages`
-/// come from the `wp_tracking` table, which is populated by the enricher
-/// (`src/enricher.rs`) correlating WP pipeline events (types 90–109 as defined
-/// in JIP-3) across nodes — tracking each work package from submission through
-/// authorization, refinement, report building, guarantee building, distribution,
-/// or failure.
+/// One core's work-package activity, with the pipeline timelines of its most
+/// recent work packages.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct CoreDetail {
     /// Core index
     pub core: i16,
-    /// WorkPackageReceived events (type 94 as defined in JIP-3)
+    /// WorkPackageReceived(94) reports for this core — one per guarantor that
+    /// received a work package, so higher than the number of distinct work packages
     pub work_packages: i64,
-    /// GuaranteeBuilt events (type 105 as defined in JIP-3)
+    /// GuaranteeBuilt(105) reports for this core, one per guarantor per work report
     pub guarantees: i64,
-    /// WorkPackageFailed events (type 92 as defined in JIP-3)
+    /// WorkPackageFailed(92) reports for this core
     pub failures: i64,
-    /// Up to 100 most recent work packages for this core
+    /// Up to 100 work packages first observed on this core in the range, newest
+    /// first, each with its pipeline timeline
     pub recent_work_packages: Vec<WpTrackingRow>,
 }
 
-/// A work package lifecycle record from `wp_tracking`.
+/// One work package's pipeline timeline, from reception to guarantee distribution.
 ///
-/// **Data source:** `wp_tracking` hypertable, populated by the `wp_tracker`
-/// module which correlates WP pipeline events (as defined in JIP-3) across
-/// multiple nodes: 94 (WorkPackageReceived), 95 (Authorized), 101 (Refined),
-/// 102 (WorkReportBuilt), 105 (GuaranteeBuilt), 109 (GuaranteeDistributed),
-/// 92 (WorkPackageFailed). Each row tracks one work package through its entire
-/// lifecycle with timestamps for each pipeline stage.
+/// Each stage timestamp is the first time any guarantor reported that stage for
+/// this work package: WorkPackageReceived(94), Authorized(95), Refined(101),
+/// WorkReportBuilt(102), GuaranteeBuilt(105), GuaranteesDistributed(109), and
+/// WorkPackageFailed(92) if it failed. The first four are reported by both the
+/// primary and the secondary guarantors, so the timeline follows whichever
+/// guarantor reached each stage first.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct WpTrackingRow {
     /// Hex-encoded work package hash
     pub wp_hash: String,
-    /// When this WP was first seen by any node
+    /// When this work package was first reported by any node
     pub first_seen: DateTime<Utc>,
-    /// Last time any stage was updated
+    /// When the most recent pipeline event for this work package arrived
     pub last_updated: DateTime<Utc>,
-    /// Current pipeline stage (numeric)
+    /// Furthest pipeline stage reached: 0 received, 1 authorized, 2 refined,
+    /// 3 work report built, 4 guarantee built, 5 guarantees distributed
     pub stage: i16,
-    /// Node that first received this WP
+    /// How many distinct guarantors reported WorkPackageReceived(94) for it
     pub received_by: i16,
-    /// Node that built the guarantee
+    /// How many distinct guarantors reported GuaranteeBuilt(105) for it
     pub guaranteed_by: i16,
-    /// Service IDs involved in this WP (hex-formatted)
+    /// Services whose work items this work package carries (hex-formatted)
     pub service_ids: Vec<DbServiceId>,
-    /// Timestamp when received
+    /// When the first guarantor reported WorkPackageReceived(94)
     pub received_at: Option<DateTime<Utc>>,
-    /// Timestamp when authorization completed
+    /// When the first guarantor reported Authorized(95)
     pub authorized_at: Option<DateTime<Utc>>,
-    /// Timestamp when refinement completed
+    /// When the first guarantor reported Refined(101)
     pub refined_at: Option<DateTime<Utc>>,
-    /// Timestamp when work report was built
+    /// When the first guarantor reported WorkReportBuilt(102)
     pub report_built_at: Option<DateTime<Utc>>,
-    /// Timestamp when guarantee was built
+    /// When the primary guarantor reported GuaranteeBuilt(105)
     pub guarantee_built_at: Option<DateTime<Utc>>,
-    /// Timestamp when guarantee was distributed
+    /// When the primary guarantor reported GuaranteesDistributed(109), having
+    /// finished sending the guarantee to the other validators
     pub distributed_at: Option<DateTime<Utc>>,
-    /// Timestamp when WP failed (null if successful)
+    /// When WorkPackageFailed(92) was reported (null if no failure was reported)
     pub failed_at: Option<DateTime<Utc>>,
 }
 
 // ── /api/grafana/blocks/convergence ─────────────────────────────────────
 
-/// Block propagation convergence percentiles per slot.
+/// How one step of a block's lifecycle spread across the network for one slot.
 ///
-/// **Data source:** `slot_convergence` table, populated by the enricher which
-/// measures the time between block authoring (on the author node) and reception
-/// across all other nodes. Percentiles (p50/p99/p100) represent network-wide
-/// propagation latency in milliseconds.
+/// All offsets are measured from Authored(42) on the block's author to the same
+/// slot's event on each reporting node, pooled over nodes.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct BlockConvergenceRow {
-    /// Slot number
+    /// Slot of the block these offsets refer to
     pub slot: i32,
-    /// Event type used for convergence measurement
+    /// JIP-3 event id whose spread this row measures — BestBlockChanged(11),
+    /// FinalizedBlockChanged(12), Authoring(40), Authored(42) or Importing(43)
     pub event_type: i16,
-    /// Human-readable event type name
+    /// Canonical JIP-3 name of that event
     #[sqlx(skip)]
     pub event_type_name: &'static str,
-    /// Number of nodes that reported this event
+    /// How many node reports the percentiles were computed from
     pub node_count: i16,
-    /// 50th percentile propagation delay (ms)
+    /// Median offset from Authored(42) on the author to this event on the
+    /// reporting nodes, in milliseconds
     pub p50_ms: i32,
-    /// 75th percentile propagation delay (ms)
+    /// 75th-percentile offset in milliseconds
     pub p75_ms: Option<i32>,
-    /// 95th percentile propagation delay (ms)
+    /// 95th-percentile offset in milliseconds
     pub p95_ms: Option<i32>,
-    /// 99th percentile propagation delay (ms)
+    /// 99th-percentile offset in milliseconds
     pub p99_ms: i32,
-    /// Maximum propagation delay (ms)
+    /// Largest offset in milliseconds — the slowest reporting node
     pub p100_ms: i32,
-    /// When the block was authored
+    /// When the author reported Authored(42); the reference point for all offsets
     pub authored_at: DateTime<Utc>,
 }
 
 // ── /api/grafana/blocks/contents ────────────────────────────────────────
 
-/// Block contents extracted from BlockAuthored events.
+/// The contents of one authored block, as reported in the block outline of
+/// Authored(42).
 ///
-/// **Data source:** Raw `events` hypertable, filtered to event_type=42
-/// (BlockAuthored). The extrinsic breakdown (guarantees, assurances, etc.)
-/// is extracted from the JSONB `data` column → `Authored.outline` fields.
+/// Every count is null if the author's report did not carry that field.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct BlockContentsRow {
-    /// Slot number
+    /// Slot the block was authored for
     pub slot: i32,
-    /// When the block was authored
+    /// When the author reported Authored(42)
     pub timestamp: DateTime<Utc>,
     /// Node that authored the block
     pub node_id: String,
-    /// Number of guarantees in the block
+    /// Guarantees included in the block
     pub num_guarantees: Option<i32>,
-    /// Number of assurances in the block
+    /// Availability assurances included in the block
     pub num_assurances: Option<i32>,
-    /// Number of preimages in the block
+    /// Preimages included in the block
     pub num_preimages: Option<i32>,
-    /// Number of tickets in the block
+    /// Safrole tickets included in the block
     pub num_tickets: Option<i32>,
-    /// Number of dispute verdicts in the block
+    /// Dispute verdicts included in the block
     pub num_disputes: Option<i32>,
-    /// Total extrinsic size in bytes
+    /// Size of the block in bytes, as reported in the block outline
     pub extrinsic_size: Option<i32>,
 }
 
 // ── /api/grafana/services ───────────────────────────────────────────────
 
-/// Per-service activity and gas usage totals.
+/// One service's activity and gas usage over the whole queried range.
 ///
-/// **Data source:** `service_stats_1m` continuous aggregate over the
-/// `event_services` join table. This aggregate tracks per-service event counts
-/// and gas consumption. Event types: 94 (WorkPackageReceived) for WP counts,
-/// 101 (Refined) for refinement gas, 95 (Authorized) for authorization gas,
-/// 47 (BlockExecuted) for execution gas.
+/// Every counter counts event attributions rather than distinct work packages
+/// or blocks: each guarantor and each block-executing node reports for itself,
+/// so the same work item or accumulated service is counted once per reporting
+/// node.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ServiceRow {
     /// Service ID (hex-formatted, e.g. "0x000000ff")
     pub service_id: DbServiceId,
-    /// Total WorkPackageReceived events
+    /// WorkPackageReceived(94) reports naming this service
     pub work_packages: i64,
-    /// Total Refined events
+    /// Work items of this service refined, from Refined(101)
     pub refinements: i64,
-    /// Total refinement gas consumed
+    /// Gas used by those refine calls
     pub refinement_gas: i64,
-    /// Total Authorized events
+    /// Authorized(95) reports naming this service
     pub authorizations: i64,
-    /// Total authorization gas consumed
+    /// Gas used by the is-authorized calls of Authorized(95). The cost is
+    /// reported once per work package and booked to the first service of the
+    /// package, so it is not spread across the package's other services.
     pub authorization_gas: i64,
-    /// Total BlockExecuted events
+    /// Times this service was accumulated, from the per-service accumulate
+    /// entries of BlockExecuted(47)
     pub executions: i64,
-    /// Total execution gas consumed
+    /// Gas used by those accumulate calls
     pub execution_gas: i64,
 }
 
 // ── /api/grafana/services/timeseries ────────────────────────────────────
 
-/// Time-bucketed per-service metrics.
+/// One service's activity and gas usage inside one time bucket.
 ///
-/// **Data source:** Same `service_stats_1m` continuous aggregate as `/services`,
-/// re-bucketed via `time_bucket()` to the requested interval.
+/// Same per-service attribution as `ServiceRow`, restricted to the bucket.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ServiceTimeseriesRow {
-    /// Bucket start timestamp
+    /// Start of the time bucket
     pub ts: DateTime<Utc>,
     /// Service ID (hex-formatted, same encoding as ServiceRow)
     pub service_id: DbServiceId,
-    /// WorkPackageReceived count in bucket
+    /// WorkPackageReceived(94) reports naming this service in the bucket
     pub work_packages: i64,
-    /// Authorization gas in bucket
+    /// Gas used by the service's is-authorized calls, from Authorized(95)
     pub authorization_gas: i64,
-    /// Refinement gas in bucket
+    /// Gas used by the service's refine calls, from Refined(101)
     pub refinement_gas: i64,
-    /// Execution gas in bucket
+    /// Gas used by the service's accumulate calls, from BlockExecuted(47)
     pub execution_gas: i64,
 }
 
 // ── /api/grafana/nodes ──────────────────────────────────────────────────
 
-/// Node metadata record.
-///
-/// **Data source:** `nodes` table, updated on TCP connect/disconnect and
-/// Status events (type 10 as defined in JIP-3). `total_event_count` is computed
-/// as `event_count` (current session) + `total_events` (historical, accumulated
-/// across reconnects).
+/// One node known to telemetry: who it is and the state of its reporting session.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct NodeRow {
-    /// Unique node identifier (64-char hex)
+    /// Node's JIP-3 peer ID — its Ed25519 public key, hex-encoded (64 characters)
     pub node_id: String,
-    /// libp2p peer ID
+    /// Same Ed25519 public key as `node_id`, hex-encoded
     pub peer_id: String,
-    /// Implementation name (e.g. "polkajam", "jamtart")
+    /// Implementation name the node reported at handshake (e.g. "polkajam")
     pub implementation_name: String,
-    /// Implementation version
+    /// Implementation version the node reported at handshake
     pub implementation_version: String,
-    /// Additional node metadata (JSONB)
+    /// The node's full JIP-3 node information message: protocol parameters, genesis
+    /// header hash, peer details, flags, Gray Paper version and free-form note
     pub node_info: serde_json::Value,
-    /// When the node first connected
+    /// When the node was first seen reporting; not reset when it reconnects
     pub connected_at: DateTime<Utc>,
-    /// When the node disconnected (null if still connected)
+    /// When the node's reporting session ended; null while it is still reporting
     pub disconnected_at: Option<DateTime<Utc>>,
-    /// Most recent activity timestamp
+    /// When the node was last heard from
     pub last_seen_at: DateTime<Utc>,
-    /// Whether the node is currently connected
+    /// Whether the node is reporting telemetry right now
     pub is_connected: bool,
-    /// Total events received across all sessions (event_count + total_events)
+    /// Events this node has reported across all of its sessions
     pub total_event_count: i64,
-    /// TCP address
+    /// Network address the node's telemetry session came from
     pub address: Option<String>,
 }
 
 // ── /api/grafana/node-stats ─────────────────────────────────────────────
 
-/// Raw node status snapshot (~2s granularity).
+/// One node's state at one moment, as reported in a single Status(10) event.
 ///
-/// **Data source:** `node_stats` hypertable, inserted from Status events
-/// (type 10) which each node sends periodically. Contains peer counts,
-/// shard/preimage storage metrics, and guarantee distribution across cores.
+/// Nodes emit Status(10) roughly every 2 seconds, so consecutive rows for the same
+/// node are about that far apart.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct NodeStatsRow {
-    /// Timestamp of the status report
+    /// When the node reported this status
     pub timestamp: DateTime<Utc>,
     /// Node that reported this status
     pub node_id: String,
-    /// Total connected peers
+    /// Total peers the node was connected to
     pub num_peers: i32,
-    /// Validator peers
+    /// Peers that are validators
     pub num_val_peers: i32,
-    /// Sync peers
+    /// Peers with a block announcement stream open
     pub num_sync_peers: i32,
-    /// Number of DA shards held
+    /// Erasure-coded shards in the node's availability store
     pub num_shards: i32,
-    /// Total shard storage in bytes
+    /// Total size of those shards, in bytes
     pub shards_size: i64,
-    /// Number of preimages held
+    /// Preimages in the node's pool, ready for inclusion in a block
     pub num_preimages: i32,
-    /// Total preimage storage in bytes
+    /// Total size of those preimages, in bytes
     pub preimages_size: i32,
-    /// Minimum guarantees across cores
+    /// Fewest guarantees any single core held in the node's guarantee pool
     pub min_guarantees: i16,
-    /// Maximum guarantees across cores
+    /// Most guarantees any single core held in the node's guarantee pool
     pub max_guarantees: i16,
-    /// Average guarantees per core
+    /// Mean guarantees per core in the node's guarantee pool
     pub avg_guarantees: f32,
-    /// Number of cores with zero guarantees
+    /// Cores for which the node held no guarantees at all
     pub zero_guarantee_cores: i16,
 }
 
 // ── /api/grafana/node-stats-aggregate ───────────────────────────────────
 
-/// 1-minute aggregated node stats.
+/// One minute's worth of Status(10) reports, condensed into a single row.
 ///
-/// **Data source:** `node_stats_1m` continuous aggregate (1-minute rollup of
-/// `node_stats`). In **network-wide** mode (no node filter), values are
-/// aggregated across all nodes: `avg_*` = AVG of per-node averages,
-/// `min_*` = global MIN, `max_*` = global MAX per bucket. In **per-node**
-/// mode, returns the raw per-node aggregate rows with `node_id` populated.
+/// Without a node filter the row is network-wide and `node_id` is absent: each
+/// `avg_*` is the mean of the per-node means, each `min_*`/`max_*` the lowest and
+/// highest value any reporting node showed in that minute. With a node filter the
+/// row covers one node in one minute and `node_id` names it.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct NodeStatsAggregateRow {
-    /// Bucket start timestamp
+    /// Start of the one-minute bucket this row covers
     pub bucket: DateTime<Utc>,
-    /// Node ID (present only when filtering by specific nodes)
+    /// The node this row is about; absent in network-wide mode
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node_id: Option<String>,
-    /// Average total peers
+    /// Mean total peers
     pub avg_peers: i32,
-    /// Minimum total peers
+    /// Lowest total peers seen
     pub min_peers: i32,
-    /// Maximum total peers
+    /// Highest total peers seen
     pub max_peers: i32,
-    /// Average validator peers
+    /// Mean peers that are validators
     pub avg_val_peers: i32,
-    /// Minimum validator peers
+    /// Lowest validator-peer count seen
     pub min_val_peers: i32,
-    /// Maximum validator peers
+    /// Highest validator-peer count seen
     pub max_val_peers: i32,
-    /// Average sync peers
+    /// Mean peers with a block announcement stream open
     pub avg_sync_peers: i32,
-    /// Minimum sync peers
+    /// Lowest count of peers with a block announcement stream open
     pub min_sync_peers: i32,
-    /// Maximum sync peers
+    /// Highest count of peers with a block announcement stream open
     pub max_sync_peers: i32,
-    /// Average shards
+    /// Mean shards held in the availability store
     pub avg_shards: i32,
-    /// Minimum shards
+    /// Fewest shards held in the availability store
     pub min_shards: i32,
-    /// Maximum shards
+    /// Most shards held in the availability store
     pub max_shards: i32,
-    /// Average shard storage (bytes)
+    /// Mean total size of stored shards, in bytes
     pub avg_shards_size: i64,
-    /// Maximum shard storage (bytes)
+    /// Largest total size of stored shards, in bytes
     pub max_shards_size: i64,
-    /// Average preimages
+    /// Mean preimages held in the pool
     pub avg_preimages: i32,
-    /// Maximum preimages
+    /// Most preimages held in the pool
     pub max_preimages: i32,
-    /// Average preimage storage (bytes)
+    /// Mean total size of pooled preimages, in bytes
     pub avg_preimages_size: i32,
-    /// Maximum preimage storage (bytes)
+    /// Largest total size of pooled preimages, in bytes
     pub max_preimages_size: i32,
-    /// Average guarantees per core
+    /// Mean guarantees per core in the guarantee pool
     pub avg_guarantees: f64,
-    /// Minimum guarantees across cores
+    /// Fewest guarantees any single core held
     pub min_guarantees: i16,
-    /// Maximum guarantees across cores
+    /// Most guarantees any single core held
     pub max_guarantees: i16,
-    /// Maximum cores with zero guarantees
+    /// Most cores seen holding no guarantees at all
     pub max_zero_guarantee_cores: i16,
-    /// Number of status reports in this bucket
+    /// Status(10) reports that went into this row
     pub status_count: i64,
 }
 
 // ── /api/grafana/db-stats ───────────────────────────────────────────────
 
-/// TimescaleDB metadata: table sizes, row counts, compression stats.
+/// Storage footprint of the collector's own database.
 ///
-/// **Data source:** TimescaleDB internal functions:
-/// `hypertable_detailed_size()` for table/index/toast byte breakdown,
-/// `approximate_row_count()` for fast row estimates,
-/// `hypertable_compression_stats()` for compression ratios.
+/// Sizes come from `hypertable_detailed_size()` for the hypertables and from
+/// `pg_total_relation_size()` for the plain tables, row counts from
+/// `approximate_row_count()` on the hypertables and exact counts on the small
+/// tables, and compression figures from `chunk_compression_stats()`. Only a
+/// fixed set of tables is reported.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct DbStatsResponse {
-    /// Per-table size breakdown
+    /// Byte breakdown, one entry per reported table
     pub tables: Vec<TableSize>,
-    /// Approximate row counts
+    /// Row count, one entry per reported table
     pub row_counts: Vec<RowCount>,
-    /// Compression statistics
+    /// Compression figures for the compressed hypertables
     pub compression: Vec<CompressionInfo>,
 }
 
-/// Byte breakdown for a single hypertable.
+/// Byte breakdown for one stored table.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct TableSize {
+    /// Table the figures refer to
     pub table_name: String,
+    /// Data, indexes and out-of-line storage together
     pub total_bytes: i64,
+    /// Bytes held by the table's own rows
     pub table_bytes: i64,
+    /// Bytes held by the table's indexes
     pub index_bytes: i64,
+    /// Bytes held in out-of-line (toast) storage; 0 for the plain tables
     pub toast_bytes: i64,
 }
 
-/// Approximate row count for a table.
+/// Row count for one stored table.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct RowCount {
+    /// Table the count refers to
     pub table_name: String,
+    /// Rows stored — an estimate for the large time-series tables, exact for
+    /// the small ones
     pub row_count: i64,
 }
 
-/// Compression statistics for a hypertable.
+/// Compression figures for one hypertable.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct CompressionInfo {
+    /// Hypertable the figures refer to
     pub table_name: String,
+    /// Chunks currently held in compressed form
     pub compressed_chunks: i64,
+    /// Bytes those chunks occupied before being compressed
     pub before_compression_bytes: i64,
+    /// Bytes they occupy now
     pub after_compression_bytes: i64,
 }
 
 // ── /api/grafana/bottlenecks ────────────────────────────────────────────
 
-/// Work package pipeline bottleneck analysis.
+/// Stage-by-stage latency of the guarantor work-package pipeline over a time range.
 ///
-/// **Data source:** `wp_tracking` table, populated by the `wp_tracker` module
-/// correlating JIP-3 events 94→95→101→102→105→109 (and 92 for failures).
-/// Stage timings are computed via `percentile_cont(0.5/0.95)` on the
-/// inter-stage timestamp deltas (received→authorized→refined→report_built→
-/// guarantee_built→distributed). The pipeline_total measures received_at to
-/// distributed_at (or last_updated for incomplete WPs). Failure rate is the
-/// ratio of WPs with `failed_at` set.
+/// Covers the work packages first observed in the range that reached at least
+/// WorkPackageReceived(94). Stage latencies are percentiles of the per-work-package
+/// durations between consecutive pipeline events, so a slow stage stands out
+/// directly.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct BottlenecksResponse {
-    /// Percentile timings for each pipeline stage
+    /// Latency percentiles for each pipeline stage
     pub stage_timing: StageTiming,
-    /// Fraction of WPs that failed (0.0 to 1.0)
+    /// Share of the work packages for which WorkPackageFailed(92) was reported (0.0 to 1.0)
     pub failure_rate: f64,
-    /// Total work packages analyzed
+    /// Work packages the percentiles were taken over
     pub total_wps: i64,
-    /// Number of failed work packages
+    /// How many of them reported WorkPackageFailed(92)
     pub failed_wps: i64,
-    /// Average total pipeline time in milliseconds
+    /// Mean reception-to-distribution duration in milliseconds
     pub avg_pipeline_ms: Option<f64>,
 }
 
-/// Percentile timing pair for a single pipeline stage.
+/// Median and 95th-percentile duration of one pipeline stage.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct Percentiles {
     /// 50th percentile (median) in milliseconds
@@ -577,208 +572,202 @@ pub struct Percentiles {
     pub p95_ms: Option<f64>,
 }
 
-/// All pipeline stage timings.
+/// Latency of every stage of the guarantor work-package pipeline, in milliseconds.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct StageTiming {
-    /// received_at → authorized_at
+    /// WorkPackageReceived(94) → Authorized(95)
     pub authorize: Percentiles,
-    /// authorized_at → refined_at
+    /// Authorized(95) → Refined(101)
     pub refine: Percentiles,
-    /// refined_at → report_built_at
+    /// Refined(101) → WorkReportBuilt(102)
     pub report: Percentiles,
-    /// report_built_at → guarantee_built_at
+    /// WorkReportBuilt(102) → GuaranteeBuilt(105)
     pub guarantee: Percentiles,
-    /// guarantee_built_at → distributed_at
+    /// GuaranteeBuilt(105) → GuaranteesDistributed(109)
     pub distribute: Percentiles,
-    /// received_at → distributed_at (or last_updated)
+    /// WorkPackageReceived(94) → GuaranteesDistributed(109), or to the last
+    /// pipeline event seen for work packages that never got distributed
     pub pipeline_total: Percentiles,
 }
 
 // ── /api/grafana/wp-funnel ──────────────────────────────────────────────
 
-/// Work package pipeline funnel — how many WPs reached each stage.
+/// How many work packages reached each stage of the guarantor pipeline.
 ///
-/// **Data source:** `wp_tracking` table, populated by the `wp_tracker` module
-/// which correlates WP pipeline events (as defined in JIP-3) across nodes:
-/// 94 (WorkPackageReceived) → received, 95 (Authorized) → authorized,
-/// 101 (Refined) → refined, 102 (WorkReportBuilt) → report_built,
-/// 105 (GuaranteeBuilt) → guarantee_built, 109 (GuaranteeDistributed) →
-/// distributed, 92 (WorkPackageFailed) → failed. Each count represents WPs
-/// that have a non-null timestamp for that stage.
+/// Counted over the work packages first observed in the time range. A work package
+/// counts towards a stage once any of its guarantors reported the corresponding
+/// event, so the drop between two consecutive counts is the number that stopped
+/// progressing there.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct WpFunnelResponse {
-    /// Total work packages in range
+    /// Work packages first observed in the range
     pub total: i64,
-    /// WPs that were received
+    /// Reached reception — WorkPackageReceived(94)
     pub received: i64,
-    /// WPs that passed authorization
+    /// Passed the authorization check — Authorized(95)
     pub authorized: i64,
-    /// WPs that completed refinement
+    /// Were refined — Refined(101)
     pub refined: i64,
-    /// WPs with work report built
+    /// Had a work report built — WorkReportBuilt(102)
     pub report_built: i64,
-    /// WPs with guarantee built
+    /// Had a guarantee built — GuaranteeBuilt(105)
     pub guarantee_built: i64,
-    /// WPs fully distributed
+    /// Had their guarantee distributed to the other validators — GuaranteesDistributed(109)
     pub distributed: i64,
-    /// WPs that hit a failure at any stage
+    /// Failed at any point in the pipeline — WorkPackageFailed(92)
     pub failed: i64,
 }
 
 // ── /api/grafana/guarantee-convergence ───────────────────────────────────
 
-/// Per-slot guarantee convergence summary (overview).
+/// Guarantee propagation for one slot, pooled across every guarantee built in it.
 ///
-/// **Data source:** `guarantee_convergence_slots` table, populated by the
-/// convergence_tracker flush. Aggregates all guarantees in a slot: flattens
-/// received_timestamps across all work_report_hashes for that slot and computes
-/// true cross-core percentiles of (received - built_at) latency.
+/// Percentiles are taken over the individual GuaranteeBuilt(105) →
+/// GuaranteeReceived(112) latencies of all guarantees in the slot, so they are
+/// true cross-core percentiles rather than an average of per-guarantee ones.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct GuaranteeConvergenceSlotRow {
-    /// Slot number
+    /// Slot the guarantees were built in
     pub slot: i32,
-    /// Slot timestamp (for Grafana X-axis)
+    /// Wall-clock start of the slot, derived from the slot number
     pub slot_timestamp: DateTime<Utc>,
-    /// Number of guarantees in this slot
+    /// Guarantees built in this slot that were seen received by at least one validator
     pub guarantee_count: i16,
-    /// Minimum receiver count across guarantees
+    /// Fewest receiving validators any one guarantee in this slot reached — the
+    /// worst-covered guarantee, not the slot average
     pub node_count: i16,
-    /// p50 propagation latency (ms)
+    /// Median milliseconds from GuaranteeBuilt(105) to GuaranteeReceived(112)
     pub p50_ms: Option<i32>,
-    /// p75 propagation latency (ms)
+    /// 75th-percentile milliseconds from GuaranteeBuilt(105) to GuaranteeReceived(112)
     pub p75_ms: Option<i32>,
-    /// p95 propagation latency (ms)
+    /// 95th-percentile milliseconds from GuaranteeBuilt(105) to GuaranteeReceived(112)
     pub p95_ms: Option<i32>,
-    /// p99 propagation latency (ms)
+    /// 99th-percentile milliseconds from GuaranteeBuilt(105) to GuaranteeReceived(112)
     pub p99_ms: Option<i32>,
-    /// p100 propagation latency (ms)
+    /// Slowest observed milliseconds from GuaranteeBuilt(105) to GuaranteeReceived(112)
     pub p100_ms: Option<i32>,
-    /// Earliest built_at across guarantees in slot
+    /// Earliest GuaranteeBuilt(105) time among the guarantees in this slot
     pub built_at: DateTime<Utc>,
 }
 
 // ── /api/grafana/guarantee-convergence/detail ────────────────────────────
 
-/// Per-guarantee convergence detail (drill-down by core or wp_hash).
+/// Propagation of one work report's guarantee across the validators that received it.
 ///
-/// **Data source:** `guarantee_convergence` table, one row per work_report_hash.
-/// Measures: GuaranteeBuilt(105) anchor → GuaranteeReceived(112) reception
-/// latency percentiles across all receiving validators.
+/// Percentiles are taken over the GuaranteeBuilt(105) → GuaranteeReceived(112)
+/// latencies reported by each receiving validator for this one work report.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct GuaranteeConvergenceDetailRow {
-    /// Work report hash (hex-encoded)
+    /// Hash of the guaranteed work report (hex-encoded)
     pub work_report_hash: String,
-    /// Slot number
+    /// Slot the guarantee was built in
     pub slot: i32,
-    /// Core index (NULL if guarantor not connected)
+    /// Core the work report was built for; null when the guarantor is not
+    /// reporting telemetry, so its core could not be attributed
     pub core: Option<i16>,
-    /// Work package hash (hex-encoded, NULL if guarantor not connected)
+    /// Hash of the work package behind the report (hex-encoded); null when the
+    /// guarantor is not reporting telemetry
     pub wp_hash: Option<String>,
-    /// Node ID of the guarantor that built this guarantee
+    /// Node that emitted GuaranteeBuilt(105) for this report; null when that
+    /// guarantor is not reporting telemetry
     pub builder_node_id: Option<String>,
-    /// Number of receiving validators
+    /// Validators that reported GuaranteeReceived(112) for this report
     pub node_count: i16,
-    /// p50 propagation latency (ms)
+    /// Median milliseconds from GuaranteeBuilt(105) to GuaranteeReceived(112)
     pub p50_ms: i32,
-    /// p75 propagation latency (ms)
+    /// 75th-percentile milliseconds from GuaranteeBuilt(105) to GuaranteeReceived(112)
     pub p75_ms: Option<i32>,
-    /// p95 propagation latency (ms)
+    /// 95th-percentile milliseconds from GuaranteeBuilt(105) to GuaranteeReceived(112)
     pub p95_ms: Option<i32>,
-    /// p99 propagation latency (ms)
+    /// 99th-percentile milliseconds from GuaranteeBuilt(105) to GuaranteeReceived(112)
     pub p99_ms: i32,
-    /// p100 propagation latency (ms)
+    /// Slowest observed milliseconds from GuaranteeBuilt(105) to GuaranteeReceived(112)
     pub p100_ms: i32,
-    /// When the guarantee was built
+    /// When the guarantor emitted GuaranteeBuilt(105)
     pub built_at: DateTime<Utc>,
 }
 
 // ── /api/grafana/assurance-convergence ───────────────────────────────────
 
-/// Per-anchor assurance convergence summary.
+/// One assurance anchor: how quickly assurances for that block reached the
+/// validator set.
 ///
-/// **Data source:** `assurance_convergence` table, populated by the
-/// convergence_tracker flush. Each row represents one block anchor,
-/// aggregating all senders' assurance propagation for that block.
-///
-/// Reception convergence: DistributingAssurance(126) → AssuranceReceived(131)
-/// deltas, clamped to max(0, delta).
-///
-/// Distribution start spread: how quickly validators begin distributing
-/// assurances (relative to the first distributor for this anchor).
+/// The reception percentiles pool the DistributingAssurance(126) →
+/// AssuranceReceived(131) latencies of every sender for this anchor (negative
+/// deltas from clock skew are treated as zero). The `dist_start_*` percentiles
+/// describe something different: when validators *started* distributing, relative
+/// to the first validator to do so for this anchor.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct AssuranceConvergenceRow {
-    /// Block anchor (hex-encoded HeaderHash)
+    /// Assurance anchor — hex-encoded header hash of the block the availability statement refers to
     pub anchor: String,
-    /// Slot number
+    /// Slot of the anchored block, when known
     pub slot: Option<i32>,
-    /// Slot timestamp (for Grafana X-axis)
+    /// Wall-clock start of that slot, for plotting on a time axis
     pub slot_timestamp: Option<DateTime<Utc>>,
-    /// Number of senders (validators distributing assurances)
+    /// Validators seen distributing an assurance for this anchor
     pub sender_count: i16,
-    /// Total receiver count across all senders
+    /// Reception measurements pooled here — one per receiving validator per sender
     pub receiver_count: i32,
-    /// p50 reception convergence (ms)
+    /// Median milliseconds from DistributingAssurance(126) to AssuranceReceived(131)
     pub p50_ms: i32,
-    /// p75 reception convergence (ms)
+    /// 75th-percentile milliseconds from DistributingAssurance(126) to AssuranceReceived(131)
     pub p75_ms: Option<i32>,
-    /// p95 reception convergence (ms)
+    /// 95th-percentile milliseconds from DistributingAssurance(126) to AssuranceReceived(131)
     pub p95_ms: Option<i32>,
-    /// p99 reception convergence (ms)
+    /// 99th-percentile milliseconds from DistributingAssurance(126) to AssuranceReceived(131)
     pub p99_ms: i32,
-    /// p100 reception convergence (ms)
+    /// Slowest observed milliseconds from DistributingAssurance(126) to AssuranceReceived(131)
     pub p100_ms: i32,
-    /// Distribution start spread p50 (ms)
+    /// Median milliseconds by which a validator started distributing later than the first one to do so
     pub dist_start_p50_ms: Option<i32>,
-    /// Distribution start spread p95 (ms)
+    /// 95th-percentile lateness in starting to distribute, in milliseconds
     pub dist_start_p95_ms: Option<i32>,
-    /// Distribution start spread p99 (ms)
+    /// 99th-percentile lateness in starting to distribute, in milliseconds
     pub dist_start_p99_ms: Option<i32>,
-    /// Distribution start spread p100 (ms)
+    /// Lateness of the last validator to start distributing, in milliseconds
     pub dist_start_p100_ms: Option<i32>,
-    /// Earliest distribution start
+    /// When the first validator emitted DistributingAssurance(126) for this anchor
     pub first_distributed_at: Option<DateTime<Utc>>,
-    /// Latest distribution start
+    /// When the last validator emitted DistributingAssurance(126) for this anchor
     pub last_distributed_at: Option<DateTime<Utc>>,
 }
 
 // ── /api/grafana/assurance-convergence/senders ──────────────────────────
 
-/// Per-sender assurance convergence detail (for debugging individual nodes).
-///
-/// **Data source:** `assurance_convergence_senders` hypertable.
-/// One row per (anchor, sender). Shows how quickly this sender's assurance
-/// propagated to receiving validators.
+/// One (anchor, sender) pair: how quickly a single validator's assurance reached
+/// the validators that received it.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct AssuranceConvergenceSenderRow {
-    /// Block anchor (hex-encoded)
+    /// Assurance anchor — hex-encoded header hash of the block the availability statement refers to
     pub anchor: String,
-    /// Slot number
+    /// Slot of the anchored block, when known
     pub slot: Option<i32>,
-    /// Sender node ID
+    /// Validator that emitted DistributingAssurance(126) for this anchor
     pub sender_node_id: String,
-    /// Number of receiving validators
+    /// Validators whose AssuranceReceived(131) was matched to this sender's assurance
     pub node_count: i16,
-    /// p50 propagation latency (ms)
+    /// Median milliseconds from this sender's DistributingAssurance(126) to AssuranceReceived(131)
     pub p50_ms: i32,
-    /// p75 propagation latency (ms)
+    /// 75th-percentile milliseconds until AssuranceReceived(131) on the receiving validators
     pub p75_ms: Option<i32>,
-    /// p95 propagation latency (ms)
+    /// 95th-percentile milliseconds until AssuranceReceived(131) on the receiving validators
     pub p95_ms: Option<i32>,
-    /// p99 propagation latency (ms)
+    /// 99th-percentile milliseconds until AssuranceReceived(131) on the receiving validators
     pub p99_ms: i32,
-    /// p100 propagation latency (ms)
+    /// Slowest observed milliseconds until AssuranceReceived(131) on a receiving validator
     pub p100_ms: i32,
-    /// When this sender started distributing
+    /// When this sender emitted DistributingAssurance(126) for this anchor
     pub distributed_at: DateTime<Utc>,
 }
 
 // ── /api/grafana/convergence-timeseries ──────────────────────────────────
 
-/// Convergence percentile timeseries row (from merged histograms).
+/// Propagation-latency percentiles for one time bucket.
 ///
-/// **Data source:** Histogram columns on `guarantee_convergence`,
-/// `assurance_convergence`, or `assurance_convergence_senders` tables,
-/// SUMmed per time_bucket and converted to percentiles in Rust.
+/// The guarantee or assurance propagation latencies observed in the bucket are
+/// pooled and reduced to percentiles; `sample_count` is how many observations
+/// stand behind them.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ConvergenceTimeseriesRow {
     /// Bucket start timestamp
@@ -799,37 +788,58 @@ pub struct ConvergenceTimeseriesRow {
 
 // ── /api/grafana/da-stats ────────────────────────────────────────────────
 
-/// Per-node DA operational stats aggregated over a time range.
+/// One node's data-availability activity over the requested time range.
 ///
-/// **Data source:** `da_node_stats` hypertable, populated by da_tracker flush.
-/// One row per node with summed event counts, weighted avg latency, and
-/// max active shard count.
+/// Counts are totals over the range. The two average latencies are weighted by
+/// sample count and include requests that ended in ShardRequestFailed(122),
+/// measured up to the failure.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct DaStatsRow {
+    /// Node that reported the events
     pub node_id: String,
+    /// Shard requests this node issued as an assurer — SendingShardRequest(120)
     pub shard_requests_sent: i64,
+    /// Shard requests this node was asked to serve — ReceivingShardRequest(121)
     pub shard_requests_received: i64,
+    /// Shard requests fully sent to the guarantor — ShardRequestSent(123)
     pub shard_sent_confirmed: i64,
+    /// Shard requests fully taken in as a guarantor — ShardRequestReceived(124)
     pub shard_received_confirmed: i64,
+    /// Completed shard transfers — ShardsTransferred(125)
     pub shards_transferred: i64,
+    /// Shard requests that failed — ShardRequestFailed(122)
     pub shard_failures: i64,
+    /// Preimage announcements that failed — PreimageAnnouncementFailed(190)
     pub preimage_ann_failures: i64,
+    /// Preimages announced to peers — PreimageAnnounced(191)
     pub preimages_announced: i64,
+    /// Announced preimages later dropped — AnnouncedPreimageForgotten(192)
     pub preimages_forgotten: i64,
+    /// Mean milliseconds from SendingShardRequest(120) to ShardsTransferred(125)
     pub assurer_avg_latency_ms: Option<f32>,
+    /// Measurements behind the assurer-side average
     pub assurer_latency_samples: i64,
+    /// Mean milliseconds from ReceivingShardRequest(121) to ShardRequestReceived(124)
     pub guarantor_avg_latency_ms: Option<f32>,
+    /// Measurements behind the guarantor-side average
     pub guarantor_latency_samples: i64,
+    /// Peak number of distinct shard indices this node served within a single sampling window
     pub active_shards: i32,
 }
 
 // ── /api/grafana/shard-latency ──────────────────────────────────────────
 
-/// Shard latency percentiles per time bucket (computed from merged histograms).
+/// Shard transfer latency percentiles for one time bucket, pooled across all
+/// reporting nodes. All percentiles are milliseconds.
 ///
-/// **Data source:** `shard_latency_hist` hypertable. Histograms are summed
-/// across nodes per time bucket, then percentiles are interpolated from the
-/// cumulative distribution in Rust.
+/// The `assurer_*` fields measure the requesting side end to end,
+/// SendingShardRequest(120) → ShardsTransferred(125); the `guarantor_*` fields
+/// measure how long the serving side took to take the request in,
+/// ReceivingShardRequest(121) → ShardRequestReceived(124). Values are
+/// approximate: they are rounded up to a latency-bucket edge and saturate at 5 s.
+/// Requests that ended in ShardRequestFailed(122) are part of the percentiles,
+/// measured up to the failure, and `failed_count` says how many of the pooled
+/// measurements those were.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ShardLatencyRow {
     pub ts: DateTime<Utc>,
@@ -850,229 +860,205 @@ pub struct ShardLatencyRow {
 
 // ── /api/grafana/wp-funnel-timeseries ────────────────────────────────────
 
-/// Work package pipeline funnel bucketed over time — how many WPs reached
-/// each stage per time bucket.
+/// One time bucket of the work-package pipeline funnel.
 ///
-/// **Data source:** `wp_tracking` table, same as `/wp-funnel` but with
-/// `time_bucket` grouping. Each row represents one time bucket containing
-/// the count of WPs whose `first_seen` falls in that bucket, broken down
-/// by pipeline stage (non-null stage timestamps).
-///
-/// Events: 94 (WorkPackageReceived) → received, 95 (Authorized) → authorized,
-/// 101 (Refined) → refined, 102 (WorkReportBuilt) → report_built,
-/// 105 (GuaranteeBuilt) → guarantee_built, 109 (GuaranteeDistributed) →
-/// distributed, 92 (WorkPackageFailed) → failed.
+/// Each work package is counted in the bucket in which it was first observed, with
+/// all the pipeline stages it eventually reached, so its later stages land in that
+/// same bucket even when they happened afterwards.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct WpFunnelTimeseriesRow {
     /// Bucket start timestamp
     pub ts: DateTime<Utc>,
-    /// Total work packages in bucket
+    /// Work packages first observed in this bucket
     pub total: i64,
-    /// WPs that were received (WorkPackageReceived)
+    /// Reached reception — WorkPackageReceived(94)
     pub received: i64,
-    /// WPs that passed authorization (Authorized)
+    /// Passed the authorization check — Authorized(95)
     pub authorized: i64,
-    /// WPs that completed refinement (Refined)
+    /// Were refined — Refined(101)
     pub refined: i64,
-    /// WPs with work report built (WorkReportBuilt)
+    /// Had a work report built — WorkReportBuilt(102)
     pub report_built: i64,
-    /// WPs with guarantee built (GuaranteeBuilt)
+    /// Had a guarantee built — GuaranteeBuilt(105)
     pub guarantee_built: i64,
-    /// WPs fully distributed (GuaranteesDistributed)
+    /// Had their guarantee distributed to the other validators — GuaranteesDistributed(109)
     pub distributed: i64,
-    /// WPs that hit a failure at any stage (WorkPackageFailed)
+    /// Failed at any point in the pipeline — WorkPackageFailed(92)
     pub failed: i64,
 }
 
 // ── /api/grafana/bottlenecks-timeseries ─────────────────────────────────
 
-/// Work package pipeline bottleneck analysis bucketed over time.
+/// One time bucket of stage-by-stage work-package pipeline latency.
 ///
-/// **Data source:** `wp_tracking` table, same as `/bottlenecks` but with
-/// `time_bucket` grouping. Per bucket: `percentile_cont(0.5)` and
-/// `percentile_cont(0.95)` on inter-stage timestamp deltas.
-///
-/// Stages: authorize (received→authorized), refine (authorized→refined),
-/// report (refined→report_built), guarantee (report_built→guarantee_built),
-/// distribute (guarantee_built→distributed), pipeline_total
-/// (received→COALESCE(distributed, last_updated)).
-///
-/// NULL stage timestamps are ignored by `percentile_cont`, so columns
-/// may be NULL if no WPs in the bucket reached that stage.
+/// Each work package is attributed to the bucket in which it was first observed,
+/// and only those that reached WorkPackageReceived(94) are counted. A stage's
+/// percentiles are null when no work package in the bucket reached that stage.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct BottlenecksTimeseriesRow {
     /// Bucket start timestamp
     pub ts: DateTime<Utc>,
-    /// received → authorized p50 (ms)
+    /// WorkPackageReceived(94) → Authorized(95), p50 in milliseconds
     pub authorize_p50: Option<f64>,
-    /// received → authorized p95 (ms)
+    /// WorkPackageReceived(94) → Authorized(95), p95 in milliseconds
     pub authorize_p95: Option<f64>,
-    /// authorized → refined p50 (ms)
+    /// Authorized(95) → Refined(101), p50 in milliseconds
     pub refine_p50: Option<f64>,
-    /// authorized → refined p95 (ms)
+    /// Authorized(95) → Refined(101), p95 in milliseconds
     pub refine_p95: Option<f64>,
-    /// refined → report_built p50 (ms)
+    /// Refined(101) → WorkReportBuilt(102), p50 in milliseconds
     pub report_p50: Option<f64>,
-    /// refined → report_built p95 (ms)
+    /// Refined(101) → WorkReportBuilt(102), p95 in milliseconds
     pub report_p95: Option<f64>,
-    /// report_built → guarantee_built p50 (ms)
+    /// WorkReportBuilt(102) → GuaranteeBuilt(105), p50 in milliseconds
     pub guarantee_p50: Option<f64>,
-    /// report_built → guarantee_built p95 (ms)
+    /// WorkReportBuilt(102) → GuaranteeBuilt(105), p95 in milliseconds
     pub guarantee_p95: Option<f64>,
-    /// guarantee_built → distributed p50 (ms)
+    /// GuaranteeBuilt(105) → GuaranteesDistributed(109), p50 in milliseconds
     pub distribute_p50: Option<f64>,
-    /// guarantee_built → distributed p95 (ms)
+    /// GuaranteeBuilt(105) → GuaranteesDistributed(109), p95 in milliseconds
     pub distribute_p95: Option<f64>,
-    /// received → distributed (or last_updated) p50 (ms)
+    /// Reception to distribution (or to the last pipeline event seen for work
+    /// packages that never got distributed), p50 in milliseconds
     pub pipeline_p50: Option<f64>,
-    /// received → distributed (or last_updated) p95 (ms)
+    /// Reception to distribution (or to the last pipeline event seen for work
+    /// packages that never got distributed), p95 in milliseconds
     pub pipeline_p95: Option<f64>,
-    /// Total WPs in bucket (with received_at IS NOT NULL)
+    /// Work packages in this bucket that reached WorkPackageReceived(94)
     pub total_wps: i64,
-    /// Failed WPs in bucket
+    /// How many of them reported WorkPackageFailed(92)
     pub failed_wps: i64,
 }
 
 // ── /api/grafana/validator-profiling ────────────────────────────────────
 
-/// Per-validator pipeline performance profiling row.
-///
-/// **Data source pipeline:** JIP-3 telemetry events flow through the in-memory
-/// `WpTracker` into the `wp_tracking` table. Each work package is identified by
-/// its `wp_hash` (primary key) and tracked through 6 pipeline stages:
-///
-/// | Stage          | Source event              | Type ID | Column             |
-/// |----------------|---------------------------|---------|--------------------|
-/// | Received       | WorkPackageReceived       | 94      | `received_at`      |
-/// | Authorized     | WorkPackageAuthorized     | 95      | `authorized_at`    |
-/// | Refined        | Refined                   | 101     | `refined_at`       |
-/// | Report built   | WorkReportBuilt           | 102     | `report_built_at`  |
-/// | Guarantee built| GuaranteeBuilt            | 105     | `guarantee_built_at`|
-/// | Distributed    | GuaranteesDistributed     | 109     | `distributed_at`   |
-///
-/// `node_id` is set from the WorkPackageReceived (94) event — the node that
-/// first received the WP. All subsequent stages execute on the same node.
-///
-/// The query computes `AVG(stage_n+1 - stage_n)` in milliseconds per node via
-/// `GROUP BY node_id`. `slowdown_factor` is computed in Rust as
-/// `node_avg_total_ms / network_avg_total_ms`.
-///
-/// Returned inside [`ValidatorProfilingResponse`] which also carries
-/// `network_avg_total_ms` for threshold/baseline rendering.
+/// Work-package pipeline performance of every guarantor, with the network-wide
+/// baseline to compare each of them against.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ValidatorProfilingResponse {
-    /// Network-wide average total pipeline latency (ms) across all nodes.
-    /// Useful as a baseline/threshold line in outlier charts.
+    /// Unweighted mean of the per-guarantor `avg_total_ms` values, in milliseconds
+    /// — the baseline `slowdown_factor` is measured against. Null when no work
+    /// package reached distribution in the range.
     pub network_avg_total_ms: Option<f64>,
-    /// Per-node profiling rows, sorted by `avg_total_ms` DESC (slowest first).
-    /// When `limit` is specified, only the top-N slowest nodes are included;
-    /// `network_avg_total_ms` still reflects all nodes.
+    /// One row per guarantor, sorted by `avg_total_ms` (slowest first by default,
+    /// fastest first with `sort=asc`), guarantors with no distributed work package
+    /// last. `limit` truncates this list only; `network_avg_total_ms` still covers
+    /// every guarantor.
     pub nodes: Vec<ValidatorProfilingRow>,
 }
 
+/// One guarantor's average progress through the work-package pipeline.
+///
+/// The work packages counted here are those attributed to this guarantor — it was
+/// the first to report WorkPackageReceived(94) for them — that finished, meaning
+/// they reached GuaranteesDistributed(109) or WorkPackageFailed(92).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ValidatorProfilingRow {
     /// Node identifier (hex-encoded 32-byte public key)
     pub node_id: String,
-    /// Total work packages processed by this node in the time range
+    /// Finished work packages attributed to this guarantor in the range
     pub wp_count: i64,
-    /// Number of WPs that failed (failed_at IS NOT NULL)
+    /// How many of them reported WorkPackageFailed(92)
     pub failures: i64,
-    /// Failure rate: failures / wp_count (0.0–1.0)
+    /// `failures` / `wp_count`, between 0.0 and 1.0
     pub failure_rate: f64,
-    /// Average received → authorized latency (ms)
+    /// Average WorkPackageReceived(94) → Authorized(95) duration in milliseconds,
+    /// over the work packages that reached distribution
     pub avg_authorize_ms: Option<f64>,
-    /// Average authorized → refined latency (ms)
+    /// Average Authorized(95) → Refined(101) duration in milliseconds
     pub avg_refine_ms: Option<f64>,
-    /// Average refined → report_built latency (ms)
+    /// Average Refined(101) → WorkReportBuilt(102) duration in milliseconds
     pub avg_report_ms: Option<f64>,
-    /// Average report_built → guarantee_built latency (ms)
+    /// Average WorkReportBuilt(102) → GuaranteeBuilt(105) duration in milliseconds
     pub avg_guarantee_ms: Option<f64>,
-    /// Average guarantee_built → distributed latency (ms)
+    /// Average GuaranteeBuilt(105) → GuaranteesDistributed(109) duration in
+    /// milliseconds
     pub avg_distribute_ms: Option<f64>,
-    /// Average total pipeline latency: received → COALESCE(distributed, failed) (ms)
+    /// Average WorkPackageReceived(94) → GuaranteesDistributed(109) duration in
+    /// milliseconds. Null when none of this guarantor's work packages reached
+    /// distribution — failed ones do not contribute.
     pub avg_total_ms: Option<f64>,
-    /// Node's avg_total_ms / network avg_total_ms. Values > 1.5 indicate underperformers.
+    /// This guarantor's `avg_total_ms` divided by `network_avg_total_ms`; above
+    /// roughly 1.5 the guarantor is an outlier
     pub slowdown_factor: Option<f64>,
 }
 
-/// Per-validator pipeline performance over time.
+/// One guarantor's average pipeline progress within one time bucket.
 ///
-/// Time-bucketed variant of [`ValidatorProfilingRow`]. Same source events and
-/// processing pipeline — results are grouped by `time_bucket(interval, first_seen)`
-/// and `node_id`.
+/// Work packages are placed in the bucket in which they were first observed, and
+/// attributed to the guarantor that first reported WorkPackageReceived(94) for
+/// them.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ValidatorProfilingTimeseriesRow {
-    /// Bucket start timestamp
+    /// Start of the time bucket
     pub ts: DateTime<Utc>,
-    /// Node identifier
+    /// Node identifier (hex-encoded 32-byte public key)
     pub node_id: String,
-    /// Work packages in this bucket for this node
+    /// Work packages attributed to this guarantor in this bucket, including ones
+    /// still in flight
     pub wp_count: i64,
-    /// Failed WPs in this bucket for this node
+    /// How many of them reported WorkPackageFailed(92)
     pub failures: i64,
-    /// Average received → authorized latency (ms)
+    /// Average WorkPackageReceived(94) → Authorized(95) duration in milliseconds,
+    /// over the bucket's work packages that reached distribution
     pub avg_authorize_ms: Option<f64>,
-    /// Average authorized → refined latency (ms)
+    /// Average Authorized(95) → Refined(101) duration in milliseconds
     pub avg_refine_ms: Option<f64>,
-    /// Average refined → report_built latency (ms)
+    /// Average Refined(101) → WorkReportBuilt(102) duration in milliseconds
     pub avg_report_ms: Option<f64>,
-    /// Average report_built → guarantee_built latency (ms)
+    /// Average WorkReportBuilt(102) → GuaranteeBuilt(105) duration in milliseconds
     pub avg_guarantee_ms: Option<f64>,
-    /// Average guarantee_built → distributed latency (ms)
+    /// Average GuaranteeBuilt(105) → GuaranteesDistributed(109) duration in
+    /// milliseconds
     pub avg_distribute_ms: Option<f64>,
-    /// Average total pipeline latency (ms)
+    /// Average WorkPackageReceived(94) → GuaranteesDistributed(109) duration in
+    /// milliseconds. Null in buckets where none of this guarantor's work packages
+    /// reached distribution.
     pub avg_total_ms: Option<f64>,
 }
 
 // ── /api/grafana/guarantee-discards ──────────────────────────────────────
 
-/// Time-bucketed guarantee discard counts grouped by reason.
-///
-/// **Data source:** `guarantee_receiving_counts` table (pre-aggregated at
-/// ingestion). Queries event_type=113 (GuaranteeDiscarded) rows where
-/// reason IS NOT NULL, grouped by (bucket, reason).
+/// GuaranteeDiscarded(113) events for one time bucket and one discard reason.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct GuaranteeDiscardRow {
-    /// Bucket start timestamp
+    /// Start of the time bucket
     pub ts: DateTime<Utc>,
-    /// Discard reason (e.g. "ReplacedByBetter(1)", "TooManyGuarantees(3)")
+    /// JIP-3 discard reason, name and code (e.g. "ReplacedByBetter(1)",
+    /// "TooManyGuarantees(3)")
     pub reason: String,
-    /// Number of discards in this bucket with this reason
+    /// Guarantees discarded for this reason within this bucket, across all validators
     pub count: i64,
 }
 
 // ── /api/grafana/events ─────────────────────────────────────────────────
 
-/// Raw event record from `ingested_raw_events` (1h retention browsing store).
+/// One raw telemetry event exactly as a node reported it.
 ///
-/// **Data source:** `ingested_raw_events` hypertable. All 115 event types are
-/// written to this table at ingestion time (after migration 020). The `data`
-/// field contains the full event-specific JSONB payload which varies by type.
-/// Hot columns (`slot`, `core`, `submission_id`, `wp_hash`) enable fast filtered
-/// queries without JSONB extraction.
+/// Every JIP-3 event type can appear here, and the payload carries the fields
+/// that JIP-3 defines for that type. Raw events are retained for about an hour,
+/// so only recent activity can be browsed this way.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct EventRow {
-    /// Event timestamp (when the event occurred on the node)
+    /// When the event occurred on the reporting node
     pub ts: DateTime<Utc>,
     /// Node that reported this event
     pub node_id: String,
     /// Event type code as defined in JIP-3
     pub event_type: i16,
-    /// Full event payload (structure varies by event type)
+    /// Full event payload; its fields depend on the event type
     pub data: serde_json::Value,
-    /// When the event was ingested into the database
+    /// When the event reached the telemetry backend
     pub created_at: DateTime<Utc>,
 }
 
-/// Paginated event search response.
+/// One page of individual telemetry events, newest first.
 ///
-/// **Data source:** `ingested_raw_events` hypertable (1h retention). Supports
-/// filtering by event type, node, core, and wp_hash. All 115 event types are
-/// browsable after migration 020.
+/// Raw events are retained for about an hour, so the page only covers the part
+/// of the requested range that falls inside that window.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct EventsSearchResponse {
-    /// Event records matching the query
+    /// Matching events, newest first
     pub events: Vec<EventRow>,
     /// Pagination metadata
     pub pagination: PaginationMeta,
@@ -1095,347 +1081,349 @@ pub struct PaginationMeta {
 
 // ── /api/grafana/failure-rates ──────────────────────────────────────────
 
-/// Network failure rates with per-category and per-node breakdown.
-///
-/// **Data source:** `all_event_stats_1m` UNION view for aggregate failure
-/// counts across 6 categories. `ingested_raw_events` (1h retention) for
-/// recent failure details with reason text from JSONB.
+/// How much of the network's reported activity failed, over the requested range.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct FailureRatesResponse {
-    /// Overall failure rate across all categories
+    /// Failure rate with all six categories pooled together
     pub overall: FailureOverall,
-    /// Per-category breakdown: block_authoring, tickets, work_packages, guarantees, shards, assurances
+    /// One entry per category: block_authoring, tickets, work_packages, guarantees,
+    /// shards, assurances
     pub by_category: Vec<FailureCategory>,
-    /// Top 20 nodes by failure count
+    /// The 20 nodes that reported the most failures, worst first
     pub by_node: Vec<FailureByNode>,
-    /// Last 20 failure events from past 5 minutes with reason text
+    /// The last 20 individual failure events from the last 5 minutes, newest first;
+    /// this list ignores the requested time range
     pub recent_failures: Vec<RecentFailure>,
 }
 
+/// The pooled failure figure across every category.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct FailureOverall {
-    /// Total events (successes + failures) across all monitored types
+    /// Successes and failures counted together across all categories
     pub total_events: i64,
-    /// Failed events count
+    /// How many of those were failures
     pub failed_events: i64,
-    /// Failure rate: failed_events / total_events (0.0 to 1.0)
+    /// Failures as a fraction of all counted events (0.0 to 1.0)
     pub failure_rate: f64,
 }
 
+/// One protocol subsystem's failure figure.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct FailureCategory {
-    /// Category name: block_authoring, tickets, work_packages, guarantees, shards, assurances
+    /// Category name: block_authoring, tickets, work_packages, guarantees, shards,
+    /// assurances
     pub category: String,
-    /// Total attempts (successes + failures) in this category
+    /// Successes and failures counted together for this category; a share of observed
+    /// events, not of distinct protocol operations
     pub attempts: i64,
-    /// Failed event count in this category
+    /// How many of those were failures
     pub failures: i64,
-    /// Failure rate: failures / attempts (0.0 to 1.0)
+    /// Failures as a fraction of the counted events (0.0 to 1.0)
     pub rate: f64,
 }
 
+/// One node's share of the network's failures.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct FailureByNode {
-    /// Node identifier (Ed25519 public key hex)
+    /// Node's peer ID — its Ed25519 public key, hex-encoded
     pub node_id: String,
-    /// Total events from this node across all monitored types
+    /// Successes and failures this node reported across all categories
     pub total_events: i64,
-    /// Failed events from this node
+    /// How many of those were failures
     pub failures: i64,
-    /// Per-node failure rate (0.0 to 1.0)
+    /// Failures as a fraction of this node's counted events (0.0 to 1.0)
     pub failure_rate: f64,
 }
 
+/// A single failure a node reported, with its reason where the event carries one.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RecentFailure {
-    /// JIP-3 event type code
+    /// JIP-3 event type ID, e.g. 92 for WorkPackageFailed
     pub event_type: i16,
-    /// Human-readable event name (e.g. "WorkPackageFailed")
+    /// The event's canonical JIP-3 name, e.g. "WorkPackageFailed"
     pub event_name: String,
     /// Node that reported this failure
     pub node_id: String,
-    /// When the failure occurred
+    /// When the node reported the failure
     pub timestamp: DateTime<Utc>,
-    /// Failure reason extracted from event JSONB (may be null if not present)
+    /// Reason string carried in the event payload; null for events that carry none
     pub reason: Option<String>,
 }
 
 // ── /api/grafana/sync-timeline ──────────────────────────────────────────
 
-/// Network sync status over time — how many nodes are synced vs behind.
-///
-/// **Data source:** `status_counts` table for BestBlockChanged events with
-/// `slot` dimension. Network slot = MAX(slot) per bucket across all nodes.
-/// A node is "synced" if its max slot is within 2 of the network max.
+/// One time bucket's view of how much of the network was at the chain tip,
+/// derived from the best-block slots nodes reported in BestBlockChanged(11).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SyncTimelineRow {
     /// Bucket start timestamp
     pub ts: DateTime<Utc>,
-    /// Total distinct nodes that reported BestBlockChanged in this bucket
+    /// Nodes that reported BestBlockChanged(11) in this bucket
     pub total_nodes: i64,
-    /// Nodes whose max slot is within 2 of the network max slot
+    /// Nodes whose best slot was within 2 slots of the network's highest
     pub synced_nodes: i64,
-    /// Nodes whose max slot is more than 2 behind the network max
+    /// Nodes whose best slot was more than 2 slots behind the network's highest
     pub behind_nodes: i64,
-    /// Sync percentage: synced_nodes / total_nodes * 100 (0.0 to 100.0)
+    /// Share of reporting nodes that were synced, in percent (0.0 to 100.0)
     pub sync_percentage: f64,
-    /// Highest slot reported by any node in this bucket
+    /// Highest best-block slot any node reported in this bucket
     pub network_slot: i32,
 }
 
 // ── /api/grafana/connections-timeline ────────────────────────────────────
 
-/// Network connection activity over time.
-///
-/// **Data source:** `all_event_stats_30s` for types 23 (ConnectedIn),
-/// 26 (ConnectedOut), 27 (Disconnected). `nodes` table for per-node
-/// uptime and health stats (maintained by batch_writer).
+/// Peer connection churn over the requested range, plus the current node tally.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ConnectionsTimelineResponse {
-    /// Time-bucketed connection counts
+    /// One entry per time bucket, ascending by time
     pub timeline: Vec<ConnectionsBucket>,
-    /// Overall connection health stats
+    /// Present-moment node counts; not affected by the requested time range
     pub health_stats: ConnectionHealthStats,
 }
 
+/// Peer connections opened and closed within one time bucket.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ConnectionsBucket {
-    /// Bucket start timestamp
+    /// Start of the bucket
     pub ts: DateTime<Utc>,
-    /// ConnectedIn + ConnectedOut events in this bucket
+    /// Peer links completed: ConnectedIn(23) plus ConnectedOut(26)
     pub connections: i64,
-    /// Disconnected events in this bucket
+    /// Peer links dropped: Disconnected(27)
     pub disconnections: i64,
-    /// Distinct nodes with any connection event in this bucket
+    /// Distinct nodes that reported any of those three events in the bucket
     pub active_nodes: i64,
 }
 
+/// Present-moment count of nodes known to telemetry.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ConnectionHealthStats {
-    /// Total nodes ever seen in the `nodes` table
+    /// Nodes that have ever reported telemetry
     pub total_nodes_seen: i64,
-    /// Nodes currently connected (is_connected = true)
+    /// Nodes reporting telemetry right now
     pub currently_connected: i64,
 }
 
 // ── /api/grafana/guarantees ─────────────────────────────────────────────
 
-/// Guarantee pipeline totals and success rates.
-///
-/// **Data source:** `all_event_stats_1m` UNION view for types 105-113.
-/// Count tables provide correct data for types 106-113 (which were
-/// previously returning 0 from raw events — this fixes a legacy bug).
+/// Network-wide guaranteeing activity over the requested time range.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct GuaranteesResponse {
-    /// Per-type event counts
+    /// One count per guaranteeing event type
     pub totals: GuaranteeTotals,
-    /// Send and receive success rates
+    /// Fraction of guarantee transfers that succeeded on each side
     pub success_rates: GuaranteeSuccessRates,
 }
 
+/// Counts of each guaranteeing event across all reporting nodes.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct GuaranteeTotals {
-    /// GuaranteeBuilt — guarantor built a guarantee proof for a work report
+    /// GuaranteeBuilt(105) — a primary guarantor assembled a guarantee for a work report
     pub built: i64,
-    /// SendingGuarantee — guarantor is sending the guarantee to peers
+    /// SendingGuarantee(106) — a guarantor started sending a guarantee to another validator
     pub sending: i64,
-    /// GuaranteeSendFailed — guarantee send attempt failed
+    /// GuaranteeSendFailed(107) — sending a guarantee to another validator failed
     pub send_failed: i64,
-    /// GuaranteeSent — guarantee successfully sent to a peer
+    /// GuaranteeSent(108) — a guarantee was successfully sent to another validator
     pub sent: i64,
-    /// GuaranteesDistributed — all guarantees for a WP distributed to all peers
+    /// GuaranteesDistributed(109) — a primary guarantor finished distributing a
+    /// work report's guarantees, successfully or not
     pub distributed: i64,
-    /// ReceivingGuarantee — node receiving a guarantee from a peer
+    /// ReceivingGuarantee(110) — a validator started receiving a guarantee
     pub receiving: i64,
-    /// GuaranteeReceiveFailed — guarantee receive failed (invalid, etc.)
+    /// GuaranteeReceiveFailed(111) — receiving a guarantee failed
     pub receive_failed: i64,
-    /// GuaranteeReceived — guarantee received and validated
+    /// GuaranteeReceived(112) — a guarantee was fully received, before validity checks
     pub received: i64,
-    /// GuaranteeDiscarded — guarantee removed from local pool (various reasons)
+    /// GuaranteeDiscarded(113) — a guarantee was dropped from a validator's local pool
     pub discarded: i64,
 }
 
+/// Share of guarantee transfers that completed, on each side of the transfer.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct GuaranteeSuccessRates {
-    /// Sent / (Sending + SendFailed + Sent). 1.0 when no sending activity.
+    /// GuaranteeSent(108) as a fraction of all send attempts (106 + 107 + 108).
+    /// 1.0 when nothing was sent in the range.
     pub send_success_rate: f64,
-    /// Received / (Receiving + ReceiveFailed + Received). 1.0 when no receiving activity.
+    /// GuaranteeReceived(112) as a fraction of all receive attempts (110 + 111 + 112).
+    /// 1.0 when nothing was received in the range.
     pub receive_success_rate: f64,
 }
 
 // ── /api/grafana/guarantees/by-guarantor ────────────────────────────────
 
-/// Per-guarantor breakdown with node→core mapping.
+/// The set of nodes seen building guarantees in the requested time range.
 ///
-/// **Data source:** `guarantee_convergence` table for observed node→core
-/// mapping (builder_node_id + core, 90d retention). `all_event_stats_1m`
-/// for per-node success rates (types 105, 107, 109).
-///
-/// **Caveat:** Node→core mapping reflects observed guarantee behavior, not
-/// protocol-level validator→core assignment. Telemetry does not transmit
-/// `validator_index`. See deep-dive Section 5.
+/// The core association per node is observed guaranteeing behaviour, not the
+/// protocol's validator→core assignment, which rotates every 10 slots and
+/// reshuffles each epoch.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct GuarantorBreakdownResponse {
+    /// One row per guarantor node, most guarantees built first
     pub guarantors: Vec<GuarantorRow>,
+    /// Number of rows in `guarantors`
     pub total_guarantors: i64,
 }
 
+/// One node's guaranteeing activity and the cores it was seen guaranteeing for.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct GuarantorRow {
-    /// Node identifier (Ed25519 public key hex)
+    /// Node identifier (Ed25519 public key, hex-encoded)
     pub node_id: String,
-    /// Core this node most frequently guarantees for (by count)
+    /// Lowest core index in `cores_active`, used as a stable label for the node
     pub primary_core: Option<i16>,
-    /// Total guarantees built by this node in the time range
+    /// GuaranteeBuilt(105) events this node emitted in the time range
     pub guarantee_count: i64,
-    /// Timestamp of this node's most recent guarantee
+    /// When this node last emitted GuaranteeBuilt(105)
     pub last_guarantee: Option<DateTime<Utc>>,
-    /// All cores this node has guaranteed for (sorted, deduplicated)
+    /// Every core this node built a guarantee for, ascending and deduplicated
     pub cores_active: Vec<i16>,
 }
 
 // ── /api/grafana/wp-stats ───────────────────────────────────────────────
 
-/// Work package pipeline summary — counts per stage, by core.
-///
-/// **Data source:** `wp_tracking` table for pipeline stage counts
-/// (received → distributed/failed) + by-core breakdown. `all_event_stats_1m`
-/// for pre-pipeline event counts (types 90 submissions, 91 being_shared,
-/// 93 duplicates).
+/// Work-package traffic and pipeline progress over a time range, plus its spread
+/// across cores.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct WpStatsResponse {
     pub totals: WpStageTotals,
     pub by_core: Vec<WpCoreCount>,
 }
 
+/// Work-package counts before and along the guarantor pipeline.
+///
+/// The first three are counts of events reported by all nodes, not of distinct work
+/// packages; the rest count distinct work packages that reached each stage.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct WpStageTotals {
-    /// WorkPackageSubmission events (pre-pipeline, from aggregates)
+    /// WorkPackageSubmission(90) events — builders opening a submission stream to a guarantor
     pub submissions: i64,
-    /// WorkPackageBeingShared events (pre-pipeline, from aggregates)
+    /// WorkPackageBeingShared(91) events — secondary guarantors accepting a share from a primary
     pub being_shared: i64,
-    /// DuplicateWorkPackage events (pre-pipeline, from aggregates)
+    /// DuplicateWorkPackage(93) events — a work package already seen was offered again;
+    /// it is reported instead of a reception, so it never enters the stage counts below
     pub duplicates: i64,
-    /// WPs that reached "received" stage (WorkPackageReceived, from wp_tracking)
+    /// Work packages that reached reception — WorkPackageReceived(94)
     pub received: i64,
-    /// WPs that reached "authorized" stage (Authorized, from wp_tracking)
+    /// Passed the authorization check — Authorized(95)
     pub authorized: i64,
-    /// WPs that reached "refined" stage (Refined, from wp_tracking)
+    /// Were refined — Refined(101)
     pub refined: i64,
-    /// WPs that reached "report_built" stage (WorkReportBuilt, from wp_tracking)
+    /// Had a work report built — WorkReportBuilt(102)
     pub report_built: i64,
-    /// WPs that reached "guarantee_built" stage (GuaranteeBuilt, from wp_tracking)
+    /// Had a guarantee built — GuaranteeBuilt(105)
     pub guarantee_built: i64,
-    /// WPs that completed pipeline (GuaranteesDistributed, from wp_tracking)
+    /// Had their guarantee distributed to the other validators — GuaranteesDistributed(109)
     pub distributed: i64,
-    /// WPs that failed at any stage (WorkPackageFailed, from wp_tracking)
+    /// Failed at any point in the pipeline — WorkPackageFailed(92)
     pub failed: i64,
 }
 
+/// Work packages assigned to one core.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct WpCoreCount {
     /// Core index
     pub core: i16,
-    /// Total WPs on this core in the time range
+    /// Work packages first observed in the time range on this core
     pub count: i64,
 }
 
 // ── /api/grafana/validators/cores ───────────────────────────────────────
 
-/// Node→core mapping based on observed guarantee behavior.
+/// One guaranteeing node and a core it was seen guaranteeing for.
 ///
-/// **Data source:** `guarantee_convergence` table (builder_node_id + core).
-/// Shares `node_core_mapping()` helper with `/guarantees/by-guarantor`.
-///
-/// **Caveat:** This mapping reflects observed guarantee behavior, not
-/// protocol-level validator→core assignment. Telemetry does not transmit
-/// `validator_index` — there is no way to map node_id → validator_index
-/// without upstream JIP-3 changes.
+/// The association is observed from GuaranteeBuilt(105) reports, not the
+/// protocol's validator→core assignment, which telemetry does not carry — JIP-3
+/// events identify a node by its public key and never by validator index.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ValidatorCoreRow {
     /// Node identifier (Ed25519 public key hex)
     pub node_id: String,
-    /// Core this node most frequently guarantees for (by count). NULL if no core data.
+    /// A core this node built guarantees for in the range. Only one core is
+    /// reported even when the node guaranteed for several, so treat it as
+    /// indicative unless the range is shorter than one 10-slot core rotation. Null
+    /// when no core could be determined.
     pub primary_core: Option<i16>,
-    /// Total guarantees built by this node in the time range
+    /// Guarantees this node built in the range, across all cores
     pub guarantee_count: i64,
 }
 
 // ── /api/grafana/cores/{id}/validators ───────────────────────────────────
 
-/// Per-core validator (guarantor) list with node metadata.
+/// The nodes observed guaranteeing for one core.
 ///
-/// **Question answered:** "Which validators are active guarantors for this core?"
-///
-/// **Data source:** `guarantee_convergence` table (builder_node_id + core, 90d
-/// retention) filtered by core. JOINed with `nodes` table for implementation
-/// details (name, version). Shares `node_core_mapping()` helper.
-///
-/// **Limitation:** Only includes validators who actually built guarantees.
-/// Validators assigned to a core but inactive (no guarantees built) won't appear.
-/// Telemetry does not transmit `validator_index`.
+/// Membership comes from GuaranteeBuilt(105) reports, so a validator assigned to
+/// the core that built no guarantee in the range is absent; this is the observed
+/// guarantor set, not the protocol's validator→core assignment.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct CoreValidatorsResponse {
     /// Core index
     pub core: i16,
-    /// Active validators on this core
+    /// One row per node that built guarantees for this core, most guarantees first
     pub validators: Vec<CoreValidatorRow>,
-    /// Number of active validators
+    /// Number of rows in `validators`
     pub total_active: i64,
 }
 
-/// A validator active on a specific core.
+/// One node's guaranteeing activity for a single core, with its node metadata.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct CoreValidatorRow {
     /// Node identifier (Ed25519 public key hex)
     pub node_id: String,
-    /// Number of guarantees built for this core
+    /// GuaranteeBuilt(105) reports from this node for this core in the range
     pub guarantee_count: i64,
-    /// When this node last guaranteed on this core
+    /// When this node last built a guarantee for this core
     pub last_guarantee: Option<DateTime<Utc>>,
-    /// Node implementation name (from nodes table, e.g. "polkajam")
+    /// Node implementation name as announced at handshake (e.g. "polkajam"). Null
+    /// for a node that has not connected to telemetry.
     pub implementation_name: Option<String>,
-    /// Node implementation version
+    /// Node implementation version as announced at handshake
     pub implementation_version: Option<String>,
-    /// Whether the node is currently connected
+    /// Whether the node's telemetry connection is open right now
     pub is_connected: Option<bool>,
 }
 
 // ── /api/grafana/network-health ─────────────────────────────────────────
 
-/// Multi-signal network health score with per-component breakdown.
-///
-/// **Data source:** `all_event_stats_1m` UNION view for 5-component health
-/// scoring (connectivity, block production, DA, work packages, throughput).
-/// LiveCounters for real-time throughput overlay. `node_stats` for peer counts.
-/// Scoring logic (~200 LOC) ported from legacy `store.rs`.
+/// The network's health over the requested range, as one score plus five subsystem scores.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct NetworkHealthResponse {
+    /// Plain mean of the five component scores (0.0 to 100.0)
     pub health_score: f64,
+    /// Label for the overall score: healthy (90 and above), degraded (70 and above),
+    /// unhealthy (below 70)
     pub overall_health: String,
+    /// One entry per component: block_production, work_packages, data_availability,
+    /// connectivity, event_throughput
     pub components: Vec<HealthComponent>,
+    /// Alerts raised by components that scored below their healthy threshold
     pub alerts: Vec<HealthAlert>,
 }
 
+/// One protocol subsystem's health score.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct HealthComponent {
-    /// Component name: block_production, work_packages, data_availability, connectivity, event_throughput
+    /// Component name: block_production, work_packages, data_availability,
+    /// connectivity, event_throughput
     pub name: String,
-    /// Component health score (0.0 to 100.0)
+    /// Share of the component's activity that succeeded, scaled 0.0 to 100.0;
+    /// 100.0 when the component saw no activity at all
     pub score: f64,
-    /// Component status: healthy (>= 95/90%), degraded (>= 80/70%), unhealthy (below)
+    /// Label for the score: healthy, degraded or unhealthy. Thresholds are 95 and 80
+    /// for block_production, work_packages and data_availability, 90 and 70 for
+    /// connectivity; event_throughput is simply healthy or unhealthy
     pub status: String,
-    /// Specific issues detected (empty when healthy)
+    /// Specific issues detected; currently always empty
     pub issues: Vec<String>,
 }
 
+/// A warning about one component that scored below its healthy threshold.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct HealthAlert {
-    /// Alert severity: "warning" or "error"
+    /// Severity: "warning", or "error" for a severely degraded component
     pub severity: String,
-    /// Human-readable alert message
+    /// Human-readable message naming the score that triggered the alert
     pub message: String,
-    /// Which health component generated this alert
+    /// Component that raised it; only block_production raises alerts at present
     pub component: String,
 }
 
@@ -1455,55 +1443,51 @@ pub struct NodeCoreRow {
 
 // ── /api/grafana/wp-active ──────────────────────────────────────────────
 
-/// Active (in-flight) work packages with pipeline health summary.
+/// Recent work packages plus pipeline health for the whole time range.
 ///
-/// **Question answered:** "What WPs are currently in-flight and what's the pipeline health?"
-///
-/// **Data source:** `wp_tracking WHERE distributed_at IS NULL AND failed_at IS NULL`.
-/// Returns the WP list plus aggregate summaries (stage counts, cumulative funnel,
-/// stage duration percentiles, failure breakdown) all computed from the same
-/// filtered set.
-///
-/// **Deliberately dropped legacy stages:** The telemetry-visible pipeline ends at
-/// `distributed_at`. Legacy "included" (GuaranteeDiscarded with PackageReportedOnChain),
-/// "available" (shard events), and "superseded" stages were pool cleanup events,
-/// not real pipeline stages — they are not included.
+/// The listed work packages are only the most recent ones; every summary beside
+/// them covers all work packages first observed in the range, whether they are
+/// still progressing, distributed or failed. The telemetry-visible pipeline ends at
+/// GuaranteesDistributed(109) — what happens to the work report on chain afterwards
+/// is not part of these stages.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct WpActiveResponse {
-    /// Individual in-flight work packages (max 200, ordered by first_seen DESC)
+    /// The most recently started work packages of the range (at most 200, newest first)
     pub work_packages: Vec<WpActiveRow>,
-    /// Per-stage counts of in-flight WPs
+    /// How many work packages stopped at each stage
     pub summary: WpActiveSummary,
-    /// Cumulative funnel: how many WPs reached each stage
+    /// How many work packages ever reached each stage
     pub reached: WpReachedCounts,
-    /// Pipeline stage latency percentiles (p50, p95) for in-flight WPs
+    /// Median and p95 duration of each pipeline stage, in milliseconds
     pub stage_duration_percentiles: WpStageDurations,
-    /// Failure reason breakdown (count per distinct reason)
+    /// Failures grouped by the reason reported in WorkPackageFailed(92)
     pub failure_breakdown: Vec<FailureBreakdownEntry>,
 }
 
-/// Single in-flight work package row.
+/// One work package and how far it got through the guarantor pipeline.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct WpActiveRow {
     /// Hex-encoded work package hash
     pub wp_hash: String,
-    /// Core index
+    /// Core this work package was submitted for
     pub core: i16,
-    /// Node that first received this WP
+    /// First guarantor that reported WorkPackageReceived(94) for it
     pub node_id: Option<String>,
-    /// Service IDs involved
+    /// Services whose work items this work package carries (hex-formatted)
     pub service_ids: Vec<DbServiceId>,
-    /// Current pipeline stage ordinal (0=received through 5=distributed)
+    /// Furthest pipeline stage reached: 0 received, 1 authorized, 2 refined,
+    /// 3 work report built, 4 guarantee built, 5 guarantees distributed
     pub stage: i16,
-    /// Total gas used during refinement
+    /// Gas the work items consumed during refinement, as reported by Refined(101)
     pub refine_gas_used: Option<i64>,
-    /// Failure reason (if failed)
+    /// Reason reported in WorkPackageFailed(92), if it failed
     pub failure_reason: Option<String>,
-    /// When the WP was first seen
+    /// When this work package was first reported by any node
     pub first_seen: DateTime<Utc>,
-    /// Last stage update time
+    /// When the most recent pipeline event for it arrived
     pub last_updated: DateTime<Utc>,
-    /// Pipeline stage timestamps (null = not reached yet)
+    /// Pipeline stage timestamps: reception, authorization, refinement, work report,
+    /// guarantee, distribution and failure (null = the stage was never reported)
     pub received_at: Option<DateTime<Utc>>,
     pub authorized_at: Option<DateTime<Utc>>,
     pub refined_at: Option<DateTime<Utc>>,
@@ -1511,167 +1495,179 @@ pub struct WpActiveRow {
     pub guarantee_built_at: Option<DateTime<Utc>>,
     pub distributed_at: Option<DateTime<Utc>>,
     pub failed_at: Option<DateTime<Utc>>,
-    /// How many distinct nodes received this WP
+    /// How many distinct guarantors reported WorkPackageReceived(94) for it
     pub received_by: i16,
-    /// How many distinct nodes guaranteed this WP
+    /// How many distinct guarantors reported GuaranteeBuilt(105) for it
     pub guaranteed_by: i16,
-    /// Elapsed time from first_seen to last_updated (milliseconds)
+    /// Milliseconds from the first to the most recent pipeline event for it
     pub elapsed_ms: f64,
 }
 
+/// Where work packages stopped: counts of those whose furthest reached stage is
+/// each stage, so anything still progressing or stuck shows up here while
+/// distributed ones do not.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct WpActiveSummary {
-    /// Total in-flight WPs
+    /// Work packages first observed in the range
     pub total: i64,
-    /// Count per stage
+    /// Got no further than reception — WorkPackageReceived(94)
     pub at_received: i64,
+    /// Got no further than authorization — Authorized(95)
     pub at_authorized: i64,
+    /// Got no further than refinement — Refined(101)
     pub at_refined: i64,
+    /// Got no further than the work report — WorkReportBuilt(102)
     pub at_report_built: i64,
+    /// Got no further than the guarantee — GuaranteeBuilt(105)
     pub at_guarantee_built: i64,
 }
 
+/// How many work packages ever reached each stage; a work package counts for every
+/// stage it passed, so these counts overlap.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct WpReachedCounts {
-    /// WPs that reached each stage (cumulative, not exclusive)
+    /// Reached reception — WorkPackageReceived(94)
     pub received: i64,
+    /// Passed the authorization check — Authorized(95)
     pub authorized: i64,
+    /// Were refined — Refined(101)
     pub refined: i64,
+    /// Had a work report built — WorkReportBuilt(102)
     pub report_built: i64,
+    /// Had a guarantee built — GuaranteeBuilt(105)
     pub guarantee_built: i64,
+    /// Had their guarantee distributed — GuaranteesDistributed(109)
     pub distributed: i64,
+    /// Failed at any point in the pipeline — WorkPackageFailed(92)
     pub failed: i64,
 }
 
+/// Duration of each guarantor pipeline stage, in milliseconds.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct WpStageDurations {
-    /// authorize: received_at → authorized_at (milliseconds)
+    /// WorkPackageReceived(94) → Authorized(95), p50
     pub authorize_p50_ms: Option<f64>,
+    /// WorkPackageReceived(94) → Authorized(95), p95
     pub authorize_p95_ms: Option<f64>,
-    /// refine: authorized_at → refined_at
+    /// Authorized(95) → Refined(101), p50
     pub refine_p50_ms: Option<f64>,
+    /// Authorized(95) → Refined(101), p95
     pub refine_p95_ms: Option<f64>,
-    /// report: refined_at → report_built_at
+    /// Refined(101) → WorkReportBuilt(102), p50
     pub report_p50_ms: Option<f64>,
+    /// Refined(101) → WorkReportBuilt(102), p95
     pub report_p95_ms: Option<f64>,
-    /// guarantee: report_built_at → guarantee_built_at
+    /// WorkReportBuilt(102) → GuaranteeBuilt(105), p50
     pub guarantee_p50_ms: Option<f64>,
+    /// WorkReportBuilt(102) → GuaranteeBuilt(105), p95
     pub guarantee_p95_ms: Option<f64>,
 }
 
+/// One distinct failure reason and how often it occurred.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct FailureBreakdownEntry {
-    /// Failure reason text
+    /// Reason text as reported in WorkPackageFailed(92)
     pub reason: String,
-    /// Number of WPs with this reason
+    /// Work packages that failed for this reason
     pub count: i64,
 }
 
 // ── /api/grafana/wp/{hash} ──────────────────────────────────────────────
 
-/// Work package detail — summary from wp_tracking + raw event drilldown.
-///
-/// **Question answered:** "Full lifecycle detail for a specific work package."
-///
-/// **Data source:** Two queries:
-/// 1. `wp_tracking WHERE wp_hash = $1` → pipeline summary (always available)
-/// 2. `ingested_raw_events WHERE wp_hash = $1` → full event list (1h retention,
-///    uses wp_hash hot column from migration 020)
-///
-/// If the WP is older than 1h, only the summary is available — the raw event
-/// timeline is empty. This is acceptable for real-time investigation.
+/// Everything known about one work package: its pipeline timeline and, while they
+/// are still retained, the raw telemetry events behind it.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct WpDetailResponse {
-    /// Pipeline summary from wp_tracking (always available)
+    /// This work package's pipeline timeline; null if the hash is unknown
     pub summary: Option<WpTrackingRow>,
-    /// Raw events for this WP (empty if WP older than 1h retention)
+    /// Every raw event reported for this work package, oldest first; empty once the
+    /// events have aged out of the roughly one-hour retention window
     pub events: Vec<EventRow>,
 }
 
 // ── /api/grafana/blocks/summary ─────────────────────────────────────────
 
-/// Block production overview — totals, recent blocks, propagation.
-///
-/// **Question answered:** "What's the block production health?"
-///
-/// **Data source:** `all_event_stats_1m` for block event totals (Authoring through
-/// BlockExecuted, BestBlockChanged, FinalizedBlockChanged). LiveCounters for
-/// current best/finalized slot. Raw events (1h) for recent block hashes.
-/// `slot_convergence` for propagation percentiles.
+/// Block production and import health over the queried range, plus the chain
+/// tips as of the request.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct BlocksSummaryResponse {
-    /// Per-event-type counts for block-related events
+    /// Network-wide counts of the block lifecycle events in the range
     pub totals: BlockTotals,
-    /// Current chain state
+    /// Best and finalized slot right now, not over the range
     pub chain: ChainState,
-    /// Per-node block authoring counts
+    /// The most active block authors in the range
     pub authoring_by_node: Vec<AuthoringByNode>,
 }
 
+/// Network-wide counts of each block lifecycle event in the range. The
+/// import-side counts are reported once per node per block, while `authored` is
+/// reported once per block by its author.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct BlockTotals {
-    /// Authoring events started
+    /// Authoring(40) — block authoring attempts started
     pub authoring_started: i64,
-    /// AuthoringFailed events
+    /// AuthoringFailed(41) — authoring attempts that failed
     pub authoring_failed: i64,
-    /// Successfully authored blocks (Authored)
+    /// Authored(42) — blocks successfully authored
     pub authored: i64,
-    /// Blocks being imported (Importing)
+    /// Importing(43) — block imports started by non-authoring nodes
     pub importing: i64,
-    /// Block verification failures (BlockVerificationFailed)
+    /// BlockVerificationFailed(44) — imported blocks that failed verification
     pub verification_failed: i64,
-    /// Blocks verified (BlockVerified)
+    /// BlockVerified(45) — imported blocks that passed verification
     pub verified: i64,
-    /// Block execution failures (BlockExecutionFailed)
+    /// BlockExecutionFailed(46) — blocks whose execution failed
     pub execution_failed: i64,
-    /// Blocks executed (BlockExecuted)
+    /// BlockExecuted(47) — blocks executed successfully
     pub executed: i64,
-    /// BestBlockChanged events
+    /// BestBlockChanged(11) — best-block changes reported by nodes
     pub best_block_changes: i64,
-    /// FinalizedBlockChanged events
+    /// FinalizedBlockChanged(12) — finalized-block changes reported by nodes
     pub finalized_block_changes: i64,
 }
 
+/// The chain tips as currently observed across the network.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ChainState {
-    /// Current best (highest) slot number
+    /// Highest best-block slot currently seen; null if live tracking is off
     pub best_slot: Option<i32>,
-    /// Current finalized slot number
+    /// Highest finalized slot currently seen; null if live tracking is off
     pub finalized_slot: Option<i32>,
 }
 
+/// How many blocks one node authored in the range.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct AuthoringByNode {
     /// Node identifier
     pub node_id: String,
-    /// Number of blocks authored by this node
+    /// Authored(42) reports from this node
     pub blocks_authored: i64,
 }
 
 // ── /api/grafana/cores/{id}/metrics ─────────────────────────────────────
 
-/// Core performance metrics — efficiency, latency, throughput, gas.
-///
-/// **Question answered:** "How is this core performing?"
-///
-/// **Data source:** `all_core_stats_1m` for event counts (efficiency ratios).
-/// `wp_tracking` for pipeline latency percentiles (same approach as `/bottlenecks`).
-/// `refine_gas_used` from wp_tracking for gas utilization.
+/// One core's work-package throughput, pipeline latency and gas usage.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct CoreMetricsResponse {
     /// Core index
     pub core: i16,
-    /// Refined / (Refined + Failed) as percentage
+    /// Share of Refined(101) among Refined(101) plus WorkPackageFailed(92) reports
+    /// on this core, as a percentage. 100 when neither was reported.
     pub processing_efficiency_pct: f64,
-    /// Pipeline p50 latency (received → distributed) in milliseconds
+    /// Median WorkPackageReceived(94) → GuaranteesDistributed(109) duration in
+    /// milliseconds, over the work packages first observed on this core in the
+    /// range. Ones that never got distributed contribute the time up to their last
+    /// observed pipeline event.
     pub p50_latency_ms: Option<f64>,
-    /// Pipeline p95 latency in milliseconds
+    /// The same measurement at the 95th percentile, in milliseconds
     pub p95_latency_ms: Option<f64>,
-    /// Average completion time (received → distributed) in milliseconds
+    /// Average WorkPackageReceived(94) → GuaranteesDistributed(109) duration in
+    /// milliseconds, over only the work packages that reached distribution
     pub average_completion_time_ms: Option<f64>,
-    /// Total gas used by refined WPs on this core
+    /// Total refine gas reported in Refined(101) for this core's work packages
     pub total_gas_used: i64,
-    /// Work packages processed in the time range
+    /// WorkPackageReceived(94) reports for this core — one per guarantor, so higher
+    /// than the number of distinct work packages
     pub work_packages_processed: i64,
 }
 
@@ -1679,76 +1675,83 @@ pub struct CoreMetricsResponse {
 
 // ── /api/grafana/execution ──────────────────────────────────────────────
 
-/// Execution performance metrics — gas and timing per processing phase.
+/// Gas and timing for the three phases in which service code runs, plus the
+/// heaviest services in each.
 ///
-/// **Question answered:** "How much gas and time does each execution phase use?"
-///
-/// **Data source:** `event_services` table (7-day retention) with pre-extracted
-/// timing columns. Three phases measured:
-/// - Authorization (Authorized event, type 95): `is_authorized` PVM call
-/// - Refinement (Refined event, type 101): `refine` PVM call per work item
-/// - Accumulation (BlockExecuted event, type 47): `accumulate` PVM call per service
-///
-/// Per-service breakdown includes all three phases (each row has a `phase` field).
+/// The phases are the is-authorized call of a work package, the refine call of
+/// each of its work items, and the accumulate call of each service touched by
+/// a block.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ExecutionMetricsResponse {
-    /// Authorization phase (Authorized event)
+    /// Authorization phase, as reported by Authorized(95)
     pub authorization: ExecutionPhaseStats,
-    /// Refinement phase (Refined event)
+    /// Refinement phase, as reported by Refined(101)
     pub refinement: ExecutionPhaseStats,
-    /// Accumulation phase (BlockExecuted event)
+    /// Accumulation phase, as reported by BlockExecuted(47)
     pub accumulation: ExecutionPhaseStats,
-    /// Per-service gas and timing breakdown across all phases
+    /// The 50 service-and-phase combinations with the highest total gas,
+    /// heaviest first
     pub by_service: Vec<ServiceExecutionRow>,
 }
 
-/// Stats for a single execution phase.
+/// Gas and timing summary for one execution phase.
+///
+/// The averages cover only the executions that came with a cost figure. For
+/// authorization the cost is reported once per work package, so `count` can
+/// exceed the number of executions the averages are taken over.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ExecutionPhaseStats {
-    /// Number of events in this phase
+    /// Executions reported in this phase, counted once per reporting node
     pub count: i64,
-    /// Total gas consumed
+    /// Total gas used by those executions
     pub total_gas: i64,
-    /// Average gas per event
+    /// Mean gas per execution
     pub avg_gas: f64,
-    /// Average execution time in nanoseconds
+    /// Mean wall-clock execution time in nanoseconds
     pub avg_time_ns: f64,
-    /// Average PVM code load/compile time in nanoseconds
+    /// Mean time to load and compile the service code, in nanoseconds
     pub avg_load_ns: f64,
 }
 
-/// Per-service execution stats for a single phase.
+/// One service's gas and timing in one execution phase.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ServiceExecutionRow {
-    /// Service ID
+    /// Service ID as a plain signed number, not the hex encoding used
+    /// elsewhere. IDs from 2^31 up therefore appear negative — including
+    /// 0xffffffff, which BlockExecuted(47) uses to report the combined cost of
+    /// the lowest-gas services when a block accumulates more than 500 of them.
     pub service_id: i32,
     /// Execution phase: "authorization", "refinement", or "accumulation"
     pub phase: String,
     /// Total gas used by this service in this phase
     pub total_gas: i64,
-    /// Number of events
+    /// Executions reported for this service in this phase, counted once per
+    /// reporting node
     pub count: i64,
-    /// Average execution time in nanoseconds
+    /// Mean wall-clock execution time in nanoseconds
     pub avg_time_ns: f64,
-    /// Average PVM code load/compile time in nanoseconds
+    /// Mean time to load and compile the service code, in nanoseconds
     pub avg_load_ns: f64,
 }
 
 // ── /api/grafana/bundle-latency ─────────────────────────────────────────
 
-/// Bundle reconstruction latency percentiles per time bucket.
+/// Audit bundle recovery latency percentiles for one time bucket.
 ///
 /// Tracks audit data recovery: auditors fetch erasure-coded shards from assurers
 /// to reconstruct the original bundle. Six measurement sides:
-/// - **shard_req** (side=0): Requestor round-trip: SendingBundleShardRequest(140) → BundleShardTransferred(145)
-/// - **shard_resp** (side=1): Responder local work: ReceivingBundleShardRequest(141) → BundleShardTransferred(145)
-/// - **full_req** (side=2): Requestor round-trip for full bundle: SendingBundleRequest(148) → BundleTransferred(153)
-/// - **full_resp** (side=3): Responder local work for full bundle: ReceivingBundleRequest(149) → BundleTransferred(153)
-/// - **reconstruct** (side=4): Pure CPU reconstruction: ReconstructingBundle(146) → BundleReconstructed(147)
-/// - **e2e** (side=5): End-to-end recovery: first SendingBundleShardRequest(140) → BundleReconstructed(147) per audit_id
+/// - **shard_req**: Requestor round-trip: SendingBundleShardRequest(140) → BundleShardTransferred(145)
+/// - **shard_resp**: Responder local work: ReceivingBundleShardRequest(141) → BundleShardTransferred(145)
+/// - **full_req**: Requestor round-trip for full bundle: SendingBundleRequest(148) → BundleTransferred(153)
+/// - **full_resp**: Responder local work for full bundle: ReceivingBundleRequest(149) → BundleTransferred(153)
+/// - **reconstruct**: Local reconstruction work: ReconstructingBundle(146) → BundleReconstructed(147)
+/// - **e2e**: End-to-end recovery per audit: first SendingBundleShardRequest(140) → BundleReconstructed(147)
 ///
-/// **Data source:** `bundle_latency_hist` hypertable. Histograms (23-bucket CONVERGENCE_BOUNDS)
-/// are summed across nodes per time bucket, then percentiles are interpolated in Rust.
+/// Latencies from all reporting nodes are pooled per time bucket. Values are
+/// milliseconds and approximate: rounded up to a latency-bucket edge, saturating
+/// at 120 s. Measurements that ended in a failure event — BundleShardRequestFailed(142)
+/// or BundleRequestFailed(150) — are included, measured up to the failure;
+/// `failed_count` totals them across all sides of the bucket.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct BundleLatencyRow {
     pub ts: DateTime<Utc>,
@@ -1782,17 +1785,22 @@ pub struct BundleLatencyRow {
 
 // ── /api/grafana/segment-latency ────────────────────────────────────────
 
-/// Segment fetching latency percentiles per time bucket.
+/// Import segment fetching latency percentiles for one time bucket.
 ///
-/// Tracks import segment fetching during WP processing (before refinement).
-/// Five measurement sides:
-/// - **shard_req** (side=0): Requestor round-trip: SendingSegmentShardRequest(162) → SegmentShardsTransferred(167)
-/// - **shard_resp** (side=1): Responder local work: ReceivingSegmentShardRequest(163) → SegmentShardsTransferred(167)
-/// - **full_req** (side=2): Requestor round-trip: SendingSegmentRequest(173) → SegmentsTransferred(178)
-/// - **full_resp** (side=3): Responder local work: ReceivingSegmentRequest(174) → SegmentsTransferred(178)
-/// - **reconstruct** (side=4): Pure CPU reconstruction: ReconstructingSegments(168) → SegmentsReconstructed(170)
+/// Tracks the import segments a guarantor fetches while processing a work package,
+/// before refinement. Five measurement sides:
+/// - **shard_req**: Requestor round-trip: SendingSegmentShardRequest(162) → SegmentShardsTransferred(167)
+/// - **shard_resp**: Responder local work: ReceivingSegmentShardRequest(163) → SegmentShardsTransferred(167)
+/// - **full_req**: Requestor round-trip: SendingSegmentRequest(173) → SegmentsTransferred(178)
+/// - **full_resp**: Responder local work: ReceivingSegmentRequest(174) → SegmentsTransferred(178)
+/// - **reconstruct**: Local reconstruction work: ReconstructingSegments(168) → SegmentsReconstructed(170)
 ///
-/// **Data source:** `segment_latency_hist` hypertable.
+/// Latencies from all reporting nodes are pooled per time bucket. Values are
+/// milliseconds and approximate: rounded up to a latency-bucket edge, saturating
+/// at 120 s. Measurements that ended in SegmentShardRequestFailed(164),
+/// SegmentRequestFailed(175) or SegmentReconstructionFailed(169) are included,
+/// measured up to the failure; `failed_count` totals them across all sides of the
+/// bucket.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SegmentLatencyRow {
     pub ts: DateTime<Utc>,
@@ -1821,13 +1829,16 @@ pub struct SegmentLatencyRow {
 
 // ── /api/grafana/preimage-latency ───────────────────────────────────────
 
-/// Preimage transfer latency percentiles per time bucket.
+/// Preimage transfer latency percentiles for one time bucket.
 ///
 /// Tracks preimage (service blob) fetching. Two measurement sides:
-/// - **req** (side=0): Requestor round-trip: SendingPreimageRequest(193) → PreimageTransferred(198)
-/// - **resp** (side=1): Responder local work: ReceivingPreimageRequest(194) → PreimageTransferred(198)
+/// - **req**: Requestor round-trip: SendingPreimageRequest(193) → PreimageTransferred(198)
+/// - **resp**: Responder local work: ReceivingPreimageRequest(194) → PreimageTransferred(198)
 ///
-/// **Data source:** `preimage_latency_hist` hypertable.
+/// Latencies from all reporting nodes are pooled per time bucket. Values are
+/// milliseconds and approximate: rounded up to a latency-bucket edge, saturating
+/// at 120 s. Transfers that ended in PreimageRequestFailed(195) are included,
+/// measured up to the failure, and counted in `failed_count`.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PreimageLatencyRow {
     pub ts: DateTime<Utc>,

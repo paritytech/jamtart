@@ -181,7 +181,7 @@ use crate::onchain_types::*;
     )),
     tags(
         (name = "grafana", description = "Grafana dashboard API — time-series, aggregates, and metadata"),
-        (name = "onchain", description = "On-chain statistics API — per-block data from JAM RPC statistics()")
+        (name = "onchain", description = "On-chain statistics API — the chain's own per-block activity statistics for cores, services and validators")
     )
 )]
 pub struct GrafanaApiDoc;
@@ -341,7 +341,8 @@ pub struct EventTypesParams {
     pub group: Option<String>,
 }
 
-/// Parameters for raw events query with optional filtering and pagination.
+/// Parameters for browsing individual telemetry events, with optional filtering
+/// and pagination.
 #[derive(Deserialize, IntoParams)]
 pub struct EventsQuery {
     /// Start of time range (ISO 8601)
@@ -356,9 +357,9 @@ pub struct EventsQuery {
     pub offset: Option<i64>,
     /// Filter to a single node_id
     pub node: Option<String>,
-    /// Filter to a single core index (uses hot column)
+    /// Filter to a single core index
     pub core: Option<i16>,
-    /// Filter to a single work package hash (hex-encoded, uses hot column)
+    /// Filter to a single work package hash (hex-encoded, with or without `0x`)
     pub wp_hash: Option<String>,
 }
 
@@ -384,7 +385,7 @@ pub struct AssuranceConvergenceSendersQuery {
     pub anchor: Option<String>,
     /// Filter to a single sender node_id
     pub node: Option<String>,
-    /// Bucket width for histogram mode. When present, returns percentile timeseries from merged histograms instead of per-sender rows.
+    /// Bucket width. When present, the response becomes one percentile row per bucket instead of one row per sender, and the anchor filter is ignored.
     pub interval: Option<String>,
 }
 
@@ -453,8 +454,8 @@ pub struct ValidatorProfilingTimeseriesQuery {
     /// Filter to a single core index
     pub core: Option<i16>,
     /// Filter to a single node (hex-encoded 32-byte public key). When provided,
-    /// returns per-bucket timeseries for that node only. When omitted, returns
-    /// top ~20 slowest nodes.
+    /// returns every bucket for that guarantor only. When omitted, returns the 20
+    /// guarantors with the highest average total pipeline duration over the range.
     pub node: Option<String>,
 }
 
@@ -485,25 +486,35 @@ fn parse_node_list(s: &str) -> Vec<String> {
 
 // ── Handlers ───────────────────────────────────────────────────────────
 
-/// Time-series event counts with automatic aggregate table selection.
+/// Telemetry event counts over time, grouped by event type, core or node.
 ///
-/// Queries TimescaleDB continuous aggregates, auto-selecting by interval:
-/// `event_stats_30s` (< 60 s), `event_stats_1m` (< 1 h), `event_stats_1h` (>= 1 h),
-/// or `core_stats_1m` when `group_by=core`. Aggregation uses
-/// `time_bucket(interval, bucket)` with `SUM(event_count)`.
+/// One row per time bucket and group value. Exactly one of `event_type`, `core`
+/// or `node_id` is populated, following the `group_by` parameter (default
+/// `event_type`; also accepts `core` and `node_id`/`node`). Counts are
+/// pre-aggregated and the bucket resolution is chosen from the interval: 30 s
+/// for intervals below one minute, 1 min below one hour, 1 h from there on;
+/// core grouping and the `core` filter always read 1-minute resolution.
+/// Requesting a finer interval than the available resolution adds no detail,
+/// and older ranges only have coarser resolution left — from roughly 3 days
+/// back the finest is 1 min, from roughly 30 days back 1 h. Interval values
+/// outside the supported set (6 s up to 1 d) snap to the nearest supported one.
 ///
-/// Exactly one grouping column is populated per row — `event_type`, `core`, or
-/// `node_id` — depending on the `group_by` parameter (default: `event_type`).
-/// Event type IDs follow the JIP-3 telemetry specification; the `event_types`
-/// parameter accepts numeric codes, group names (e.g. `wp_pipeline`), or event
-/// names, and supports Grafana `{a,b}` multi-select syntax.
+/// The `event_types` parameter takes a comma-separated mix of numeric JIP-3
+/// event IDs, canonical event names such as `Authored`, and event group names
+/// (the `wp_pipeline` group, for instance), with Grafana `{a,b}` multi-select
+/// syntax; entries it does not recognise are ignored. The `node` filter has no
+/// effect once `group_by=core` or a `core` filter is in play, since only
+/// core-attributed events are counted there.
+///
+/// Answers: how did telemetry volume develop over the range, and which event
+/// types, cores or nodes account for it?
 #[utoipa::path(
     get,
     path = "/api/grafana/timeseries",
     params(TimeseriesQuery),
     responses(
-        (status = 200, description = "Time-bucketed event counts", body = [TimeseriesRow]),
-        (status = 400, description = "Invalid interval or group_by"),
+        (status = 200, description = "Array of rows, one per time bucket and group value, ascending by bucket, each with the bucket start, the event count and the single populated grouping field.", body = [TimeseriesRow]),
+        (status = 400, description = "`group_by` is not one of `event_type`, `core`, `node_id`"),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -534,22 +545,29 @@ async fn timeseries(
         .map_err(|e| map_sqlx_error("grafana/timeseries", e))
 }
 
-/// Dashboard summary counters for the given time range.
+/// Headline network counters for a dashboard summary row.
 ///
-/// Database counters from `event_stats_1m`: slot events (BlockAuthored, type 42),
-/// guarantees (GuaranteeBuilt, 105), failures (WorkPackageFailed, 92), WP events
-/// (WorkPackageReceived, 94). Connected nodes from the `nodes` table.
-/// Event type IDs as defined in JIP-3.
+/// Over the requested range: how many GuaranteeBuilt(105), WorkPackageFailed(92)
+/// and WorkPackageReceived(94) reports arrived, plus `slot_events` — the largest
+/// number of Authored(42) reports seen in any single minute of the range, so the
+/// busiest minute of block authoring rather than a total.
 ///
-/// Real-time fields are overlaid from in-memory `LiveCounters`: events/blocks per
-/// second (10 s rolling average), best and finalized slot numbers, and active TCP
-/// connection count. These fields are absent when the metrics tracker is disabled.
+/// The remaining fields describe the present moment and ignore the time range:
+/// how many nodes are currently connected to the telemetry collector, telemetry
+/// events and BestBlockChanged(11) reports per second over the last 10 s, the
+/// highest slot numbers seen in BestBlockChanged(11) and
+/// FinalizedBlockChanged(12) reports so far, and the number of open node
+/// connections. Everything except the connected-node count is absent when live
+/// metrics collection is switched off.
+///
+/// Answers: is the network alive right now, and how much block, guarantee and
+/// work-package activity did the range see?
 #[utoipa::path(
     get,
     path = "/api/grafana/stats",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Dashboard stats", body = StatsResponse),
+        (status = 200, description = "Single object with the range's authoring, guarantee, failure and work-package counters plus the live rate, slot and connection fields when available.", body = StatsResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -579,17 +597,24 @@ async fn stats(
     Ok(Json(result))
 }
 
-/// Per-core activity summary: work packages, guarantees, and failures.
+/// Per-core work-package activity: receptions, guarantees and failures.
 ///
-/// Queries `core_stats_1m` continuous aggregate using `SUM(event_count) FILTER`
-/// for three event types as defined in JIP-3: WorkPackageReceived (94),
-/// GuaranteeBuilt (105), WorkPackageFailed (92). Grouped by core index.
+/// One row per core that saw any core-attributed activity in the range, counting
+/// WorkPackageReceived(94), GuaranteeBuilt(105) and WorkPackageFailed(92). These
+/// are event counts, not distinct work packages — every guarantor of a work
+/// package reports its own reception and guarantee, so one work package
+/// contributes once per guarantor. `last_activity` is the newest work package
+/// first observed on the core since the range start and is not capped at the
+/// range end.
+///
+/// Answers: which cores are carrying work-package load, and where are work
+/// packages failing?
 #[utoipa::path(
     get,
     path = "/api/grafana/cores",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Per-core summary", body = [CoreSummary]),
+        (status = 200, description = "Array of per-core rows, ascending by core index, each with the core's work-package reception, guarantee and failure counts plus its last observed work-package activity.", body = [CoreSummary]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -606,13 +631,17 @@ async fn cores_summary(
         .map_err(|e| map_sqlx_error("grafana/cores", e))
 }
 
-/// Single core detail with recent work packages from the enricher pipeline.
+/// One core's work-package activity, with its most recent work-package timelines.
 ///
-/// Returns the same summary counters as `/cores` (from `core_stats_1m`) plus
-/// the 100 most recent work packages from `wp_tracking` for this core. The
-/// `wp_tracking` table is populated by the enricher, which correlates WP
-/// pipeline events (types 90–109 as defined in JIP-3) across nodes, tracking
-/// each work package from submission through distribution or failure.
+/// The same counters as `/cores` for this core — WorkPackageReceived(94),
+/// GuaranteeBuilt(105) and WorkPackageFailed(92) event counts — plus up to 100
+/// work packages first observed on the core in the range, newest first, each with
+/// its pipeline timeline from reception through guarantee distribution or failure.
+/// A core with no activity in the range comes back with zero counters and an empty
+/// list.
+///
+/// Answers: what is this one core doing, and how far did its most recent work
+/// packages get?
 #[utoipa::path(
     get,
     path = "/api/grafana/cores/{core_id}",
@@ -621,7 +650,7 @@ async fn cores_summary(
         TimeRangeQuery,
     ),
     responses(
-        (status = 200, description = "Core detail with recent WPs", body = CoreDetail),
+        (status = 200, description = "Single object with the core's activity counters and up to 100 of its recent work-package pipeline timelines, newest first.", body = CoreDetail),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -639,20 +668,27 @@ async fn core_detail(
         .map_err(|e| map_sqlx_error("grafana/cores/detail", e))
 }
 
-/// Block propagation convergence percentiles per slot.
+/// How fast a newly authored block reaches the rest of the network, per slot.
 ///
-/// Reads the `slot_convergence` table, populated by the enricher which measures
-/// the time between block authoring on the author node and reception across all
-/// other nodes. Returns pre-computed p50, p99, and p100 propagation delays in
-/// milliseconds, along with the node count that reported each event type.
-/// Use the `event_type` filter to select BestBlock (11), Finalized (12), or
-/// Importing (43) convergence — event types as defined in JIP-3.
+/// One row per slot and per block event. Every offset is measured from
+/// Authored(42) on the block's author to the same slot's event on each other
+/// node, and the offsets of all reporting nodes are pooled before the
+/// percentiles are taken, so they are percentiles over nodes. The `event_type`
+/// filter picks which step to look at — BestBlockChanged(11),
+/// FinalizedBlockChanged(12), Authoring(40), Authored(42) or Importing(43);
+/// without it every step observed for the slot is returned. Authoring(40) and
+/// Authored(42) come from the author itself, so their offsets sit at or below
+/// zero. A slot whose author never reported Authored(42) has no rows at all,
+/// and a slot's rows keep being refined while late reports for it arrive.
+///
+/// Answers: how quickly does a new block propagate across the network, and in
+/// which slots does propagation degrade?
 #[utoipa::path(
     get,
     path = "/api/grafana/blocks/convergence",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Convergence percentiles per slot", body = [BlockConvergenceRow]),
+        (status = 200, description = "Array of per-slot rows, ascending by slot and then by event type, each carrying the propagation-offset percentiles across the nodes that reported that block event for the slot.", body = [BlockConvergenceRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -669,18 +705,22 @@ async fn blocks_convergence(
         .map_err(|e| map_sqlx_error("grafana/blocks/convergence", e))
 }
 
-/// Block contents extracted from BlockAuthored events.
+/// What each authored block contained, one row per authored block.
 ///
-/// Queries the raw `events` hypertable for BlockAuthored events (type 42 as
-/// defined in JIP-3), extracting extrinsic breakdown from the JSONB `data`
-/// column via `data->'Authored'->'outline'` — counts of guarantees, assurances,
-/// preimages, tickets, dispute verdicts, and total extrinsic size in bytes.
+/// Each row is one Authored(42) report from the node that authored the block:
+/// the slot, the author, and the block outline it reported — how many
+/// guarantees, assurances, preimages, tickets and dispute verdicts the block
+/// carried, plus the block's size in bytes. Built from recent raw events, which
+/// are retained for about an hour, so older parts of a range come back empty.
+///
+/// Answers: how full are the blocks being authored, and which extrinsic types
+/// are actually making it on chain?
 #[utoipa::path(
     get,
     path = "/api/grafana/blocks/contents",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Block contents per slot", body = [BlockContentsRow]),
+        (status = 200, description = "Array of rows, one per authored block, ascending by slot, each with the author and the per-extrinsic-type counts from the block outline. Only covers the ~1 hour raw-event retention window.", body = [BlockContentsRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -697,21 +737,28 @@ async fn blocks_contents(
         .map_err(|e| map_sqlx_error("grafana/blocks/contents", e))
 }
 
-/// Per-service activity and gas usage totals.
+/// What each service did in the range, and the gas it spent doing it.
 ///
-/// Queries `service_stats_1m` continuous aggregate (rollup of `event_services`
-/// join table). Counts and gas are computed via `SUM FILTER` for event types
-/// as defined in JIP-3: WorkPackageReceived (94), Authorized (95),
-/// Refined (101), BlockExecuted (47). Service IDs are hex-encoded in the
-/// response (JAM uses u32 service IDs, stored as signed i32 in PostgreSQL).
-/// The `service` parameter accepts decimal or `0x` hex IDs with Grafana
-/// `{a,b}` multi-select syntax.
+/// One row per service that any node attributed work to. The counters are
+/// event attributions, not distinct work packages or blocks: a service is
+/// counted once for every WorkPackageReceived(94), Authorized(95),
+/// Refined(101) and BlockExecuted(47) report that names it, and since each
+/// guarantor and each node executing a block reports for itself, one work
+/// package or block contributes once per reporting node. The gas figures are
+/// the reported costs of the service's own code — the is-authorized call for
+/// Authorized(95), the per-work-item refine calls for Refined(101) and the
+/// per-service accumulate calls for BlockExecuted(47). Service IDs come back
+/// zero-padded hex; the `service` filter accepts decimal or `0x` hex IDs and
+/// Grafana `{a,b}` multi-select syntax.
+///
+/// Answers: which services are consuming the network's compute, and how much
+/// gas does each spend on authorization, refinement and accumulation?
 #[utoipa::path(
     get,
     path = "/api/grafana/services",
     params(ServiceQuery),
     responses(
-        (status = 200, description = "Per-service totals", body = [ServiceRow]),
+        (status = 200, description = "Array with one row per service, ascending by service ID, each with the service's work-package, authorization, refinement and accumulation counters and the gas consumed in each of the three phases.", body = [ServiceRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -729,19 +776,27 @@ async fn services(
         .map_err(|e| map_sqlx_error("grafana/services", e))
 }
 
-/// Time-bucketed per-service metrics (WP counts and gas usage).
+/// Per-service work-package load and gas usage over time.
 ///
-/// Same `service_stats_1m` aggregate as `/services`, re-bucketed via
-/// `time_bucket()` to the requested interval (default 1 m). Returns per-bucket
-/// work package counts and gas consumed split by type: authorization (95),
-/// refinement (101), execution (47) — event types as defined in JIP-3.
-/// Service IDs are hex-encoded. Supports Grafana `{a,b}` multi-select.
+/// The same per-service attribution as `/services`, split into buckets of the
+/// requested `interval` (default 1 minute, snapped to the nearest supported
+/// width from 6s up to 1d). Each bucket carries the WorkPackageReceived(94)
+/// count for the service and the gas its code used in each phase —
+/// Authorized(95) for authorization, Refined(101) for refinement,
+/// BlockExecuted(47) for accumulation. The counts behind it have one-minute
+/// resolution, so 1 minute is the finest interval that carries real detail;
+/// shorter buckets land everything on the minute boundaries. Service IDs come
+/// back zero-padded hex and the `service` filter takes Grafana `{a,b}`
+/// multi-select syntax.
+///
+/// Answers: how does each service's work-package load and gas consumption
+/// evolve over time?
 #[utoipa::path(
     get,
     path = "/api/grafana/services/timeseries",
     params(ServiceTimeseriesQuery),
     responses(
-        (status = 200, description = "Service time-series", body = [ServiceTimeseriesRow]),
+        (status = 200, description = "Array of rows, one per time bucket and service, ascending by bucket and then service ID, each with the bucket's work-package count and its authorization, refinement and accumulation gas.", body = [ServiceTimeseriesRow]),
         (status = 400, description = "Invalid interval"),
         (status = 500, description = "Database error"),
     ),
@@ -762,18 +817,24 @@ async fn services_timeseries(
         .map_err(|e| map_sqlx_error("grafana/services/timeseries", e))
 }
 
-/// All known nodes with metadata.
+/// Every node that has ever reported telemetry, with its identity and current session state.
 ///
-/// Returns every node that has ever connected, from the `nodes` table (updated
-/// on TCP connect/disconnect and status events). Sorted by `is_connected DESC,
-/// last_seen_at DESC` (connected nodes first). `total_event_count` is the sum
-/// of the current-session counter and the historical total across reconnects.
-/// No time range required.
+/// One row per node, whether or not it is still reporting. The connection state
+/// (`is_connected`, `connected_at`, `disconnected_at`, `last_seen_at`) describes the
+/// node's telemetry session with this collector, not its JAM peer connections — for
+/// those see `/connections-timeline`. Identity, implementation and protocol
+/// parameters come from the JIP-3 node information message sent at handshake, and
+/// `total_event_count` covers every event the node has reported across all of its
+/// sessions. Nodes currently reporting come first, then the most recently heard from.
+/// Takes no time range: the answer is always the present state.
+///
+/// Answers: which nodes are reporting right now, what software are they running,
+/// and when was each one last heard from?
 #[utoipa::path(
     get,
     path = "/api/grafana/nodes",
     responses(
-        (status = 200, description = "All known nodes", body = [NodeRow]),
+        (status = 200, description = "Array with one row per known node, the ones currently reporting first and then the most recently seen, each with the node's identity, implementation, session timestamps and lifetime event count.", body = [NodeRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -787,19 +848,25 @@ async fn nodes(State(state): State<ApiState>) -> Result<impl IntoResponse, Statu
         .map_err(|e| map_sqlx_error("grafana/nodes", e))
 }
 
-/// Raw node status rows at ~2 s granularity.
+/// Individual node status snapshots, exactly as reported in Status(10).
 ///
-/// Reads the `node_stats` hypertable directly (not an aggregate). Each row is
-/// inserted from a Status event (type 10, as defined in JIP-3) that nodes send
-/// periodically. Contains peer counts, DA shard/preimage storage metrics, and
-/// guarantee distribution across cores. The `node` parameter accepts a
-/// comma-separated list with Grafana `{a,b}` multi-select syntax.
+/// One row per Status(10) event. Nodes emit one roughly every 2 seconds, so an
+/// unfiltered query over a wide range returns a great many rows — use
+/// `/node-stats-aggregate` when a trend is enough. Each row carries the reporting
+/// node's peer counts, its availability-store shard holdings and preimage pool, and
+/// how many guarantees its guarantee pool held per core, summarised as the minimum,
+/// maximum and mean across cores plus the number of cores holding none. The `node`
+/// parameter accepts a comma-separated list with Grafana `{a,b}` multi-select
+/// syntax; without it, every reporting node is included.
+///
+/// Answers: what did a specific node's peer count, availability-store occupancy and
+/// guarantee pool look like at each moment?
 #[utoipa::path(
     get,
     path = "/api/grafana/node-stats",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Raw node status snapshots", body = [NodeStatsRow]),
+        (status = 200, description = "Array of one row per Status(10) report in the range, ascending by time, each with the reporting node's peer counts, shard and preimage holdings and per-core guarantee-pool summary.", body = [NodeStatsRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -817,19 +884,26 @@ async fn node_stats(
         .map_err(|e| map_sqlx_error("grafana/node-stats", e))
 }
 
-/// 1-minute aggregated node stats from `node_stats_1m`.
+/// Node status metrics from Status(10), condensed into 1-minute buckets.
 ///
-/// Without a node filter, returns **network-wide** aggregates per 1-minute
-/// bucket: AVG/MIN/MAX across all nodes for each metric (peers, shards,
-/// preimages, guarantees). With a node filter, returns per-node aggregate
-/// rows. The `node` parameter accepts comma-separated IDs with Grafana
-/// `{a,b}` multi-select syntax.
+/// The same measurements as `/node-stats`, pre-aggregated to one row per minute so
+/// that long ranges stay cheap. Without a `node` filter each row is network-wide:
+/// the mean of the per-node means, and the lowest and highest value any reporting
+/// node showed in that minute. With a `node` filter each row is one node in one
+/// minute. `status_count` is how many Status(10) reports went into the row, which
+/// distinguishes a fully reported minute from a partial one. One minute is the
+/// finest resolution available here — use `/node-stats` for individual reports. The
+/// `node` parameter accepts comma-separated IDs with Grafana `{a,b}` multi-select
+/// syntax.
+///
+/// Answers: how are peer counts, availability-store occupancy and guarantee-pool
+/// depth trending, network-wide or for particular nodes?
 #[utoipa::path(
     get,
     path = "/api/grafana/node-stats-aggregate",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Aggregated node stats (network-wide or per-node)", body = [NodeStatsAggregateRow]),
+        (status = 200, description = "Array of rows, one per minute bucket network-wide, or one per minute and node when a node filter is given, ascending by time, each with mean/lowest/highest peer, shard, preimage and guarantee-pool figures and the number of Status(10) reports behind them.", body = [NodeStatsAggregateRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -847,18 +921,24 @@ async fn node_stats_aggregate(
         .map_err(|e| map_sqlx_error("grafana/node-stats-aggregate", e))
 }
 
-/// TimescaleDB internal metadata: table sizes, row counts, compression.
+/// Storage state of the telemetry collector itself — an operational endpoint.
 ///
-/// Queries three TimescaleDB internal functions: `hypertable_detailed_size()`
-/// for table/index/toast byte breakdown, `approximate_row_count()` for fast
-/// row estimates on hypertables (exact `COUNT(*)` for smaller tables like
-/// `wp_tracking`, `slot_convergence`, `nodes`), and `chunk_compression_stats()`
-/// for compression ratios. No parameters required.
+/// Reports jam-tart's own TimescaleDB state for running the collector; it says
+/// nothing about the JAM network. For a fixed set of tables it returns the byte
+/// breakdown (total, table, index, toast) from `hypertable_detailed_size()`, row
+/// counts — estimated via `approximate_row_count()` on the hypertables, exact on
+/// the small tables such as `wp_tracking`, `slot_convergence` and `nodes` — and
+/// the chunk compression totals before and after compression, from
+/// `chunk_compression_stats()`, for the raw event and node status hypertables.
+/// It takes no parameters and always describes the current state.
+///
+/// Answers: how much storage is the collector using, and is compression keeping
+/// up?
 #[utoipa::path(
     get,
     path = "/api/grafana/db-stats",
     responses(
-        (status = 200, description = "TimescaleDB metadata", body = DbStatsResponse),
+        (status = 200, description = "Single object with per-table byte sizes, row counts and compression figures for the collector's own storage.", body = DbStatsResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -872,21 +952,27 @@ async fn db_stats(State(state): State<ApiState>) -> Result<impl IntoResponse, St
         .map_err(|e| map_sqlx_error("grafana/db-stats", e))
 }
 
-/// Work package pipeline bottleneck analysis with percentile timings.
+/// Where time goes inside the guarantor work-package pipeline.
 ///
-/// Queries `wp_tracking` table using `percentile_cont(0.5)` and
-/// `percentile_cont(0.95)` on the inter-stage timestamp deltas for each
-/// pipeline stage: authorize (received→authorized), refine (authorized→refined),
-/// report (refined→report_built), guarantee (report_built→guarantee_built),
-/// distribute (guarantee_built→distributed), and pipeline_total
-/// (received→distributed or last_updated). Failure rate is the ratio of WPs
-/// with `failed_at IS NOT NULL`. Optional `core` filter narrows to a single core.
+/// Median and 95th-percentile durations of each stage a work package passes
+/// through on its guarantors: authorize (WorkPackageReceived(94) →
+/// Authorized(95)), refine (→ Refined(101)), report (→ WorkReportBuilt(102)),
+/// guarantee (→ GuaranteeBuilt(105)), distribute (→ GuaranteesDistributed(109)),
+/// plus the total from reception to distribution. Work packages are selected by
+/// when they were first observed anywhere in the network; one that never reached
+/// distribution contributes the time up to its last observed pipeline event.
+/// `failure_rate` is the share of them for which a WorkPackageFailed(92) was
+/// reported. The optional `core` filter narrows to the work packages assigned to
+/// one core.
+///
+/// Answers: which pipeline stage dominates work-package latency, and how often do
+/// work packages fail outright?
 #[utoipa::path(
     get,
     path = "/api/grafana/bottlenecks",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Pipeline bottleneck analysis", body = [BottlenecksResponse]),
+        (status = 200, description = "Array holding a single object: per-stage median and p95 durations in milliseconds, the number of work packages considered, how many of them failed, and the resulting failure rate.", body = [BottlenecksResponse]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -903,19 +989,24 @@ async fn bottlenecks(
         .map_err(|e| map_sqlx_error("grafana/bottlenecks", e))
 }
 
-/// Work package pipeline funnel — counts how many WPs reached each stage.
+/// How many work packages reached each stage of the guarantor pipeline.
 ///
-/// Queries `wp_tracking` with `COUNT(*) FILTER (WHERE stage_timestamp IS NOT NULL)`
-/// for each pipeline stage: received, authorized, refined, report_built,
-/// guarantee_built, distributed, and failed. A WP counted as "distributed" has
-/// successfully completed the entire pipeline. "failed" counts WPs with
-/// `failed_at` set at any stage.
+/// Counts over the work packages first observed in the range: received
+/// (WorkPackageReceived(94)), authorized (Authorized(95)), refined (Refined(101)),
+/// report_built (WorkReportBuilt(102)), guarantee_built (GuaranteeBuilt(105)),
+/// distributed (GuaranteesDistributed(109)) and failed (WorkPackageFailed(92)).
+/// A work package counts towards a stage as soon as any of its guarantors reported
+/// that stage, so the gap between two consecutive counts is the number that
+/// stopped progressing there. `distributed` means the primary guarantor finished
+/// sending the guarantee out.
+///
+/// Answers: at which pipeline stage do work packages get stuck or lost?
 #[utoipa::path(
     get,
     path = "/api/grafana/wp-funnel",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Pipeline funnel counts", body = WpFunnelResponse),
+        (status = 200, description = "Single object with one work-package count per pipeline stage for the whole range.", body = WpFunnelResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -932,17 +1023,22 @@ async fn wp_funnel(
         .map_err(|e| map_sqlx_error("grafana/wp-funnel", e))
 }
 
-/// Guarantee convergence overview — per-slot summary.
+/// How fast guarantees reach the validator set, summarised per slot.
 ///
-/// Aggregates all guarantees per slot: flattens received_timestamps across all
-/// work_report_hashes for a slot and computes true cross-core percentiles of
-/// (GuaranteeReceived - GuaranteeBuilt) propagation latency. One row per slot.
+/// One row per slot. The latency measured is GuaranteeBuilt(105) on the
+/// guarantor until GuaranteeReceived(112) on each validator that received the
+/// guarantee. Latencies for every guarantee built in the slot are pooled before
+/// the percentiles are taken, so they are true cross-core percentiles and not an
+/// average of per-guarantee ones.
+///
+/// Answers: how quickly does a guarantee propagate to the rest of the validator
+/// set, and in which slots does propagation degrade?
 #[utoipa::path(
     get,
     path = "/api/grafana/guarantee-convergence",
     params(ConvergenceQuery),
     responses(
-        (status = 200, description = "Per-slot guarantee convergence (one row per slot, ASC). Without interval: per-slot rows from guarantee_convergence_slots. With interval: percentile timeseries from merged histograms.", body = [GuaranteeConvergenceSlotRow]),
+        (status = 200, description = "Array of per-slot rows, ascending by slot, each carrying the propagation-latency percentiles for that slot. With `interval`: one row per time bucket instead, with percentiles taken over the latencies of all guarantees in the bucket.", body = [GuaranteeConvergenceSlotRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -968,17 +1064,22 @@ async fn guarantee_convergence(
     }
 }
 
-/// Guarantee convergence detail — per-guarantee rows for drill-down.
+/// Per-work-report guarantee propagation — drill-down behind the per-slot summary.
 ///
-/// Returns one row per work_report_hash, filtered by optional core or wp_hash.
-/// Each row shows how quickly GuaranteeReceived(112) propagated across the
-/// validator network after GuaranteeBuilt(105).
+/// One row per work report, identified by its work-report hash. Each row names
+/// the guarantor that emitted GuaranteeBuilt(105) and the core the report was
+/// built for, and gives the spread of latencies until GuaranteeReceived(112) on
+/// the validators that received it. Optional `core` and `wp_hash` filters narrow
+/// the drill-down.
+///
+/// Answers: which individual guarantees propagated slowly, and which guarantor
+/// and core produced them?
 #[utoipa::path(
     get,
     path = "/api/grafana/guarantee-convergence/detail",
     params(GuaranteeConvergenceDetailQuery),
     responses(
-        (status = 200, description = "Per-guarantee drill-down (one row per work_report_hash, by slot ASC). GuaranteeBuilt(105) → GuaranteeReceived(112) propagation latency. Optional core/wp_hash filters. Source: guarantee_convergence table.", body = [GuaranteeConvergenceDetailRow]),
+        (status = 200, description = "Array of rows, one per work report, ascending by slot, each with its guarantor, core and GuaranteeBuilt(105) → GuaranteeReceived(112) latency percentiles. Narrowed by the optional core and work-package-hash filters.", body = [GuaranteeConvergenceDetailRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -996,21 +1097,25 @@ async fn guarantee_convergence_detail(
         .map_err(|e| map_sqlx_error("grafana/guarantee-convergence/detail", e))
 }
 
-/// Assurance convergence overview — per-anchor summary.
+/// How fast assurances reach the validator set, summarised per assurance anchor.
 ///
-/// Each row represents one block anchor, showing how quickly assurances
-/// from all senders propagated to receiving validators. Also includes
-/// distribution start spread (how quickly validators begin distributing).
+/// One row per anchor — the header hash of the block an availability statement
+/// refers to. Reception latency runs from DistributingAssurance(126) on a sender
+/// to AssuranceReceived(131) on each validator that received that sender's
+/// assurance; the latencies of every sender for the anchor are pooled before the
+/// percentiles are taken. A second set of percentiles gives the distribution
+/// start spread — how much later the remaining validators began distributing for
+/// this anchor than the first one did. Assurances only count towards
+/// availability while the report is still pending, a 5-slot (30 s) window.
 ///
-/// Anchor: DistributingAssurance(126) per sender.
-/// Measured: AssuranceReceived(131) on receiving validators.
-/// Availability window: 5 slots (30 seconds).
+/// Answers: do assurances for a block reach the validator set well inside the
+/// 5-slot availability window, and which anchors converge slowly?
 #[utoipa::path(
     get,
     path = "/api/grafana/assurance-convergence",
     params(ConvergenceQuery),
     responses(
-        (status = 200, description = "Per-anchor assurance convergence. Without interval: per-anchor rows from assurance_convergence. With interval: percentile timeseries from merged histograms.", body = [AssuranceConvergenceRow]),
+        (status = 200, description = "Array of per-anchor rows, ascending by slot, each with the pooled DistributingAssurance(126) → AssuranceReceived(131) percentiles and the distribution start spread for that anchor. With `interval`: one row per time bucket instead, with percentiles over the latencies of all assurances in the bucket (approximate, latency-histogram based).", body = [AssuranceConvergenceRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1036,16 +1141,22 @@ async fn assurance_convergence(
     }
 }
 
-/// Assurance convergence per-sender detail — for debugging individual node propagation.
+/// Per-sender assurance propagation — drill-down behind the per-anchor summary.
 ///
-/// Returns one row per (anchor, sender), showing how quickly this sender's
-/// assurance reached other validators. Filter by anchor or node for drill-down.
+/// One row per (anchor, sender): the validator that emitted
+/// DistributingAssurance(126) for that anchor, how many validators received its
+/// assurance, and the spread of latencies until AssuranceReceived(131) on them.
+/// Optional `anchor` and `node` filters isolate a single block or a single
+/// suspect validator.
+///
+/// Answers: which validator's assurances propagate slowly, and to how many of
+/// its peers?
 #[utoipa::path(
     get,
     path = "/api/grafana/assurance-convergence/senders",
     params(AssuranceConvergenceSendersQuery),
     responses(
-        (status = 200, description = "Per-sender assurance detail. Without interval: per-sender rows. With interval: percentile timeseries from merged histograms. Optional anchor/node filters.", body = [AssuranceConvergenceSenderRow]),
+        (status = 200, description = "Array of rows, one per anchor and sender, ascending by the time that sender started distributing, each with its receiving-validator count and DistributingAssurance(126) → AssuranceReceived(131) latency percentiles. With `interval`: one row per time bucket instead, with percentiles over all sender latencies in the bucket, and the anchor filter no longer applies.", body = [AssuranceConvergenceSenderRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1077,20 +1188,27 @@ async fn assurance_convergence_senders(
     }
 }
 
-/// Per-node DA operational stats — shard event counts, latency averages,
-/// shard inventory. Aggregated over the requested time range.
+/// Per-node data-availability activity: shard request counts, average shard
+/// latency and shard inventory over the requested time range.
 ///
-/// Replaces the disabled `get_da_stats_enhanced` legacy endpoint.
-/// Events tracked: SendingShardRequest(120), ReceivingShardRequest(121),
-/// ShardRequestFailed(122), ShardRequestSent(123), ShardRequestReceived(124),
-/// ShardsTransferred(125), PreimageAnnouncementFailed(190),
-/// PreimageAnnounced(191), AnnouncedPreimageForgotten(192).
+/// One row per node, totalled over the range. Shard work is counted from both
+/// ends: requests the node made as an assurer fetching its shards
+/// (SendingShardRequest(120), ShardRequestSent(123), ShardsTransferred(125)) and
+/// requests it took in as a guarantor holding them (ReceivingShardRequest(121),
+/// ShardRequestReceived(124)), alongside failures (ShardRequestFailed(122)) and
+/// preimage announcement activity (PreimageAnnouncementFailed(190),
+/// PreimageAnnounced(191), AnnouncedPreimageForgotten(192)). The two average
+/// latencies cover the same two perspectives and include requests that ended in
+/// failure, measured up to the failure.
+///
+/// Answers: which nodes carry the data-availability load, and which are slow or
+/// failing at serving shards?
 #[utoipa::path(
     get,
     path = "/api/grafana/da-stats",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Per-node DA operational stats (one row per node, ordered by shards_transferred DESC). SUMmed event counts, weighted AVG latency, MAX active shards. Source: da_node_stats hypertable.", body = [DaStatsRow]),
+        (status = 200, description = "Array of per-node rows, busiest shard transferrer first, each with its shard and preimage event totals, sample-weighted average latency per perspective in milliseconds, and peak distinct-shard count.", body = [DaStatsRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1107,21 +1225,26 @@ async fn da_stats(
         .map_err(|e| map_sqlx_error("grafana/da-stats", e))
 }
 
-/// Shard latency timeseries — approximate percentiles from merged histograms.
+/// Shard transfer latency percentiles over time, seen from both ends of the
+/// transfer.
 ///
-/// Latency measured from two perspectives:
-/// - Assurer round-trip: SendingShardRequest(120) → ShardsTransferred(125)
-/// - Guarantor processing: ReceivingShardRequest(121) → ShardRequestReceived(124)
+/// One row per time bucket, with the two perspectives measured separately: the
+/// assurer's round-trip from SendingShardRequest(120) to ShardsTransferred(125),
+/// and the guarantor's time to take the request in, ReceivingShardRequest(121) to
+/// ShardRequestReceived(124). Latencies from all reporting nodes are pooled per
+/// bucket, so the percentiles are network-wide and approximate: values are
+/// rounded up to a latency-bucket edge and saturate at 5 s. Requests that ended
+/// in ShardRequestFailed(122) are included, measured up to the failure, and also
+/// reported as a separate count.
 ///
-/// Histograms (14 buckets, ms: 0-1-2-5-10-25-50-100-250-500-1000-2000-3000-5000-∞)
-/// are merged across nodes per time bucket. Percentiles are interpolated
-/// from the cumulative distribution.
+/// Answers: is shard fetching slow because assurers are waiting on the network,
+/// or because guarantors are slow to serve their shards?
 #[utoipa::path(
     get,
     path = "/api/grafana/shard-latency",
     params(WpTimeseriesQuery),
     responses(
-        (status = 200, description = "Shard latency percentile timeseries (one row per time bucket). Assurer round-trip (120→125) + guarantor processing (121→124). Approximate p50/p95/p99/p100 interpolated from merged 14-bucket histograms. Source: shard_latency_hist hypertable.", body = [ShardLatencyRow]),
+        (status = 200, description = "Array of rows, one per time bucket, each with approximate p50/p75/p95/p99/p100 latencies in milliseconds for the assurer round-trip and the guarantor request-intake side, their sample counts, and how many measurements ended in failure.", body = [ShardLatencyRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1139,16 +1262,27 @@ async fn shard_latency(
         .map_err(|e| map_sqlx_error("grafana/shard-latency", e))
 }
 
-/// Bundle reconstruction latency percentiles over time.
+/// Audit bundle recovery latency percentiles over time.
 ///
-/// Tracks audit data recovery across six measurement sides — see BundleLatencyRow for details.
-/// Histograms (23-bucket CONVERGENCE_BOUNDS, 0–120s) merged across nodes per time bucket.
+/// One row per time bucket. Auditors fetch erasure-coded shards from assurers
+/// and reconstruct the original work-package bundle; each leg of that recovery is
+/// reported separately — requesting and serving shards
+/// (SendingBundleShardRequest(140) / ReceivingBundleShardRequest(141) →
+/// BundleShardTransferred(145)), requesting and serving a whole bundle
+/// (SendingBundleRequest(148) / ReceivingBundleRequest(149) →
+/// BundleTransferred(153)), local reconstruction (ReconstructingBundle(146) →
+/// BundleReconstructed(147)) and end-to-end recovery per audit. Latencies from
+/// all reporting nodes are pooled per bucket; see BundleLatencyRow for the exact
+/// event pairing behind each field.
+///
+/// Answers: how long does recovering an audit bundle take, and which leg of the
+/// recovery dominates?
 #[utoipa::path(
     get,
     path = "/api/grafana/bundle-latency",
     params(WpTimeseriesQuery),
     responses(
-        (status = 200, description = "Bundle reconstruction latency timeseries. Shard req/resp, full req/resp, reconstruction CPU, and e2e recovery percentiles.", body = [BundleLatencyRow]),
+        (status = 200, description = "Array of rows, one per time bucket, each with approximate percentiles in milliseconds for shard request and serve, full-bundle request and serve, reconstruction and end-to-end recovery, their sample counts, and how many measurements ended in failure.", body = [BundleLatencyRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1166,16 +1300,26 @@ async fn bundle_latency(
         .map_err(|e| map_sqlx_error("grafana/bundle-latency", e))
 }
 
-/// Segment fetching latency percentiles over time.
+/// Import segment fetching latency percentiles over time.
 ///
-/// Tracks import segment fetching during WP processing — see SegmentLatencyRow for details.
-/// Slow segments directly delay the WP pipeline (fetched before refinement).
+/// One row per time bucket. A guarantor fetches a work package's import segments
+/// before refinement, so these latencies sit directly in the work-package
+/// pipeline. Each leg is reported separately — requesting and serving segment
+/// shards (SendingSegmentShardRequest(162) / ReceivingSegmentShardRequest(163) →
+/// SegmentShardsTransferred(167)), requesting and serving whole segments
+/// (SendingSegmentRequest(173) / ReceivingSegmentRequest(174) →
+/// SegmentsTransferred(178)) and local reconstruction
+/// (ReconstructingSegments(168) → SegmentsReconstructed(170)). Latencies from all
+/// reporting nodes are pooled per bucket.
+///
+/// Answers: is import segment fetching delaying refinement, and is the delay in
+/// the network or in reconstruction?
 #[utoipa::path(
     get,
     path = "/api/grafana/segment-latency",
     params(WpTimeseriesQuery),
     responses(
-        (status = 200, description = "Segment fetching latency timeseries. Shard req/resp, full req/resp, and reconstruction CPU percentiles.", body = [SegmentLatencyRow]),
+        (status = 200, description = "Array of rows, one per time bucket, each with approximate percentiles in milliseconds for segment shard request and serve, whole-segment request and serve, and reconstruction, their sample counts, and how many measurements ended in failure.", body = [SegmentLatencyRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1195,13 +1339,19 @@ async fn segment_latency(
 
 /// Preimage transfer latency percentiles over time.
 ///
-/// Tracks preimage (service blob) fetching — see PreimageLatencyRow for details.
+/// One row per time bucket, split by role: the requestor's round-trip from
+/// SendingPreimageRequest(193) to PreimageTransferred(198), and the responder's
+/// local handling from ReceivingPreimageRequest(194) to PreimageTransferred(198).
+/// Latencies from all reporting nodes are pooled per bucket.
+///
+/// Answers: how quickly do nodes obtain the preimages a service needs, and is a
+/// slow transfer the requestor's or the responder's problem?
 #[utoipa::path(
     get,
     path = "/api/grafana/preimage-latency",
     params(WpTimeseriesQuery),
     responses(
-        (status = 200, description = "Preimage transfer latency timeseries. Requestor and responder percentiles.", body = [PreimageLatencyRow]),
+        (status = 200, description = "Array of rows, one per time bucket, each with approximate requestor-side and responder-side percentiles in milliseconds, their sample counts, and how many transfers ended in failure.", body = [PreimageLatencyRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1219,17 +1369,22 @@ async fn preimage_latency(
         .map_err(|e| map_sqlx_error("grafana/preimage-latency", e))
 }
 
-/// Work package pipeline funnel bucketed over time.
+/// Work-package pipeline funnel over time, one row per time bucket.
 ///
-/// Same data as `/wp-funnel` but bucketed by `time_bucket` on `first_seen`.
-/// Each row contains per-stage counts for WPs whose `first_seen` falls in
-/// that bucket. Optional `core` filter narrows to a single core.
+/// The same per-stage counts as `/wp-funnel` — WorkPackageReceived(94),
+/// Authorized(95), Refined(101), WorkReportBuilt(102), GuaranteeBuilt(105),
+/// GuaranteesDistributed(109) and WorkPackageFailed(92) — with each work package
+/// attributed to the bucket in which it was first observed, so its later stages
+/// are counted in that same bucket even if they happened afterwards. The optional
+/// `core` filter narrows to one core.
+///
+/// Answers: when did the pipeline start losing work packages, and at which stage?
 #[utoipa::path(
     get,
     path = "/api/grafana/wp-funnel-timeseries",
     params(WpTimeseriesQuery),
     responses(
-        (status = 200, description = "Pipeline stage counts per time bucket (one row per bucket, ASC). Per-stage COUNT of WPs reaching each stage. Optional core filter. Source: wp_tracking table, time_bucket on first_seen.", body = [WpFunnelTimeseriesRow]),
+        (status = 200, description = "Array of rows, one per time bucket in ascending order, each with the per-stage work-package counts for that bucket. Narrowed by the optional core filter.", body = [WpFunnelTimeseriesRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1247,18 +1402,22 @@ async fn wp_funnel_timeseries(
         .map_err(|e| map_sqlx_error("grafana/wp-funnel-timeseries", e))
 }
 
-/// Work package pipeline bottleneck analysis bucketed over time.
+/// Per-stage work-package pipeline durations over time, one row per time bucket.
 ///
-/// Same data as `/bottlenecks` but bucketed by `time_bucket` on `first_seen`.
-/// Per bucket: `percentile_cont(0.5)` and `percentile_cont(0.95)` on
-/// inter-stage timestamp deltas for each pipeline stage. Optional `core`
-/// filter narrows to a single core.
+/// The same stage measurements as `/bottlenecks` — authorize
+/// (WorkPackageReceived(94) → Authorized(95)) through distribute
+/// (GuaranteeBuilt(105) → GuaranteesDistributed(109)), plus the total from
+/// reception to distribution — with each work package attributed to the bucket in
+/// which it was first observed. A stage's percentiles are null in buckets where no
+/// work package reached that stage. The optional `core` filter narrows to one core.
+///
+/// Answers: when did a pipeline stage start slowing down, and which one?
 #[utoipa::path(
     get,
     path = "/api/grafana/bottlenecks-timeseries",
     params(WpTimeseriesQuery),
     responses(
-        (status = 200, description = "Pipeline bottleneck percentiles per time bucket (one row per bucket). percentile_cont(0.5/0.95) on inter-stage deltas. Only WPs with received_at IS NOT NULL. Optional core filter. Source: wp_tracking.", body = [BottlenecksTimeseriesRow]),
+        (status = 200, description = "Array of rows, one per time bucket in ascending order, each with the per-stage median and p95 durations in milliseconds plus the bucket's work-package and failure counts. Narrowed by the optional core filter.", body = [BottlenecksTimeseriesRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1276,35 +1435,35 @@ async fn bottlenecks_timeseries(
         .map_err(|e| map_sqlx_error("grafana/bottlenecks-timeseries", e))
 }
 
-/// Per-guarantor pipeline performance — which guarantors are slow or failing?
+/// Per-guarantor work-package pipeline performance.
 ///
-/// Profiles the guarantor-side work-package pipeline: from receiving a WP
-/// through authorization, refinement, report building, guarantee building,
-/// to distribution. All stages execute on the same guarantor node. Only WPs
-/// that completed the pipeline (distributed or failed) are included —
-/// in-flight WPs are excluded.
+/// One row per guarantor, over the work packages first observed in the range that
+/// finished — reached GuaranteesDistributed(109) or WorkPackageFailed(92); ones
+/// still in flight are left out. Each stage average is the duration between two
+/// consecutive pipeline stages (WorkPackageReceived(94) → Authorized(95) →
+/// Refined(101) → WorkReportBuilt(102) → GuaranteeBuilt(105) →
+/// GuaranteesDistributed(109)) in milliseconds, taken only over the work packages
+/// that did get distributed, while `failure_rate` covers every finished one.
+/// `slowdown_factor` is the guarantor's average total divided by
+/// `network_avg_total_ms`, itself the unweighted mean of the per-guarantor
+/// averages; above roughly 1.5 the guarantor is an outlier. `core` narrows to the
+/// work packages on one core, `sort` picks slowest-first (default) or
+/// fastest-first, and `limit` truncates after sorting.
 ///
-/// | Pipeline stage  | Source event              | Type ID | Ordinal | wp_tracking column    |
-/// |-----------------|---------------------------|---------|---------|-----------------------|
-/// | Received        | WorkPackageReceived       | 94      | 0       | `received_at`         |
-/// | Authorized      | WorkPackageAuthorized     | 95      | 1       | `authorized_at`       |
-/// | Refined         | Refined                   | 101     | 2       | `refined_at`          |
-/// | Report built    | WorkReportBuilt           | 102     | 3       | `report_built_at`     |
-/// | Guarantee built | GuaranteeBuilt            | 105     | 4       | `guarantee_built_at`  |
-/// | Distributed     | GuaranteesDistributed     | 109     | 5       | `distributed_at`      |
-/// | Failed          | WorkPackageFailed         | 92      | —       | `failed_at`           |
+/// **Caveat:** a work package is attributed to the guarantor that first reported
+/// WorkPackageReceived(94) for it, but every later stage timestamp is the earliest
+/// report from *any* of its guarantors. A row therefore measures the fastest
+/// observed progress of that guarantor's work packages, which can blend several
+/// guarantors, rather than that one node's own processing.
 ///
-/// `node_id` identifies the guarantor — set from WorkPackageReceived (94).
-/// All subsequent stages execute on the same node.
-///
-/// `slowdown_factor` = `node_avg_total_ms / network_avg_total_ms` (>1.5 = underperformer).
-/// Guarantors rotate across cores, so `core` is an optional drill-down filter.
+/// Answers: which guarantors are slow or failing compared with the rest of the
+/// network?
 #[utoipa::path(
     get,
     path = "/api/grafana/validator-profiling",
     params(ValidatorProfilingQuery),
     responses(
-        (status = 200, description = "Per-guarantor pipeline performance. `nodes` sorted by avg_total_ms (slowest first by default). Only guarantors with completed WPs (distributed or failed) are included. `network_avg_total_ms` reflects all completed guarantors regardless of `limit`.", body = ValidatorProfilingResponse),
+        (status = 200, description = "Single object with the network-wide average total pipeline duration and the per-guarantor rows, sorted by average total duration, slowest first unless `sort=asc`. The network average always reflects every guarantor with finished work packages, not just the rows returned under `limit`.", body = ValidatorProfilingResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1322,21 +1481,29 @@ async fn validator_profiling(
         .map_err(|e| map_sqlx_error("grafana/validator-profiling", e))
 }
 
-/// Per-guarantor pipeline performance over time.
+/// Per-guarantor work-package pipeline performance over time.
 ///
-/// Time-bucketed variant of `/api/grafana/validator-profiling`. Same guarantor
-/// pipeline stages (see that endpoint's docs for the full event→column mapping).
-/// Results are grouped by `time_bucket(interval, first_seen)` and `node_id`.
+/// The time-bucketed form of `/validator-profiling`: one row per bucket and
+/// guarantor, with each work package placed in the bucket in which it was first
+/// observed. `wp_count` here counts every work package attributed to that
+/// guarantor in the bucket, including ones still in flight, while the stage
+/// averages (WorkPackageReceived(94) → Authorized(95) → Refined(101) →
+/// WorkReportBuilt(102) → GuaranteeBuilt(105) → GuaranteesDistributed(109)) cover
+/// only those that reached distribution. With `node` set, every bucket for that
+/// one guarantor is returned; without it, the 20 guarantors with the highest
+/// average total duration over the whole range are chosen once and all their
+/// buckets returned, so the same nodes appear throughout.
 ///
-/// When `node` is provided, returns per-bucket averages for that single guarantor
-/// (suitable for sparklines / per-node detail charts). When omitted, returns
-/// only the top ~20 slowest guarantors per bucket to avoid 1024×N result explosion.
+/// The attribution caveat of `/validator-profiling` applies here too: stage
+/// timestamps are the earliest report from any of a work package's guarantors.
+///
+/// Answers: when did a guarantor start slowing down, and at which stage?
 #[utoipa::path(
     get,
     path = "/api/grafana/validator-profiling-timeseries",
     params(ValidatorProfilingTimeseriesQuery),
     responses(
-        (status = 200, description = "Per-guarantor pipeline performance per time bucket. When node is provided: one row per bucket for that guarantor. When omitted: top ~20 slowest guarantors per bucket.", body = [ValidatorProfilingTimeseriesRow]),
+        (status = 200, description = "Array of rows, one per time bucket and guarantor, ascending by bucket and then node, each with the bucket's work-package and failure counts and its per-stage average durations in milliseconds. With `node`: only that guarantor; without it: the 20 slowest guarantors over the whole range.", body = [ValidatorProfilingTimeseriesRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1354,19 +1521,29 @@ async fn validator_profiling_timeseries(
         .map_err(|e| map_sqlx_error("grafana/validator-profiling-timeseries", e))
 }
 
-/// Static metadata for all telemetry event types (as defined in JIP-3).
+/// Catalogue of the 115 JIP-3 telemetry event types this API understands.
 ///
-/// Returns in-memory metadata for all 115 event types — no database query.
-/// Each entry includes the numeric ID, human-readable name, and group. Use
-/// the `group` parameter to filter by group name (e.g. `blocks`, `wp_pipeline`,
-/// `failures`). The `failures` group is a virtual group spanning all
-/// Failed/Discarded/Duplicate events across categories.
+/// One entry per event type: its numeric ID as defined in JIP-3, its canonical
+/// name — `Authored` for 42, for instance — and the event group it belongs to.
+/// The event groups are `wp_pipeline`, `guarantee_receiving`, `assurances`,
+/// `shards`, `segments`, `bundles`, `preimages`, `blocks`,
+/// `block_distribution`, `tickets`, `connections`, `status` and `system`, plus
+/// the virtual group `failures`, which gathers every failure, discard and
+/// duplicate event from across the others. The `group` parameter narrows the
+/// listing to one of them.
+///
+/// The IDs, names and group names listed here are exactly the values that the
+/// `event_types` parameter of the other endpoints accepts. The catalogue is
+/// fixed and describes no observed traffic.
+///
+/// Answers: which telemetry event types exist, what are they called, and which
+/// group does each belong to?
 #[utoipa::path(
     get,
     path = "/api/grafana/event-types",
     params(EventTypesParams),
     responses(
-        (status = 200, description = "Event type metadata", body = [crate::event_type_meta::EventTypeMeta]),
+        (status = 200, description = "Array of event type entries — numeric ID, canonical name and event group — covering every type, or only the requested group.", body = [crate::event_type_meta::EventTypeMeta]),
     ),
     tag = "grafana"
 )]
@@ -1385,23 +1562,31 @@ async fn event_types(Query(params): Query<EventTypesParams>) -> impl IntoRespons
     }
 }
 
-/// Search raw events from `ingested_raw_events` with filtering and pagination.
+/// Individual telemetry events exactly as the nodes reported them, newest first.
 ///
-/// Returns events matching the given filters, ordered by timestamp DESC. All 115
-/// event types are browsable (1h retention after migration 020). Supports filtering
-/// by event type, node, core (hot column), and wp_hash (hot column). Returns
-/// paginated response with total count for UI pagination controls.
+/// Every one of the 115 JIP-3 event types is browsable here, each with the full
+/// payload the reporting node sent. Raw events are retained for about an hour,
+/// so a range reaching further back returns nothing for the older part. Filters
+/// narrow by event type, reporting node, core and work-package hash (hex, with
+/// or without `0x`); the core and work-package filters only match events whose
+/// core or work package could be determined.
 ///
-/// The `event_types` parameter is optional — if omitted, returns all types. When
-/// provided, accepts numeric IDs (as defined in JIP-3), group names (e.g.
-/// `wp_pipeline`, `failures`), or event names (e.g. `Authored`), expanded
-/// server-side via `expand_event_types()`.
+/// The `event_types` parameter is optional — omitted, every type is returned.
+/// It takes a comma-separated mix of numeric JIP-3 event IDs, canonical event
+/// names such as `Authored`, and event group names such as `wp_pipeline`, with
+/// Grafana `{a,b}` multi-select syntax; entries it does not recognise are
+/// ignored. Results are paginated: `limit` defaults to 500 and is capped at
+/// 2000, `offset` skips ahead, and the response reports how many events match
+/// in total.
+///
+/// Answers: what exactly did the nodes report in the last hour, for a given
+/// event type, node, core or work package?
 #[utoipa::path(
     get,
     path = "/api/grafana/events",
     params(EventsQuery),
     responses(
-        (status = 200, description = "Paginated event records with total count", body = EventsSearchResponse),
+        (status = 200, description = "Single object with one page of matching events, newest first, plus pagination metadata carrying the total number of matches.", body = EventsSearchResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1441,18 +1626,22 @@ async fn events(
         .map_err(|e| map_sqlx_error("grafana/events", e))
 }
 
-/// Time-bucketed guarantee discard counts grouped by reason.
+/// Guarantees dropped from validators' local guarantee pools over time, split by reason.
 ///
-/// Queries the pre-aggregated `guarantee_receiving_counts` table for
-/// GuaranteeDiscarded events (type 113), grouped by discard reason.
-/// Reasons are enum variants: PackageReportedOnChain(0), ReplacedByBetter(1),
-/// CannotReportOnChain(2), TooManyGuarantees(3), Other(4).
+/// Counts GuaranteeDiscarded(113) per time bucket and per reason. The reasons are
+/// the JIP-3 discard reasons: PackageReportedOnChain(0) — the work package was
+/// already reported on-chain, ReplacedByBetter(1), CannotReportOnChain(2),
+/// TooManyGuarantees(3), Other(4). Only reason 0 means the guarantee reached its
+/// intended end; the others mean guarantor work was thrown away.
+///
+/// Answers: why are guarantees leaving the pool without being reported on-chain,
+/// and is that getting worse over time?
 #[utoipa::path(
     get,
     path = "/api/grafana/guarantee-discards",
     params(GuaranteeDiscardsQuery),
     responses(
-        (status = 200, description = "Guarantee discards by reason", body = [GuaranteeDiscardRow]),
+        (status = 200, description = "Array of (bucket timestamp, discard reason, count) rows, ordered by bucket then reason; one row per reason seen in each bucket.", body = [GuaranteeDiscardRow]),
         (status = 400, description = "Invalid interval"),
         (status = 500, description = "Database error"),
     ),
@@ -1473,32 +1662,44 @@ async fn guarantee_discards(
 
 // ── Phase 3: New grafana endpoints ───────────────────────────────────────
 
-/// Network failure rates with per-category, per-node breakdown and recent failures.
+/// How often each part of the protocol is failing, network-wide, per node, and most recently.
 ///
-/// **Question answered:** "What's failing across the network, how badly, and where?"
+/// Six categories, each weighing the failures a node reported against the
+/// corresponding successes over the time range:
 ///
-/// **Data source:** `all_event_stats_1m` UNION view for aggregate counts.
-/// `ingested_raw_events` (1h retention) for recent failure details with reason
-/// text extracted from JSONB.
+/// - **block_authoring** — AuthoringFailed(41), BlockVerificationFailed(44),
+///   BlockExecutionFailed(46) against Authoring(40) and Authored(42)
+/// - **tickets** — TicketGenerationFailed(81), TicketTransferFailed(83) against
+///   GeneratingTickets(80), TicketsGenerated(82), TicketTransferred(84)
+/// - **work_packages** — WorkPackageFailed(92), WorkPackageSharingFailed(99) against
+///   WorkPackageReceived(94)
+/// - **guarantees** — GuaranteeSendFailed(107), GuaranteeReceiveFailed(111),
+///   GuaranteeDiscarded(113) against GuaranteeBuilt(105), GuaranteeSent(108),
+///   GuaranteesDistributed(109)
+/// - **shards** — ShardRequestFailed(122) against SendingShardRequest(120) and
+///   ShardsTransferred(125)
+/// - **assurances** — AssuranceSendFailed(127) against DistributingAssurance(126)
 ///
-/// **Categories and their failure event types (JIP-3):**
-/// - block_authoring: AuthoringFailed, BlockVerificationFailed, BlockExecutionFailed
-/// - tickets: TicketGenerationFailed, TicketTransferFailed
-/// - work_packages: WorkPackageFailed, WorkPackageSharingFailed
-/// - guarantees: GuaranteeSendFailed, GuaranteeReceiveFailed, GuaranteeDiscarded
-/// - shards: ShardRequestFailed
-/// - assurances: AssuranceSendFailed
+/// Each rate is failures over all events counted for the category, so it is a share
+/// of observed events, not of distinct protocol operations — one block or work
+/// package normally reports several events on its way through. `overall` pools the
+/// same failure events across all six categories, but its denominator leaves out
+/// TicketsGenerated(82) and TicketTransferred(84), so it is not exactly the sum of
+/// the per-category figures. `by_node` names the 20 nodes with the most failures.
+/// Note that GuaranteeDiscarded(113) counts as a failure here even though its most
+/// common reason is the work package already being reported on-chain — see
+/// `/guarantee-discards` for the reason split. `recent_failures` lists the last 20
+/// individual failure events from the last 5 minutes only, regardless of the
+/// requested range, since individual events are retained for about an hour.
 ///
-/// Each category's rate = failures / (successes + failures). Overall rate spans
-/// all categories. `by_node` returns the top 20 nodes by failure count.
-/// `recent_failures` returns the last 20 failure events from the past 5 minutes
-/// with reason text from JSONB and human-readable event name.
+/// Answers: what is failing across the network, in which part of the protocol, and
+/// on which nodes?
 #[utoipa::path(
     get,
     path = "/api/grafana/failure-rates",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Failure rates with breakdown", body = FailureRatesResponse),
+        (status = 200, description = "Single object with the pooled failure rate for the range, one entry per failure category, the 20 nodes with the most failures, and a short list of the most recent individual failure events.", body = FailureRatesResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1515,23 +1716,26 @@ async fn failure_rates(
         .map_err(|e| map_sqlx_error("grafana/failure-rates", e))
 }
 
-/// Network sync status over time — how many nodes are synced vs behind.
+/// How much of the network is keeping up with the chain tip, over time.
 ///
-/// **Question answered:** "Is the network in sync? Which nodes are falling behind?"
+/// One row per time bucket. Each node's highest best-block slot in the bucket
+/// comes from its BestBlockChanged(11) reports; `network_slot` is the highest
+/// slot any node reported, and a node counts as synced when its own best slot is
+/// within 2 slots (about 12 s) of it. Only nodes that reported
+/// BestBlockChanged(11) in the bucket are counted, so a node that stops
+/// reporting disappears from the row instead of showing up as behind. This is an
+/// observed measure and is independent of the node's own subjective
+/// SyncStatusChanged(13) flag. `interval` defaults to 5m and is snapped to a
+/// supported bucket width.
 ///
-/// **Data source:** `status_counts` table for BestBlockChanged events with
-/// `slot` dimension preserved in pre-aggregation.
-///
-/// **Algorithm:** For each time bucket, finds the network max slot (highest slot
-/// reported by any node). Nodes whose max slot is within 2 of the network max
-/// are considered "synced"; the rest are "behind." Returns per-bucket:
-/// total_nodes, synced_nodes, behind_nodes, sync_percentage, network_slot.
+/// Answers: is the network in sync, and how many nodes are lagging behind the
+/// chain tip?
 #[utoipa::path(
     get,
     path = "/api/grafana/sync-timeline",
     params(TimeseriesQuery),
     responses(
-        (status = 200, description = "Sync status timeline", body = [SyncTimelineRow]),
+        (status = 200, description = "Array of per-bucket rows, ascending by time, each with the highest best-block slot seen in the network and how many reporting nodes were at the tip versus behind it.", body = [SyncTimelineRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1549,23 +1753,27 @@ async fn sync_timeline(
         .map_err(|e| map_sqlx_error("grafana/sync-timeline", e))
 }
 
-/// Network connection activity over time.
+/// Peer connections established and dropped across the network, over time.
 ///
-/// **Question answered:** "How are node connections changing over time?"
+/// One row per time bucket, counting the peer links nodes reported completing —
+/// ConnectedIn(23) for inbound plus ConnectedOut(26) for outbound — against
+/// Disconnected(27), together with how many distinct nodes reported any of those
+/// three in the bucket. Attempts that never completed are not counted here:
+/// ConnectionRefused(20), ConnectingIn(21), ConnectInFailed(22), ConnectingOut(24)
+/// and ConnectOutFailed(25) are excluded. `health_stats` is not part of the
+/// timeline and ignores the time range — it is the current tally of nodes ever seen
+/// by telemetry and how many are reporting right now. `interval` defaults to 5m and
+/// snaps to a supported width; the underlying counts have 30-second resolution, so
+/// 30s is the finest interval that carries real detail.
 ///
-/// **Data source:** `all_event_stats_30s` for ConnectedIn, ConnectedOut, and
-/// Disconnected events. `nodes` table for overall health stats (maintained by
-/// batch_writer on connect/disconnect).
-///
-/// Timeline shows per-bucket: connections (ConnectedIn + ConnectedOut),
-/// disconnections (Disconnected), and active_nodes (distinct node_ids).
-/// Health stats show total_nodes_seen and currently_connected from the nodes table.
+/// Answers: is peer connectivity across the network stable, or are nodes churning
+/// connections?
 #[utoipa::path(
     get,
     path = "/api/grafana/connections-timeline",
     params(TimeseriesQuery),
     responses(
-        (status = 200, description = "Connection activity timeline", body = ConnectionsTimelineResponse),
+        (status = 200, description = "Single object with an array of per-bucket connection, disconnection and active-node counts ascending by time, plus a current, range-independent tally of known and reporting nodes.", body = ConnectionsTimelineResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1583,24 +1791,24 @@ async fn connections_timeline(
         .map_err(|e| map_sqlx_error("grafana/connections-timeline", e))
 }
 
-/// Guarantee pipeline totals and success rates.
+/// Network-wide guarantee counts for every stage of guarantee distribution, plus success rates.
 ///
-/// **Question answered:** "How many guarantees are being built, sent, received,
-/// and discarded across the network?"
+/// Counts each guaranteeing event over the time range: GuaranteeBuilt(105),
+/// SendingGuarantee(106), GuaranteeSendFailed(107), GuaranteeSent(108),
+/// GuaranteesDistributed(109) on the guarantor side, and ReceivingGuarantee(110),
+/// GuaranteeReceiveFailed(111), GuaranteeReceived(112), GuaranteeDiscarded(113)
+/// on the receiving side. Send success is GuaranteeSent(108) over all send
+/// attempts (106 + 107 + 108), receive success is GuaranteeReceived(112) over all
+/// receive attempts (110 + 111 + 112); both are 1.0 when there was no activity.
 ///
-/// **Data source:** `all_event_stats_1m` UNION view for all guarantee event types:
-/// GuaranteeBuilt, SendingGuarantee, GuaranteeSendFailed, GuaranteeSent,
-/// GuaranteesDistributed, ReceivingGuarantee, GuaranteeReceiveFailed,
-/// GuaranteeReceived, GuaranteeDiscarded.
-///
-/// Success rates: send = GuaranteeSent / (Sending + SendFailed + Sent),
-/// receive = GuaranteeReceived / (Receiving + ReceiveFailed + Received).
+/// Answers: how much guaranteeing traffic is the network carrying, and what
+/// fraction of guarantee transfers succeeds?
 #[utoipa::path(
     get,
     path = "/api/grafana/guarantees",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Guarantee totals and success rates", body = GuaranteesResponse),
+        (status = 200, description = "Single object with a per-event-type count block and a send/receive success-rate block for the whole time range.", body = GuaranteesResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1617,26 +1825,27 @@ async fn guarantees(
         .map_err(|e| map_sqlx_error("grafana/guarantees", e))
 }
 
-/// Per-guarantor breakdown with observed node→core mapping.
+/// Guaranteeing activity per guarantor node, with the cores each one was seen guaranteeing for.
 ///
-/// **Question answered:** "Which validators are building guarantees, for which cores,
-/// and how actively?"
+/// One row per node that emitted GuaranteeBuilt(105) in the time range, with how
+/// many guarantees it built, when it last built one, and the set of cores those
+/// guarantees were for. Nodes that built no guarantees do not appear. Guarantee
+/// propagation records are retained for 7 days, which bounds how far back the
+/// time range can reach.
 ///
-/// **Data source:** `guarantee_convergence` table for observed node→core mapping
-/// (builder_node_id + core, 90d retention). Groups by node_id, returns primary
-/// core (most guaranteed), all active cores, guarantee count, and last guarantee
-/// timestamp.
+/// **Caveat:** the node→core association is what was observed, not the protocol's
+/// validator→core assignment. JAM rotates core assignments every 10 slots and
+/// reshuffles them each epoch, so a node legitimately appears on several cores
+/// over any range longer than one rotation.
 ///
-/// **Caveat:** Node→core mapping reflects observed guarantee behavior, not
-/// protocol-level validator→core assignment. JAM rotates assignments every 10 slots
-/// and reshuffles per epoch. Telemetry does not transmit `validator_index` —
-/// there is no way to map node_id → validator_index without upstream JIP-3 changes.
+/// Answers: which nodes are actually guaranteeing, for which cores, and how
+/// evenly is guaranteeing work spread across them?
 #[utoipa::path(
     get,
     path = "/api/grafana/guarantees/by-guarantor",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Per-guarantor breakdown", body = GuarantorBreakdownResponse),
+        (status = 200, description = "Single object holding the guarantor count and an array of per-node rows, ordered by guarantees built, most active first.", body = GuarantorBreakdownResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1653,24 +1862,26 @@ async fn guarantees_by_guarantor(
         .map_err(|e| map_sqlx_error("grafana/guarantees/by-guarantor", e))
 }
 
-/// Work package pipeline summary — counts per stage, by core.
+/// Work-package pipeline totals for the range, with a per-core breakdown.
 ///
-/// **Question answered:** "How many work packages are at each pipeline stage?"
+/// `totals` combines two views. The stage counts say how many work packages
+/// reached each guarantor pipeline stage, from received (WorkPackageReceived(94))
+/// through distributed (GuaranteesDistributed(109)) and failed
+/// (WorkPackageFailed(92)). The pre-pipeline figures count the
+/// WorkPackageSubmission(90), WorkPackageBeingShared(91) and
+/// DuplicateWorkPackage(93) events reported by all nodes — these are event counts,
+/// not distinct work packages, and a duplicate is reported instead of a reception,
+/// so duplicates never appear in the stage counts. `by_core` counts the work
+/// packages first observed in the range per core they were assigned to.
 ///
-/// **Data source:** Two sources combined:
-/// - `wp_tracking` table for pipeline stage counts: received (WorkPackageReceived),
-///   authorized (Authorized), refined (Refined), report_built (WorkReportBuilt),
-///   guarantee_built (GuaranteeBuilt), distributed (GuaranteesDistributed),
-///   failed (WorkPackageFailed). Plus by-core breakdown.
-/// - `all_event_stats_1m` for pre-pipeline event counts: WorkPackageSubmission,
-///   WorkPackageBeingShared, DuplicateWorkPackage — these occur before the WP
-///   enters wp_tracking.
+/// Answers: how much work-package traffic did the network handle, how far did it
+/// get, and how is it spread across cores?
 #[utoipa::path(
     get,
     path = "/api/grafana/wp-stats",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "WP pipeline summary", body = WpStatsResponse),
+        (status = 200, description = "Single object with the pre-pipeline and per-stage totals for the range plus one count per core.", body = WpStatsResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1687,24 +1898,28 @@ async fn wp_stats(
         .map_err(|e| map_sqlx_error("grafana/wp-stats", e))
 }
 
-/// Node→core mapping based on observed guarantee behavior.
+/// Which core each guaranteeing node was seen working on.
 ///
-/// **Question answered:** "Which node is active on which core?"
+/// One row per node that emitted GuaranteeBuilt(105) in the range, with the total
+/// number of guarantees it built across all cores; a node that built none does not
+/// appear. `primary_core` names a single core even when the node guaranteed for
+/// several, so it is only meaningful over ranges shorter than one core rotation —
+/// use `/guarantees/by-guarantor` for a node's full core set, or
+/// `/cores/{core_id}/validators` for the view from one core. Guarantee propagation
+/// records are kept for 7 days, which bounds how far back the range can reach.
 ///
-/// **Data source:** `guarantee_convergence` table (builder_node_id + core, 90d
-/// retention). Returns primary core (most guarantees built) per node, plus total
-/// guarantee count. Shares `node_core_mapping()` helper with
-/// `/guarantees/by-guarantor`.
+/// **Caveat:** the node→core association is observed from guaranteeing behaviour,
+/// not the protocol's validator→core assignment. JAM rotates core assignments
+/// every 10 slots and reshuffles them each epoch, so a node legitimately shows up
+/// on several cores over any range longer than one rotation.
 ///
-/// **Caveat:** Reflects observed guarantee behavior, not protocol-level
-/// validator→core assignment. Nodes that haven't built any guarantees in the
-/// time range won't appear. See `/guarantees/by-guarantor` for the same caveat.
+/// Answers: which node is active on which core?
 #[utoipa::path(
     get,
     path = "/api/grafana/validators/cores",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Node to core mapping", body = [ValidatorCoreRow]),
+        (status = 200, description = "Array of one row per guaranteeing node, ordered by guarantees built with the most active first, each naming a core the node was seen guaranteeing for.", body = [ValidatorCoreRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1721,31 +1936,34 @@ async fn validators_cores(
         .map_err(|e| map_sqlx_error("grafana/validators/cores", e))
 }
 
-/// Multi-signal network health score with per-component breakdown.
+/// One network health score for the range, broken down into five protocol subsystems.
 ///
-/// **Question answered:** "Is the network healthy? Which subsystems are degraded?"
+/// Each component is a success share over the requested range, scored 0–100:
 ///
-/// **Data source:** `all_event_stats_1m` for event counts. `nodes` table for
-/// connectivity. Each component scored 0-100:
+/// - **block_production** — Authored(42) over Authored(42) plus AuthoringFailed(41),
+///   BlockVerificationFailed(44) and BlockExecutionFailed(46). Healthy at 95 and above.
+/// - **work_packages** — WorkPackageReceived(94) over that plus WorkPackageFailed(92)
+///   and WorkPackageSharingFailed(99). Healthy at 95 and above.
+/// - **data_availability** — ShardsTransferred(125) over that plus
+///   ShardRequestFailed(122). Healthy at 95 and above.
+/// - **connectivity** — the share of all nodes ever seen by telemetry that are
+///   reporting right now; this one ignores the time range. Healthy at 90 and above.
+/// - **event_throughput** — 100 if any of the above events arrived at all in the
+///   range, 0 if none did.
 ///
-/// - **block_production:** Authored / (Authored + AuthoringFailed +
-///   BlockVerificationFailed + BlockExecutionFailed). Healthy >= 95%.
-/// - **work_packages:** WorkPackageReceived / (Received + WorkPackageFailed +
-///   WorkPackageSharingFailed). Healthy >= 95%.
-/// - **data_availability:** ShardsTransferred / (Transferred + ShardRequestFailed).
-///   Healthy >= 95%.
-/// - **connectivity:** connected_nodes / total_nodes from `nodes` table.
-///   Healthy >= 90%.
-/// - **event_throughput:** non-zero total events = 100, zero = 0.
+/// A component with no activity at all scores 100 rather than 0, so an idle network
+/// looks healthy. The overall score is the plain mean of the five: healthy at 90 and
+/// above, degraded from 70, unhealthy below that. Only block_production raises
+/// alerts — a warning below 95 and an error below 80.
 ///
-/// Overall health_score = average of 5 component scores. Status: healthy >= 90,
-/// degraded >= 70, unhealthy < 70.
+/// Answers: is the network healthy overall, and which subsystem is dragging the
+/// score down?
 #[utoipa::path(
     get,
     path = "/api/grafana/network-health",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Network health score and breakdown", body = NetworkHealthResponse),
+        (status = 200, description = "Single object with the overall score and status label, one entry per health component, and any alerts raised.", body = NetworkHealthResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1764,24 +1982,28 @@ async fn network_health(
 
 // ── Phase 4: Moderate endpoints ──────────────────────────────────────────
 
-/// Recent work packages with pipeline health summary.
+/// Recent work packages, with a pipeline health summary of the whole range.
 ///
-/// **Question answered:** "What WPs have been processed recently, and what's the pipeline health?"
+/// `work_packages` lists the most recently started work packages of the range (at
+/// most 200, newest first), each with its stage timestamps from
+/// WorkPackageReceived(94) through GuaranteesDistributed(109), the gas its
+/// Refined(101) reported, how many guarantors received it and how many built a
+/// guarantee for it, and the reason from WorkPackageFailed(92) where one was
+/// reported. The summaries alongside cover every work package first observed in the
+/// range, not only the listed ones: `summary` counts the work packages whose
+/// furthest reached stage is each stage, so it shows where work stalled; `reached`
+/// counts those that ever reached each stage; `stage_duration_percentiles` gives
+/// per-stage median and p95 durations; `failure_breakdown` groups failures by
+/// reported reason.
 ///
-/// **Data source:** `wp_tracking` for the given time range (all WPs, not just
-/// in-flight — matches legacy `/api/workpackages/active` behavior). Returns WP list
-/// (max 200, ordered by first_seen DESC) plus aggregates: summary (per-stage counts),
-/// reached (cumulative funnel), stage_duration_percentiles (p50/p95 for each
-/// inter-stage transition), failure_breakdown (count per distinct failure_reason).
-///
-/// **Deliberately dropped stages:** included, available, superseded from legacy
-/// are not real pipeline stages — see migration plan deep-dive Section 8.
+/// Answers: which work packages ran recently, where are they stalling, and why are
+/// they failing?
 #[utoipa::path(
     get,
     path = "/api/grafana/wp-active",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Active work packages with pipeline health", body = WpActiveResponse),
+        (status = 200, description = "Single object with the recent work-package list and the range-wide stage counts, per-stage duration percentiles and failure-reason breakdown.", body = WpActiveResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1798,13 +2020,18 @@ async fn wp_active(
         .map_err(|e| map_sqlx_error("grafana/wp-active", e))
 }
 
-/// Work package detail — pipeline summary + raw event drilldown.
+/// Everything known about one work package, looked up by its hash.
 ///
-/// **Question answered:** "Full lifecycle detail for a specific work package."
+/// `summary` is that work package's pipeline timeline — the timestamps of
+/// WorkPackageReceived(94), Authorized(95), Refined(101), WorkReportBuilt(102),
+/// GuaranteeBuilt(105), GuaranteesDistributed(109) and WorkPackageFailed(92), the
+/// services it touched, and how many guarantors received and guaranteed it — and
+/// stays available long after the work package finished. `events` is the raw
+/// telemetry timeline for the same work package in emission order; raw events are
+/// retained for about an hour, so for older work packages this array is empty while
+/// the summary remains. The hash is hex-encoded, with or without a `0x` prefix.
 ///
-/// **Data source:** `wp_tracking` for pipeline summary (always available).
-/// `ingested_raw_events` via `wp_hash` hot column for full event list (1h
-/// retention — if WP is older than 1h, events array is empty but summary persists).
+/// Answers: what exactly happened to this one work package, and where did it stop?
 #[utoipa::path(
     get,
     path = "/api/grafana/wp/{wp_hash}",
@@ -1812,8 +2039,8 @@ async fn wp_active(
         ("wp_hash" = String, Path, description = "Work package hash (hex-encoded)")
     ),
     responses(
-        (status = 200, description = "WP detail with events", body = WpDetailResponse),
-        (status = 400, description = "Invalid hash"),
+        (status = 200, description = "Single object with the work package's pipeline timeline (null if the hash is unknown) and its raw event timeline, oldest event first.", body = WpDetailResponse),
+        (status = 400, description = "Work package hash is not valid hex"),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1833,16 +2060,23 @@ async fn wp_detail(
         .map_err(|e| map_sqlx_error("grafana/wp/{hash}", e))
 }
 
-/// Batch WP summary lookup by multiple hashes.
+/// Pipeline timelines for several work packages in one request.
 ///
-/// **Data source:** `wp_tracking WHERE wp_hash = ANY($1)`.
-/// Returns pipeline summary for each requested WP.
+/// The request body is a JSON array of hex-encoded work-package hashes, with or
+/// without `0x` prefixes. Each response row is one work package's pipeline
+/// timeline, the same summary `/wp/{wp_hash}` returns: the stage timestamps from
+/// WorkPackageReceived(94) through GuaranteesDistributed(109), WorkPackageFailed(92)
+/// where reported, and the guarantor counts. Hashes that are unknown or not valid
+/// hex are simply absent, so the response can be shorter than the request.
+///
+/// Answers: how far through the pipeline did each of these specific work packages
+/// get?
 #[utoipa::path(
     post,
     path = "/api/grafana/wp/batch",
     request_body = Vec<String>,
     responses(
-        (status = 200, description = "Batch WP summaries", body = [WpTrackingRow]),
+        (status = 200, description = "Array of pipeline timelines, one per work package that was found, newest first.", body = [WpTrackingRow]),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1867,19 +2101,26 @@ async fn wp_batch(
         .map_err(|e| map_sqlx_error("grafana/wp/batch", e))
 }
 
-/// Block production overview — totals, authoring by node.
+/// Block production and import health for the range, plus the current chain tips.
 ///
-/// **Question answered:** "What's the block production health?"
+/// `totals` counts the block lifecycle events reported by the whole network in
+/// the range: Authoring(40), AuthoringFailed(41), Authored(42), Importing(43),
+/// BlockVerificationFailed(44), BlockVerified(45), BlockExecutionFailed(46),
+/// BlockExecuted(47), plus BestBlockChanged(11) and FinalizedBlockChanged(12).
+/// Every node reports its own import of a block, so the import-side counts scale
+/// with the number of nodes, while `authored` is one per block. `chain` gives the
+/// current best and finalized slot as of the request, not over the range, and is
+/// null when live chain tracking is unavailable. `authoring_by_node` ranks the 50
+/// most active authors by Authored(42) count.
 ///
-/// **Data source:** `all_event_stats_1m` for block event totals (Authoring through
-/// BlockExecuted, BestBlockChanged, FinalizedBlockChanged). Per-node authoring
-/// counts from the same aggregate. Best/finalized slot from LiveCounters overlay.
+/// Answers: are blocks being produced, verified and executed successfully, and
+/// which nodes are authoring them?
 #[utoipa::path(
     get,
     path = "/api/grafana/blocks/summary",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Block production summary", body = BlocksSummaryResponse),
+        (status = 200, description = "Single object with the range-wide block-event totals, the current best and finalized slot, and the 50 most active authoring nodes.", body = BlocksSummaryResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1904,12 +2145,19 @@ async fn blocks_summary(
     Ok(Json(result))
 }
 
-/// Core performance metrics — efficiency, latency, throughput, gas.
+/// One core's work-package throughput, latency and gas usage.
 ///
-/// **Question answered:** "How is this core performing?"
+/// `processing_efficiency_pct` is the share of Refined(101) among Refined(101)
+/// plus WorkPackageFailed(92) reports on the core, and is 100 when neither was
+/// reported. The latency percentiles run from WorkPackageReceived(94) to
+/// GuaranteesDistributed(109) over the work packages first observed on this core in
+/// the range, falling back to the last pipeline event seen for ones that never got
+/// distributed, whereas `average_completion_time_ms` averages only the ones that
+/// did. `total_gas_used` sums the refine gas reported in Refined(101), and
+/// `work_packages_processed` counts WorkPackageReceived(94) reports, one per
+/// guarantor.
 ///
-/// **Data source:** `all_core_stats_1m` for event counts (processing efficiency).
-/// `wp_tracking` for pipeline latency percentiles and gas totals.
+/// Answers: is this core keeping up, and is it slow, failing or gas-heavy?
 #[utoipa::path(
     get,
     path = "/api/grafana/cores/{core_id}/metrics",
@@ -1918,7 +2166,7 @@ async fn blocks_summary(
         TimeRangeQuery,
     ),
     responses(
-        (status = 200, description = "Core performance metrics", body = CoreMetricsResponse),
+        (status = 200, description = "Single object with this core's processing efficiency, pipeline latency percentiles, average completion time, refine gas total and work-package reception count.", body = CoreMetricsResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1936,17 +2184,22 @@ async fn core_metrics(
         .map_err(|e| map_sqlx_error("grafana/cores/{id}/metrics", e))
 }
 
-/// Per-core validator (guarantor) list with node metadata.
+/// Which nodes built guarantees for one core, and what software they run.
 ///
-/// **Question answered:** "Which validators are active guarantors for this core?"
+/// One row per node that emitted GuaranteeBuilt(105) for this core in the range,
+/// with how many guarantees it built, when it last built one, and the node's
+/// implementation name, version and current connection state. A validator assigned
+/// to the core that never built a guarantee does not appear, and `total_active`
+/// counts only the nodes that did. Guarantee propagation records are kept for
+/// 7 days, which bounds how far back the range can reach. Per-guarantor data
+/// availability figures come from `/da-stats?node=…` instead.
 ///
-/// **Data source:** `guarantee_convergence` table filtered by core, JOINed with
-/// `nodes` table for implementation details. Only includes validators who actually
-/// built guarantees — inactive validators don't appear. Shares `node_core_mapping()`
-/// infrastructure.
+/// **Caveat:** this is the observed guarantor set, not the protocol's
+/// validator→core assignment. JAM rotates core assignments every 10 slots and
+/// reshuffles them each epoch, so over a longer range more nodes appear here than
+/// are assigned to the core at any one time.
 ///
-/// Also replaces legacy `/api/cores/{id}/guarantors` and `/guarantors/enhanced`.
-/// DA metrics per guarantor available separately from `/api/grafana/da-stats?node=X`.
+/// Answers: which nodes are actually guaranteeing for this core?
 #[utoipa::path(
     get,
     path = "/api/grafana/cores/{core_id}/validators",
@@ -1955,7 +2208,7 @@ async fn core_metrics(
         TimeRangeQuery,
     ),
     responses(
-        (status = 200, description = "Validators active on this core", body = CoreValidatorsResponse),
+        (status = 200, description = "Single object with the core index, how many nodes built guarantees for it, and the per-node rows ordered by guarantees built with the most active first.", body = CoreValidatorsResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -1975,24 +2228,27 @@ async fn core_validators(
 
 // ── Phase 5: Hard rewrites ──────────────────────────────────────────────
 
-/// Execution performance metrics — gas and timing per processing phase.
+/// Gas and execution time for each of the three service-execution phases.
 ///
-/// **Question answered:** "How much gas and time does each execution phase use?"
+/// The phases are the three points where service code actually runs: the
+/// is-authorized call of a work package, reported by Authorized(95); the
+/// refine call of each work item, reported by Refined(101); and the
+/// accumulate call of each service touched by a block, reported by
+/// BlockExecuted(47). Each phase gives how many executions were reported,
+/// their total and mean gas, and the mean wall-clock and code-load times.
+/// `by_service` splits the same numbers per service and phase, highest gas
+/// first. Guarantors and block-executing nodes report independently, so an
+/// execution is counted once per reporting node rather than once per work
+/// package or block. Only about the last week of executions is kept.
 ///
-/// **Data source:** `event_services` table (7-day retention) with pre-extracted
-/// gas and timing columns from three event types:
-/// - Authorized (type 95): `is_authorized` PVM call cost
-/// - Refined (type 101): per-item `refine` PVM call costs
-/// - BlockExecuted (type 47): per-service `accumulate` PVM call costs
-///
-/// Per-service gas/timing breakdown available for all three phases.
-/// Each `by_service` entry includes a `phase` field.
+/// Answers: which execution phase and which services dominate gas usage and
+/// execution time?
 #[utoipa::path(
     get,
     path = "/api/grafana/execution",
     params(TimeRangeQuery),
     responses(
-        (status = 200, description = "Execution performance by phase", body = ExecutionMetricsResponse),
+        (status = 200, description = "Single object with a gas and timing summary for each of the authorization, refinement and accumulation phases, plus the 50 highest-gas service-and-phase combinations.", body = ExecutionMetricsResponse),
         (status = 500, description = "Database error"),
     ),
     tag = "grafana"
@@ -2083,17 +2339,28 @@ pub struct OnchainServiceTimeseriesQuery {
 
 // ── On-chain cores ──────────────────────────────────────────────────────
 
-/// Per-core on-chain activity summary (all 341 cores).
+/// What each core did on chain over a time range, one row per core.
 ///
-/// Fields from Gray Paper `CoreActivityRecord`, SUMmed over range except
-/// popularity (AVG). Data source: `onchain_core_stats` hypertable.
+/// The JAM chain keeps per-core activity statistics in every block: the gas
+/// consumed by the work reported on the core, the segments its work items
+/// imported and exported, the extrinsics they referenced, the work-bundle bytes
+/// and the total bytes the core placed into data availability, and how many
+/// validators assured the core. Those are per-block figures in the protocol, so
+/// each row adds them up over every block of the range — `popularity_avg`
+/// excepted, which is a mean. Statistics are read from the chain once per block,
+/// blocks that later lost to a fork are left out, and history reaches back
+/// 90 days.
+///
+/// Answers: how is reported work spread across cores, and which cores carry the
+/// most gas and data-availability load?
 #[utoipa::path(
     get,
     path = "/api/grafana/onchain/cores",
     params(OnchainTimeRangeQuery),
     responses(
-        (status = 200, description = "Per-core on-chain activity summary (all 341 cores). \
-            Fields from Gray Paper CoreActivityRecord, SUMmed over range except popularity (AVG).",
+        (status = 200, description = "Array with one row per core, ascending by core index, \
+            each totalling the core's gas, imports, exports, extrinsic and data-availability \
+            figures over the range, plus its mean assurance popularity.",
             body = [OnchainCoreSummary]),
         (status = 500, description = "Database error"),
     ),
@@ -2111,23 +2378,25 @@ async fn onchain_cores_summary(
         .map_err(|e| map_sqlx_error("onchain/cores", e))
 }
 
-/// Time-bucketed on-chain core stats.
+/// Per-core on-chain activity over time.
 ///
-/// Without `core` filter: network-wide aggregate — one row per time bucket
-/// with SUMmed fields across all cores (AVG for popularity).
+/// The same per-block core statistics as `/onchain/cores`, split into buckets of
+/// the requested `interval` (default 1 minute; widths outside the supported set
+/// are snapped up to the nearest supported one, between 6 s — one slot — and
+/// 1 day). Without a `core` filter each row covers all cores together, with
+/// popularity averaged; with one, each row covers that single core and carries
+/// its index.
 ///
-/// With `core` filter: per-core timeseries — one row per time bucket for
-/// the specified core.
-///
-/// Data source: `onchain_core_stats` with `time_bucket()` aggregation.
+/// Answers: how does core load develop over time, and when did gas or
+/// data-availability usage spike?
 #[utoipa::path(
     get,
     path = "/api/grafana/onchain/cores/timeseries",
     params(OnchainCoreTimeseriesQuery),
     responses(
-        (status = 200, description = "Without core filter: network-wide aggregate — one row \
-            per time bucket with SUMmed fields across all cores. \
-            With core filter: per-core timeseries for the specified core.",
+        (status = 200, description = "Array of rows ascending by bucket: without the core \
+            filter, one row per bucket covering all cores together; with it, one row per bucket \
+            for the requested core.",
             body = [OnchainCoreTimeseriesAgg]),
         (status = 400, description = "Invalid interval"),
         (status = 500, description = "Database error"),
@@ -2156,20 +2425,25 @@ async fn onchain_cores_timeseries(
     }
 }
 
-/// Raw per-block on-chain stats for a single core.
+/// One core's on-chain activity block by block.
 ///
-/// No aggregation — each row is one block. Max 1000 rows, newest first.
-/// Data source: `onchain_core_stats` filtered by core.
+/// One row per block in which the chain reported statistics for this core,
+/// newest first, capped at 1000 rows and never aggregated — each row is what the
+/// core did in that single block: gas, imports, exports, extrinsics, work-bundle
+/// bytes, bytes placed into data availability, and the number of validators
+/// assuring it.
+///
+/// Answers: what exactly did this core do in each recent block?
 #[utoipa::path(
     get,
     path = "/api/grafana/onchain/cores/{core_id}",
     params(
-        ("core_id" = i16, Path, description = "Core index (0–340)"),
+        ("core_id" = i16, Path, description = "Core index (0-based)"),
         OnchainTimeRangeQuery,
     ),
     responses(
-        (status = 200, description = "Raw per-block on-chain stats for a single core. \
-            No aggregation — each row is one block. Max 1000 rows, newest first.",
+        (status = 200, description = "Array of per-block rows for this core, newest first, \
+            at most 1000 rows.",
             body = [OnchainCoreDetail]),
         (status = 500, description = "Database error"),
     ),
@@ -2190,19 +2464,28 @@ async fn onchain_core_detail(
 
 // ── On-chain services ───────────────────────────────────────────────────
 
-/// Per-service on-chain activity summary.
+/// What each service did on chain over a time range, one row per service.
 ///
-/// Only services with non-zero activity are returned.
-/// Fields from Gray Paper `ServiceActivityRecord`, all SUMmed.
-/// Data source: `onchain_service_stats` hypertable.
+/// The JAM chain keeps per-service activity statistics in every block: preimages
+/// provided to the service and their total size, work items refined for it and
+/// the refinement gas they used, work items accumulated and the accumulation gas,
+/// the segments its work items imported and exported, and the extrinsics they
+/// referenced. Those are per-block figures, so each row adds them up over the
+/// range, and only services that were active somewhere in the range appear. The
+/// `service` filter takes decimal or 0x-hex service IDs and Grafana `{a,b}`
+/// multi-select syntax. Statistics are read from the chain once per block, blocks
+/// that later lost to a fork are left out, and history reaches back 90 days.
+///
+/// Answers: which services are consuming the network's gas and
+/// data-availability capacity?
 #[utoipa::path(
     get,
     path = "/api/grafana/onchain/services",
     params(OnchainServiceQuery),
     responses(
-        (status = 200, description = "Per-service on-chain activity summary. \
-            Only services with non-zero activity are returned. \
-            Fields from Gray Paper ServiceActivityRecord, all SUMmed.",
+        (status = 200, description = "Array with one row per service that was active in the \
+            range, ascending by service ID, each totalling its preimage, refinement, \
+            accumulation, segment and extrinsic figures.",
             body = [OnchainServiceSummary]),
         (status = 500, description = "Database error"),
     ),
@@ -2221,15 +2504,25 @@ async fn onchain_services_summary(
         .map_err(|e| map_sqlx_error("onchain/services", e))
 }
 
-/// Time-bucketed per-service on-chain stats.
+/// Per-service on-chain activity over time.
 ///
-/// Data source: `onchain_service_stats` with `time_bucket()` aggregation.
+/// The same per-block service statistics as `/onchain/services`, split into
+/// buckets of the requested `interval` (default 1 minute; unsupported widths are
+/// snapped up to the nearest supported one, between 6 s — one slot — and 1 day).
+/// One row per bucket and service; without a `service` filter every service
+/// active in the bucket is returned, so the response grows with the number of
+/// active services.
+///
+/// Answers: how do a service's refinement and accumulation gas and its
+/// data-availability traffic develop over time?
 #[utoipa::path(
     get,
     path = "/api/grafana/onchain/services/timeseries",
     params(OnchainServiceTimeseriesQuery),
     responses(
-        (status = 200, description = "Time-bucketed per-service on-chain stats.",
+        (status = 200, description = "Array of rows, one per time bucket and service, \
+            ascending by bucket and then service ID, each with that service's figures for \
+            the bucket.",
             body = [OnchainServiceTimeseries]),
         (status = 400, description = "Invalid interval"),
         (status = 500, description = "Database error"),
@@ -2250,10 +2543,14 @@ async fn onchain_services_timeseries(
         .map_err(|e| map_sqlx_error("onchain/services/timeseries", e))
 }
 
-/// Raw per-block on-chain stats for a single service.
+/// One service's on-chain activity block by block.
 ///
-/// Max 1000 rows, newest first.
-/// Data source: `onchain_service_stats` filtered by service_id.
+/// One row per block in which the chain reported statistics for this service,
+/// newest first, capped at 1000 rows and never aggregated. The path accepts the
+/// service ID in decimal or 0x-hex form.
+///
+/// Answers: in which blocks was this service refined or accumulated, and what
+/// did each of those blocks cost it in gas?
 #[utoipa::path(
     get,
     path = "/api/grafana/onchain/services/{service_id}",
@@ -2262,8 +2559,8 @@ async fn onchain_services_timeseries(
         OnchainTimeRangeQuery,
     ),
     responses(
-        (status = 200, description = "Raw per-block on-chain stats for a single service. \
-            Max 1000 rows, newest first.",
+        (status = 200, description = "Array of per-block rows for this service, newest first, \
+            at most 1000 rows.",
             body = [OnchainServiceDetail]),
         (status = 400, description = "Invalid service ID"),
         (status = 500, description = "Database error"),
@@ -2287,19 +2584,26 @@ async fn onchain_service_detail(
 
 // ── On-chain validators ─────────────────────────────────────────────────
 
-/// Per-validator on-chain stats (all 1024 validators).
+/// Each validator's on-chain activity tallies, at their peak within a time range.
 ///
-/// Fields from Gray Paper `ValActivityRecord`. Values are epoch-cumulative —
-/// MAX is used to get peak value in the requested range.
-/// Data source: `onchain_validator_stats` hypertable.
+/// The JAM chain accumulates six tallies per validator over an epoch — blocks
+/// authored, tickets introduced, preimages introduced and their total size, work
+/// reports guaranteed, and availability assurances made — and resets them when
+/// the next epoch starts. Each field is the highest value that tally reached
+/// inside the requested range, so a range that sits inside one epoch shows that
+/// epoch's progress, while a range crossing an epoch boundary shows the older
+/// epoch's final value. Statistics are read from the chain once per block, blocks
+/// that later lost to a fork are left out, and history reaches back 90 days.
+///
+/// Answers: which validators are authoring blocks, guaranteeing reports and
+/// assuring availability, and which are contributing nothing?
 #[utoipa::path(
     get,
     path = "/api/grafana/onchain/validators",
     params(OnchainTimeRangeQuery),
     responses(
-        (status = 200, description = "Per-validator on-chain stats (all 1024 validators). \
-            Fields from Gray Paper ValActivityRecord. Values are epoch-cumulative — \
-            MAX is used to get peak value in the requested range.",
+        (status = 200, description = "Array with one row per validator, ascending by validator \
+            index, each holding the peak of that validator's epoch tallies within the range.",
             body = [OnchainValidatorSummary]),
         (status = 500, description = "Database error"),
     ),
@@ -2317,23 +2621,29 @@ async fn onchain_validators_summary(
         .map_err(|e| map_sqlx_error("onchain/validators", e))
 }
 
-/// Time-bucketed on-chain validator stats.
+/// Validator activity tallies over time.
 ///
-/// Without `validator` filter: network-wide aggregate — one row per time bucket
-/// with SUMmed fields across all validators.
+/// With a `validator` filter (comma-separated indices, Grafana `{a,b}`
+/// multi-select syntax): one row per bucket and validator, holding the highest
+/// value that validator's epoch tallies reached in the bucket, so each series
+/// steps up through an epoch and falls back to zero at the epoch boundary.
+/// Without the filter: one row per bucket adding up the tallies every validator
+/// reported in every block of the bucket — since those tallies are
+/// epoch-cumulative, that sum is a relative measure of participation, not a count
+/// of what happened during the bucket. Bucket width comes from `interval`
+/// (default 1 minute, snapped up to the nearest supported width between 6 s —
+/// one slot — and 1 day).
 ///
-/// With `validator` filter: per-validator timeseries — one row per time bucket
-/// for the specified validator(s). MAX aggregation (epoch-cumulative values).
-///
-/// Data source: `onchain_validator_stats` with `time_bucket()` aggregation.
+/// Answers: how does validator participation build up through an epoch, and
+/// which validators stop making progress?
 #[utoipa::path(
     get,
     path = "/api/grafana/onchain/validators/timeseries",
     params(OnchainValidatorTimeseriesQuery),
     responses(
-        (status = 200, description = "Without validator filter: network-wide aggregate — one row \
-            per time bucket with SUMmed fields across all validators. \
-            With validator filter: per-validator timeseries with MAX aggregation (epoch-cumulative).",
+        (status = 200, description = "Array of rows ascending by bucket: without the validator \
+            filter, one row per bucket adding up all validators' tallies; with it, one row per \
+            bucket and selected validator holding that validator's peak tallies for the bucket.",
             body = [OnchainValidatorTimeseriesAgg]),
         (status = 400, description = "Invalid interval"),
         (status = 500, description = "Database error"),
@@ -2363,20 +2673,24 @@ async fn onchain_validators_timeseries(
     }
 }
 
-/// Raw per-block on-chain stats for a single validator.
+/// One validator's activity tallies block by block.
 ///
-/// Shows epoch-cumulative values growing block by block. Max 1000 rows.
-/// Data source: `onchain_validator_stats` filtered by validator_index.
+/// One row per block, newest first, capped at 1000 rows, each holding the
+/// validator's epoch tallies as of that block. The values climb block by block
+/// through the epoch and restart at zero once the next epoch begins.
+///
+/// Answers: block by block, when did this validator author, guarantee or assure,
+/// and at which block did its tallies stop advancing?
 #[utoipa::path(
     get,
     path = "/api/grafana/onchain/validators/{validator_idx}",
     params(
-        ("validator_idx" = i16, Path, description = "Validator index (0–1023)"),
+        ("validator_idx" = i16, Path, description = "Validator index (0-based)"),
         OnchainTimeRangeQuery,
     ),
     responses(
-        (status = 200, description = "Raw per-block on-chain stats for a single validator. \
-            Shows epoch-cumulative values growing block by block. Max 1000 rows.",
+        (status = 200, description = "Array of per-block rows for this validator, newest first, \
+            at most 1000 rows, each with the epoch tallies as of that block.",
             body = [OnchainValidatorDetail]),
         (status = 500, description = "Database error"),
     ),

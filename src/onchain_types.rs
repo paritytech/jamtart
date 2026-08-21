@@ -1,9 +1,8 @@
 //! Typed response structs for the on-chain statistics API.
 //!
-//! Each struct documents its **data source pipeline** — how the data is collected,
-//! aggregated, or enriched before being served. All structs derive `Serialize` for
-//! JSON responses, `ToSchema` for OpenAPI documentation, and `FromRow` where the
-//! SQL result maps directly to the struct fields.
+//! These carry the JAM chain's own activity statistics, as the chain maintains
+//! them in its state: per-core and per-service records covering a single block,
+//! and per-validator records accumulating over an epoch.
 //!
 //! Fields map 1:1 to the Gray Paper's activity records:
 //! - `CoreActivityRecord` → `OnchainCoreSummary`, `OnchainCoreTimeseries`, `OnchainCoreDetail`
@@ -18,311 +17,315 @@ use crate::grafana_types::DbServiceId;
 
 // ── /api/grafana/onchain/cores ──────────────────────────────────────────
 
-/// Per-core on-chain activity summary over a time range.
+/// One core's on-chain activity, totalled over a time range.
 ///
-/// **Data source:** `onchain_core_stats` hypertable. Fields map 1:1 to the
-/// Gray Paper's `CoreActivityRecord`. All values are SUMs across the requested
-/// time range, except `popularity_avg` which is the mean.
+/// The chain records these figures for every core in every block; each field
+/// here adds up the blocks of the requested range, except `popularity_avg`,
+/// which is a mean over those blocks.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct OnchainCoreSummary {
-    /// Core index (0–340)
+    /// Core index
     pub core: i16,
-    /// Total gas consumed (refinement + authorizations)
+    /// Gas consumed by the work reported on this core, refinement and
+    /// authorization together
     pub gas_used: i64,
-    /// Total bytes placed into DA (work-bundle + segments)
+    /// Bytes the core made available: work bundles plus exported segments
     pub da_load: i64,
-    /// Average number of validators forming supermajority for assurance
+    /// Mean number of validators assuring this core's reports per block
     pub popularity_avg: i16,
-    /// Total segments imported from DA
+    /// Segments the core's work items imported from data availability
     pub imports: i64,
-    /// Total number of extrinsics used
+    /// Extrinsics referenced by the core's work items
     pub extrinsic_count: i64,
-    /// Total extrinsic bytes
+    /// Total bytes of those extrinsics
     pub extrinsic_size: i64,
-    /// Total segments exported to DA
+    /// Segments the core's work items exported into data availability
     pub exports: i64,
-    /// Total work-bundle size (Audits DA)
+    /// Work-bundle bytes reported on this core
     pub bundle_size: i64,
 }
 
-/// Time-bucketed per-core on-chain stats.
+/// One core's on-chain activity within one time bucket.
 ///
-/// **Data source:** `onchain_core_stats` with `time_bucket()` aggregation.
-/// One row per (bucket, core) pair.
+/// Returned by `/onchain/cores/timeseries` when a `core` filter is given: one
+/// row per bucket for that core.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct OnchainCoreTimeseries {
-    /// Bucket start timestamp
+    /// Start of the time bucket
     pub ts: DateTime<Utc>,
     /// Core index
     pub core: i16,
-    /// Gas consumed in this bucket
+    /// Gas consumed by the work reported on this core during the bucket
     pub gas_used: i64,
-    /// Bytes placed into DA in this bucket
+    /// Bytes the core made available during the bucket
     pub da_load: i64,
-    /// Average popularity in this bucket
+    /// Mean number of validators assuring this core's reports during the bucket
     pub popularity: i16,
-    /// Segments imported in this bucket
+    /// Segments imported from data availability during the bucket
     pub imports: i64,
-    /// Extrinsics used in this bucket
+    /// Extrinsics referenced by the core's work items during the bucket
     pub extrinsic_count: i64,
-    /// Extrinsic bytes in this bucket
+    /// Total bytes of those extrinsics
     pub extrinsic_size: i64,
-    /// Segments exported in this bucket
+    /// Segments exported into data availability during the bucket
     pub exports: i64,
-    /// Work-bundle bytes in this bucket
+    /// Work-bundle bytes reported on this core during the bucket
     pub bundle_size: i64,
 }
 
-/// Network-wide aggregate time-bucketed core stats (no per-core breakdown).
+/// All cores' on-chain activity combined, within one time bucket.
 ///
-/// **Data source:** `onchain_core_stats` with `time_bucket()` aggregation.
-/// One row per time bucket — all cores SUMmed together (AVG for popularity).
-/// Returned when no `core` filter is specified.
+/// Returned by `/onchain/cores/timeseries` when no `core` filter is given: one
+/// row per bucket with every core's figures added together, popularity averaged.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct OnchainCoreTimeseriesAgg {
-    /// Bucket start timestamp
+    /// Start of the time bucket
     pub ts: DateTime<Utc>,
-    /// Total gas consumed across all cores
+    /// Gas consumed by reported work on all cores during the bucket
     pub gas_used: i64,
-    /// Total bytes placed into DA across all cores
+    /// Bytes made available by all cores during the bucket
     pub da_load: i64,
-    /// Average popularity across all cores
+    /// Mean number of validators assuring a core's reports, across all cores
     pub popularity: i16,
-    /// Total segments imported across all cores
+    /// Segments imported from data availability by all cores
     pub imports: i64,
-    /// Total extrinsics across all cores
+    /// Extrinsics referenced by work items on all cores
     pub extrinsic_count: i64,
-    /// Total extrinsic bytes across all cores
+    /// Total bytes of those extrinsics
     pub extrinsic_size: i64,
-    /// Total segments exported across all cores
+    /// Segments exported into data availability by all cores
     pub exports: i64,
-    /// Total work-bundle bytes across all cores
+    /// Work-bundle bytes reported on all cores
     pub bundle_size: i64,
 }
 
-/// Raw per-block on-chain stats for a single core.
+/// One core's on-chain activity in a single block.
 ///
-/// **Data source:** `onchain_core_stats` filtered by core, no aggregation.
-/// Returns up to 1000 most recent rows.
+/// The chain resets these figures every block, so each instance describes what
+/// the core did in that one block alone.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct OnchainCoreDetail {
-    /// Block timestamp
+    /// Wall-clock time of the block's slot
     pub timestamp: DateTime<Utc>,
-    /// Slot number
+    /// Slot the block was authored in
     pub slot: i32,
     /// Core index
     pub core: i16,
-    /// Gas consumed
+    /// Gas consumed by the work reported on this core in the block
     pub gas_used: i64,
-    /// Bytes placed into DA
+    /// Bytes the core made available in the block: work bundles plus exported
+    /// segments
     pub da_load: i32,
-    /// Validators forming supermajority for assurance
+    /// Validators that assured this core's reports in the block
     pub popularity: i16,
-    /// Segments imported from DA
+    /// Segments imported from data availability
     pub imports: i16,
-    /// Number of extrinsics used
+    /// Extrinsics referenced by the core's work items
     pub extrinsic_count: i16,
-    /// Total extrinsic bytes
+    /// Total bytes of those extrinsics
     pub extrinsic_size: i32,
-    /// Segments exported to DA
+    /// Segments exported into data availability
     pub exports: i16,
-    /// Work-bundle size
+    /// Work-bundle bytes reported on this core
     pub bundle_size: i32,
 }
 
 // ── /api/grafana/onchain/services ───────────────────────────────────────
 
-/// Per-service on-chain activity summary over a time range.
+/// One service's on-chain activity, totalled over a time range.
 ///
-/// **Data source:** `onchain_service_stats` hypertable. Fields map 1:1 to the
-/// Gray Paper's `ServiceActivityRecord`. All values are SUMs.
+/// The chain records these figures in every block in which the service was
+/// active; each field adds up the blocks of the requested range.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct OnchainServiceSummary {
-    /// Service ID (hex-formatted, e.g. "0x0000000a")
+    /// Service ID, zero-padded hex (e.g. "0x0000000a")
     pub service_id: DbServiceId,
-    /// Number of preimages provided to this service
+    /// Preimages provided to this service
     pub provided_count: i64,
-    /// Total preimage bytes provided
+    /// Total bytes of those preimages
     pub provided_size: i64,
-    /// Work-items refined
+    /// Work items refined for this service
     pub refinement_count: i64,
-    /// Gas used for refinement
+    /// Gas the service's code used refining them
     pub refinement_gas: i64,
-    /// Segments imported from DL
+    /// Segments the service's work items imported from data availability
     pub imports: i64,
-    /// Number of extrinsics used
+    /// Extrinsics referenced by the service's work items
     pub extrinsic_count: i64,
-    /// Total extrinsic bytes
+    /// Total bytes of those extrinsics
     pub extrinsic_size: i64,
-    /// Segments exported to DL
+    /// Segments the service's work items exported into data availability
     pub exports: i64,
-    /// Work-items accumulated
+    /// Work items accumulated for this service
     pub accumulate_count: i64,
-    /// Gas used for accumulation
+    /// Gas the service's code used accumulating them
     pub accumulate_gas: i64,
 }
 
-/// Time-bucketed per-service on-chain stats.
+/// One service's on-chain activity within one time bucket.
 ///
-/// **Data source:** `onchain_service_stats` with `time_bucket()` aggregation.
-/// One row per (bucket, service_id) pair.
+/// One instance per bucket and service, covering the blocks that fall in the
+/// bucket.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct OnchainServiceTimeseries {
-    /// Bucket start timestamp
+    /// Start of the time bucket
     pub ts: DateTime<Utc>,
-    /// Service ID (hex-formatted, e.g. "0x0000000a")
+    /// Service ID, zero-padded hex (e.g. "0x0000000a")
     pub service_id: DbServiceId,
-    /// Preimages provided in this bucket
+    /// Preimages provided to this service during the bucket
     pub provided_count: i64,
-    /// Preimage bytes provided in this bucket
+    /// Total bytes of those preimages
     pub provided_size: i64,
-    /// Work-items refined in this bucket
+    /// Work items refined for this service during the bucket
     pub refinement_count: i64,
-    /// Refinement gas in this bucket
+    /// Gas the service's code used refining them
     pub refinement_gas: i64,
-    /// Segments imported in this bucket
+    /// Segments imported from data availability during the bucket
     pub imports: i64,
-    /// Extrinsics used in this bucket
+    /// Extrinsics referenced by the service's work items during the bucket
     pub extrinsic_count: i64,
-    /// Extrinsic bytes in this bucket
+    /// Total bytes of those extrinsics
     pub extrinsic_size: i64,
-    /// Segments exported in this bucket
+    /// Segments exported into data availability during the bucket
     pub exports: i64,
-    /// Work-items accumulated in this bucket
+    /// Work items accumulated for this service during the bucket
     pub accumulate_count: i64,
-    /// Accumulation gas in this bucket
+    /// Gas the service's code used accumulating them
     pub accumulate_gas: i64,
 }
 
-/// Raw per-block on-chain stats for a single service.
+/// One service's on-chain activity in a single block.
 ///
-/// **Data source:** `onchain_service_stats` filtered by service_id, no aggregation.
-/// Returns up to 1000 most recent rows.
+/// The chain resets these figures every block, so each instance describes the
+/// service's activity in that one block alone.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct OnchainServiceDetail {
-    /// Block timestamp
+    /// Wall-clock time of the block's slot
     pub timestamp: DateTime<Utc>,
-    /// Slot number
+    /// Slot the block was authored in
     pub slot: i32,
-    /// Service ID (hex-formatted, e.g. "0x0000000a")
+    /// Service ID, zero-padded hex (e.g. "0x0000000a")
     pub service_id: DbServiceId,
-    /// Preimages provided
+    /// Preimages provided to this service in the block
     pub provided_count: i16,
-    /// Preimage bytes provided
+    /// Total bytes of those preimages
     pub provided_size: i32,
-    /// Work-items refined
+    /// Work items refined for this service in the block
     pub refinement_count: i32,
-    /// Gas used for refinement
+    /// Gas the service's code used refining them
     pub refinement_gas: i64,
-    /// Segments imported from DL
+    /// Segments imported from data availability
     pub imports: i32,
-    /// Number of extrinsics used
+    /// Extrinsics referenced by the service's work items
     pub extrinsic_count: i32,
-    /// Total extrinsic bytes
+    /// Total bytes of those extrinsics
     pub extrinsic_size: i32,
-    /// Segments exported to DL
+    /// Segments exported into data availability
     pub exports: i32,
-    /// Work-items accumulated
+    /// Work items accumulated for this service in the block
     pub accumulate_count: i32,
-    /// Gas used for accumulation
+    /// Gas the service's code used accumulating them
     pub accumulate_gas: i64,
 }
 
 // ── /api/grafana/onchain/validators ─────────────────────────────────────
 
-/// Per-validator on-chain stats summary over a time range.
+/// One validator's epoch activity tallies, at their peak within a time range.
 ///
-/// **Data source:** `onchain_validator_stats` hypertable. Fields map 1:1 to the
-/// Gray Paper's `ValActivityRecord`. Since validator stats are epoch-cumulative
-/// (not reset per block), all aggregations use MAX to get the peak value in the
-/// requested range.
+/// The chain accumulates these tallies over an epoch and resets them when the
+/// next epoch starts, so each field is the highest value the tally reached
+/// inside the requested range.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct OnchainValidatorSummary {
-    /// Validator index (0–1023)
+    /// Validator index
     pub validator_index: i16,
-    /// Blocks produced by this validator (epoch-cumulative MAX)
+    /// Blocks the validator authored in the epoch
     pub blocks_produced: i32,
-    /// Tickets introduced (epoch-cumulative MAX)
+    /// Tickets the validator introduced in the epoch
     pub tickets: i32,
-    /// Preimages introduced (epoch-cumulative MAX)
+    /// Preimages the validator introduced in the epoch
     pub preimages: i32,
-    /// Total preimage bytes introduced (epoch-cumulative MAX)
+    /// Total bytes across those preimages
     pub preimages_size: i32,
-    /// Work reports guaranteed (epoch-cumulative MAX)
+    /// Work reports the validator guaranteed in the epoch
     pub guarantees: i32,
-    /// Availability assurances made (epoch-cumulative MAX)
+    /// Availability assurances the validator made in the epoch
     pub assurances: i32,
 }
 
-/// Time-bucketed per-validator on-chain stats.
+/// One validator's epoch tallies, at their peak within one time bucket.
 ///
-/// **Data source:** `onchain_validator_stats` with `time_bucket()` aggregation.
-/// One row per (bucket, validator_index) pair. MAX aggregation (epoch-cumulative).
+/// Returned by `/onchain/validators/timeseries` when a `validator` filter is
+/// given. Because the tallies accumulate over an epoch, each series steps upward
+/// through the epoch and falls back to zero at the epoch boundary.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct OnchainValidatorTimeseries {
-    /// Bucket start timestamp
+    /// Start of the time bucket
     pub ts: DateTime<Utc>,
     /// Validator index
     pub validator_index: i16,
-    /// Blocks produced (MAX in bucket)
+    /// Blocks authored in the epoch, highest tally within the bucket
     pub blocks_produced: i32,
-    /// Tickets introduced (MAX in bucket)
+    /// Tickets introduced in the epoch, highest tally within the bucket
     pub tickets: i32,
-    /// Preimages introduced (MAX in bucket)
+    /// Preimages introduced in the epoch, highest tally within the bucket
     pub preimages: i32,
-    /// Preimage bytes (MAX in bucket)
+    /// Total preimage bytes in the epoch, highest tally within the bucket
     pub preimages_size: i32,
-    /// Work reports guaranteed (MAX in bucket)
+    /// Work reports guaranteed in the epoch, highest tally within the bucket
     pub guarantees: i32,
-    /// Assurances made (MAX in bucket)
+    /// Availability assurances made in the epoch, highest tally within the bucket
     pub assurances: i32,
 }
 
-/// Network-wide aggregate time-bucketed validator stats (no per-validator breakdown).
+/// All validators' epoch tallies added together, within one time bucket.
 ///
-/// **Data source:** `onchain_validator_stats` with `time_bucket()` aggregation.
-/// One row per time bucket — all validators SUMmed together.
-/// Returned when no `validator` filter is specified.
+/// Returned by `/onchain/validators/timeseries` when no `validator` filter is
+/// given. Every validator's tallies are added up across every block of the
+/// bucket; since the tallies are epoch-cumulative, these sums indicate the
+/// relative level of validator participation rather than counting events that
+/// happened inside the bucket.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct OnchainValidatorTimeseriesAgg {
-    /// Bucket start timestamp
+    /// Start of the time bucket
     pub ts: DateTime<Utc>,
-    /// Total blocks produced across all validators (SUM of per-validator MAX)
+    /// Block-authoring tallies of all validators, summed over the bucket
     pub blocks_produced: i64,
-    /// Total tickets across all validators
+    /// Ticket tallies of all validators, summed over the bucket
     pub tickets: i64,
-    /// Total preimages across all validators
+    /// Preimage tallies of all validators, summed over the bucket
     pub preimages: i64,
-    /// Total preimage bytes across all validators
+    /// Preimage-byte tallies of all validators, summed over the bucket
     pub preimages_size: i64,
-    /// Total guarantees across all validators
+    /// Guarantee tallies of all validators, summed over the bucket
     pub guarantees: i64,
-    /// Total assurances across all validators
+    /// Assurance tallies of all validators, summed over the bucket
     pub assurances: i64,
 }
 
-/// Raw per-block on-chain stats for a single validator.
+/// One validator's epoch tallies as of a single block.
 ///
-/// **Data source:** `onchain_validator_stats` filtered by validator_index, no aggregation.
-/// Shows epoch-cumulative values growing block by block. Returns up to 1000 most recent rows.
+/// The values climb block by block through the epoch and restart at zero once
+/// the next epoch begins.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct OnchainValidatorDetail {
-    /// Block timestamp
+    /// Wall-clock time of the block's slot
     pub timestamp: DateTime<Utc>,
-    /// Slot number
+    /// Slot the block was authored in
     pub slot: i32,
     /// Validator index
     pub validator_index: i16,
-    /// Blocks produced (epoch-cumulative)
+    /// Blocks the validator had authored in the epoch as of this block
     pub blocks_produced: i32,
-    /// Tickets introduced (epoch-cumulative)
+    /// Tickets the validator had introduced in the epoch as of this block
     pub tickets: i32,
-    /// Preimages introduced (epoch-cumulative)
+    /// Preimages the validator had introduced in the epoch as of this block
     pub preimages: i32,
-    /// Preimage bytes introduced (epoch-cumulative)
+    /// Total bytes across those preimages
     pub preimages_size: i32,
-    /// Work reports guaranteed (epoch-cumulative)
+    /// Work reports the validator had guaranteed in the epoch as of this block
     pub guarantees: i32,
-    /// Availability assurances made (epoch-cumulative)
+    /// Availability assurances the validator had made in the epoch as of this
+    /// block
     pub assurances: i32,
 }
