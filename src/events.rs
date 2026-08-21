@@ -1,7 +1,7 @@
 //! Telemetry event type definitions and protocol version constants. Each variant
 //! of `Event` corresponds to a distinct telemetry message emitted by JAM nodes.
 
-use crate::encoding::{Encode, EncodingError};
+use crate::encoding::{encode_variable_length, variable_length_size, Encode, EncodingError};
 use crate::types::*;
 use bytes::BytesMut;
 use serde::{Deserialize, Serialize};
@@ -1646,6 +1646,66 @@ impl Encode for Event {
                 submission_or_share_id.encode(buf)?;
                 reason.encode(buf)?;
             }
+            Event::WorkPackageSubmission { builder, bundle, .. } => {
+                builder.encode(buf)?;
+                bundle.encode(buf)?;
+            }
+            Event::WorkPackageBeingShared { primary, .. } => {
+                primary.encode(buf)?;
+            }
+            Event::DuplicateWorkPackage {
+                submission_or_share_id,
+                core,
+                hash,
+                ..
+            } => {
+                submission_or_share_id.encode(buf)?;
+                core.encode(buf)?;
+                hash.encode(buf)?;
+            }
+            Event::ExtrinsicDataReceived {
+                submission_or_share_id,
+                ..
+            } => {
+                submission_or_share_id.encode(buf)?;
+            }
+            Event::ImportsReceived {
+                submission_or_share_id,
+                ..
+            } => {
+                submission_or_share_id.encode(buf)?;
+            }
+            Event::SharingWorkPackage {
+                submission_id, secondary, ..
+            } => {
+                submission_id.encode(buf)?;
+                secondary.encode(buf)?;
+            }
+            Event::WorkPackageSharingFailed {
+                submission_id,
+                secondary,
+                reason,
+                ..
+            } => {
+                submission_id.encode(buf)?;
+                secondary.encode(buf)?;
+                reason.encode(buf)?;
+            }
+            Event::BundleSent {
+                submission_id, secondary, ..
+            } => {
+                submission_id.encode(buf)?;
+                secondary.encode(buf)?;
+            }
+            Event::WorkReportSignatureSent { share_id, .. } => {
+                share_id.encode(buf)?;
+            }
+            Event::WorkReportSignatureReceived {
+                submission_id, secondary, ..
+            } => {
+                submission_id.encode(buf)?;
+                secondary.encode(buf)?;
+            }
             // Guarantee sending (106-108)
             Event::SendingGuarantee {
                 built_id,
@@ -1867,8 +1927,8 @@ impl Encode for Event {
                 submission_id.encode(buf)?;
                 assurer.encode(buf)?;
                 proofs.encode(buf)?;
-                // BoundedVec<(u16, u16)> — encode as length-prefixed pairs
-                (shards.len() as u32).encode(buf)?;
+                // BoundedVec<(u16, u16)> — LEB128 length prefix then pairs
+                encode_variable_length(shards.len() as u64, buf)?;
                 for (seg_id, shard_idx) in shards.iter() {
                     seg_id.encode(buf)?;
                     shard_idx.encode(buf)?;
@@ -2045,9 +2105,6 @@ impl Encode for Event {
                 length.encode(buf)?;
                 (*reason as u8).encode(buf)?;
             }
-            _ => {
-                todo!("Event::Encode not implemented for {:?}", self.event_type())
-            }
         }
         Ok(())
     }
@@ -2106,6 +2163,16 @@ impl Encode for Event {
             Event::WorkReportBuilt { outline, .. } => 8 + outline.encoded_size(),
             Event::GuaranteesDistributed { .. } => 8, // submission_id only
             Event::WorkPackageFailed { reason, .. } => 8 + reason.encoded_size(),
+            Event::WorkPackageSubmission { .. } => 32 + 1, // builder + bundle
+            Event::WorkPackageBeingShared { .. } => 32,     // primary
+            Event::DuplicateWorkPackage { .. } => 8 + 2 + 32, // submission_or_share_id + core + hash
+            Event::ExtrinsicDataReceived { .. } => 8,       // submission_or_share_id
+            Event::ImportsReceived { .. } => 8,             // submission_or_share_id
+            Event::SharingWorkPackage { .. } => 8 + 32,     // submission_id + secondary
+            Event::WorkPackageSharingFailed { reason, .. } => 8 + 32 + reason.encoded_size(),
+            Event::BundleSent { .. } => 8 + 32,             // submission_id + secondary
+            Event::WorkReportSignatureSent { .. } => 8,     // share_id
+            Event::WorkReportSignatureReceived { .. } => 8 + 32, // submission_id + secondary
             // Guarantee sending (106-108)
             Event::SendingGuarantee { .. } => 8 + 32, // built_id + recipient
             Event::GuaranteeSendFailed { reason, .. } => 8 + reason.encoded_size(),
@@ -2150,7 +2217,9 @@ impl Encode for Event {
             Event::BundleTransferred { .. } => 8,
             // Segment fetching (162-178) — SegmentsRootMapped handled elsewhere
             Event::SegmentsRootMapped { .. } => 8 + 32 + 32, // submission_id + segments_root + erasure_root
-            Event::SendingSegmentShardRequest { shards, .. } => 8 + 32 + 1 + 4 + shards.len() * 4, // len prefix + (u16,u16) pairs
+            Event::SendingSegmentShardRequest { shards, .. } => {
+                8 + 32 + 1 + variable_length_size(shards.len() as u64) + shards.len() * 4 // proofs + len + pairs
+            }
             Event::ReceivingSegmentShardRequest { .. } => 32 + 1, // sender + proofs
             Event::SegmentShardRequestFailed { reason, .. } => 8 + reason.encoded_size(),
             Event::SegmentShardRequestSent { .. } => 8,
@@ -2180,10 +2249,6 @@ impl Encode for Event {
             Event::PreimageRequestReceived { .. } => 8 + 32, // request_id + hash
             Event::PreimageTransferred { .. } => 8 + 4,      // request_id + length
             Event::PreimageDiscarded { .. } => 32 + 4 + 1,   // hash + length + reason
-            _ => todo!(
-                "Event::encoded_size not implemented for {:?}",
-                self.event_type()
-            ),
         };
 
         base_size + specific_size

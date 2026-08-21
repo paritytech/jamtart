@@ -359,3 +359,65 @@ fn test_message_frame_size_limits() {
     // This should fail due to size limit check (>10MB)
     assert!(decode_message_frame(&buf).is_err());
 }
+
+#[test]
+fn test_distributing_assurance_bitfield_fixed_no_prefix() {
+    // JIP-3: AvailabilityStatement bitfield is [u8; ceil(core_count/8)], fixed-size with NO
+    // length prefix. The decoder reads exactly ceil(core_count/8) bytes after the anchor.
+    use tart_backend::events::Event;
+    use tart_backend::types::AvailabilityStatement;
+
+    let core_count = 16u16; // ceil(16/8) = 2 bytes
+    let anchor = [0xABu8; 32];
+    let bitfield = vec![0xFFu8; 2];
+    let event = Event::DistributingAssurance {
+        timestamp: 1_700_000_000_000_000,
+        statement: AvailabilityStatement { anchor, bitfield },
+    };
+
+    let mut buf = BytesMut::new();
+    event.encode(&mut buf).unwrap();
+
+    // content = timestamp(8) + discriminator(1) + anchor(32) + bitfield(2) = 43
+    assert_eq!(buf.len(), 43, "no length prefix expected for fixed bitfield");
+    assert_eq!(buf[41], 0xFF);
+    assert_eq!(buf[42], 0xFF);
+
+    // Decoder must consume the bitfield without a prefix and round-trip.
+    let mut cursor = Cursor::new(&buf[..]);
+    let decoded = Event::decode_event(&mut cursor, core_count).unwrap();
+    match decoded {
+        Event::DistributingAssurance { statement, .. } => {
+            assert_eq!(statement.anchor, anchor);
+            assert_eq!(statement.bitfield, vec![0xFFu8; 2]);
+        }
+        _ => panic!("wrong variant decoded"),
+    }
+    assert_eq!(cursor.position() as usize, buf.len(), "whole event consumed");
+}
+
+#[test]
+fn test_sending_segment_shard_request_varlen_prefix() {
+    // BoundedVec<(u16,u16)> shards use a LEB128 variable-length count prefix.
+    use tart_backend::events::Event;
+
+    let event = Event::SendingSegmentShardRequest {
+        timestamp: 1_700_000_000_000_000,
+        submission_id: 42,
+        assurer: [0x11u8; 32],
+        proofs: true, // bool — 1 byte, no prefix
+        shards: vec![(1u16, 2u16)], // BoundedVec<(u16,u16)> — varlen count 1 byte + 4 bytes
+    };
+
+    let mut buf = BytesMut::new();
+    event.encode(&mut buf).unwrap();
+    assert_eq!(buf.len(), event.encoded_size());
+
+    // Round-trip through the decoder.
+    let mut cursor = Cursor::new(&buf[..]);
+    let decoded = Event::decode_event(&mut cursor, 16).unwrap();
+    assert_eq!(decoded.event_type() as u8, 162); // SendingSegmentShardRequest
+    let mut reencoded = BytesMut::new();
+    decoded.encode(&mut reencoded).unwrap();
+    assert_eq!(reencoded, buf);
+}
