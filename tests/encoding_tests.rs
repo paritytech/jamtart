@@ -421,3 +421,52 @@ fn test_sending_segment_shard_request_varlen_prefix() {
     decoded.encode(&mut reencoded).unwrap();
     assert_eq!(reencoded, buf);
 }
+
+#[test]
+fn test_decode_truncated_events_no_panic() {
+    // Decoder must never panic on truncated input; it returns DecodingError instead.
+    use tart_backend::events::Event;
+
+    // Truncate a DistributingAssurance frame just before the fixed bitfield bytes:
+    // ts(8) + discriminator(1) + anchor(32) present, bitfield missing.
+    let mut buf = BytesMut::new();
+    buf.extend_from_slice(&1_700_000_000_000_000u64.to_le_bytes());
+    buf.extend_from_slice(&[126]); // DistributingAssurance discriminator
+    buf.extend_from_slice(&[0xABu8; 32]); // anchor
+    // bitfield bytes omitted
+    let mut cursor = Cursor::new(&buf[..]);
+    assert!(Event::decode_event(&mut cursor, 16).is_err());
+
+    // Unknown discriminator must produce an error, not a panic.
+    let mut buf = BytesMut::new();
+    buf.extend_from_slice(&1_700_000_000_000_000u64.to_le_bytes());
+    buf.extend_from_slice(&[200]);
+    let mut cursor = Cursor::new(&buf[..]);
+    assert!(Event::decode_event(&mut cursor, 16).is_err());
+}
+
+#[test]
+fn test_encode_no_todo_variants() {
+    // Every event variant must have an Encode arm — no todo!() panics remain.
+    use tart_backend::events::Event;
+    use tart_backend::types::BoundedString;
+
+    let ts = 1_700_000_000_000_000;
+    let events = vec![
+        Event::WorkPackageSubmission { timestamp: ts, builder: [0x11u8; 32], bundle: true },
+        Event::WorkPackageBeingShared { timestamp: ts, primary: [0x22u8; 32] },
+        Event::DuplicateWorkPackage { timestamp: ts, submission_or_share_id: 1, core: 2, hash: [0x33u8; 32] },
+        Event::ExtrinsicDataReceived { timestamp: ts, submission_or_share_id: 1 },
+        Event::ImportsReceived { timestamp: ts, submission_or_share_id: 1 },
+        Event::SharingWorkPackage { timestamp: ts, submission_id: 1, secondary: [0x44u8; 32] },
+        Event::WorkPackageSharingFailed { timestamp: ts, submission_id: 1, secondary: [0x44u8; 32], reason: BoundedString::new("x").unwrap() },
+        Event::BundleSent { timestamp: ts, submission_id: 1, secondary: [0x44u8; 32] },
+        Event::WorkReportSignatureSent { timestamp: ts, share_id: 1 },
+        Event::WorkReportSignatureReceived { timestamp: ts, submission_id: 1, secondary: [0x44u8; 32] },
+    ];
+    for event in events {
+        let mut buf = BytesMut::new();
+        event.encode(&mut buf).unwrap();
+        assert_eq!(buf.len(), event.encoded_size());
+    }
+}
