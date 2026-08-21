@@ -1,9 +1,12 @@
 use std::sync::Arc;
 use std::time::Duration;
+use tart_backend::encoding::encode_message;
 use tart_backend::events::{Event, NodeInformation};
 use tart_backend::types::*;
 // GuaranteeDiscardReason, GuaranteeSummary, ConnectionSide, BoundedString — all from types::*
 use tart_backend::TelemetryServer;
+use tokio::io::AsyncWriteExt;
+use tokio::net::TcpStream;
 use tokio::time::sleep;
 
 /// Core count used in test_protocol_params(). Status events must have
@@ -41,6 +44,36 @@ pub fn test_database_url() -> String {
 pub async fn flush_and_wait(server: &Arc<TelemetryServer>) {
     sleep(Duration::from_millis(100)).await;
     server.flush_writes().await.expect("Flush failed");
+}
+
+/// Connect a fake node with the given id and wait until the server sees it.
+#[allow(dead_code)]
+pub async fn connect_test_node(port: u16, node_id: u8, server: &Arc<TelemetryServer>) -> TcpStream {
+    let expected = server.connection_count() + 1;
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
+        .await
+        .unwrap();
+
+    let mut node_info = test_node_info([node_id; 32]);
+    node_info.implementation_name = BoundedString::new(&format!("test-node-{}", node_id)).unwrap();
+
+    let encoded = encode_message(&node_info).unwrap();
+    stream.write_all(&encoded).await.unwrap();
+
+    server.wait_for_connections(expected).await;
+    flush_and_wait(server).await;
+
+    stream
+}
+
+/// Write a batch of encoded events to a connected node stream.
+#[allow(dead_code)]
+pub async fn send_events(stream: &mut TcpStream, events: &[Event]) {
+    for event in events {
+        let encoded = encode_message(event).unwrap();
+        stream.write_all(&encoded).await.unwrap();
+    }
 }
 
 /// Creates a test BlockSummary with reasonable default values

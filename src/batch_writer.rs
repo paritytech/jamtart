@@ -74,6 +74,7 @@ impl SharedFlushStats {
 #[derive(Clone)]
 pub struct BatchWriter {
     sender: Sender<WriterCommand>,
+    shared_node_counts: Arc<Mutex<HashMap<NodeId, u64>>>,
 }
 
 enum WriterCommand {
@@ -189,7 +190,10 @@ impl BatchWriter {
             });
         }
 
-        BatchWriter { sender }
+        BatchWriter {
+            sender,
+            shared_node_counts,
+        }
     }
 
     /// Queue a node connection event (async for reliability)
@@ -258,6 +262,19 @@ impl BatchWriter {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to send shutdown command: {}", e))?;
         Ok(())
+    }
+
+    /// Test-only: drain the shared node-count map and persist it immediately,
+    /// bypassing the NODE_STATS_INTERVAL gate. Mirrors flush_trackers_for_test.
+    pub async fn flush_node_stats_for_test(&self, store: &Arc<EventStore>) -> Result<()> {
+        let batch = {
+            let mut map = self.shared_node_counts.lock().await;
+            if map.is_empty() {
+                return Ok(());
+            }
+            std::mem::take(&mut *map)
+        };
+        store.update_node_stats(&batch).await.map_err(Into::into)
     }
 
     /// Flush all pending writes to database.
