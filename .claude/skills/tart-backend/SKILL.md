@@ -114,9 +114,8 @@ curl -s "$BASE/grafana/stats?start=$(date -u -d '5 min ago' +%FT%TZ)&end=$(date 
 ## Digging deeper: the JIP-3 spec
 
 The telemetry protocol itself is specified in **JIP-3**:
-https://github.com/polkadot-fellows/JIPs/blob/main/JIP-3.md
-(raw: https://raw.githubusercontent.com/polkadot-fellows/JIPs/main/JIP-3.md; often
-also checked out locally as a `JIPs/` sibling of this repo).
+https://raw.githubusercontent.com/polkadot-fellows/JIPs/main/JIP-3.md
+(often also checked out locally as a `JIPs/` sibling of this repo).
 
 Don't read it up front — the endpoint docs and `/grafana/event-types` cover normal
 debugging. Reach for it when the question moves from "which endpoint" to "what does
@@ -128,8 +127,9 @@ this event actually mean":
 - semantics of enum values, e.g. guarantee discard reasons or failure kinds
 - handshake / node-information fields, universal event fields (slot, timestamps)
 
-The emitting side is implemented in polkajam (`crates/jam-std-common/src/telemetry.rs`)
-if you need to confirm what a node really sends.
+The emitting side lives in polkajam (`crates/jam-std-common/src/telemetry.rs`). If the
+sibling checkout is missing or the GitHub source isn't reachable, fall back to the public
+docs: https://docs.rs/jam-std-common/latest/jam_std_common/
 
 ## Gotchas
 
