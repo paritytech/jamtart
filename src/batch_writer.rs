@@ -93,6 +93,9 @@ enum WriterCommand {
     Flush {
         response: tokio::sync::oneshot::Sender<Result<()>>,
     },
+    FlushNodeStats {
+        response: tokio::sync::oneshot::Sender<()>,
+    },
     Shutdown,
 }
 
@@ -264,17 +267,35 @@ impl BatchWriter {
         Ok(())
     }
 
-    /// Test-only: drain the shared node-count map and persist it immediately,
-    /// bypassing the NODE_STATS_INTERVAL gate. Mirrors flush_trackers_for_test.
+    /// Test-only: force every writer to merge its local event counts into the
+    /// shared map, then drain and persist it — bypassing the NODE_STATS_INTERVAL
+    /// gate. Mirrors flush_trackers_for_test.
     pub async fn flush_node_stats_for_test(&self, store: &Arc<EventStore>) -> Result<()> {
+        let mut receivers = Vec::with_capacity(NUM_WRITERS);
+        for _ in 0..NUM_WRITERS {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            self.sender
+                .send(WriterCommand::FlushNodeStats { response: tx })
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to send node-stats flush: {}", e))?;
+            receivers.push(rx);
+        }
+        for rx in receivers {
+            rx.await
+                .map_err(|e| anyhow::anyhow!("Node-stats flush channel closed: {}", e))?;
+        }
+
         let batch = {
             let mut map = self.shared_node_counts.lock().await;
-            if map.is_empty() {
-                return Ok(());
-            }
             std::mem::take(&mut *map)
         };
-        store.update_node_stats(&batch).await.map_err(Into::into)
+        if !batch.is_empty() {
+            store
+                .update_node_stats(&batch)
+                .await
+                .map_err(|e| anyhow::anyhow!("update_node_stats failed: {e}"))?;
+        }
+        Ok(())
     }
 
     /// Flush all pending writes to database.
@@ -322,9 +343,6 @@ async fn writer_worker(
     let mut node_disconnects: Vec<NodeId> = Vec::new();
     let mut node_counts: HashMap<NodeId, u64> = HashMap::new();
 
-    let mut stats_interval = interval(NODE_STATS_INTERVAL);
-    stats_interval.tick().await;
-
     loop {
         // Phase 1: Acquire lock and drain available events into local batch.
         // Hold lock only for try_recv() calls (microseconds), release before DB I/O.
@@ -335,6 +353,7 @@ async fn writer_worker(
             &mut node_connects,
             &mut node_disconnects,
             &mut node_counts,
+            &shared_node_counts,
             &mut flush_response,
         )
         .await;
@@ -385,23 +404,22 @@ async fn writer_worker(
             node_disconnects.clear();
         }
 
-        // Send flush response after everything is written
-        if let Some(response) = flush_response.take() {
-            let _ = response.send(Ok(()));
-        }
-
-        // Phase 4: Merge local node counts into shared aggregator (every 5 seconds)
-        // A single dedicated task flushes the shared map to DB, preventing deadlocks
-        if tokio::time::timeout(Duration::ZERO, stats_interval.tick())
-            .await
-            .is_ok()
-            && !node_counts.is_empty()
-        {
+        // Phase 4: Merge local node counts into shared aggregator before the
+        // flush response, so flush_writes() only returns once all counts are
+        // visible to flush_node_stats_for_test (work-stealing: the writer that
+        // drained a node's events is not necessarily the one that handles the
+        // subsequent FlushNodeStats command).
+        if !node_counts.is_empty() {
             let local = std::mem::take(&mut node_counts);
             let mut shared = shared_node_counts.lock().await;
             for (node_id, count) in local {
                 *shared.entry(node_id).or_default() += count;
             }
+        }
+
+        // Send flush response after everything is written
+        if let Some(response) = flush_response.take() {
+            let _ = response.send(Ok(()));
         }
 
         if should_shutdown {
@@ -447,6 +465,7 @@ async fn drain_from_channel(
     node_connects: &mut Vec<(NodeId, NodeInformation, String)>,
     node_disconnects: &mut Vec<NodeId>,
     node_counts: &mut HashMap<NodeId, u64>,
+    shared_node_counts: &Arc<Mutex<HashMap<NodeId, u64>>>,
     flush_response: &mut Option<tokio::sync::oneshot::Sender<Result<()>>>,
 ) -> bool {
     let mut rx = receiver.lock().await;
@@ -459,8 +478,11 @@ async fn drain_from_channel(
             node_connects,
             node_disconnects,
             node_counts,
+            shared_node_counts,
             flush_response,
-        ) {
+        )
+        .await
+        {
             CommandAction::Shutdown => return true,
             CommandAction::Flush => return false,
             CommandAction::Continue => {}
@@ -485,8 +507,11 @@ async fn drain_from_channel(
                 node_connects,
                 node_disconnects,
                 node_counts,
+                shared_node_counts,
                 flush_response,
-            ) {
+            )
+            .await
+            {
                 CommandAction::Continue => {}
                 CommandAction::Shutdown => return true,
                 CommandAction::Flush => return false,
@@ -500,8 +525,11 @@ async fn drain_from_channel(
                         node_connects,
                         node_disconnects,
                         node_counts,
+                        shared_node_counts,
                         flush_response,
-                    ) {
+                    )
+                    .await
+                    {
                         CommandAction::Continue => {}
                         CommandAction::Shutdown => return true,
                         CommandAction::Flush => return false,
@@ -520,12 +548,13 @@ enum CommandAction {
     Flush,
 }
 
-fn handle_command(
+async fn handle_command(
     cmd: WriterCommand,
     event_batch: &mut Vec<EventRecord>,
     node_connects: &mut Vec<(NodeId, NodeInformation, String)>,
     node_disconnects: &mut Vec<NodeId>,
     node_counts: &mut HashMap<NodeId, u64>,
+    shared_node_counts: &Arc<Mutex<HashMap<NodeId, u64>>>,
     flush_response: &mut Option<tokio::sync::oneshot::Sender<Result<()>>>,
 ) -> CommandAction {
     match cmd {
@@ -556,6 +585,16 @@ fn handle_command(
         WriterCommand::Flush { response } => {
             *flush_response = Some(response);
             CommandAction::Flush
+        }
+        WriterCommand::FlushNodeStats { response } => {
+            if !node_counts.is_empty() {
+                let mut shared = shared_node_counts.lock().await;
+                for (node_id, count) in node_counts.drain() {
+                    *shared.entry(node_id).or_default() += count;
+                }
+            }
+            let _ = response.send(());
+            CommandAction::Continue
         }
         WriterCommand::Shutdown => CommandAction::Shutdown,
     }
