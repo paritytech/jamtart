@@ -702,8 +702,7 @@ async fn flush_events(store: &Arc<EventStore>, event_batch: &mut Vec<EventRecord
 
     // Flush event_services (independent, failure doesn't roll back events)
     let svc_count = service_rows.len();
-    let svc_ms;
-    if !service_rows.is_empty() {
+    let svc_ms = if !service_rows.is_empty() {
         let refs: Vec<crate::store::EventServiceRow<'_>> = service_rows
             .iter()
             .map(|(ts, nid, et, sid, g, elapsed, load)| {
@@ -714,15 +713,14 @@ async fn flush_events(store: &Arc<EventStore>, event_batch: &mut Vec<EventRecord
         if let Err(e) = store.store_event_services_batch(&refs).await {
             warn!("Failed to flush event_services: {}", e);
         }
-        svc_ms = t0.elapsed().as_millis();
+        t0.elapsed().as_millis()
     } else {
-        svc_ms = 0;
-    }
+        0
+    };
 
     // Flush node_stats (independent)
     let stats_count = stats_rows.len();
-    let stats_ms;
-    if !stats_rows.is_empty() {
+    let stats_ms = if !stats_rows.is_empty() {
         let refs: Vec<crate::store::NodeStatsRow<'_>> = stats_rows
             .iter()
             .map(|(ts, nid, a, b, c, d, e, f, g, h, i, j, k)| {
@@ -747,10 +745,10 @@ async fn flush_events(store: &Arc<EventStore>, event_batch: &mut Vec<EventRecord
         if let Err(e) = store.store_node_stats_batch(&refs).await {
             warn!("Failed to flush node_stats: {}", e);
         }
-        stats_ms = t0.elapsed().as_millis();
+        t0.elapsed().as_millis()
     } else {
-        stats_ms = 0;
-    }
+        0
+    };
 
     // Update metrics
     metrics::counter!("telemetry_events_flushed").increment(event_count as u64);
