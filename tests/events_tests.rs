@@ -686,54 +686,6 @@ fn test_event_encoded_size() {
             slot: 12345,
             hash: [0xAAu8; 32],
         },
-        Event::WorkPackageSubmission {
-            timestamp: get_test_timestamp(),
-            builder: [0x11u8; 32],
-            bundle: true,
-        },
-        Event::WorkPackageBeingShared {
-            timestamp: get_test_timestamp(),
-            primary: [0x22u8; 32],
-        },
-        Event::DuplicateWorkPackage {
-            timestamp: get_test_timestamp(),
-            submission_or_share_id: 42,
-            core: 7,
-            hash: [0x33u8; 32],
-        },
-        Event::ExtrinsicDataReceived {
-            timestamp: get_test_timestamp(),
-            submission_or_share_id: 42,
-        },
-        Event::ImportsReceived {
-            timestamp: get_test_timestamp(),
-            submission_or_share_id: 42,
-        },
-        Event::SharingWorkPackage {
-            timestamp: get_test_timestamp(),
-            submission_id: 42,
-            secondary: [0x44u8; 32],
-        },
-        Event::WorkPackageSharingFailed {
-            timestamp: get_test_timestamp(),
-            submission_id: 42,
-            secondary: [0x44u8; 32],
-            reason: BoundedString::new("timeout").unwrap(),
-        },
-        Event::BundleSent {
-            timestamp: get_test_timestamp(),
-            submission_id: 42,
-            secondary: [0x44u8; 32],
-        },
-        Event::WorkReportSignatureSent {
-            timestamp: get_test_timestamp(),
-            share_id: 42,
-        },
-        Event::WorkReportSignatureReceived {
-            timestamp: get_test_timestamp(),
-            submission_id: 42,
-            secondary: [0x44u8; 32],
-        },
     ];
 
     for event in events {
@@ -800,6 +752,7 @@ fn test_work_package_variants_round_trip() {
     for event in events {
         let mut buf = BytesMut::new();
         event.encode(&mut buf).unwrap();
+        assert_eq!(buf.len(), event.encoded_size());
         let mut cursor = Cursor::new(&buf[..]);
         let decoded = Event::decode_event(&mut cursor, 16).unwrap();
         assert_eq!(decoded.event_type() as u8, event.event_type() as u8);
