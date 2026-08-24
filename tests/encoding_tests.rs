@@ -180,16 +180,18 @@ fn test_fixed_array_encoding_decoding() {
 
 #[test]
 fn test_variable_length_encoding() {
+    // Golden bytes follow the Graypaper general natural number serialization,
+    // matching what real nodes (jam-codec) put on the wire.
     let test_cases = vec![
         (0u64, vec![0]),
         (1, vec![1]),
         (127, vec![127]),
-        (128, vec![128, 1]),
-        (255, vec![255, 1]),
-        (256, vec![128, 2]),
-        (16383, vec![255, 127]),
-        (16384, vec![128, 128, 1]),
-        (99999, vec![159, 141, 6]), // Large but below 100k limit
+        (128, vec![128, 128]),
+        (255, vec![128, 255]),
+        (256, vec![129, 0]),
+        (16383, vec![191, 255]),
+        (16384, vec![192, 0, 64]),
+        (99999, vec![193, 159, 134]), // Large but below 100k limit
     ];
 
     for (value, expected) in test_cases {
@@ -398,7 +400,7 @@ fn test_distributing_assurance_bitfield_fixed_no_prefix() {
 
 #[test]
 fn test_sending_segment_shard_request_varlen_prefix() {
-    // BoundedVec<(u16,u16)> shards use a LEB128 variable-length count prefix.
+    // BoundedVec<(u16,u16)> shards use a variable-length count prefix.
     use tart_backend::events::Event;
 
     let event = Event::SendingSegmentShardRequest {

@@ -1927,7 +1927,7 @@ impl Encode for Event {
                 submission_id.encode(buf)?;
                 assurer.encode(buf)?;
                 proofs.encode(buf)?;
-                // BoundedVec<(u16, u16)> — LEB128 length prefix then pairs
+                // BoundedVec<(u16, u16)> — natural-number length prefix then pairs
                 encode_variable_length(shards.len() as u64, buf)?;
                 for (seg_id, shard_idx) in shards.iter() {
                     seg_id.encode(buf)?;

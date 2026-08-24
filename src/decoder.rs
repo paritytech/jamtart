@@ -142,40 +142,20 @@ impl Decode for Vec<u8> {
     }
 }
 
+// Graypaper general natural number serialization, via the same crate real nodes use.
 pub fn decode_variable_length(buf: &mut Cursor<&[u8]>) -> Result<u64, DecodingError> {
-    let mut value = 0u64;
-    let mut shift = 0;
     let start_pos = buf.position();
     let available = buf.remaining();
 
-    loop {
-        if buf.remaining() < 1 {
-            return Err(DecodingError::InsufficientData {
+    let mut input = &buf.get_ref()[start_pos as usize..];
+    let jam_codec::Compact(value) =
+        <jam_codec::Compact<u64> as jam_codec::Decode>::decode(&mut input).map_err(|_| {
+            DecodingError::InsufficientData {
                 needed: 1,
-                available: buf.remaining(),
-            });
-        }
-
-        let byte = buf.get_u8();
-        value |= ((byte & 0x7F) as u64) << shift;
-
-        if byte & 0x80 == 0 {
-            break;
-        }
-
-        shift += 7;
-        if shift >= 64 {
-            return Err(DecodingError::InvalidDiscriminator(byte));
-        }
-
-        // Sanity check: if we've read more than 9 bytes for a u64, something is wrong
-        if buf.position() - start_pos > 9 {
-            let data_slice = &buf.get_ref()[start_pos as usize..];
-            tracing::warn!("Variable length decode reading too many bytes. Available: {}, Value so far: {}, Data: {}", 
-                available, value, hex_dump(data_slice, 20));
-            return Err(DecodingError::InvalidDiscriminator(byte));
-        }
-    }
+                available,
+            }
+        })?;
+    buf.set_position((buf.get_ref().len() - input.len()) as u64);
 
     // Additional sanity check for unreasonable values
     if value > 1_000_000 {
