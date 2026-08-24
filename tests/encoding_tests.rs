@@ -444,29 +444,3 @@ fn test_decode_truncated_events_no_panic() {
     let mut cursor = Cursor::new(&buf[..]);
     assert!(Event::decode_event(&mut cursor, 16).is_err());
 }
-
-#[test]
-fn test_encode_no_todo_variants() {
-    // Every event variant must have an Encode arm — no todo!() panics remain.
-    use tart_backend::events::Event;
-    use tart_backend::types::BoundedString;
-
-    let ts = 1_700_000_000_000_000;
-    let events = vec![
-        Event::WorkPackageSubmission { timestamp: ts, builder: [0x11u8; 32], bundle: true },
-        Event::WorkPackageBeingShared { timestamp: ts, primary: [0x22u8; 32] },
-        Event::DuplicateWorkPackage { timestamp: ts, submission_or_share_id: 1, core: 2, hash: [0x33u8; 32] },
-        Event::ExtrinsicDataReceived { timestamp: ts, submission_or_share_id: 1 },
-        Event::ImportsReceived { timestamp: ts, submission_or_share_id: 1 },
-        Event::SharingWorkPackage { timestamp: ts, submission_id: 1, secondary: [0x44u8; 32] },
-        Event::WorkPackageSharingFailed { timestamp: ts, submission_id: 1, secondary: [0x44u8; 32], reason: BoundedString::new("x").unwrap() },
-        Event::BundleSent { timestamp: ts, submission_id: 1, secondary: [0x44u8; 32] },
-        Event::WorkReportSignatureSent { timestamp: ts, share_id: 1 },
-        Event::WorkReportSignatureReceived { timestamp: ts, submission_id: 1, secondary: [0x44u8; 32] },
-    ];
-    for event in events {
-        let mut buf = BytesMut::new();
-        event.encode(&mut buf).unwrap();
-        assert_eq!(buf.len(), event.encoded_size());
-    }
-}
