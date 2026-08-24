@@ -657,15 +657,6 @@ impl Encode for AvailabilityStatement {
     }
 }
 
-impl crate::decoder::Decode for AvailabilityStatement {
-    fn decode(buf: &mut std::io::Cursor<&[u8]>) -> Result<Self, crate::decoder::DecodingError> {
-        Ok(Self {
-            anchor: crate::decoder::Decode::decode(buf)?,
-            bitfield: crate::decoder::Decode::decode(buf)?,
-        })
-    }
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum ReconstructionKind {
