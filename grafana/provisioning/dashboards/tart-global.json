@@ -1890,378 +1890,12 @@
       "type": "table"
     },
     {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "jamtart-api"
-      },
-      "description": "[JIP-3] Per-node counts of the event types picked in the Event Type variable \u2014 one line per reporting node, legend sorted by total so the top senders come first. Same data as Selected Events, split by node (group_by=node_id). Resolution follows the range: 30-second counts below 1-minute intervals, 1-minute / 1-hour aggregates above.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "smooth",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 10,
-        "w": 12,
-        "x": 0,
-        "y": 32
-      },
-      "id": 42,
-      "options": {
-        "legend": {
-          "calcs": [
-            "sum"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "sortBy": "Total",
-          "sortDesc": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "columns": [
-            {
-              "selector": "ts",
-              "text": "Time",
-              "type": "timestamp"
-            },
-            {
-              "selector": "node_id",
-              "text": "Node ID",
-              "type": "string"
-            },
-            {
-              "selector": "count",
-              "text": "Events",
-              "type": "number"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "jamtart-api"
-          },
-          "format": "table",
-          "parser": "backend",
-          "refId": "A",
-          "root_selector": "",
-          "source": "url",
-          "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/timeseries?event_types=${event_type}&group_by=node_id&interval=${__interval}&start=${__from:date:iso}&end=${__to:date:iso}",
-          "url_options": {
-            "data": "",
-            "headers": [],
-            "method": "GET",
-            "params": []
-          }
-        }
-      ],
-      "title": "Selected Events by Node",
-      "type": "timeseries",
-      "transformations": [
-        {
-          "id": "partitionByValues",
-          "options": {
-            "fields": [
-              "Node ID"
-            ],
-            "keepFields": false,
-            "naming": {
-              "asLabels": true
-            }
-          }
-        },
-        {
-          "id": "renameByRegex",
-          "options": {
-            "regex": "^(.*?)([0-9a-f]{12})[0-9a-f]{52}(.*)$",
-            "renamePattern": "$1$2\u2026$3"
-          }
-        }
-      ],
-      "maxDataPoints": 300
-    },
-    {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "jamtart-api"
-      },
-      "description": "[JIP-3] Nodes ranked by how many of the selected event types they reported in the time range (top 100), with each node's share of the network-wide total and its handshake identity: address, implementation, version, connection state, last seen. Click a Node ID to open the TART Node dashboard for it.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "auto"
-            },
-            "inspect": false
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Node ID"
-            },
-            "properties": [
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "Open TART Node dashboard",
-                    "url": "/d/tart-grafana-node?var-node_id=${__data.fields[\"Node ID\"]}&${__url_time_range}"
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Events"
-            },
-            "properties": [
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "type": "gauge",
-                  "mode": "gradient",
-                  "valueDisplayMode": "text"
-                }
-              },
-              {
-                "id": "color",
-                "value": {
-                  "mode": "continuous-BlPu"
-                }
-              },
-              {
-                "id": "custom.width",
-                "value": 160
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Share"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "percentunit"
-              },
-              {
-                "id": "decimals",
-                "value": 1
-              },
-              {
-                "id": "custom.width",
-                "value": 80
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Connected"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "options": {
-                      "false": {
-                        "color": "red",
-                        "index": 1,
-                        "text": "No"
-                      },
-                      "true": {
-                        "color": "green",
-                        "index": 0,
-                        "text": "Yes"
-                      }
-                    },
-                    "type": "value"
-                  }
-                ]
-              },
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "type": "color-text"
-                }
-              },
-              {
-                "id": "custom.width",
-                "value": 90
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 10,
-        "w": 12,
-        "x": 12,
-        "y": 32
-      },
-      "id": 43,
-      "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
-        "showHeader": true,
-        "sortBy": [
-          {
-            "desc": true,
-            "displayName": "Events"
-          }
-        ]
-      },
-      "targets": [
-        {
-          "columns": [
-            {
-              "selector": "node_id",
-              "text": "Node ID",
-              "type": "string"
-            },
-            {
-              "selector": "count",
-              "text": "Events",
-              "type": "number"
-            },
-            {
-              "selector": "share",
-              "text": "Share",
-              "type": "number"
-            },
-            {
-              "selector": "address",
-              "text": "Address",
-              "type": "string"
-            },
-            {
-              "selector": "implementation_name",
-              "text": "Impl",
-              "type": "string"
-            },
-            {
-              "selector": "implementation_version",
-              "text": "Version",
-              "type": "string"
-            },
-            {
-              "selector": "is_connected",
-              "text": "Connected",
-              "type": "string"
-            },
-            {
-              "selector": "last_seen_at",
-              "text": "Last Seen",
-              "type": "timestamp"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "jamtart-api"
-          },
-          "format": "table",
-          "parser": "backend",
-          "refId": "A",
-          "root_selector": "",
-          "source": "url",
-          "type": "json",
-          "url": "http://tart-backend:8080/api/grafana/events-by-node?event_types=${event_type}&interval=${__interval}&limit=100&start=${__from:date:iso}&end=${__to:date:iso}",
-          "url_options": {
-            "data": "",
-            "headers": [],
-            "method": "GET",
-            "params": []
-          }
-        }
-      ],
-      "title": "Top Senders (Selected Events)",
-      "type": "table",
-      "maxDataPoints": 300
-    },
-    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 42
+        "y": 32
       },
       "id": 16,
       "title": "Blocks & Pipeline",
@@ -2326,7 +1960,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 43
+        "y": 33
       },
       "id": 14,
       "options": {
@@ -2440,7 +2074,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 43
+        "y": 33
       },
       "id": 15,
       "options": {
@@ -2661,7 +2295,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 43
+        "y": 33
       },
       "id": 17,
       "options": {
@@ -2773,7 +2407,7 @@
         "h": 6,
         "w": 12,
         "x": 0,
-        "y": 51
+        "y": 41
       },
       "id": 18,
       "options": {
@@ -2913,7 +2547,7 @@
         "h": 6,
         "w": 12,
         "x": 12,
-        "y": 51
+        "y": 41
       },
       "id": 19,
       "options": {
@@ -2982,7 +2616,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 57
+        "y": 47
       },
       "id": 23,
       "title": "Nodes & Data Availability",
@@ -3031,7 +2665,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 58
+        "y": 48
       },
       "id": 24,
       "options": {
@@ -3148,7 +2782,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 58
+        "y": 48
       },
       "id": 25,
       "options": {
@@ -3267,7 +2901,7 @@
         "h": 4,
         "w": 24,
         "x": 0,
-        "y": 58
+        "y": 48
       },
       "id": 26,
       "options": {

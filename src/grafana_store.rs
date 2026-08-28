@@ -101,22 +101,6 @@ fn snap_interval(input: &str) -> &'static str {
     "1d"
 }
 
-/// Pick the event-count tier for a query: by resolution first (sub-minute →
-/// 30 s raw counts, sub-hour → 1 m aggregates, otherwise 1 h), then bumped to
-/// a coarser tier when the range starts beyond the finer tier's retention
-/// (30 s counts keep 3 days, 1 m aggregates 30 days). The upgrade is silent:
-/// the finer data simply no longer exists for that part of the range.
-fn select_event_stats_table(interval_secs: i64, start: DateTime<Utc>) -> &'static str {
-    let age = Utc::now() - start;
-    if interval_secs < 60 && age <= chrono::Duration::days(3) {
-        "all_event_stats_30s"
-    } else if interval_secs < 3600 && age <= chrono::Duration::days(30) {
-        "all_event_stats_1m"
-    } else {
-        "all_event_stats_1h"
-    }
-}
-
 impl EventStore {
     // ── 1. grafana_timeseries ──────────────────────────────────────────
 
@@ -150,10 +134,23 @@ impl EventStore {
         let pg_interval = interval_to_pg(interval);
 
         // Select aggregate table (interval-based, then retention-aware upgrade)
+        let age = Utc::now() - start;
         let table = if group_by == Some("core") || core.is_some() {
             "all_core_stats_1m"
+        } else if interval_secs < 60 {
+            if age > chrono::Duration::days(3) {
+                "all_event_stats_1m" // 30s retention is 3 days, upgrade silently
+            } else {
+                "all_event_stats_30s"
+            }
+        } else if interval_secs < 3600 {
+            if age > chrono::Duration::days(30) {
+                "all_event_stats_1h" // 1m retention is 30 days, upgrade silently
+            } else {
+                "all_event_stats_1m"
+            }
         } else {
-            select_event_stats_table(interval_secs, start)
+            "all_event_stats_1h"
         };
 
         // Safety: table is from a hardcoded set
@@ -255,91 +252,6 @@ impl EventStore {
             .collect();
 
         Ok(results)
-    }
-
-    // ── 1b. grafana_events_by_node ─────────────────────────────────────
-
-    /// Per-node totals for a set of event types over a range, highest first,
-    /// joined with each node's handshake identity.
-    ///
-    /// Reads the same aggregate tiers as `grafana_timeseries`. `interval` is only
-    /// a resolution hint that picks the tier; `None` derives it from the range
-    /// length as roughly 300 buckets, mirroring Grafana's `$__interval`, so short
-    /// ranges read the fresh 30 s counts and long ranges the 1 m / 1 h aggregates.
-    /// `share` is computed over all nodes before `limit` is applied.
-    pub async fn grafana_events_by_node(
-        &self,
-        start: DateTime<Utc>,
-        end: DateTime<Utc>,
-        interval: Option<&str>,
-        event_types: Option<&[i16]>,
-        limit: i64,
-    ) -> Result<Vec<EventsByNodeRow>, sqlx::Error> {
-        let interval_secs = match interval {
-            Some(i) => interval_to_seconds(snap_interval(i)).unwrap_or(60),
-            None => ((end - start).num_seconds() / 300).max(1),
-        };
-        let table = select_event_stats_table(interval_secs, start);
-
-        // Safety: table is from a hardcoded set
-        if !VALID_TABLES.contains(&table) {
-            return Err(sqlx::Error::Protocol(format!("invalid table: {table}")));
-        }
-
-        let (type_filter, limit_idx) = if event_types.is_some() {
-            ("AND event_type = ANY($3)", 4)
-        } else {
-            ("", 3)
-        };
-
-        // `share` is a window over the full per-node totals, so it is relative
-        // to every node in the range even when LIMIT trims the output.
-        let sql = format!(
-            r#"
-            WITH totals AS (
-                SELECT node_id, SUM(event_count)::BIGINT AS count
-                FROM {table}
-                WHERE bucket >= $1 AND bucket < $2 {type_filter}
-                GROUP BY node_id
-            )
-            SELECT
-                t.node_id,
-                t.count,
-                t.count::DOUBLE PRECISION
-                    / NULLIF(SUM(t.count) OVER (), 0)::DOUBLE PRECISION AS share,
-                n.address,
-                n.implementation_name,
-                n.implementation_version,
-                n.is_connected,
-                n.last_seen_at
-            FROM totals t
-            LEFT JOIN nodes n ON n.node_id = t.node_id
-            ORDER BY t.count DESC, t.node_id ASC
-            LIMIT ${limit_idx}
-            "#,
-        );
-
-        let mut query = sqlx::query(&sql).bind(start).bind(end);
-        if let Some(types) = event_types {
-            query = query.bind(types.to_vec());
-        }
-        query = query.bind(limit);
-
-        let rows = query.fetch_all(self.pool()).await?;
-
-        Ok(rows
-            .iter()
-            .map(|row| EventsByNodeRow {
-                node_id: row.get("node_id"),
-                count: row.get("count"),
-                share: row.get::<Option<f64>, _>("share").unwrap_or(0.0),
-                address: row.get("address"),
-                implementation_name: row.get("implementation_name"),
-                implementation_version: row.get("implementation_version"),
-                is_connected: row.get("is_connected"),
-                last_seen_at: row.get("last_seen_at"),
-            })
-            .collect())
     }
 
     // ── 2. grafana_stats ───────────────────────────────────────────────
@@ -3930,44 +3842,5 @@ mod tests {
         assert!(p75 <= p95, "p75 ({p75}) <= p95 ({p95})");
         assert!(p95 <= p99, "p95 ({p95}) <= p99 ({p99})");
         assert!(p99 <= p100, "p99 ({p99}) <= p100 ({p100})");
-    }
-
-    #[test]
-    fn event_stats_tier_by_resolution() {
-        let recent = Utc::now() - chrono::Duration::hours(1);
-        assert_eq!(select_event_stats_table(30, recent), "all_event_stats_30s");
-        assert_eq!(select_event_stats_table(59, recent), "all_event_stats_30s");
-        assert_eq!(select_event_stats_table(60, recent), "all_event_stats_1m");
-        assert_eq!(select_event_stats_table(3599, recent), "all_event_stats_1m");
-        assert_eq!(select_event_stats_table(3600, recent), "all_event_stats_1h");
-    }
-
-    #[test]
-    fn event_stats_tier_upgrades_past_retention() {
-        // 30 s counts keep 3 days: older ranges fall back to the 1 m aggregates.
-        let four_days = Utc::now() - chrono::Duration::days(4);
-        assert_eq!(
-            select_event_stats_table(30, four_days),
-            "all_event_stats_1m"
-        );
-        assert_eq!(
-            select_event_stats_table(60, four_days),
-            "all_event_stats_1m"
-        );
-        // 1 m aggregates keep 30 days: anything older reads the 1 h tier, whatever
-        // resolution was asked for.
-        let forty_days = Utc::now() - chrono::Duration::days(40);
-        assert_eq!(
-            select_event_stats_table(30, forty_days),
-            "all_event_stats_1h"
-        );
-        assert_eq!(
-            select_event_stats_table(60, forty_days),
-            "all_event_stats_1h"
-        );
-        assert_eq!(
-            select_event_stats_table(3600, forty_days),
-            "all_event_stats_1h"
-        );
     }
 }

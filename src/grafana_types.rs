@@ -161,30 +161,6 @@ pub struct TimeseriesRow {
     pub node_id: Option<String>,
 }
 
-// ── /api/grafana/events-by-node ─────────────────────────────────────────
-
-/// One node's total for the selected event types over the range, with the node's
-/// handshake identity attached — the "who reports most of this event" view.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct EventsByNodeRow {
-    /// Node's JIP-3 peer ID — its Ed25519 public key, hex-encoded (64 characters)
-    pub node_id: String,
-    /// Events of the selected types this node reported in the range
-    pub count: i64,
-    /// `count` divided by the total over all nodes in the range (0–1)
-    pub share: f64,
-    /// Network address the node's telemetry session came from (`ip:port`)
-    pub address: Option<String>,
-    /// Implementation name the node reported at handshake (e.g. "polkajam")
-    pub implementation_name: Option<String>,
-    /// Implementation version the node reported at handshake
-    pub implementation_version: Option<String>,
-    /// Whether the node is reporting telemetry right now
-    pub is_connected: Option<bool>,
-    /// When the node was last heard from
-    pub last_seen_at: Option<DateTime<Utc>>,
-}
-
 // ── /api/grafana/cores ──────────────────────────────────────────────────
 
 /// One core's work-package activity over the time range.
