@@ -759,7 +759,12 @@ fn test_work_package_variants_round_trip() {
         // Re-encoding the decoded event must reproduce the original bytes
         let mut reencoded = BytesMut::new();
         decoded.encode(&mut reencoded).unwrap();
-        assert_eq!(reencoded, buf, "round-trip mismatch for {:?}", event.event_type());
+        assert_eq!(
+            reencoded,
+            buf,
+            "round-trip mismatch for {:?}",
+            event.event_type()
+        );
     }
 }
 

@@ -1646,7 +1646,9 @@ impl Encode for Event {
                 submission_or_share_id.encode(buf)?;
                 reason.encode(buf)?;
             }
-            Event::WorkPackageSubmission { builder, bundle, .. } => {
+            Event::WorkPackageSubmission {
+                builder, bundle, ..
+            } => {
                 builder.encode(buf)?;
                 bundle.encode(buf)?;
             }
@@ -1676,7 +1678,9 @@ impl Encode for Event {
                 submission_or_share_id.encode(buf)?;
             }
             Event::SharingWorkPackage {
-                submission_id, secondary, ..
+                submission_id,
+                secondary,
+                ..
             } => {
                 submission_id.encode(buf)?;
                 secondary.encode(buf)?;
@@ -1692,7 +1696,9 @@ impl Encode for Event {
                 reason.encode(buf)?;
             }
             Event::BundleSent {
-                submission_id, secondary, ..
+                submission_id,
+                secondary,
+                ..
             } => {
                 submission_id.encode(buf)?;
                 secondary.encode(buf)?;
@@ -1701,7 +1707,9 @@ impl Encode for Event {
                 share_id.encode(buf)?;
             }
             Event::WorkReportSignatureReceived {
-                submission_id, secondary, ..
+                submission_id,
+                secondary,
+                ..
             } => {
                 submission_id.encode(buf)?;
                 secondary.encode(buf)?;
@@ -2164,14 +2172,14 @@ impl Encode for Event {
             Event::GuaranteesDistributed { .. } => 8, // submission_id only
             Event::WorkPackageFailed { reason, .. } => 8 + reason.encoded_size(),
             Event::WorkPackageSubmission { .. } => 32 + 1, // builder + bundle
-            Event::WorkPackageBeingShared { .. } => 32,     // primary
+            Event::WorkPackageBeingShared { .. } => 32,    // primary
             Event::DuplicateWorkPackage { .. } => 8 + 2 + 32, // submission_or_share_id + core + hash
-            Event::ExtrinsicDataReceived { .. } => 8,       // submission_or_share_id
-            Event::ImportsReceived { .. } => 8,             // submission_or_share_id
-            Event::SharingWorkPackage { .. } => 8 + 32,     // submission_id + secondary
+            Event::ExtrinsicDataReceived { .. } => 8,         // submission_or_share_id
+            Event::ImportsReceived { .. } => 8,               // submission_or_share_id
+            Event::SharingWorkPackage { .. } => 8 + 32,       // submission_id + secondary
             Event::WorkPackageSharingFailed { reason, .. } => 8 + 32 + reason.encoded_size(),
-            Event::BundleSent { .. } => 8 + 32,             // submission_id + secondary
-            Event::WorkReportSignatureSent { .. } => 8,     // share_id
+            Event::BundleSent { .. } => 8 + 32, // submission_id + secondary
+            Event::WorkReportSignatureSent { .. } => 8, // share_id
             Event::WorkReportSignatureReceived { .. } => 8 + 32, // submission_id + secondary
             // Guarantee sending (106-108)
             Event::SendingGuarantee { .. } => 8 + 32, // built_id + recipient
@@ -2218,7 +2226,8 @@ impl Encode for Event {
             // Segment fetching (162-178) — SegmentsRootMapped handled elsewhere
             Event::SegmentsRootMapped { .. } => 8 + 32 + 32, // submission_id + segments_root + erasure_root
             Event::SendingSegmentShardRequest { shards, .. } => {
-                8 + 32 + 1 + variable_length_size(shards.len() as u64) + shards.len() * 4 // proofs + len + pairs
+                8 + 32 + 1 + variable_length_size(shards.len() as u64) + shards.len() * 4
+                // proofs + len + pairs
             }
             Event::ReceivingSegmentShardRequest { .. } => 32 + 1, // sender + proofs
             Event::SegmentShardRequestFailed { reason, .. } => 8 + reason.encoded_size(),

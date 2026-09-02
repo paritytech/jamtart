@@ -381,7 +381,11 @@ fn test_distributing_assurance_bitfield_fixed_no_prefix() {
     event.encode(&mut buf).unwrap();
 
     // content = timestamp(8) + discriminator(1) + anchor(32) + bitfield(2) = 43
-    assert_eq!(buf.len(), 43, "no length prefix expected for fixed bitfield");
+    assert_eq!(
+        buf.len(),
+        43,
+        "no length prefix expected for fixed bitfield"
+    );
     assert_eq!(buf[41], 0xFF);
     assert_eq!(buf[42], 0xFF);
 
@@ -395,7 +399,11 @@ fn test_distributing_assurance_bitfield_fixed_no_prefix() {
         }
         _ => panic!("wrong variant decoded"),
     }
-    assert_eq!(cursor.position() as usize, buf.len(), "whole event consumed");
+    assert_eq!(
+        cursor.position() as usize,
+        buf.len(),
+        "whole event consumed"
+    );
 }
 
 #[test]
@@ -407,7 +415,7 @@ fn test_sending_segment_shard_request_varlen_prefix() {
         timestamp: 1_700_000_000_000_000,
         submission_id: 42,
         assurer: [0x11u8; 32],
-        proofs: true, // bool — 1 byte, no prefix
+        proofs: true,               // bool — 1 byte, no prefix
         shards: vec![(1u16, 2u16)], // BoundedVec<(u16,u16)> — varlen count 1 byte + 4 bytes
     };
 
@@ -435,7 +443,7 @@ fn test_decode_truncated_events_no_panic() {
     buf.extend_from_slice(&1_700_000_000_000_000u64.to_le_bytes());
     buf.extend_from_slice(&[126]); // DistributingAssurance discriminator
     buf.extend_from_slice(&[0xABu8; 32]); // anchor
-    // bitfield bytes omitted
+                                          // bitfield bytes omitted
     let mut cursor = Cursor::new(&buf[..]);
     assert!(Event::decode_event(&mut cursor, 16).is_err());
 
