@@ -696,6 +696,79 @@ fn test_event_encoded_size() {
 }
 
 #[test]
+fn test_work_package_variants_round_trip() {
+    // Each of the 10 formerly-todo variants must round-trip through the decoder
+    let events = vec![
+        Event::WorkPackageSubmission {
+            timestamp: get_test_timestamp(),
+            builder: [0x11u8; 32],
+            bundle: true,
+        },
+        Event::WorkPackageBeingShared {
+            timestamp: get_test_timestamp(),
+            primary: [0x22u8; 32],
+        },
+        Event::DuplicateWorkPackage {
+            timestamp: get_test_timestamp(),
+            submission_or_share_id: 42,
+            core: 7,
+            hash: [0x33u8; 32],
+        },
+        Event::ExtrinsicDataReceived {
+            timestamp: get_test_timestamp(),
+            submission_or_share_id: 42,
+        },
+        Event::ImportsReceived {
+            timestamp: get_test_timestamp(),
+            submission_or_share_id: 42,
+        },
+        Event::SharingWorkPackage {
+            timestamp: get_test_timestamp(),
+            submission_id: 42,
+            secondary: [0x44u8; 32],
+        },
+        Event::WorkPackageSharingFailed {
+            timestamp: get_test_timestamp(),
+            submission_id: 42,
+            secondary: [0x44u8; 32],
+            reason: BoundedString::new("timeout").unwrap(),
+        },
+        Event::BundleSent {
+            timestamp: get_test_timestamp(),
+            submission_id: 42,
+            secondary: [0x44u8; 32],
+        },
+        Event::WorkReportSignatureSent {
+            timestamp: get_test_timestamp(),
+            share_id: 42,
+        },
+        Event::WorkReportSignatureReceived {
+            timestamp: get_test_timestamp(),
+            submission_id: 42,
+            secondary: [0x44u8; 32],
+        },
+    ];
+
+    for event in events {
+        let mut buf = BytesMut::new();
+        event.encode(&mut buf).unwrap();
+        assert_eq!(buf.len(), event.encoded_size());
+        let mut cursor = Cursor::new(&buf[..]);
+        let decoded = Event::decode_event(&mut cursor, 16).unwrap();
+        assert_eq!(decoded.event_type() as u8, event.event_type() as u8);
+        // Re-encoding the decoded event must reproduce the original bytes
+        let mut reencoded = BytesMut::new();
+        decoded.encode(&mut reencoded).unwrap();
+        assert_eq!(
+            reencoded,
+            buf,
+            "round-trip mismatch for {:?}",
+            event.event_type()
+        );
+    }
+}
+
+#[test]
 fn test_status_event_with_message_frame() {
     // Test the exact Status event that's failing in api_tests
     let event = Event::Status {

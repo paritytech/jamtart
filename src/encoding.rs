@@ -142,30 +142,14 @@ impl<T: Encode> Encode for Vec<T> {
     }
 }
 
-pub fn encode_variable_length(mut value: u64, buf: &mut BytesMut) -> Result<(), EncodingError> {
-    loop {
-        let byte = (value & 0x7F) as u8;
-        value >>= 7;
-        if value == 0 {
-            buf.put_u8(byte);
-            break;
-        } else {
-            buf.put_u8(byte | 0x80);
-        }
-    }
+// Graypaper general natural number serialization, via the same crate real nodes use.
+pub fn encode_variable_length(value: u64, buf: &mut BytesMut) -> Result<(), EncodingError> {
+    buf.extend_from_slice(&jam_codec::Encode::encode(&jam_codec::Compact(value)));
     Ok(())
 }
 
-pub fn variable_length_size(mut value: u64) -> usize {
-    let mut size = 0;
-    loop {
-        size += 1;
-        value >>= 7;
-        if value == 0 {
-            break;
-        }
-    }
-    size
+pub fn variable_length_size(value: u64) -> usize {
+    <jam_codec::Compact<u64> as jam_codec::CompactLen<u64>>::compact_len(&value)
 }
 
 pub fn encode_message<T: Encode>(msg: &T) -> Result<Vec<u8>, EncodingError> {

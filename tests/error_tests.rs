@@ -512,9 +512,9 @@ fn test_reason_string_edge_cases() {
     let mut buf = BytesMut::new();
     reason.encode(&mut buf).unwrap();
 
-    // Length encoding for 128 should be 2 bytes: [128, 1]
+    // Graypaper natural number encoding for 128 is 2 bytes: [128, 128]
     assert_eq!(buf[0], 128);
-    assert_eq!(buf[1], 1);
+    assert_eq!(buf[1], 128);
     assert_eq!(&buf[2..], max_reason.as_bytes());
 
     // Test reason with UTF-8 characters

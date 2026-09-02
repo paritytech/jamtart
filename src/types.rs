@@ -647,21 +647,13 @@ pub struct AvailabilityStatement {
 impl Encode for AvailabilityStatement {
     fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodingError> {
         self.anchor.encode(buf)?;
-        self.bitfield.encode(buf)?; // Encoded with variable-length prefix
+        // JIP-3: bitfield is [u8; ceil(core_count/8)] — fixed size, no length prefix
+        buf.extend_from_slice(&self.bitfield);
         Ok(())
     }
 
     fn encoded_size(&self) -> usize {
-        32 + variable_length_size(self.bitfield.len() as u64) + self.bitfield.len()
-    }
-}
-
-impl crate::decoder::Decode for AvailabilityStatement {
-    fn decode(buf: &mut std::io::Cursor<&[u8]>) -> Result<Self, crate::decoder::DecodingError> {
-        Ok(Self {
-            anchor: crate::decoder::Decode::decode(buf)?,
-            bitfield: crate::decoder::Decode::decode(buf)?,
-        })
+        32 + self.bitfield.len()
     }
 }
 
