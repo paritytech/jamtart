@@ -96,6 +96,7 @@ curl -s "$BASE/grafana/stats?start=$(date -u -d '5 min ago' +%FT%TZ)&end=$(date 
 - `/grafana/validator-profiling` (+ `-timeseries`) — slow or failing guarantors vs the rest
 - `/grafana/validators/cores` — observed node→core mapping
 - `/grafana/nodes` — every node ever seen: version, last heard from
+- `/grafana/events-by-node` — which nodes report the most of a given event type (top senders, with address and version)
 - `/grafana/node-stats` (+ `-aggregate`) — Status(10) snapshots: peers, DA store, guarantee pool
 
 **Which service is expensive?**
