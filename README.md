@@ -644,7 +644,7 @@ jam-validator \
   --dev-validator 0
 ```
 
-**Protocol:** Binary TCP (JIP-3 telemetry specification)
+**Protocol:** Binary TCP ([JIP-3][JIP-3] telemetry specification)
 **Port:** 9000 (configurable via `TELEMETRY_BIND`)
 
 ### REST API Integration
@@ -1158,7 +1158,7 @@ Build custom dashboards or integrations using the REST API and WebSocket:
 
 ### Event Types Reference
 
-TART supports all 130 event types from the JIP-3 specification:
+TART supports all 130 event types from the [JIP-3][JIP-3] specification:
 
 | Event ID | Event Name | Description |
 |----------|------------|-------------|
@@ -1177,7 +1177,7 @@ TART supports all 130 event types from the JIP-3 specification:
 | 160-178 | Segment Events | Segment recovery and reconstruction |
 | 190-199 | Preimage Events | Preimage distribution |
 
-**Full specification:** See [JIP-3.md](JIP-3.md) for complete event definitions.
+**Full specification:** See [JIP-3.md][JIP-3] for complete event definitions.
 
 ### Data Export
 
@@ -1767,4 +1767,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Acknowledgments
 
 - Built for the [JAM (Join-Accumulate Machine)](https://graypaper.com/) protocol
-- Specification: JIP-3 Telemetry
+- Specification: [JIP-3][JIP-3] Telemetry
+
+[JIP-3]: https://github.com/polkadot-fellows/JIPs/blob/main/JIP-3.md
