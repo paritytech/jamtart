@@ -803,7 +803,8 @@ impl EventStore {
         let (core_count, val_count, epoch_period, slot_period_sec) = if let Some(ref p) = params {
             (
                 p.get("core_count").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
-                p.get("val_count").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
+                // GP 0.8.0 dropped val_count from the params; use the max (3 per core).
+                (p.get("core_count").and_then(|v| v.as_u64()).unwrap_or(0) * 3) as u16,
                 p.get("epoch_period").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
                 p.get("slot_period_sec")
                     .and_then(|v| v.as_u64())

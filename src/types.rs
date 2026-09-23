@@ -704,20 +704,16 @@ pub struct ProtocolParameters {
     pub max_dependencies: u16,
     pub max_tickets_per_block: u16,
     pub max_lookup_anchor_age: Slot,
-    pub tickets_attempts_number: u16,
     pub auth_window: u16,
     pub slot_period_sec: u16,
     pub auth_queue_len: u16,
     pub rotation_period: u16,
     pub max_extrinsics: u16,
     pub availability_timeout: u16,
-    pub val_count: ValIndex,
     pub max_authorizer_code_size: u32,
     pub max_input: u32,
     pub max_service_code_size: u32,
-    pub basic_piece_len: u32,
     pub max_imports: u32,
-    pub segment_piece_count: u32,
     pub max_report_elective_data: u32,
     pub transfer_memo_size: u32,
     pub max_exports: u32,
@@ -741,20 +737,16 @@ impl Encode for ProtocolParameters {
         self.max_dependencies.encode(buf)?;
         self.max_tickets_per_block.encode(buf)?;
         self.max_lookup_anchor_age.encode(buf)?;
-        self.tickets_attempts_number.encode(buf)?;
         self.auth_window.encode(buf)?;
         self.slot_period_sec.encode(buf)?;
         self.auth_queue_len.encode(buf)?;
         self.rotation_period.encode(buf)?;
         self.max_extrinsics.encode(buf)?;
         self.availability_timeout.encode(buf)?;
-        self.val_count.encode(buf)?;
         self.max_authorizer_code_size.encode(buf)?;
         self.max_input.encode(buf)?;
         self.max_service_code_size.encode(buf)?;
-        self.basic_piece_len.encode(buf)?;
         self.max_imports.encode(buf)?;
-        self.segment_piece_count.encode(buf)?;
         self.max_report_elective_data.encode(buf)?;
         self.transfer_memo_size.encode(buf)?;
         self.max_exports.encode(buf)?;
@@ -763,7 +755,7 @@ impl Encode for ProtocolParameters {
     }
 
     fn encoded_size(&self) -> usize {
-        // 3 Balance (8 each) + 4 UnsignedGas (8 each) + 4 Slot (4 each) + 13 u16 (2 each) + 9 u32 (4 each)
-        3 * 8 + 4 * 8 + 4 * 4 + 13 * 2 + 9 * 4
+        // 3 Balance (8 each) + 4 UnsignedGas (8 each) + 4 Slot (4 each) + 11 u16 (2 each) + 7 u32 (4 each)
+        3 * 8 + 4 * 8 + 4 * 4 + 11 * 2 + 7 * 4
     }
 }
