@@ -243,7 +243,7 @@ impl JamRpcClient {
             let mut p = self.params.write().await;
             *p = Some(ProtocolParams {
                 core_count: params.core_count,
-                validator_count: params.max_val_count(),
+                validator_count: params.val_count,
                 epoch_period: params.epoch_period,
                 slot_period_sec: params.slot_period_sec,
                 max_refine_gas: params.max_refine_gas,
@@ -257,7 +257,7 @@ impl JamRpcClient {
         info!(
             "Connected to JAM RPC: {} cores, {} validators",
             params.core_count,
-            params.max_val_count()
+            params.val_count
         );
 
         self.client = Some(client);
