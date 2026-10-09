@@ -256,7 +256,8 @@ impl JamRpcClient {
 
         info!(
             "Connected to JAM RPC: {} cores, {} validators",
-            params.core_count, params.val_count
+            params.core_count,
+            params.val_count
         );
 
         self.client = Some(client);
