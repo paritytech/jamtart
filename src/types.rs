@@ -3,6 +3,10 @@
 
 use crate::encoding::{variable_length_size, Encode, EncodingError};
 use bytes::BytesMut;
+pub use jam_types::{
+    Balance, CoreIndex, Hash, ProtocolParameters, ServiceId, Slot, TicketAttempt, UnsignedGas,
+    ValIndex,
+};
 use serde::{Deserialize, Serialize};
 
 /// JAM Common Era (JCE) epoch starts on January 1, 2025 12:00:00 UTC (noon)
@@ -12,23 +16,16 @@ pub const JCE_EPOCH_UNIX_MICROS: i64 = 1735732800000000;
 pub type Timestamp = u64;
 pub type EventId = u64;
 pub type PeerId = [u8; 32];
-pub type Hash = [u8; 32];
 pub type HeaderHash = Hash;
 pub type WorkPackageHash = Hash;
 pub type WorkReportHash = Hash;
 pub type ErasureRoot = Hash;
 pub type SegmentsRoot = Hash;
 pub type Ed25519Signature = [u8; 64];
-pub type Slot = u32;
 pub type EpochIndex = u32;
 pub type ValidatorIndex = u16;
-pub type ValIndex = u16; // Alias for ValidatorIndex
-pub type CoreIndex = u16;
-pub type ServiceId = u32;
 pub type ShardIndex = u16;
 pub type Gas = u64;
-pub type UnsignedGas = u64; // Gas without sign
-pub type Balance = u64; // Account balance type
 
 #[derive(Debug, Clone)]
 pub struct BoundedString<const N: usize> {
@@ -556,7 +553,6 @@ impl Encode for PreimageDiscardReason {
 // Additional types for full event specification compliance
 
 pub type TicketId = Hash;
-pub type TicketAttempt = u8;
 pub type SegmentTreeRoot = Hash;
 pub type ImportSegmentId = u16;
 pub type CoreCount = u16;
@@ -685,39 +681,6 @@ impl crate::decoder::Decode for ReconstructionKind {
             _ => Err(crate::decoder::DecodingError::InvalidEnumValue(value)),
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct ProtocolParameters {
-    pub deposit_per_item: Balance,
-    pub deposit_per_byte: Balance,
-    pub deposit_per_account: Balance,
-    pub core_count: CoreIndex,
-    pub min_turnaround_period: Slot,
-    pub epoch_period: Slot,
-    pub max_accumulate_gas: UnsignedGas,
-    pub max_is_authorized_gas: UnsignedGas,
-    pub max_refine_gas: UnsignedGas,
-    pub block_gas_limit: UnsignedGas,
-    pub recent_block_count: u16,
-    pub max_work_items: u16,
-    pub max_dependencies: u16,
-    pub max_tickets_per_block: u16,
-    pub max_lookup_anchor_age: Slot,
-    pub auth_window: u16,
-    pub slot_period_sec: u16,
-    pub auth_queue_len: u16,
-    pub rotation_period: u16,
-    pub max_extrinsics: u16,
-    pub availability_timeout: u16,
-    pub max_authorizer_code_size: u32,
-    pub max_input: u32,
-    pub max_service_code_size: u32,
-    pub max_imports: u32,
-    pub max_report_elective_data: u32,
-    pub transfer_memo_size: u32,
-    pub max_exports: u32,
-    pub epoch_tail_start: Slot,
 }
 
 impl Encode for ProtocolParameters {
