@@ -905,6 +905,46 @@ curl 'http://localhost:8080/api/grafana/guarantee-discards?start=2025-01-15T00:0
 
 ---
 
+### 1.25 GET /api/grafana/events-by-node
+
+Per-node totals for a set of event types over a range, ranked by count — which nodes are the top senders of a given event. Each row carries the node's share of the network-wide total and its handshake identity (address, implementation, version, connection state, last seen) joined from the `nodes` table.
+
+**Query:** `EventsByNodeQuery`
+
+| Param | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `start` | ISO 8601 datetime | yes | - | Start of time range |
+| `end` | ISO 8601 datetime | yes | - | End of time range |
+| `event_types` | string | no | all types | Comma-separated list: numeric IDs, group names, or event names. Supports Grafana `{a,b}` braces. |
+| `interval` | string | no | derived from range | Resolution hint (same values as `/timeseries`). Only selects the aggregate tier the totals are summed from: sub-minute values read the fresh 30 s counts, `1m` and up the `_1m` / `_1h` aggregates (which trail ingest by a few minutes). Omitted: range length / 300, mirroring Grafana's `$__interval`. |
+| `limit` | u32 | no | 50 | Maximum number of nodes returned, highest count first. Capped at 2048. |
+
+**Aggregate Table Auto-Selection:** same rules as `/timeseries` (see 1.1), driven by `interval` (or the derived value) and the age of `start`.
+
+**Response:** Array sorted by descending `count`, then ascending `node_id`:
+
+```json
+[{
+  "node_id": "9d7aa2cb55242be29e4161d708fecf3a092255a4f748d2aa6f52c3b292c58f09",
+  "count": 1234,
+  "share": 0.182,
+  "address": "192.168.20.59:56318",
+  "implementation_name": "PolkaJam",
+  "implementation_version": "0.1.28",
+  "is_connected": true,
+  "last_seen_at": "2026-08-27T11:45:09Z"
+}]
+```
+
+`share` is `count` divided by the total over **all** nodes in the range (computed before `limit` is applied), so the returned shares need not sum to 1. The node metadata fields are `null` if the node's handshake record is missing.
+
+```bash
+# Who reported the most WorkPackageFailed(92) in the last hour?
+curl 'http://localhost:8080/api/grafana/events-by-node?start=2025-01-15T00:00:00Z&end=2025-01-15T01:00:00Z&event_types=92&limit=10'
+```
+
+---
+
 ## 2. Shared Query Types
 
 All query parameter structs are defined in `src/grafana.rs`.
@@ -1008,6 +1048,19 @@ struct EventsQuery {
 }
 ```
 
+### EventsByNodeQuery
+Used by: `/events-by-node`
+
+```rust
+struct EventsByNodeQuery {
+    start: DateTime<Utc>,        // required
+    end: DateTime<Utc>,          // required
+    event_types: Option<String>, // comma-sep IDs/groups/names; all types if omitted
+    interval: Option<String>,    // resolution hint -> aggregate tier; derived from range if omitted
+    limit: Option<u32>,          // default 50, max 2048
+}
+```
+
 ### Special parsing
 
 - **`parse_service_ids()`**: Strips Grafana `{a,b}` braces, accepts decimal or `0x` hex, parses as u32 then casts to i32
@@ -1037,6 +1090,8 @@ All dashboards use the **Infinity** data source plugin (uid: `jamtart-api`, JSON
 | Nodes Active | stat | `/api/grafana/nodes` | — |
 | Live Events | timeseries | `/api/grafana/timeseries` | event_types=${event_group}, group_by=event_type, interval=1m |
 | Event Type Details | stat | `/api/grafana/timeseries` | event_types=${event_type}, group_by=event_type, interval=1m |
+| Selected Events by Node | timeseries | `/api/grafana/timeseries` | event_types=${event_type}, group_by=node_id, interval=$__interval |
+| Top Senders (Selected Events) | table | `/api/grafana/events-by-node` | event_types=${event_type}, interval=$__interval, limit=100 |
 | Failures Rate | stat | `/api/grafana/bottlenecks` | — |
 | WP Guarantee Rate | stat | `/api/grafana/timeseries` | event_types=guarantee_receiving |
 | Block Rate | timeseries | `/api/grafana/timeseries` | event_types=42 |
@@ -1188,6 +1243,7 @@ Which endpoints are used by which dashboards:
 | Endpoint | Global | Blocks | Cores | Services | Node | DA | Connectivity |
 |----------|:------:|:------:|:-----:|:--------:|:----:|:--:|:------------:|
 | `/timeseries` | x | x | x | | x | | x |
+| `/events-by-node` | x | | | | | | |
 | `/stats` | x | x | | | | | x |
 | `/nodes` | x | | | | x | | x |
 | `/cores` | | | x | | | | |
