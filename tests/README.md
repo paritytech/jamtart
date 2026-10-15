@@ -16,11 +16,12 @@ These tests run in parallel and don't require external services:
 
 ### Integration Tests (Require PostgreSQL)
 These tests use a real PostgreSQL database and MUST run serially:
-- `api_tests.rs` - REST API endpoints (10 tests)
+- `api_tests.rs` - REST API endpoints (16 tests)
 - `integration_tests.rs` - End-to-end telemetry flow (8 tests)
-- `optimized_server_tests.rs` - Performance and concurrency (6 tests)
+- `optimized_server_tests.rs` - Performance and concurrency (5 tests)
+- `retention_tests.rs` - Incremental raw-events retention job (2 tests)
 
-**Total: 24 integration tests**
+**Total: 31 integration tests**
 
 ## Running Tests Locally
 
@@ -42,7 +43,7 @@ cargo sqlx migrate run
 # _sqlx_migrations ledger doesn't match the squashed migration set.
 
 # Run integration tests SERIALLY
-cargo test --test api_tests --test integration_tests --test optimized_server_tests -- --test-threads=1
+cargo test --test api_tests --test integration_tests --test optimized_server_tests --test retention_tests -- --test-threads=1
 ```
 
 ## Why Tests Must Run Serially (`--test-threads=1`)
@@ -229,7 +230,7 @@ GitHub Actions workflow (`.github/workflows/ci.yml`):
 cargo test --lib --test types_tests --test events_tests --test error_tests --test encoding_tests
 
 # Integration tests serially (safe)
-cargo test --test api_tests --test integration_tests --test optimized_server_tests -- --test-threads=1
+cargo test --test api_tests --test integration_tests --test optimized_server_tests --test retention_tests -- --test-threads=1
 ```
 
 This ensures:
