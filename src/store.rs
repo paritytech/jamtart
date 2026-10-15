@@ -4,6 +4,7 @@
 use crate::batch_writer::EventRecord;
 use crate::types::JCE_EPOCH_UNIX_MICROS;
 use chrono::{DateTime, Utc};
+use jam_types::VALS_PER_CORE;
 use serde_json;
 use sqlx::{postgres::PgPoolOptions, Executor, PgPool, Row};
 use std::collections::HashMap;
@@ -803,7 +804,8 @@ impl EventStore {
         let (core_count, val_count, epoch_period, slot_period_sec) = if let Some(ref p) = params {
             (
                 p.get("core_count").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
-                p.get("val_count").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
+                (p.get("core_count").and_then(|v| v.as_u64()).unwrap_or(0) * VALS_PER_CORE as u64)
+                    as u16,
                 p.get("epoch_period").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
                 p.get("slot_period_sec")
                     .and_then(|v| v.as_u64())

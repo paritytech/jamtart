@@ -3,6 +3,10 @@
 
 use crate::encoding::{variable_length_size, Encode, EncodingError};
 use bytes::BytesMut;
+pub use jam_types::{
+    Balance, CoreIndex, Hash, ProtocolParameters, ServiceId, Slot, TicketAttempt, UnsignedGas,
+    ValIndex,
+};
 use serde::{Deserialize, Serialize};
 
 /// JAM Common Era (JCE) epoch starts on January 1, 2025 12:00:00 UTC (noon)
@@ -12,23 +16,16 @@ pub const JCE_EPOCH_UNIX_MICROS: i64 = 1735732800000000;
 pub type Timestamp = u64;
 pub type EventId = u64;
 pub type PeerId = [u8; 32];
-pub type Hash = [u8; 32];
 pub type HeaderHash = Hash;
 pub type WorkPackageHash = Hash;
 pub type WorkReportHash = Hash;
 pub type ErasureRoot = Hash;
 pub type SegmentsRoot = Hash;
 pub type Ed25519Signature = [u8; 64];
-pub type Slot = u32;
 pub type EpochIndex = u32;
 pub type ValidatorIndex = u16;
-pub type ValIndex = u16; // Alias for ValidatorIndex
-pub type CoreIndex = u16;
-pub type ServiceId = u32;
 pub type ShardIndex = u16;
 pub type Gas = u64;
-pub type UnsignedGas = u64; // Gas without sign
-pub type Balance = u64; // Account balance type
 
 #[derive(Debug, Clone)]
 pub struct BoundedString<const N: usize> {
@@ -556,7 +553,6 @@ impl Encode for PreimageDiscardReason {
 // Additional types for full event specification compliance
 
 pub type TicketId = Hash;
-pub type TicketAttempt = u8;
 pub type SegmentTreeRoot = Hash;
 pub type ImportSegmentId = u16;
 pub type CoreCount = u16;
@@ -687,43 +683,6 @@ impl crate::decoder::Decode for ReconstructionKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct ProtocolParameters {
-    pub deposit_per_item: Balance,
-    pub deposit_per_byte: Balance,
-    pub deposit_per_account: Balance,
-    pub core_count: CoreIndex,
-    pub min_turnaround_period: Slot,
-    pub epoch_period: Slot,
-    pub max_accumulate_gas: UnsignedGas,
-    pub max_is_authorized_gas: UnsignedGas,
-    pub max_refine_gas: UnsignedGas,
-    pub block_gas_limit: UnsignedGas,
-    pub recent_block_count: u16,
-    pub max_work_items: u16,
-    pub max_dependencies: u16,
-    pub max_tickets_per_block: u16,
-    pub max_lookup_anchor_age: Slot,
-    pub tickets_attempts_number: u16,
-    pub auth_window: u16,
-    pub slot_period_sec: u16,
-    pub auth_queue_len: u16,
-    pub rotation_period: u16,
-    pub max_extrinsics: u16,
-    pub availability_timeout: u16,
-    pub val_count: ValIndex,
-    pub max_authorizer_code_size: u32,
-    pub max_input: u32,
-    pub max_service_code_size: u32,
-    pub basic_piece_len: u32,
-    pub max_imports: u32,
-    pub segment_piece_count: u32,
-    pub max_report_elective_data: u32,
-    pub transfer_memo_size: u32,
-    pub max_exports: u32,
-    pub epoch_tail_start: Slot,
-}
-
 impl Encode for ProtocolParameters {
     fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodingError> {
         self.deposit_per_item.encode(buf)?;
@@ -741,20 +700,16 @@ impl Encode for ProtocolParameters {
         self.max_dependencies.encode(buf)?;
         self.max_tickets_per_block.encode(buf)?;
         self.max_lookup_anchor_age.encode(buf)?;
-        self.tickets_attempts_number.encode(buf)?;
         self.auth_window.encode(buf)?;
         self.slot_period_sec.encode(buf)?;
         self.auth_queue_len.encode(buf)?;
         self.rotation_period.encode(buf)?;
         self.max_extrinsics.encode(buf)?;
         self.availability_timeout.encode(buf)?;
-        self.val_count.encode(buf)?;
         self.max_authorizer_code_size.encode(buf)?;
         self.max_input.encode(buf)?;
         self.max_service_code_size.encode(buf)?;
-        self.basic_piece_len.encode(buf)?;
         self.max_imports.encode(buf)?;
-        self.segment_piece_count.encode(buf)?;
         self.max_report_elective_data.encode(buf)?;
         self.transfer_memo_size.encode(buf)?;
         self.max_exports.encode(buf)?;
@@ -763,7 +718,7 @@ impl Encode for ProtocolParameters {
     }
 
     fn encoded_size(&self) -> usize {
-        // 3 Balance (8 each) + 4 UnsignedGas (8 each) + 4 Slot (4 each) + 13 u16 (2 each) + 9 u32 (4 each)
-        3 * 8 + 4 * 8 + 4 * 4 + 13 * 2 + 9 * 4
+        // 3 Balance (8 each) + 4 UnsignedGas (8 each) + 4 Slot (4 each) + 11 u16 (2 each) + 7 u32 (4 each)
+        3 * 8 + 4 * 8 + 4 * 4 + 11 * 2 + 7 * 4
     }
 }
