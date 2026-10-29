@@ -81,10 +81,14 @@ jobs:
       - name: Build jip-3-spammer for functional tests
         run: cargo build --manifest-path jip-3-spammer/Cargo.toml -p jip-3-spammer --bin jip-3-spammer
 
+      - name: Build TART for functional tests
+        run: cargo build --release -p tart-backend --bin tart-backend
+
       - name: Run functional tests
         env:
           TEST_DATABASE_URL: postgres://tart:tart_password@localhost:5432/tart_test
           TEST_SPAMMER_CMD: jip-3-spammer/target/debug/jip-3-spammer
+          TEST_TART_CMD: target/release/tart-backend
         run: cargo test --test functional
 
   build-and-bench:

@@ -58,6 +58,7 @@ pub fn run_test(unique_name: &str, f: impl FnOnce(TestContext) + UnwindSafe) {
     let test_db_name = unique_name;
     let spammer_cmd =
         std::env::var("TEST_SPAMMER_CMD").expect("ENV var TEST_SPAMMER_CMD should be set");
+    let tart_cmd = std::env::var("TEST_TART_CMD").expect("ENV var TEST_TART_CMD should be set");
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
@@ -86,13 +87,6 @@ pub fn run_test(unique_name: &str, f: impl FnOnce(TestContext) + UnwindSafe) {
         .with_var("DATABASE_URL", test_database_url.clone())
         .with_current_dir(work_dir);
 
-    cmd!(
-        sh,
-        "cargo build --release -p tart-backend --bin tart-backend"
-    )
-    .run_echo()
-    .expect("cargo build should succeed");
-
     // Allocate port numbers uniquely for the test
     let hash = {
         let mut hasher = DefaultHasher::new();
@@ -111,7 +105,7 @@ pub fn run_test(unique_name: &str, f: impl FnOnce(TestContext) + UnwindSafe) {
     let api_bind = format!("127.0.0.1:{api_port}");
     let telemetry_process = cmd!(
         sh,
-        "./target/release/tart-backend --telemetry-bind {telemetry_bind} --api-bind {api_bind}"
+        "{tart_cmd} --telemetry-bind {telemetry_bind} --api-bind {api_bind}"
     )
     .to_command()
     .stdout(Stdio::piped())
