@@ -109,6 +109,8 @@ profiling = ["dhat"]
 axum-test = "15.0"
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
+reqwest = { version = "0.11", features = ["json", "blocking"] }
+xshell = "0.3.0-pre.2"
 
 [profile.dev]
 opt-level = 1
