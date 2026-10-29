@@ -56,6 +56,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Checkout jip-3-spammer for functional tests
+        uses: actions/checkout@v4
+        with:
+          repository: 'paritytech/jip-3-load-test'
+          path: 'jip-3-spammer'
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -71,6 +77,19 @@ jobs:
           TEST_DATABASE_URL: postgres://tart:tart_password@localhost:5432/tart_test
           RUST_LOG: info
         run: cargo test --test api_tests --test ws_tests --test integration_tests --test optimized_server_tests -- --test-threads=1
+
+      - name: Build jip-3-spammer for functional tests
+        run: cargo build --manifest-path jip-3-spammer/Cargo.toml -p jip-3-spammer --bin jip-3-spammer
+
+      - name: Build TART for functional tests
+        run: cargo build --release -p tart-backend --bin tart-backend
+
+      - name: Run functional tests
+        env:
+          TEST_DATABASE_URL: postgres://tart:tart_password@localhost:5432/tart_test
+          TEST_SPAMMER_CMD: jip-3-spammer/target/debug/jip-3-spammer
+          TEST_TART_CMD: target/release/tart-backend
+        run: cargo test --test functional
 
   build-and-bench:
     name: Build & Benchmark
