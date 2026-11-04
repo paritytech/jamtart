@@ -21,6 +21,10 @@ required-features = ["bench"]
 name = "tart-loadgen"
 path = "src/bin/loadgen.rs"
 
+[[bench]]
+name = "perf"
+harness = false
+
 [dependencies]
 # Async runtime
 tokio = { version = "1.40", features = ["rt-multi-thread", "sync", "time", "macros", "io-util", "net", "signal"] }
@@ -109,6 +113,7 @@ profiling = ["dhat"]
 axum-test = "15.0"
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
+criterion = "0.8.2"
 
 [profile.dev]
 opt-level = 1
