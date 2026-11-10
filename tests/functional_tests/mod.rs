@@ -1,8 +1,10 @@
 use sqlx::postgres::PgConnectOptions;
 use sqlx::{Connection, PgConnection};
+use std::fs::File;
 use std::net::TcpListener;
 use std::panic::UnwindSafe;
-use std::process::{Command, Stdio};
+use std::path::Path;
+use std::process::Command;
 use std::sync::{Mutex, PoisonError};
 use url::Url;
 
@@ -98,11 +100,15 @@ pub fn run_test(unique_name: &str, f: impl FnOnce(TestContext) + UnwindSafe) {
 
     let telemetry_bind = format!("127.0.0.1:{}", free_local_port());
     let api_bind = format!("127.0.0.1:{}", free_local_port());
-    let telemetry_process = Command::new(&tart_cmd)
+    let tart_log_path =
+        Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{unique_name}-tart.log"));
+    let tart_log = File::create(&tart_log_path).expect("TART log file should be writable");
+    let mut telemetry_process = Command::new(&tart_cmd)
         .args(["--telemetry-bind", &telemetry_bind, "--api-bind", &api_bind])
         .env("DATABASE_URL", &test_database_url)
         .current_dir(work_dir)
-        .stdout(Stdio::piped())
+        .stdout(tart_log.try_clone().unwrap())
+        .stderr(tart_log)
         .spawn()
         .unwrap();
 
@@ -122,9 +128,11 @@ pub fn run_test(unique_name: &str, f: impl FnOnce(TestContext) + UnwindSafe) {
         .status()
         .unwrap();
 
-    let output = telemetry_process.wait_with_output().unwrap();
+    telemetry_process.wait().unwrap();
 
-    println!("{}", String::from_utf8_lossy(&output.stdout));
+    if result.is_err() {
+        print_tart_log(&tart_log_path);
+    }
 
     runtime
         .block_on(async {
@@ -139,6 +147,13 @@ pub fn run_test(unique_name: &str, f: impl FnOnce(TestContext) + UnwindSafe) {
         .unwrap();
 
     result.expect("test should succeed");
+}
+
+fn print_tart_log(path: &Path) {
+    match std::fs::read_to_string(path) {
+        Ok(log) => println!("TART log ({}):\n{log}", path.display()),
+        Err(error) => println!("Could not read TART log {}: {error}", path.display()),
+    }
 }
 
 fn free_local_port() -> u16 {
