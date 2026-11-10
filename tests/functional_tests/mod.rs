@@ -35,10 +35,11 @@ pub struct TestContext {
 }
 
 impl TestContext {
-    /// Runs `jip-3-spammer` with `args`, sending its events to the TART under test.
-    pub fn run_spammer(&self, args: &[&str]) {
+    /// Runs `jip-3-spammer` with whitespace-separated `args`, sending its events to the TART under
+    /// test.
+    pub fn run_spammer(&self, args: &str) {
         let mut spammer = Command::new(&self.spammer_cmd)
-            .args(args)
+            .args(args.split_whitespace())
             .args(["--server", &self.telemetry_bind])
             .spawn()
             .expect("jip-3-spammer should start");
