@@ -9,28 +9,11 @@ fn test_bottlenecks_detect_work_packages() {
 
         let end = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
 
-        let api_bind = &ctx.api_bind;
-        let actual_response: serde_json::Value = reqwest::blocking::get(format!(
-            "http://{api_bind}/api/grafana/bottlenecks?start={start}&end={end}"
-        ))
-        .unwrap()
-        .json()
-        .unwrap();
+        let response = ctx.get_json(&format!("/api/grafana/bottlenecks?start={start}&end={end}"));
 
-        let actual_total_wps = actual_response
-            .as_array()
-            .unwrap()
-            .first()
-            .unwrap()
-            .as_object()
-            .unwrap()
-            .get("total_wps")
-            .unwrap()
-            .as_i64()
-            .unwrap();
-
-        assert!(actual_total_wps > 0);
-
-        println!("actual response: {actual_response}");
+        assert!(
+            response[0]["total_wps"].as_i64() > Some(0),
+            "expected work packages in the response: {response}"
+        );
     });
 }

@@ -15,6 +15,7 @@ mod bottlenecks;
 static ONE_TEST_AT_A_TIME: Mutex<()> = Mutex::new(());
 
 const TART_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
+const SPAMMER_TIMEOUT: Duration = Duration::from_secs(600);
 const TART_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
@@ -28,7 +29,7 @@ pub struct TestContext {
     /// A string of `addr:port` where TART API server is listening.
     ///
     /// This should be the server to read statistics from.
-    pub api_bind: String,
+    api_bind: String,
     /// A filename of the CLI executable to generate input with.
     spammer_cmd: String,
 }
@@ -36,12 +37,28 @@ pub struct TestContext {
 impl TestContext {
     /// Runs `jip-3-spammer` with `args`, sending its events to the TART under test.
     pub fn run_spammer(&self, args: &[&str]) {
-        let status = Command::new(&self.spammer_cmd)
+        let mut spammer = Command::new(&self.spammer_cmd)
             .args(args)
             .args(["--server", &self.telemetry_bind])
-            .status()
+            .spawn()
             .expect("jip-3-spammer should start");
+        let Some(status) = wait_for_exit(&mut spammer, SPAMMER_TIMEOUT) else {
+            let _ = spammer.kill();
+            panic!("jip-3-spammer should finish within {SPAMMER_TIMEOUT:?}");
+        };
         assert!(status.success(), "jip-3-spammer failed: {status}");
+    }
+
+    /// Sends a GET request to the TART API, e.g. `get_json("/api/health")`.
+    pub fn get_json(&self, path_and_query: &str) -> serde_json::Value {
+        let url = format!("http://{}{path_and_query}", self.api_bind);
+        let response =
+            reqwest::blocking::get(&url).unwrap_or_else(|error| panic!("GET {url}: {error}"));
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        assert!(status.is_success(), "GET {url} returned {status}: {body}");
+        serde_json::from_str(&body)
+            .unwrap_or_else(|error| panic!("GET {url} returned invalid JSON ({error}): {body}"))
     }
 }
 
