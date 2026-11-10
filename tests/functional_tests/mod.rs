@@ -89,13 +89,17 @@ pub fn run_test(unique_name: &str, f: impl FnOnce(TestContext)) {
     let _one_test_at_a_time = ONE_TEST_AT_A_TIME
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
-    let database = TestDatabase::create(&required_env("TEST_DATABASE_URL"), unique_name);
-    let tart = Tart::start(&required_env("TEST_TART_CMD"), &database.url, unique_name);
+    let database_url = required_env("TEST_DATABASE_URL");
+    let tart_cmd = required_env("TEST_TART_CMD");
+    let spammer_cmd = required_env("TEST_SPAMMER_CMD");
+
+    let database = TestDatabase::create(&database_url, unique_name);
+    let tart = Tart::start(&tart_cmd, &database.url, unique_name);
 
     f(TestContext {
         telemetry_bind: tart.telemetry_bind.clone(),
         api_bind: tart.api_bind.clone(),
-        spammer_cmd: required_env("TEST_SPAMMER_CMD"),
+        spammer_cmd,
     });
 }
 
