@@ -104,3 +104,4 @@ docs/build/
 !docs/*.md
 !.claude/skills/**/*.md
 *log*.txt
+!CLAUDE.md
