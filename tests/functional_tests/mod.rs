@@ -3,9 +3,12 @@ use sqlx::{Connection, PgConnection};
 use std::net::TcpListener;
 use std::panic::UnwindSafe;
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, PoisonError};
 use url::Url;
 
 mod bottlenecks;
+
+static ONE_TEST_AT_A_TIME: Mutex<()> = Mutex::new(());
 
 /// A collection of parameters intended for the test scenario to use to locate TART services and
 /// related tools.
@@ -39,9 +42,11 @@ impl TestContext {
 /// Before running `f`, this function prepares and launches TART. The address of the TART instance
 /// is then passed to `f` using [`TestContext`].
 ///
-/// The `unique_name` is used as the name of the test database. It should be different for every
-/// test, otherwise it raises a conflict when running them in parallel. It is intentionally not
-/// generated as a straight-forward way to remain deterministic.
+/// The `unique_name` is used as the name of the test database, so every test starts from an empty
+/// one. It is intentionally not generated as a straight-forward way to remain deterministic.
+///
+/// Only one test runs at a time, even when the test harness runs them on multiple threads. The
+/// tests are meant to catch performance regressions, so they must not compete for resources.
 ///
 /// After running `f`, a cleanup of resources and a graceful shutdown of TART is performed. Because
 /// `f` may panic e.g. due to a failed assertion, it has an additional constraint on [`UnwindSafe`].
@@ -53,6 +58,9 @@ impl TestContext {
 /// * ENV var `TEST_DATABASE_URL` is defined and contains a postgres URL.
 /// * ENV var `TEST_SPAMMER_CMD` is defined and contains a path to executable `jip-3-spammer` binary
 pub fn run_test(unique_name: &str, f: impl FnOnce(TestContext) + UnwindSafe) {
+    let _one_test_at_a_time = ONE_TEST_AT_A_TIME
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     let work_dir = env!("CARGO_MANIFEST_DIR");
     let database_url =
         std::env::var("TEST_DATABASE_URL").expect("ENV var TEST_DATABASE_URL should be set");
