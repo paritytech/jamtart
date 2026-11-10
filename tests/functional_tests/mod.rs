@@ -159,8 +159,7 @@ struct Tart {
 
 impl Tart {
     fn start(tart_cmd: &str, database_url: &str, name: &str) -> Self {
-        let telemetry_bind = format!("127.0.0.1:{}", free_local_port());
-        let api_bind = format!("127.0.0.1:{}", free_local_port());
+        let [telemetry_bind, api_bind] = free_local_addresses();
         let log_path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}-tart.log"));
         let log = File::create(&log_path).expect("TART log file should be writable");
         let process = Command::new(tart_cmd)
@@ -241,9 +240,10 @@ fn wait_for_exit(process: &mut Child, timeout: Duration) -> Option<ExitStatus> {
     }
 }
 
-fn free_local_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("should find a free port");
-    listener.local_addr().unwrap().port()
+fn free_local_addresses<const COUNT: usize>() -> [String; COUNT] {
+    let listeners =
+        [(); COUNT].map(|()| TcpListener::bind("127.0.0.1:0").expect("should find a free port"));
+    listeners.map(|listener| listener.local_addr().unwrap().to_string())
 }
 
 fn database_url_for(server_url: &str, database_name: &str) -> String {
