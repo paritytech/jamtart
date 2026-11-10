@@ -1,16 +1,23 @@
+use nix::sys::signal::{kill, Signal};
+use nix::unistd::Pid;
 use sqlx::postgres::PgConnectOptions;
 use sqlx::{Connection, PgConnection};
 use std::fs::File;
 use std::net::TcpListener;
 use std::panic::UnwindSafe;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Child, Command, ExitStatus};
 use std::sync::{Mutex, PoisonError};
+use std::thread;
+use std::time::{Duration, Instant};
 use url::Url;
 
 mod bottlenecks;
 
 static ONE_TEST_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+const TART_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
+const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 /// A collection of parameters intended for the test scenario to use to locate TART services and
 /// related tools.
@@ -112,8 +119,6 @@ pub fn run_test(unique_name: &str, f: impl FnOnce(TestContext) + UnwindSafe) {
         .spawn()
         .unwrap();
 
-    let telemetry_pid = telemetry_process.id();
-
     let result = std::panic::catch_unwind(|| {
         f(TestContext {
             telemetry_bind,
@@ -122,15 +127,18 @@ pub fn run_test(unique_name: &str, f: impl FnOnce(TestContext) + UnwindSafe) {
         });
     });
 
-    Command::new("kill")
-        .arg("-2")
-        .arg(telemetry_pid.to_string())
-        .status()
-        .unwrap();
+    kill(
+        Pid::from_raw(telemetry_process.id() as i32),
+        Signal::SIGTERM,
+    )
+    .expect("TART should accept SIGTERM");
+    let stopped_in_time = wait_for_exit(&mut telemetry_process, TART_SHUTDOWN_TIMEOUT).is_some();
+    if !stopped_in_time {
+        telemetry_process.kill().unwrap();
+        telemetry_process.wait().unwrap();
+    }
 
-    telemetry_process.wait().unwrap();
-
-    if result.is_err() {
+    if result.is_err() || !stopped_in_time {
         print_tart_log(&tart_log_path);
     }
 
@@ -147,6 +155,23 @@ pub fn run_test(unique_name: &str, f: impl FnOnce(TestContext) + UnwindSafe) {
         .unwrap();
 
     result.expect("test should succeed");
+    assert!(
+        stopped_in_time,
+        "TART should shut down within {TART_SHUTDOWN_TIMEOUT:?}"
+    );
+}
+
+fn wait_for_exit(process: &mut Child, timeout: Duration) -> Option<ExitStatus> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = process.try_wait().unwrap() {
+            return Some(status);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
 }
 
 fn print_tart_log(path: &Path) {
