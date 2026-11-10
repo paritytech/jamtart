@@ -637,6 +637,11 @@ impl TelemetryServer {
             da_latency_tracker::flush_da_latency_tracker(&self.da_latency_tracker, store.pool())
                 .await;
             event_counter::flush_event_counter(&self.event_counter, store.pool()).await;
+            let _ = self
+                .batch_writer
+                .flush_node_stats_for_test(store)
+                .await
+                .map_err(|e| tracing::warn!("flush_node_stats_for_test failed: {e}"));
         }
     }
 
