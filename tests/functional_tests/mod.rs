@@ -3,6 +3,7 @@ use sqlx::{Connection, PgConnection};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::panic::UnwindSafe;
 use std::process::{Command, Stdio};
+use url::Url;
 
 mod bottlenecks;
 
@@ -58,9 +59,6 @@ pub fn run_test(unique_name: &str, f: impl FnOnce(TestContext) + UnwindSafe) {
     let options: PgConnectOptions = database_url
         .parse()
         .expect("TEST_DATABASE_URL should be a postgres URL");
-    let default_db_name = options
-        .get_database()
-        .expect("TEST_DATABASE_URL should contain a default database name");
 
     let test_db_name = unique_name;
     let spammer_cmd =
@@ -88,7 +86,7 @@ pub fn run_test(unique_name: &str, f: impl FnOnce(TestContext) + UnwindSafe) {
         })
         .unwrap();
 
-    let test_database_url = database_url.replace(default_db_name, test_db_name);
+    let test_database_url = database_url_for(&database_url, test_db_name);
 
     // Allocate port numbers uniquely for the test
     let hash = {
@@ -147,4 +145,21 @@ pub fn run_test(unique_name: &str, f: impl FnOnce(TestContext) + UnwindSafe) {
         .unwrap();
 
     result.expect("test should succeed");
+}
+
+fn database_url_for(server_url: &str, database_name: &str) -> String {
+    let mut url = Url::parse(server_url).expect("TEST_DATABASE_URL should be a valid URL");
+    url.set_path(database_name);
+    url.to_string()
+}
+
+#[test]
+fn database_url_for_keeps_user_and_options_when_they_contain_the_database_name() {
+    assert_eq!(
+        database_url_for(
+            "postgres://postgres:pw@localhost/postgres?sslmode=disable",
+            "functional"
+        ),
+        "postgres://postgres:pw@localhost/functional?sslmode=disable"
+    );
 }
