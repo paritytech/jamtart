@@ -60,6 +60,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: 'paritytech/jip-3-load-test'
+          # The functional tests expect exact results from this spammer version.
+          ref: 'ba9d87cd0448e2e570da0c4169fcca2f441e5af2'
           path: 'jip-3-spammer'
 
       - name: Install Rust toolchain
