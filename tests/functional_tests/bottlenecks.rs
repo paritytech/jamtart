@@ -9,9 +9,10 @@ const RESULTS_TIMEOUT: Duration = Duration::from_secs(30);
 #[test]
 fn test_bottlenecks_detect_work_packages() {
     super::run_test("test_bottlenecks_detect_work_packages", |ctx| {
-        // Faster timelines make TART drop late pipeline events, which changes the results.
+        // Above 10x, events from all nodes arrive together and their order decides which
+        // timestamps TART records, so the results would differ between runs.
         ctx.run_spammer(&format!(
-            "sim --params tiny --seed 42 --start {SIM_START} --duration 120 --speed 1 --quiet"
+            "sim --params tiny --seed 42 --start {SIM_START} --duration 120 --speed 10 --quiet"
         ));
 
         let expected = json!([{

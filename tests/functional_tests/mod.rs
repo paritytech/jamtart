@@ -199,6 +199,8 @@ impl Tart {
         let log = File::create(&log_path).expect("TART log file should be writable");
         let process = Command::new(tart_cmd)
             .args(["--telemetry-bind", &telemetry_bind, "--api-bind", &api_bind])
+            // Production runs without the per-node rate limiter too.
+            .arg("--no-rate-limit")
             .env("DATABASE_URL", database_url)
             .current_dir(env!("CARGO_MANIFEST_DIR"))
             .stdout(log.try_clone().unwrap())
