@@ -32,15 +32,23 @@ pub struct TestContext {
     api_bind: String,
     /// A filename of the CLI executable to generate input with.
     spammer_cmd: String,
+    /// Output of all spammer runs in the test, printed when the test fails.
+    spammer_log_path: PathBuf,
 }
 
 impl TestContext {
     /// Runs `jip-3-spammer` with whitespace-separated `args`, sending its events to the TART under
     /// test.
     pub fn run_spammer(&self, args: &str) {
+        let log = File::options()
+            .append(true)
+            .open(&self.spammer_log_path)
+            .expect("jip-3-spammer log file should be writable");
         let mut spammer = Command::new(&self.spammer_cmd)
             .args(args.split_whitespace())
             .args(["--server", &self.telemetry_bind])
+            .stdout(log.try_clone().unwrap())
+            .stderr(log)
             .spawn()
             .expect("jip-3-spammer should start");
         let Some(status) = wait_for_exit(&mut spammer, SPAMMER_TIMEOUT) else {
@@ -63,6 +71,14 @@ impl TestContext {
     }
 }
 
+impl Drop for TestContext {
+    fn drop(&mut self) {
+        if thread::panicking() {
+            print_log(&self.spammer_log_path);
+        }
+    }
+}
+
 /// Runs the test scenario provided in `f`.
 ///
 /// Before running `f`, this function prepares and launches TART. The address of the TART instance
@@ -75,7 +91,7 @@ impl TestContext {
 /// tests are meant to catch performance regressions, so they must not compete for resources.
 ///
 /// TART is shut down gracefully and the test database is dropped afterwards, also when `f` panics
-/// e.g. due to a failed assertion. TART's output is written to a log file in
+/// e.g. due to a failed assertion. The output of TART and of the spammer is written to log files in
 /// `CARGO_TARGET_TMPDIR`, and printed when the test fails.
 ///
 /// # Environment requirements
@@ -96,11 +112,26 @@ pub fn run_test(unique_name: &str, f: impl FnOnce(TestContext)) {
     let database = TestDatabase::create(&database_url, unique_name);
     let tart = Tart::start(&tart_cmd, &database.url, unique_name);
 
+    let spammer_log_path = log_path(unique_name, "jip-3-spammer");
+    File::create(&spammer_log_path).expect("jip-3-spammer log file should be writable");
+
     f(TestContext {
         telemetry_bind: tart.telemetry_bind.clone(),
         api_bind: tart.api_bind.clone(),
         spammer_cmd,
+        spammer_log_path,
     });
+}
+
+fn log_path(test_name: &str, program: &str) -> PathBuf {
+    Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{test_name}-{program}.log"))
+}
+
+fn print_log(path: &Path) {
+    match std::fs::read_to_string(path) {
+        Ok(log) => println!("Log {}:\n{log}", path.display()),
+        Err(error) => println!("Could not read log {}: {error}", path.display()),
+    }
 }
 
 fn required_env(name: &str) -> String {
@@ -164,7 +195,7 @@ struct Tart {
 impl Tart {
     fn start(tart_cmd: &str, database_url: &str, name: &str) -> Self {
         let [telemetry_bind, api_bind] = free_local_addresses();
-        let log_path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}-tart.log"));
+        let log_path = log_path(name, "tart");
         let log = File::create(&log_path).expect("TART log file should be writable");
         let process = Command::new(tart_cmd)
             .args(["--telemetry-bind", &telemetry_bind, "--api-bind", &api_bind])
@@ -200,16 +231,6 @@ impl Tart {
             thread::sleep(POLL_INTERVAL);
         }
     }
-
-    fn print_log(&self) {
-        match std::fs::read_to_string(&self.log_path) {
-            Ok(log) => println!("TART log ({}):\n{log}", self.log_path.display()),
-            Err(error) => println!(
-                "Could not read TART log {}: {error}",
-                self.log_path.display()
-            ),
-        }
-    }
 }
 
 impl Drop for Tart {
@@ -222,7 +243,7 @@ impl Drop for Tart {
         }
 
         if thread::panicking() || !stopped_in_time {
-            self.print_log();
+            print_log(&self.log_path);
         }
         assert!(
             stopped_in_time || thread::panicking(),
