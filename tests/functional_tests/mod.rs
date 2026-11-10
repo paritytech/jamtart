@@ -14,6 +14,7 @@ mod bottlenecks;
 
 static ONE_TEST_AT_A_TIME: Mutex<()> = Mutex::new(());
 
+const TART_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 const TART_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
@@ -150,11 +151,30 @@ impl Tart {
             .stderr(log)
             .spawn()
             .expect("TART should start");
-        Self {
+        let mut tart = Self {
             process,
             telemetry_bind,
             api_bind,
             log_path,
+        };
+        tart.wait_until_ready();
+        tart
+    }
+
+    fn wait_until_ready(&mut self) {
+        let health_url = format!("http://{}/api/health", self.api_bind);
+        let deadline = Instant::now() + TART_STARTUP_TIMEOUT;
+        while !reqwest::blocking::get(&health_url)
+            .is_ok_and(|response| response.status().is_success())
+        {
+            if let Ok(Some(status)) = self.process.try_wait() {
+                panic!("TART exited during startup: {status}");
+            }
+            assert!(
+                Instant::now() < deadline,
+                "TART should be ready within {TART_STARTUP_TIMEOUT:?}"
+            );
+            thread::sleep(POLL_INTERVAL);
         }
     }
 
