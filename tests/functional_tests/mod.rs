@@ -3,27 +3,34 @@ use sqlx::{Connection, PgConnection};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::panic::UnwindSafe;
 use std::process::{Command, Stdio};
-use xshell::{cmd, Shell};
 
 mod bottlenecks;
 
 /// A collection of parameters intended for the test scenario to use to locate TART services and
 /// related tools.
 pub struct TestContext {
-    /// A [`Shell`] to use to run commands with.
-    ///
-    /// The shell may come with workdir and environment variables set.
-    pub sh: Shell,
     /// A string of `addr:port` where TART telemetry server is listening.
     ///
     /// This should be the server to write JIP-3 events to.
-    pub telemetry_bind: String,
+    telemetry_bind: String,
     /// A string of `addr:port` where TART API server is listening.
     ///
     /// This should be the server to read statistics from.
     pub api_bind: String,
     /// A filename of the CLI executable to generate input with.
-    pub spammer_cmd: String,
+    spammer_cmd: String,
+}
+
+impl TestContext {
+    /// Runs `jip-3-spammer` with `args`, sending its events to the TART under test.
+    pub fn run_spammer(&self, args: &[&str]) {
+        let status = Command::new(&self.spammer_cmd)
+            .args(args)
+            .args(["--server", &self.telemetry_bind])
+            .status()
+            .expect("jip-3-spammer should start");
+        assert!(status.success(), "jip-3-spammer failed: {status}");
+    }
 }
 
 /// Runs the test scenario provided in `f`.
@@ -82,10 +89,6 @@ pub fn run_test(unique_name: &str, f: impl FnOnce(TestContext) + UnwindSafe) {
         .unwrap();
 
     let test_database_url = database_url.replace(default_db_name, test_db_name);
-    let sh = Shell::new()
-        .unwrap()
-        .with_var("DATABASE_URL", test_database_url.clone())
-        .with_current_dir(work_dir);
 
     // Allocate port numbers uniquely for the test
     let hash = {
@@ -103,20 +106,18 @@ pub fn run_test(unique_name: &str, f: impl FnOnce(TestContext) + UnwindSafe) {
 
     let telemetry_bind = format!("127.0.0.1:{telemetry_port}");
     let api_bind = format!("127.0.0.1:{api_port}");
-    let telemetry_process = cmd!(
-        sh,
-        "{tart_cmd} --telemetry-bind {telemetry_bind} --api-bind {api_bind}"
-    )
-    .to_command()
-    .stdout(Stdio::piped())
-    .spawn()
-    .unwrap();
+    let telemetry_process = Command::new(&tart_cmd)
+        .args(["--telemetry-bind", &telemetry_bind, "--api-bind", &api_bind])
+        .env("DATABASE_URL", &test_database_url)
+        .current_dir(work_dir)
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
 
     let telemetry_pid = telemetry_process.id();
 
     let result = std::panic::catch_unwind(|| {
         f(TestContext {
-            sh,
             telemetry_bind,
             api_bind,
             spammer_cmd,
