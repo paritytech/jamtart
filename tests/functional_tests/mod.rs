@@ -1,6 +1,6 @@
 use sqlx::postgres::PgConnectOptions;
 use sqlx::{Connection, PgConnection};
-use std::hash::{DefaultHasher, Hash, Hasher};
+use std::net::TcpListener;
 use std::panic::UnwindSafe;
 use std::process::{Command, Stdio};
 use url::Url;
@@ -39,9 +39,9 @@ impl TestContext {
 /// Before running `f`, this function prepares and launches TART. The address of the TART instance
 /// is then passed to `f` using [`TestContext`].
 ///
-/// The `unique_name` is used to derive parameters. It should be different for every test, otherwise
-/// it raises a conflict when running them in parallel. It is intentionally not generated as a
-/// straight-forward way to remain deterministic.
+/// The `unique_name` is used as the name of the test database. It should be different for every
+/// test, otherwise it raises a conflict when running them in parallel. It is intentionally not
+/// generated as a straight-forward way to remain deterministic.
 ///
 /// After running `f`, a cleanup of resources and a graceful shutdown of TART is performed. Because
 /// `f` may panic e.g. due to a failed assertion, it has an additional constraint on [`UnwindSafe`].
@@ -88,22 +88,8 @@ pub fn run_test(unique_name: &str, f: impl FnOnce(TestContext) + UnwindSafe) {
 
     let test_database_url = database_url_for(&database_url, test_db_name);
 
-    // Allocate port numbers uniquely for the test
-    let hash = {
-        let mut hasher = DefaultHasher::new();
-        unique_name.hash(&mut hasher);
-        hasher.finish()
-    };
-    let telemetry_port = (9000 + (hash % (u16::MAX as u64 - 9000))) as u16;
-    let api_port = (8080 + (hash % (u16::MAX as u64 - 8080))) as u16;
-
-    assert_ne!(
-        telemetry_port, api_port,
-        "Telemetry port and API port should not match"
-    );
-
-    let telemetry_bind = format!("127.0.0.1:{telemetry_port}");
-    let api_bind = format!("127.0.0.1:{api_port}");
+    let telemetry_bind = format!("127.0.0.1:{}", free_local_port());
+    let api_bind = format!("127.0.0.1:{}", free_local_port());
     let telemetry_process = Command::new(&tart_cmd)
         .args(["--telemetry-bind", &telemetry_bind, "--api-bind", &api_bind])
         .env("DATABASE_URL", &test_database_url)
@@ -145,6 +131,11 @@ pub fn run_test(unique_name: &str, f: impl FnOnce(TestContext) + UnwindSafe) {
         .unwrap();
 
     result.expect("test should succeed");
+}
+
+fn free_local_port() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("should find a free port");
+    listener.local_addr().unwrap().port()
 }
 
 fn database_url_for(server_url: &str, database_name: &str) -> String {
