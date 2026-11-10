@@ -23,6 +23,7 @@ use crate::onchain_types::*;
 #[openapi(
     paths(
         timeseries,
+        events_by_node,
         stats,
         cores_summary,
         core_detail,
@@ -84,6 +85,7 @@ use crate::onchain_types::*;
     ),
     components(schemas(
         TimeseriesRow,
+        EventsByNodeRow,
         StatsResponse,
         CoreSummary,
         CoreDetail,
@@ -189,6 +191,7 @@ pub struct GrafanaApiDoc;
 pub fn router() -> Router<ApiState> {
     Router::new()
         .route("/timeseries", get(timeseries))
+        .route("/events-by-node", get(events_by_node))
         .route("/stats", get(stats))
         .route("/cores", get(cores_summary))
         .route("/cores/:core_id", get(core_detail))
@@ -293,6 +296,21 @@ pub struct TimeseriesQuery {
     pub event_types: Option<String>,
     /// Filter to a single core index
     pub core: Option<i16>,
+}
+
+/// Parameters for the per-node event totals endpoint.
+#[derive(Deserialize, IntoParams)]
+pub struct EventsByNodeQuery {
+    /// Start of time range (ISO 8601)
+    pub start: DateTime<Utc>,
+    /// End of time range (ISO 8601)
+    pub end: DateTime<Utc>,
+    /// Comma-separated event type codes, group names, or event names. Supports Grafana {a,b} syntax. Optional — if omitted, every type is counted.
+    pub event_types: Option<String>,
+    /// Resolution hint (same values as /timeseries) that selects the aggregate tier the totals are summed from. Omitted: derived from the range length.
+    pub interval: Option<String>,
+    /// Maximum number of nodes to return, highest count first (default: 50, max: 2048)
+    pub limit: Option<u32>,
 }
 
 /// Common time range + optional filters used by most endpoints.
@@ -543,6 +561,51 @@ async fn timeseries(
         .await
         .map(Json)
         .map_err(|e| map_sqlx_error("grafana/timeseries", e))
+}
+
+/// Which nodes report the most of a given event: per-node totals over the range,
+/// highest first, with each node's identity attached.
+///
+/// Counts come from the same pre-aggregated tiers as `/timeseries`. The optional
+/// `interval` is only a resolution hint that picks the tier: sub-minute values
+/// read the fresh 30 s counts, anything from one minute up the 1 min or 1 h
+/// aggregates, which trail ingestion by a few minutes. Omitted, it is derived
+/// from the range length (about 300 buckets), so short ranges see the freshest
+/// data and long ranges stay cheap.
+///
+/// Answers: which nodes are the top senders of this event type, and who are they?
+#[utoipa::path(
+    get,
+    path = "/api/grafana/events-by-node",
+    params(EventsByNodeQuery),
+    responses(
+        (status = 200, description = "Array of one row per reporting node, descending by count, each with the node's total for the selected event types, its share of the network-wide total and its handshake identity (address, implementation, version, connection state, last seen).", body = [EventsByNodeRow]),
+        (status = 500, description = "Database error"),
+    ),
+    tag = "grafana"
+)]
+async fn events_by_node(
+    Query(q): Query<EventsByNodeQuery>,
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let event_types: Option<Vec<i16>> = q
+        .event_types
+        .map(|s| crate::event_type_meta::expand_event_types(&s))
+        .filter(|v| !v.is_empty());
+    let limit = i64::from(q.limit.unwrap_or(50).clamp(1, 2048));
+
+    state
+        .store
+        .grafana_events_by_node(
+            q.start,
+            q.end,
+            q.interval.as_deref(),
+            event_types.as_deref(),
+            limit,
+        )
+        .await
+        .map(Json)
+        .map_err(|e| map_sqlx_error("grafana/events-by-node", e))
 }
 
 /// Headline network counters for a dashboard summary row.
