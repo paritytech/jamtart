@@ -81,8 +81,10 @@ impl TestContext {
 /// # Environment requirements
 ///
 /// There are a few assumptions that need to pass in order for the test to run.
-/// * ENV var `TEST_DATABASE_URL` is defined and contains a postgres URL.
+/// * ENV var `TEST_DATABASE_URL` is defined and contains a postgres URL of a TimescaleDB server.
+///   Its user must be allowed to create databases.
 /// * ENV var `TEST_SPAMMER_CMD` is defined and contains a path to executable `jip-3-spammer` binary
+/// * ENV var `TEST_TART_CMD` is defined and contains a path to executable `tart-backend` binary
 pub fn run_test(unique_name: &str, f: impl FnOnce(TestContext)) {
     let _one_test_at_a_time = ONE_TEST_AT_A_TIME
         .lock()
