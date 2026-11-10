@@ -1,11 +1,9 @@
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
-use sqlx::postgres::PgConnectOptions;
 use sqlx::{Connection, PgConnection};
 use std::fs::File;
 use std::net::TcpListener;
-use std::panic::UnwindSafe;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus};
 use std::sync::{Mutex, PoisonError};
 use std::thread;
@@ -57,127 +55,149 @@ impl TestContext {
 /// Only one test runs at a time, even when the test harness runs them on multiple threads. The
 /// tests are meant to catch performance regressions, so they must not compete for resources.
 ///
-/// After running `f`, a cleanup of resources and a graceful shutdown of TART is performed. Because
-/// `f` may panic e.g. due to a failed assertion, it has an additional constraint on [`UnwindSafe`].
-/// The panic is only caught if it triggers unwind.
+/// TART is shut down gracefully and the test database is dropped afterwards, also when `f` panics
+/// e.g. due to a failed assertion. TART's output is written to a log file in
+/// `CARGO_TARGET_TMPDIR`, and printed when the test fails.
 ///
 /// # Environment requirements
 ///
 /// There are a few assumptions that need to pass in order for the test to run.
 /// * ENV var `TEST_DATABASE_URL` is defined and contains a postgres URL.
 /// * ENV var `TEST_SPAMMER_CMD` is defined and contains a path to executable `jip-3-spammer` binary
-pub fn run_test(unique_name: &str, f: impl FnOnce(TestContext) + UnwindSafe) {
+pub fn run_test(unique_name: &str, f: impl FnOnce(TestContext)) {
     let _one_test_at_a_time = ONE_TEST_AT_A_TIME
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
-    let work_dir = env!("CARGO_MANIFEST_DIR");
-    let database_url =
-        std::env::var("TEST_DATABASE_URL").expect("ENV var TEST_DATABASE_URL should be set");
-    let options: PgConnectOptions = database_url
-        .parse()
-        .expect("TEST_DATABASE_URL should be a postgres URL");
+    let database = TestDatabase::create(&required_env("TEST_DATABASE_URL"), unique_name);
+    let tart = Tart::start(&required_env("TEST_TART_CMD"), &database.url, unique_name);
 
-    let test_db_name = unique_name;
-    let spammer_cmd =
-        std::env::var("TEST_SPAMMER_CMD").expect("ENV var TEST_SPAMMER_CMD should be set");
-    let tart_cmd = std::env::var("TEST_TART_CMD").expect("ENV var TEST_TART_CMD should be set");
+    f(TestContext {
+        telemetry_bind: tart.telemetry_bind.clone(),
+        api_bind: tart.api_bind.clone(),
+        spammer_cmd: required_env("TEST_SPAMMER_CMD"),
+    });
+}
 
+fn required_env(name: &str) -> String {
+    std::env::var(name).unwrap_or_else(|_| panic!("ENV var {name} should be set"))
+}
+
+struct TestDatabase {
+    server_url: String,
+    name: String,
+    url: String,
+}
+
+impl TestDatabase {
+    fn create(server_url: &str, name: &str) -> Self {
+        execute_on_server(
+            server_url,
+            &[
+                format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)"),
+                format!("CREATE DATABASE {name}"),
+            ],
+        )
+        .expect("test database should be created");
+        Self {
+            server_url: server_url.to_string(),
+            name: name.to_string(),
+            url: database_url_for(server_url, name),
+        }
+    }
+}
+
+impl Drop for TestDatabase {
+    fn drop(&mut self) {
+        let drop_database = format!("DROP DATABASE {} WITH (FORCE)", self.name);
+        if let Err(error) = execute_on_server(&self.server_url, &[drop_database]) {
+            println!("Could not drop test database {}: {error}", self.name);
+        }
+    }
+}
+
+fn execute_on_server(server_url: &str, statements: &[String]) -> Result<(), sqlx::Error> {
     let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_io()
+        .enable_all()
         .build()
-        .unwrap();
+        .expect("tokio runtime should start");
+    runtime.block_on(async {
+        let mut connection = PgConnection::connect(server_url).await?;
+        for statement in statements {
+            sqlx::query(statement).execute(&mut connection).await?;
+        }
+        Ok(())
+    })
+}
 
-    runtime
-        .block_on(async {
-            let mut connection = PgConnection::connect_with(&options).await?;
+struct Tart {
+    process: Child,
+    telemetry_bind: String,
+    api_bind: String,
+    log_path: PathBuf,
+}
 
-            sqlx::query(format!("DROP DATABASE IF EXISTS {test_db_name}").as_str())
-                .execute(&mut connection)
-                .await?;
-
-            sqlx::query(format!("CREATE DATABASE {test_db_name}").as_str())
-                .execute(&mut connection)
-                .await?;
-
-            Ok::<_, sqlx::Error>(())
-        })
-        .unwrap();
-
-    let test_database_url = database_url_for(&database_url, test_db_name);
-
-    let telemetry_bind = format!("127.0.0.1:{}", free_local_port());
-    let api_bind = format!("127.0.0.1:{}", free_local_port());
-    let tart_log_path =
-        Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{unique_name}-tart.log"));
-    let tart_log = File::create(&tart_log_path).expect("TART log file should be writable");
-    let mut telemetry_process = Command::new(&tart_cmd)
-        .args(["--telemetry-bind", &telemetry_bind, "--api-bind", &api_bind])
-        .env("DATABASE_URL", &test_database_url)
-        .current_dir(work_dir)
-        .stdout(tart_log.try_clone().unwrap())
-        .stderr(tart_log)
-        .spawn()
-        .unwrap();
-
-    let result = std::panic::catch_unwind(|| {
-        f(TestContext {
+impl Tart {
+    fn start(tart_cmd: &str, database_url: &str, name: &str) -> Self {
+        let telemetry_bind = format!("127.0.0.1:{}", free_local_port());
+        let api_bind = format!("127.0.0.1:{}", free_local_port());
+        let log_path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}-tart.log"));
+        let log = File::create(&log_path).expect("TART log file should be writable");
+        let process = Command::new(tart_cmd)
+            .args(["--telemetry-bind", &telemetry_bind, "--api-bind", &api_bind])
+            .env("DATABASE_URL", database_url)
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .stdout(log.try_clone().unwrap())
+            .stderr(log)
+            .spawn()
+            .expect("TART should start");
+        Self {
+            process,
             telemetry_bind,
             api_bind,
-            spammer_cmd,
-        });
-    });
-
-    kill(
-        Pid::from_raw(telemetry_process.id() as i32),
-        Signal::SIGTERM,
-    )
-    .expect("TART should accept SIGTERM");
-    let stopped_in_time = wait_for_exit(&mut telemetry_process, TART_SHUTDOWN_TIMEOUT).is_some();
-    if !stopped_in_time {
-        telemetry_process.kill().unwrap();
-        telemetry_process.wait().unwrap();
+            log_path,
+        }
     }
 
-    if result.is_err() || !stopped_in_time {
-        print_tart_log(&tart_log_path);
+    fn print_log(&self) {
+        match std::fs::read_to_string(&self.log_path) {
+            Ok(log) => println!("TART log ({}):\n{log}", self.log_path.display()),
+            Err(error) => println!(
+                "Could not read TART log {}: {error}",
+                self.log_path.display()
+            ),
+        }
     }
+}
 
-    runtime
-        .block_on(async {
-            let mut connection = PgConnection::connect(database_url.as_str()).await?;
+impl Drop for Tart {
+    fn drop(&mut self) {
+        let _ = kill(Pid::from_raw(self.process.id() as i32), Signal::SIGTERM);
+        let stopped_in_time = wait_for_exit(&mut self.process, TART_SHUTDOWN_TIMEOUT).is_some();
+        if !stopped_in_time {
+            let _ = self.process.kill();
+            let _ = self.process.wait();
+        }
 
-            sqlx::query(format!("DROP DATABASE {test_db_name}").as_str())
-                .execute(&mut connection)
-                .await?;
-
-            Ok::<_, sqlx::Error>(())
-        })
-        .unwrap();
-
-    result.expect("test should succeed");
-    assert!(
-        stopped_in_time,
-        "TART should shut down within {TART_SHUTDOWN_TIMEOUT:?}"
-    );
+        if thread::panicking() || !stopped_in_time {
+            self.print_log();
+        }
+        assert!(
+            stopped_in_time || thread::panicking(),
+            "TART should shut down within {TART_SHUTDOWN_TIMEOUT:?}"
+        );
+    }
 }
 
 fn wait_for_exit(process: &mut Child, timeout: Duration) -> Option<ExitStatus> {
     let deadline = Instant::now() + timeout;
     loop {
-        if let Some(status) = process.try_wait().unwrap() {
+        if let Ok(Some(status)) = process.try_wait() {
             return Some(status);
         }
         if Instant::now() >= deadline {
             return None;
         }
         thread::sleep(POLL_INTERVAL);
-    }
-}
-
-fn print_tart_log(path: &Path) {
-    match std::fs::read_to_string(path) {
-        Ok(log) => println!("TART log ({}):\n{log}", path.display()),
-        Err(error) => println!("Could not read TART log {}: {error}", path.display()),
     }
 }
 
