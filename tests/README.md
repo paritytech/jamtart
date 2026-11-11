@@ -45,6 +45,16 @@ cargo sqlx migrate run
 cargo test --test api_tests --test integration_tests --test optimized_server_tests -- --test-threads=1
 ```
 
+## Ignored Tests (Known Bugs)
+
+Tests marked `#[ignore = "bug: ..."]` assert correct behavior that `src/` does not
+deliver yet; the reason names the bug. Keep them, and remove the marker together
+with the fix. Run them with:
+
+```bash
+cargo test -- --ignored --test-threads=1
+```
+
 ## Why Tests Must Run Serially (`--test-threads=1`)
 
 **Problem**: Integration tests share the same PostgreSQL database `tart_test`.

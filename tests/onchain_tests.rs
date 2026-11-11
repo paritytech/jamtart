@@ -334,6 +334,7 @@ async fn test_onchain_cores_timeseries_filtered() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "bug: validators timeseries aggregate sums running totals instead of per-validator MAX"]
 async fn test_onchain_validators_timeseries_aggregate() {
     let (server, store) = setup_test_api().await;
 
@@ -358,7 +359,7 @@ async fn test_onchain_validators_timeseries_aggregate() {
     )
     .await;
 
-    // Aggregate — SUM across all validators per bucket, no `validator_index` field
+    // Aggregate — SUM of each validator's MAX per bucket, no `validator_index` field
     let path = format!(
         "/api/grafana/onchain/validators/timeseries?{}&interval=30m",
         time_range_params()
@@ -376,10 +377,10 @@ async fn test_onchain_validators_timeseries_aggregate() {
         "Aggregate should not have `validator_index` field"
     );
 
-    // blocks_produced = (1 + 0 + 3) + (1 + 1 + 3) = 9
-    assert_eq!(row["blocks_produced"].as_i64().unwrap(), 9);
-    // guarantees = (5 + 3 + 10) + (7 + 6 + 10) = 41
-    assert_eq!(row["guarantees"].as_i64().unwrap(), 41);
+    // blocks_produced = max(1, 1) + max(0, 1) + max(3, 3) = 5
+    assert_eq!(row["blocks_produced"].as_i64().unwrap(), 5);
+    // guarantees = max(5, 7) + max(3, 6) + max(10, 10) = 23
+    assert_eq!(row["guarantees"].as_i64().unwrap(), 23);
 }
 
 #[tokio::test]
@@ -831,4 +832,74 @@ async fn test_onchain_validator_detail() {
     assert_eq!(body[0]["tickets"].as_i64().unwrap(), 5);
     assert_eq!(body[0]["assurances"].as_i64().unwrap(), 8);
     assert_eq!(body[2]["blocks_produced"].as_i64().unwrap(), 1);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Ingestion bugs
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Two redundant JAM_RPC_URLs pointing at the same node double-insert: each
+/// connection carries its own `seen` set and the insert has no existence guard.
+#[tokio::test]
+#[ignore = "bug: #14 redundant JAM_RPC_URLs insert the same block twice"]
+async fn test_onchain_multi_url_duplicate_inserts() {
+    let (server, store) = setup_test_api().await;
+
+    let node = MockJamRpc::start(vec![cores_block(
+        1,
+        slot_minutes_ago(5),
+        vec![core(1000, 100)],
+    )])
+    .await;
+    let (first, second) = tokio::join!(
+        ingest_until_closed(node.url(), store.pool(), SLOT_PERIOD_SECS),
+        ingest_until_closed(node.url(), store.pool(), SLOT_PERIOD_SECS),
+    );
+    first.expect("first ingestion failed");
+    second.expect("second ingestion failed");
+
+    let path = format!("/api/grafana/onchain/cores/0?{}", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let body: Vec<Value> = response.json();
+
+    assert_eq!(
+        body.len(),
+        1,
+        "one block must be stored once despite two redundant connections, got {} rows",
+        body.len()
+    );
+}
+
+/// A core `popularity` above 32767 must survive ingestion un-wrapped: the source
+/// is a u16, and the insert must not narrow it to i16.
+#[tokio::test]
+#[ignore = "bug: onchain P2-4 u16 stats narrowed to i16 SMALLINT on insert"]
+async fn test_onchain_ingestion_u16_narrowing() {
+    let (server, store) = setup_test_api().await;
+
+    ingest(
+        &store,
+        vec![cores_block(
+            1,
+            slot_minutes_ago(5),
+            vec![CoreActivityRecord {
+                popularity: 40_000,
+                ..Default::default()
+            }],
+        )],
+    )
+    .await;
+
+    let path = format!("/api/grafana/onchain/cores/0?{}", time_range_params());
+    let response = server.get(&path).await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let body: Vec<Value> = response.json();
+
+    assert_eq!(body.len(), 1);
+    let popularity = body[0]["popularity"].as_i64().unwrap();
+    assert_eq!(
+        popularity, 40_000,
+        "popularity must not wrap when stored, got {popularity}"
+    );
 }
