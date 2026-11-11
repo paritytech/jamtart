@@ -96,6 +96,18 @@ pub fn spawn_onchain_ingestion(
         .collect()
 }
 
+/// One-shot ingestion for tests: runs a single connection to `url` without
+/// reconnecting, returning once the node has closed it and everything it sent
+/// has been processed.
+pub async fn ingest_until_closed(
+    url: &str,
+    pool: &PgPool,
+    slot_period_secs: u16,
+) -> anyhow::Result<()> {
+    let counters = RwLock::new(IngestCounters::new());
+    run_connection(url, pool, slot_period_secs, &counters, 0).await
+}
+
 /// Run a single RPC connection: subscribe to stats + finalization, process both.
 async fn run_connection(
     url: &str,
