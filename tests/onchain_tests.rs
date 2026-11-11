@@ -2,6 +2,7 @@ mod common;
 
 use axum::http::StatusCode;
 use axum_test::TestServer;
+use chrono::DurationRound;
 use serde_json::Value;
 use std::sync::Arc;
 use tart_backend::api::{create_api_router, ApiState};
@@ -61,6 +62,18 @@ fn time_range_params() -> String {
         "start={}&end={}",
         start.format("%Y-%m-%dT%H:%M:%SZ"),
         end.format("%Y-%m-%dT%H:%M:%SZ"),
+    )
+}
+
+/// Two timestamps inside the previous complete 30m bucket, so `interval=30m`
+/// groups them together no matter when the test runs.
+fn timestamps_in_one_30m_bucket() -> (String, String) {
+    let bucket = chrono::Duration::minutes(30);
+    let bucket_start = chrono::Utc::now().duration_trunc(bucket).unwrap() - bucket;
+    let format = |ts: chrono::DateTime<chrono::Utc>| ts.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    (
+        format(bucket_start + chrono::Duration::minutes(10)),
+        format(bucket_start + chrono::Duration::minutes(20)),
     )
 }
 
@@ -173,13 +186,7 @@ async fn test_onchain_cores_timeseries_aggregate() {
     let (server, store) = setup_test_api().await;
     let pool = store.pool();
 
-    let now = chrono::Utc::now();
-    let t1 = (now - chrono::Duration::minutes(10))
-        .format("%Y-%m-%dT%H:%M:%SZ")
-        .to_string();
-    let t2 = (now - chrono::Duration::minutes(5))
-        .format("%Y-%m-%dT%H:%M:%SZ")
-        .to_string();
+    let (t1, t2) = timestamps_in_one_30m_bucket();
 
     // Core 0: gas=1000, da=100 at t1 and t2
     insert_core_stats(pool, &t1, 100, 0, 1000, 100).await;
@@ -225,13 +232,7 @@ async fn test_onchain_cores_timeseries_filtered() {
     let (server, store) = setup_test_api().await;
     let pool = store.pool();
 
-    let now = chrono::Utc::now();
-    let t1 = (now - chrono::Duration::minutes(10))
-        .format("%Y-%m-%dT%H:%M:%SZ")
-        .to_string();
-    let t2 = (now - chrono::Duration::minutes(5))
-        .format("%Y-%m-%dT%H:%M:%SZ")
-        .to_string();
+    let (t1, t2) = timestamps_in_one_30m_bucket();
 
     // Core 0
     insert_core_stats(pool, &t1, 100, 0, 1000, 100).await;
@@ -269,13 +270,7 @@ async fn test_onchain_validators_timeseries_aggregate() {
     let (server, store) = setup_test_api().await;
     let pool = store.pool();
 
-    let now = chrono::Utc::now();
-    let t1 = (now - chrono::Duration::minutes(10))
-        .format("%Y-%m-%dT%H:%M:%SZ")
-        .to_string();
-    let t2 = (now - chrono::Duration::minutes(5))
-        .format("%Y-%m-%dT%H:%M:%SZ")
-        .to_string();
+    let (t1, t2) = timestamps_in_one_30m_bucket();
 
     // Validator 0: blocks_produced=1, guarantees=5 at t1; blocks=2, guarantees=8 at t2
     insert_validator_stats(pool, &t1, 100, 0, 1, 5).await;
@@ -315,13 +310,7 @@ async fn test_onchain_validators_timeseries_filtered() {
     let (server, store) = setup_test_api().await;
     let pool = store.pool();
 
-    let now = chrono::Utc::now();
-    let t1 = (now - chrono::Duration::minutes(10))
-        .format("%Y-%m-%dT%H:%M:%SZ")
-        .to_string();
-    let t2 = (now - chrono::Duration::minutes(5))
-        .format("%Y-%m-%dT%H:%M:%SZ")
-        .to_string();
+    let (t1, t2) = timestamps_in_one_30m_bucket();
 
     // Validator 0
     insert_validator_stats(pool, &t1, 100, 0, 1, 5).await;

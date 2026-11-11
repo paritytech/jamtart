@@ -74,6 +74,7 @@ impl SharedFlushStats {
 #[derive(Clone)]
 pub struct BatchWriter {
     sender: Sender<WriterCommand>,
+    shared_node_counts: Arc<Mutex<HashMap<NodeId, u64>>>,
 }
 
 enum WriterCommand {
@@ -189,7 +190,10 @@ impl BatchWriter {
             });
         }
 
-        BatchWriter { sender }
+        BatchWriter {
+            sender,
+            shared_node_counts,
+        }
     }
 
     /// Queue a node connection event (async for reliability)
@@ -260,6 +264,23 @@ impl BatchWriter {
         Ok(())
     }
 
+    /// Test-only: persist the shared node-stats map now instead of waiting for
+    /// the NODE_STATS_INTERVAL tick. Call after `flush()` so every writer has
+    /// merged its local counts. Mirrors flush_trackers_for_test.
+    pub async fn flush_node_stats_for_test(&self, store: &Arc<EventStore>) -> Result<()> {
+        let batch = {
+            let mut map = self.shared_node_counts.lock().await;
+            std::mem::take(&mut *map)
+        };
+        if !batch.is_empty() {
+            store
+                .update_node_stats(&batch)
+                .await
+                .map_err(|e| anyhow::anyhow!("update_node_stats failed: {e}"))?;
+        }
+        Ok(())
+    }
+
     /// Flush all pending writes to database.
     ///
     /// **For testing only**: Forces immediate flush. Sends a flush command to
@@ -304,9 +325,6 @@ async fn writer_worker(
     let mut node_connects: Vec<(NodeId, NodeInformation, String)> = Vec::new();
     let mut node_disconnects: Vec<NodeId> = Vec::new();
     let mut node_counts: HashMap<NodeId, u64> = HashMap::new();
-
-    let mut stats_interval = interval(NODE_STATS_INTERVAL);
-    stats_interval.tick().await;
 
     loop {
         // Phase 1: Acquire lock and drain available events into local batch.
@@ -368,23 +386,20 @@ async fn writer_worker(
             node_disconnects.clear();
         }
 
-        // Send flush response after everything is written
-        if let Some(response) = flush_response.take() {
-            let _ = response.send(Ok(()));
-        }
-
-        // Phase 4: Merge local node counts into shared aggregator (every 5 seconds)
-        // A single dedicated task flushes the shared map to DB, preventing deadlocks
-        if tokio::time::timeout(Duration::ZERO, stats_interval.tick())
-            .await
-            .is_ok()
-            && !node_counts.is_empty()
-        {
+        // Phase 4: Merge local node counts into the shared aggregator before
+        // the flush response, so a completed flush() implies all counts are
+        // visible in the shared map.
+        if !node_counts.is_empty() {
             let local = std::mem::take(&mut node_counts);
             let mut shared = shared_node_counts.lock().await;
             for (node_id, count) in local {
                 *shared.entry(node_id).or_default() += count;
             }
+        }
+
+        // Send flush response after everything is written
+        if let Some(response) = flush_response.take() {
+            let _ = response.send(Ok(()));
         }
 
         if should_shutdown {
@@ -401,13 +416,6 @@ async fn writer_worker(
                     let _ = store
                         .store_nodes_disconnected_batch(&node_disconnects)
                         .await;
-                }
-            }
-            // Merge remaining node counts into shared aggregator
-            if !node_counts.is_empty() {
-                let mut shared = shared_node_counts.lock().await;
-                for (node_id, count) in &node_counts {
-                    *shared.entry(node_id.clone()).or_default() += count;
                 }
             }
             info!("Writer worker {} stopped", id);

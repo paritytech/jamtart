@@ -74,15 +74,12 @@ jobs:
             . -> target
             jip-3-spammer -> target
 
-      - name: Run unit tests
-        run: cargo test --lib --test types_tests --test events_tests --test error_tests --test encoding_tests
-
-      - name: Run integration tests
+      - name: Run tests
         env:
           DATABASE_URL: postgres://tart:tart_password@localhost:5432/tart_test
           TEST_DATABASE_URL: postgres://tart:tart_password@localhost:5432/tart_test
           RUST_LOG: info
-        run: cargo test --test api_tests --test ws_tests --test integration_tests --test optimized_server_tests -- --test-threads=1
+        run: cargo test --no-fail-fast -- --test-threads=1
 
       - name: Build jip-3-spammer for functional tests
         run: cargo build --manifest-path jip-3-spammer/Cargo.toml -p jip-3-spammer --bin jip-3-spammer
