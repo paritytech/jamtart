@@ -15,7 +15,7 @@ mod bottlenecks;
 static ONE_TEST_AT_A_TIME: Mutex<()> = Mutex::new(());
 
 const TART_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
-const SPAMMER_TIMEOUT: Duration = Duration::from_secs(600);
+const SPAMMER_TIMEOUT: Duration = Duration::from_secs(60);
 const TART_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
