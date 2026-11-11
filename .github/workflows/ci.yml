@@ -69,6 +69,10 @@ jobs:
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            jip-3-spammer -> target
 
       - name: Run unit tests
         run: cargo test --lib --test types_tests --test events_tests --test error_tests --test encoding_tests
