@@ -7,7 +7,6 @@ use tart_backend::types::*;
 use tart_backend::TelemetryServer;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
-use tokio::time::sleep;
 
 pub mod mock_jam_rpc;
 
@@ -44,13 +43,21 @@ pub fn test_database_url() -> String {
 /// Flush all pending batch writes and wait for database visibility.
 #[allow(dead_code)]
 pub async fn flush_and_wait(server: &Arc<TelemetryServer>) {
-    sleep(Duration::from_millis(100)).await;
     server.flush_writes().await.expect("Flush failed");
+}
+
+/// A fake node connected to the telemetry server.
+#[allow(dead_code)]
+pub struct TestNode {
+    stream: TcpStream,
+    server: Arc<TelemetryServer>,
+    node_id: String,
+    events_sent: u64,
 }
 
 /// Connect a fake node with the given id and wait until the server sees it.
 #[allow(dead_code)]
-pub async fn connect_test_node(port: u16, node_id: u8, server: &Arc<TelemetryServer>) -> TcpStream {
+pub async fn connect_test_node(port: u16, node_id: u8, server: &Arc<TelemetryServer>) -> TestNode {
     let expected = server.connection_count() + 1;
 
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
@@ -66,16 +73,33 @@ pub async fn connect_test_node(port: u16, node_id: u8, server: &Arc<TelemetrySer
     server.wait_for_connections(expected).await;
     flush_and_wait(server).await;
 
-    stream
+    TestNode {
+        stream,
+        server: Arc::clone(server),
+        node_id: node_id_hex(node_id),
+        events_sent: 0,
+    }
 }
 
-/// Write a batch of encoded events to a connected node stream.
+/// Send events from a fake node and wait until the server has received them all,
+/// so a following flush covers them.
 #[allow(dead_code)]
-pub async fn send_events(stream: &mut TcpStream, events: &[Event]) {
+pub async fn send_events(node: &mut TestNode, events: &[Event]) {
     for event in events {
         let encoded = encode_message(event).unwrap();
-        stream.write_all(&encoded).await.unwrap();
+        node.stream.write_all(&encoded).await.unwrap();
     }
+    node.events_sent += events.len() as u64;
+
+    let received = node.server.wait_for_events(&node.node_id, node.events_sent);
+    tokio::time::timeout(Duration::from_secs(10), received)
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "server did not receive {} events from node {}",
+                node.events_sent, node.node_id
+            )
+        });
 }
 
 /// Creates a test BlockSummary with reasonable default values
@@ -223,7 +247,6 @@ pub async fn refresh_aggregates(pool: &sqlx::PgPool) {
 /// Flush batch_writer + trackers. Combined helper for grafana tests.
 #[allow(dead_code)]
 pub async fn flush_all(server: &Arc<TelemetryServer>) {
-    sleep(Duration::from_millis(100)).await;
     server.flush_writes().await.expect("Flush writes failed");
     server.flush_trackers_for_test().await;
 }

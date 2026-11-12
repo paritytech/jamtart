@@ -2,15 +2,13 @@ mod common;
 
 use axum::http::StatusCode;
 use axum_test::TestServer;
+use common::{connect_test_node, send_events};
 use serde_json::Value;
 use std::sync::Arc;
 use tart_backend::api::{create_api_router, ApiState};
-use tart_backend::encoding::encode_message;
 use tart_backend::events::Event;
 use tart_backend::types::*;
 use tart_backend::{EventStore, TelemetryServer};
-use tokio::io::AsyncWriteExt;
-use tokio::net::TcpStream;
 
 async fn setup_test_api() -> (TestServer, Arc<TelemetryServer>, u16, Arc<EventStore>) {
     let database_url = common::test_database_url();
@@ -57,32 +55,6 @@ async fn setup_test_api() -> (TestServer, Arc<TelemetryServer>, u16, Arc<EventSt
     let test_server = TestServer::new(app).unwrap();
 
     (test_server, telemetry_server, telemetry_port, store)
-}
-
-async fn connect_test_node(port: u16, node_id: u8, server: &Arc<TelemetryServer>) -> TcpStream {
-    let expected = server.connection_count() + 1;
-
-    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
-        .await
-        .unwrap();
-
-    let mut node_info = common::test_node_info([node_id; 32]);
-    node_info.implementation_name = BoundedString::new(&format!("test-node-{}", node_id)).unwrap();
-
-    let encoded = encode_message(&node_info).unwrap();
-    stream.write_all(&encoded).await.unwrap();
-
-    server.wait_for_connections(expected).await;
-    common::flush_and_wait(server).await;
-
-    stream
-}
-
-async fn send_events(stream: &mut TcpStream, events: &[Event]) {
-    for event in events {
-        let encoded = encode_message(event).unwrap();
-        stream.write_all(&encoded).await.unwrap();
-    }
 }
 
 fn time_range_params() -> String {
@@ -1135,7 +1107,8 @@ async fn test_grafana_node_disconnect() {
 
     // Drop node 2's stream
     drop(stream2);
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    telemetry.wait_for_connections(1).await;
+    common::flush_and_wait(&telemetry).await;
 
     // Verify node 2 disconnected
     let response = server.get("/api/grafana/nodes").await;
@@ -2584,8 +2557,6 @@ async fn test_grafana_da_stats() {
         ],
     )
     .await;
-    // Small delay to ensure ordering
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     send_events(
         &mut stream_a,
         &[
@@ -2638,7 +2609,6 @@ async fn test_grafana_shard_latency_histogram() {
         ],
     )
     .await;
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     send_events(
         &mut stream_a,
         &[
@@ -2655,7 +2625,6 @@ async fn test_grafana_shard_latency_histogram() {
         ],
     )
     .await;
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     send_events(
         &mut stream_a,
         &[
@@ -2672,7 +2641,6 @@ async fn test_grafana_shard_latency_histogram() {
         ],
     )
     .await;
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     send_events(
         &mut stream_a,
         &[
@@ -2745,7 +2713,6 @@ async fn test_grafana_shard_latency_with_failure() {
         ],
     )
     .await;
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     send_events(
         &mut stream_a,
         &[
@@ -2762,7 +2729,6 @@ async fn test_grafana_shard_latency_with_failure() {
         ],
     )
     .await;
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     send_events(
         &mut stream_a,
         &[
@@ -4210,7 +4176,6 @@ async fn test_grafana_bundle_latency() {
         ],
     )
     .await;
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     send_events(
         &mut stream,
         &[
@@ -4227,7 +4192,6 @@ async fn test_grafana_bundle_latency() {
         ],
     )
     .await;
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     send_events(
         &mut stream,
         &[
@@ -4248,7 +4212,6 @@ async fn test_grafana_bundle_latency() {
         ],
     )
     .await;
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     send_events(
         &mut stream,
         &[
@@ -4338,7 +4301,6 @@ async fn test_grafana_segment_latency() {
         ],
     )
     .await;
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     send_events(
         &mut stream,
         &[
@@ -4395,7 +4357,6 @@ async fn test_grafana_preimage_latency() {
         ],
     )
     .await;
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     send_events(
         &mut stream,
         &[
