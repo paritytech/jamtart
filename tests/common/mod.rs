@@ -53,6 +53,7 @@ pub struct TestNode {
     server: Arc<TelemetryServer>,
     node_id: String,
     events_sent: u64,
+    next_event_id: u64,
 }
 
 /// Connect a fake node with the given id and wait until the server sees it.
@@ -78,16 +79,24 @@ pub async fn connect_test_node(port: u16, node_id: u8, server: &Arc<TelemetrySer
         server: Arc::clone(server),
         node_id: node_id_hex(node_id),
         events_sent: 0,
+        next_event_id: 0,
     }
 }
 
 /// Send events from a fake node and wait until the server has received them all,
-/// so a following flush covers them.
+/// so a following flush covers them. Returns the JIP-3 event ids the server
+/// assigns, for events that refer to earlier ones.
 #[allow(dead_code)]
-pub async fn send_events(node: &mut TestNode, events: &[Event]) {
+pub async fn send_events(node: &mut TestNode, events: &[Event]) -> Vec<u64> {
+    let mut event_ids = Vec::with_capacity(events.len());
     for event in events {
         let encoded = encode_message(event).unwrap();
         node.stream.write_all(&encoded).await.unwrap();
+        event_ids.push(node.next_event_id);
+        node.next_event_id += match event {
+            Event::Dropped { num, .. } => *num,
+            _ => 1,
+        };
     }
     node.events_sent += events.len() as u64;
 
@@ -100,6 +109,7 @@ pub async fn send_events(node: &mut TestNode, events: &[Event]) {
                 node.events_sent, node.node_id
             )
         });
+    event_ids
 }
 
 /// Creates a test BlockSummary with reasonable default values
@@ -212,8 +222,7 @@ pub fn test_node_info(peer_id: [u8; 32]) -> NodeInformation {
 
 /// Force-refresh all continuous aggregates used by grafana endpoints.
 /// TimescaleDB continuous aggregates don't auto-refresh fast enough in tests.
-#[allow(dead_code)]
-pub async fn refresh_aggregates(pool: &sqlx::PgPool) {
+async fn refresh_aggregates(pool: &sqlx::PgPool) {
     // The refresh window covers a generous range so test data is always included
     let aggregates = [
         // Non-event aggregates (not affected by migration 020)
@@ -244,11 +253,15 @@ pub async fn refresh_aggregates(pool: &sqlx::PgPool) {
     }
 }
 
-/// Flush batch_writer + trackers. Combined helper for grafana tests.
+/// Flush batch_writer, trackers and the per-minute aggregates, so everything
+/// sent so far is visible through the API.
 #[allow(dead_code)]
 pub async fn flush_all(server: &Arc<TelemetryServer>) {
     server.flush_writes().await.expect("Flush writes failed");
     server.flush_trackers_for_test().await;
+    if let Some(store) = server.get_store() {
+        refresh_aggregates(store.pool()).await;
+    }
 }
 
 /// Construct a Status event (event_type=10) with the given timestamp.
