@@ -105,6 +105,8 @@ pub struct NodeConnection {
     pub connected_at: chrono::DateTime<chrono::Utc>,
     pub last_event_at: chrono::DateTime<chrono::Utc>,
     pub event_count: u64,
+    /// Events handed to the batch writer so far; lets tests wait for ingestion.
+    pub events_received: Arc<tokio::sync::watch::Sender<u64>>,
 }
 
 /// High-performance TCP telemetry server for JAM/Polkadot blockchain nodes.
@@ -675,6 +677,20 @@ impl TelemetryServer {
             rx.changed().await.expect("connection watch closed");
         }
     }
+
+    /// Wait until the server has handed at least `expected` events from
+    /// `node_id` to the batch writer. Panics if the node is not connected.
+    pub async fn wait_for_events(&self, node_id: &str, expected: u64) {
+        let events_received = self
+            .connections
+            .get(node_id)
+            .map(|connection| Arc::clone(&connection.events_received))
+            .unwrap_or_else(|| panic!("node {node_id} is not connected"));
+        let _ = events_received
+            .subscribe()
+            .wait_for(|count| *count >= expected)
+            .await;
+    }
 }
 
 /// Shared server state passed to each connection handler.
@@ -781,6 +797,8 @@ async fn handle_connection_optimized(
         node_info.additional_info.as_str().unwrap_or("")
     );
 
+    let events_received = Arc::new(tokio::sync::watch::Sender::new(0u64));
+
     // Store connection info (DashMap key is String; one-time alloc per connection)
     let connection = NodeConnection {
         id: node_id_str.to_string(),
@@ -789,9 +807,9 @@ async fn handle_connection_optimized(
         connected_at: chrono::Utc::now(),
         last_event_at: chrono::Utc::now(),
         event_count: 0,
+        events_received: Arc::clone(&events_received),
     };
     connections.insert(node_id_str.to_string(), connection);
-    let _ = connection_watch.send(connections.len());
 
     // Queue node connection event
     info!("Queueing node connection for {}", node_id_str);
@@ -805,6 +823,8 @@ async fn handle_connection_optimized(
             return Err(e.into());
         }
     }
+    // Announced only after queueing, so a flush after wait_for_connections includes it.
+    let _ = connection_watch.send(connections.len());
 
     // Track dropped events
     let mut dropped_events = 0u64;
@@ -2061,6 +2081,10 @@ async fn handle_connection_optimized(
             }
         }
 
+        if batch_received > 0 {
+            events_received.send_modify(|count| *count += batch_received);
+        }
+
         // Read more data from stream
         let n = stream.read_buf(&mut buffer).await?;
         if n == 0 {
@@ -2084,8 +2108,10 @@ async fn handle_connection_optimized(
     // Clean up
     connections.remove(&*node_id_str);
     broadcaster.remove_node_channel(&node_id_str).await;
+    // As on connect, announce only after queueing the change.
+    let disconnected = batch_writer.node_disconnected(node_id_str).await;
     let _ = connection_watch.send(connections.len());
-    batch_writer.node_disconnected(node_id_str).await?;
+    disconnected?;
 
     Ok(())
 }

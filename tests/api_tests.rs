@@ -5,6 +5,7 @@ use axum_test::TestServer;
 use serde_json::Value;
 use std::sync::Arc;
 use tart_backend::api::{create_api_router, ApiState};
+use tart_backend::events::Event;
 use tart_backend::{EventStore, TelemetryServer};
 
 async fn setup_test_api() -> (TestServer, Arc<TelemetryServer>, u16, Arc<EventStore>) {
@@ -97,6 +98,29 @@ async fn test_node_details_endpoint() {
     assert!(conn_info["address"].is_string());
     assert_eq!(conn_info["event_count"], 0);
     assert!(conn_info["connected_duration_secs"].is_number());
+}
+
+/// A burst of events reaches the server over many socket reads and writer
+/// batches; once flushed, the node's event count must include every one.
+#[tokio::test]
+async fn test_node_event_count_after_burst() {
+    let (server, telemetry_server, telemetry_port, _) = setup_test_api().await;
+    let mut node = common::connect_test_node(telemetry_port, 4, &telemetry_server).await;
+
+    const SLOT_MICROS: u64 = 6_000_000;
+    let first_slot_at = common::now_jce_micros() - 1000 * SLOT_MICROS;
+    let events: Vec<Event> = (0..1000u32)
+        .map(|slot| common::best_block_event(first_slot_at + u64::from(slot) * SLOT_MICROS, slot))
+        .collect();
+    common::send_events(&mut node, &events).await;
+    common::flush_all(&telemetry_server).await;
+
+    let response = server
+        .get(&format!("/api/nodes/{}", common::node_id_hex(4)))
+        .await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    assert_eq!(json["event_count"], 1000);
 }
 
 #[tokio::test]
