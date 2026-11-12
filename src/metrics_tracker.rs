@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use parking_lot::RwLock;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tracing::{debug, info};
 
 use crate::events::Event;
@@ -29,6 +29,7 @@ pub struct MetricsTracker {
     cores_status_snapshot: RwLock<Arc<serde_json::Value>>,
     core_processing: RwLock<HashMap<u16, Arc<serde_json::Value>>>,
     live_counters: Arc<LiveCounters>,
+    events_recorded: watch::Sender<u64>,
 }
 
 impl Default for MetricsTracker {
@@ -44,6 +45,7 @@ impl MetricsTracker {
             cores_status_snapshot: RwLock::new(Arc::new(serde_json::json!(null))),
             core_processing: RwLock::new(HashMap::new()),
             live_counters: Arc::new(LiveCounters::new()),
+            events_recorded: watch::Sender::new(0),
         }
     }
 
@@ -61,6 +63,15 @@ impl MetricsTracker {
 
     pub fn live_counters(&self) -> &Arc<LiveCounters> {
         &self.live_counters
+    }
+
+    /// Wait until the tracker task has recorded at least `expected` events.
+    pub async fn wait_for_events(&self, expected: u64) {
+        let _ = self
+            .events_recorded
+            .subscribe()
+            .wait_for(|count| *count >= expected)
+            .await;
     }
 }
 
@@ -563,13 +574,20 @@ pub async fn run(shared: Arc<MetricsTracker>, mut rx: mpsc::Receiver<MetricsEven
                 // Process filtered events for block propagation / WP pipeline
                 state.events_processed += 1;
                 state.process_event(event);
+                let mut recorded_this_pass = 1;
 
                 // Drain remaining buffered events
                 while let Ok(event) = rx.try_recv() {
                     live_counters.record(now_secs(), event.event_type, extract_slot(&event.event));
                     state.events_processed += 1;
                     state.process_event(event);
+                    recorded_this_pass += 1;
                 }
+                let events_recorded = &shared.events_recorded;
+                events_recorded.send_if_modified(|count| {
+                    *count += recorded_this_pass;
+                    events_recorded.receiver_count() > 0
+                });
                 state.maybe_rebuild_snapshots();
                 state.maybe_log_stats();
                 state.maybe_cleanup();
