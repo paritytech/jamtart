@@ -291,6 +291,34 @@ pub fn best_block_event(ts: u64, slot: u32) -> Event {
     }
 }
 
+/// A block hash distinct for every slot, for events that name a block.
+#[allow(dead_code)]
+pub fn block_hash(slot: u32) -> [u8; 32] {
+    let mut hash = [0xB0; 32];
+    hash[..4].copy_from_slice(&slot.to_le_bytes());
+    hash
+}
+
+/// Construct a BestBlockChanged event (event_type=11) for the block with the given hash.
+#[allow(dead_code)]
+pub fn best_block_event_with_hash(ts: u64, slot: u32, hash: [u8; 32]) -> Event {
+    Event::BestBlockChanged {
+        timestamp: ts,
+        slot,
+        hash,
+    }
+}
+
+/// Construct a FinalizedBlockChanged event (event_type=12) for the block with the given hash.
+#[allow(dead_code)]
+pub fn finalized_block_event_with_hash(ts: u64, slot: u32, hash: [u8; 32]) -> Event {
+    Event::FinalizedBlockChanged {
+        timestamp: ts,
+        slot,
+        hash,
+    }
+}
+
 /// Construct a FinalizedBlockChanged event (event_type=12).
 #[allow(dead_code)]
 pub fn finalized_block_event(ts: u64, slot: u32) -> Event {
@@ -348,6 +376,16 @@ pub fn importing_event(ts: u64, slot: u32, block_hash: [u8; 32]) -> Event {
             num_assurances: 2,
             num_dispute_verdicts: 0,
         },
+    }
+}
+
+/// Construct a WorkPackageSubmission event (event_type=90): `builder` submitted a work package.
+#[allow(dead_code)]
+pub fn wp_submission_event(ts: u64, builder: [u8; 32]) -> Event {
+    Event::WorkPackageSubmission {
+        timestamp: ts,
+        builder,
+        bundle: false,
     }
 }
 
@@ -532,6 +570,18 @@ pub fn block_announced_event(ts: u64, slot: u32) -> Event {
         announcer: ConnectionSide::Remote,
         slot,
         hash: [0xAA; 32],
+    }
+}
+
+/// Construct a BlockAnnounced event (event_type=62): `peer` announced the block to this node.
+#[allow(dead_code)]
+pub fn block_announced_event_from(ts: u64, peer: [u8; 32], slot: u32, hash: [u8; 32]) -> Event {
+    Event::BlockAnnounced {
+        timestamp: ts,
+        peer,
+        announcer: ConnectionSide::Remote,
+        slot,
+        hash,
     }
 }
 
