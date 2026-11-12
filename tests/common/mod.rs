@@ -9,6 +9,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::time::sleep;
 
+pub mod mock_jam_rpc;
+
 /// Core count used in test_protocol_params(). Status events must have
 /// num_guarantees with exactly this many elements to match the decoder.
 #[allow(dead_code)]
