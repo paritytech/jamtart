@@ -549,6 +549,10 @@ impl TelemetryServer {
         Arc::clone(&self.event_counter)
     }
 
+    pub fn get_store(&self) -> Option<Arc<EventStore>> {
+        self.store.clone()
+    }
+
     pub fn get_slot_tracker(&self) -> SlotTracker {
         Arc::clone(&self.slot_tracker)
     }

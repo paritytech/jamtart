@@ -181,7 +181,7 @@ async fn test_grafana_timeseries_invalid_group_by() {
 
 #[tokio::test]
 async fn test_grafana_timeseries_with_events() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
@@ -197,7 +197,6 @@ async fn test_grafana_timeseries_with_events() {
 
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
-    common::refresh_aggregates(store.pool()).await;
 
     let path = format!(
         "/api/grafana/timeseries?{}&interval=1m",
@@ -578,7 +577,7 @@ async fn test_grafana_db_stats_structure() {
 
 #[tokio::test]
 async fn test_grafana_stats_basic() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
@@ -591,7 +590,6 @@ async fn test_grafana_stats_basic() {
     ];
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
-    common::refresh_aggregates(store.pool()).await;
 
     let path = format!("/api/grafana/stats?{}", time_range_params());
     let response = server.get(&path).await;
@@ -614,7 +612,7 @@ async fn test_grafana_stats_basic() {
 
 #[tokio::test]
 async fn test_grafana_cores_summary() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
@@ -627,7 +625,6 @@ async fn test_grafana_cores_summary() {
     ];
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
-    common::refresh_aggregates(store.pool()).await;
 
     let path = format!("/api/grafana/cores?{}", time_range_params());
     let response = server.get(&path).await;
@@ -673,7 +670,7 @@ async fn test_grafana_cores_summary() {
 
 #[tokio::test]
 async fn test_grafana_services_pipeline() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
@@ -687,7 +684,6 @@ async fn test_grafana_services_pipeline() {
     ];
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
-    common::refresh_aggregates(store.pool()).await;
 
     let path = format!("/api/grafana/services?{}", time_range_params());
     let response = server.get(&path).await;
@@ -731,7 +727,7 @@ async fn test_grafana_services_pipeline() {
 
 #[tokio::test]
 async fn test_grafana_timeseries_group_by_core() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
@@ -745,7 +741,6 @@ async fn test_grafana_timeseries_group_by_core() {
     ];
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
-    common::refresh_aggregates(store.pool()).await;
 
     let path = format!(
         "/api/grafana/timeseries?{}&interval=1m&group_by=core",
@@ -975,7 +970,7 @@ async fn test_grafana_wp_failure_partial_pipeline() {
 
 #[tokio::test]
 async fn test_grafana_node_stats_aggregate_and_filter() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
 
     let ts = common::now_jce_micros();
 
@@ -994,7 +989,6 @@ async fn test_grafana_node_stats_aggregate_and_filter() {
     send_events(&mut stream2, &events2).await;
 
     common::flush_all(&telemetry).await;
-    common::refresh_aggregates(store.pool()).await;
 
     // Unfiltered aggregate
     let path = format!("/api/grafana/node-stats-aggregate?{}", time_range_params());
@@ -1055,7 +1049,7 @@ async fn test_grafana_node_stats_aggregate_and_filter() {
 
 #[tokio::test]
 async fn test_grafana_cores_detail_mode() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
@@ -1068,7 +1062,6 @@ async fn test_grafana_cores_detail_mode() {
     ];
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
-    common::refresh_aggregates(store.pool()).await;
 
     let path = format!("/api/grafana/cores/3?{}", time_range_params());
     let response = server.get(&path).await;
@@ -1146,7 +1139,7 @@ async fn test_grafana_node_disconnect() {
 
 #[tokio::test]
 async fn test_grafana_timeseries_node_and_event_type_filters() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
@@ -1159,7 +1152,6 @@ async fn test_grafana_timeseries_node_and_event_type_filters() {
     ];
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
-    common::refresh_aggregates(store.pool()).await;
 
     let node1_id = common::node_id_hex(1);
 
@@ -1291,7 +1283,7 @@ async fn test_grafana_services_timeseries_invalid_interval() {
 
 #[tokio::test]
 async fn test_grafana_services_timeseries_with_data() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
@@ -1306,7 +1298,6 @@ async fn test_grafana_services_timeseries_with_data() {
     ];
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
-    common::refresh_aggregates(store.pool()).await;
 
     let path = format!(
         "/api/grafana/services/timeseries?{}&interval=1m",
@@ -1346,7 +1337,7 @@ async fn test_grafana_services_timeseries_with_data() {
 
 #[tokio::test]
 async fn test_grafana_services_timeseries_service_filter() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
@@ -1358,7 +1349,6 @@ async fn test_grafana_services_timeseries_service_filter() {
     )];
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
-    common::refresh_aggregates(store.pool()).await;
 
     // Filter to service 10 only
     let path = format!(
@@ -1382,7 +1372,7 @@ async fn test_grafana_services_timeseries_service_filter() {
 
 #[tokio::test]
 async fn test_grafana_services_timeseries_gas_split() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
@@ -1391,7 +1381,6 @@ async fn test_grafana_services_timeseries_gas_split() {
     let events = vec![common::block_executed_event(ts, 42, &[(10, 50_000)])];
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
-    common::refresh_aggregates(store.pool()).await;
 
     let path = format!(
         "/api/grafana/services/timeseries?{}&interval=1m&service=10",
@@ -1419,7 +1408,7 @@ async fn test_grafana_services_timeseries_gas_split() {
 
 #[tokio::test]
 async fn test_grafana_timeseries_core_filter() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
@@ -1437,7 +1426,6 @@ async fn test_grafana_timeseries_core_filter() {
     ];
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
-    common::refresh_aggregates(store.pool()).await;
 
     // Query failures filtered to core 3
     let path = format!(
@@ -1642,7 +1630,7 @@ fn sum_counts_for_type(arr: &[Value], event_type: i64) -> i64 {
 
 #[tokio::test]
 async fn test_timeseries_pre_aggregated_event_types() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
@@ -1660,7 +1648,6 @@ async fn test_timeseries_pre_aggregated_event_types() {
 
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
-    common::refresh_aggregates(store.pool()).await;
 
     let path = format!(
         "/api/grafana/timeseries?{}&interval=1m&event_types=62,128,131",
@@ -1683,7 +1670,7 @@ async fn test_timeseries_pre_aggregated_event_types() {
 
 #[tokio::test]
 async fn test_timeseries_mixed_raw_and_pre_aggregated() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
@@ -1701,7 +1688,6 @@ async fn test_timeseries_mixed_raw_and_pre_aggregated() {
 
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
-    common::refresh_aggregates(store.pool()).await;
 
     let path = format!(
         "/api/grafana/timeseries?{}&interval=1m",
@@ -1732,7 +1718,7 @@ async fn test_timeseries_mixed_raw_and_pre_aggregated() {
 
 #[tokio::test]
 async fn test_timeseries_group_filter_with_pre_aggregated() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
@@ -1746,7 +1732,6 @@ async fn test_timeseries_group_filter_with_pre_aggregated() {
 
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
-    common::refresh_aggregates(store.pool()).await;
 
     let path = format!(
         "/api/grafana/timeseries?{}&interval=1m&event_types=assurances",
@@ -1773,7 +1758,7 @@ async fn test_timeseries_group_filter_with_pre_aggregated() {
 
 #[tokio::test]
 async fn test_timeseries_failures_cross_storage_paths() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
@@ -1794,7 +1779,6 @@ async fn test_timeseries_failures_cross_storage_paths() {
 
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
-    common::refresh_aggregates(store.pool()).await;
 
     let path = format!(
         "/api/grafana/timeseries?{}&interval=1m&event_types=failures",
@@ -1820,7 +1804,7 @@ async fn test_timeseries_failures_cross_storage_paths() {
 
 #[tokio::test]
 async fn test_guarantee_sending_enriched_core_in_timeseries() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
@@ -1835,7 +1819,6 @@ async fn test_guarantee_sending_enriched_core_in_timeseries() {
 
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
-    common::refresh_aggregates(store.pool()).await;
 
     let path = format!(
         "/api/grafana/timeseries?{}&interval=1m&event_types=106,108",
@@ -1857,7 +1840,7 @@ async fn test_guarantee_sending_enriched_core_in_timeseries() {
 
 #[tokio::test]
 async fn test_guarantee_receiving_slot_and_reason() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
@@ -1890,7 +1873,6 @@ async fn test_guarantee_receiving_slot_and_reason() {
 
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
-    common::refresh_aggregates(store.pool()).await;
 
     let path = format!(
         "/api/grafana/timeseries?{}&interval=1m&event_types=112,113",
@@ -1916,7 +1898,7 @@ async fn test_guarantee_receiving_slot_and_reason() {
 
 #[tokio::test]
 async fn test_timeseries_multi_bucket_aggregation() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
@@ -1933,7 +1915,6 @@ async fn test_timeseries_multi_bucket_aggregation() {
 
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
-    common::refresh_aggregates(store.pool()).await;
 
     // At 1m resolution, both buckets should be merged
     let path = format!(
@@ -2074,7 +2055,7 @@ async fn test_guarantee_discards_endpoint() {
 
 #[tokio::test]
 async fn test_timeseries_group_by_core_with_pre_aggregated() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
@@ -2089,7 +2070,6 @@ async fn test_timeseries_group_by_core_with_pre_aggregated() {
 
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
-    common::refresh_aggregates(store.pool()).await;
 
     let path = format!(
         "/api/grafana/timeseries?{}&interval=1m&event_types=106,108&group_by=core",
@@ -2986,7 +2966,7 @@ async fn test_grafana_assurance_convergence_pending_buffer() {
 
 #[tokio::test]
 async fn test_grafana_failure_rates() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
@@ -3000,7 +2980,6 @@ async fn test_grafana_failure_rates() {
     ];
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
-    common::refresh_aggregates(store.pool()).await;
 
     let path = format!("/api/grafana/failure-rates?{}", time_range_params());
     let response = server.get(&path).await;
@@ -3039,7 +3018,7 @@ async fn test_grafana_failure_rates() {
 
 #[tokio::test]
 async fn test_grafana_sync_timeline() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
     let mut stream2 = connect_test_node(port, 2, &telemetry).await;
 
@@ -3049,7 +3028,6 @@ async fn test_grafana_sync_timeline() {
     send_events(&mut stream, &[common::best_block_event(ts, 100)]).await;
     send_events(&mut stream2, &[common::best_block_event(ts + 500, 98)]).await;
     common::flush_all(&telemetry).await;
-    common::refresh_aggregates(store.pool()).await;
 
     let path = format!(
         "/api/grafana/sync-timeline?{}&interval=30m",
@@ -3083,7 +3061,7 @@ async fn test_grafana_sync_timeline() {
 
 #[tokio::test]
 async fn test_grafana_connections_timeline() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
@@ -3093,7 +3071,6 @@ async fn test_grafana_connections_timeline() {
     let events = vec![common::disconnected_event(ts + 1000, [3; 32])];
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
-    common::refresh_aggregates(store.pool()).await;
 
     let path = format!(
         "/api/grafana/connections-timeline?{}&interval=30m",
@@ -3118,7 +3095,7 @@ async fn test_grafana_connections_timeline() {
 
 #[tokio::test]
 async fn test_grafana_guarantees() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
@@ -3134,7 +3111,6 @@ async fn test_grafana_guarantees() {
     ];
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
-    common::refresh_aggregates(store.pool()).await;
 
     let path = format!("/api/grafana/guarantees?{}", time_range_params());
     let response = server.get(&path).await;
@@ -3199,7 +3175,7 @@ async fn test_grafana_guarantees_by_guarantor() {
 
 #[tokio::test]
 async fn test_grafana_wp_stats() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
@@ -3215,7 +3191,6 @@ async fn test_grafana_wp_stats() {
     ];
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
-    common::refresh_aggregates(store.pool()).await;
 
     let path = format!("/api/grafana/wp-stats?{}", time_range_params());
     let response = server.get(&path).await;
@@ -3280,7 +3255,7 @@ async fn test_grafana_validators_cores() {
 
 #[tokio::test]
 async fn test_grafana_network_health() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
@@ -3295,7 +3270,6 @@ async fn test_grafana_network_health() {
     ];
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
-    common::refresh_aggregates(store.pool()).await;
 
     let path = format!("/api/grafana/network-health?{}", time_range_params());
     let response = server.get(&path).await;
@@ -3417,7 +3391,7 @@ async fn test_grafana_wp_detail() {
 
 #[tokio::test]
 async fn test_grafana_blocks_summary() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
@@ -3430,7 +3404,6 @@ async fn test_grafana_blocks_summary() {
     ];
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
-    common::refresh_aggregates(store.pool()).await;
 
     let path = format!("/api/grafana/blocks/summary?{}", time_range_params());
     let response = server.get(&path).await;
@@ -3463,7 +3436,7 @@ async fn test_grafana_blocks_summary() {
 
 #[tokio::test]
 async fn test_grafana_core_metrics() {
-    let (server, telemetry, port, store) = setup_test_api().await;
+    let (server, telemetry, port, _store) = setup_test_api().await;
     let mut stream = connect_test_node(port, 1, &telemetry).await;
 
     let ts = common::now_jce_micros();
@@ -3479,7 +3452,6 @@ async fn test_grafana_core_metrics() {
     ];
     send_events(&mut stream, &events).await;
     common::flush_all(&telemetry).await;
-    common::refresh_aggregates(store.pool()).await;
 
     let path = format!("/api/grafana/cores/3/metrics?{}", time_range_params());
     let response = server.get(&path).await;

@@ -123,6 +123,47 @@ async fn test_node_event_count_after_burst() {
     assert_eq!(json["event_count"], 1000);
 }
 
+/// Events refer to earlier ones by the id their node gave them (JIP-3): ids start
+/// at 0 after NodeInformation, and a Dropped event takes the ids of the events it
+/// stands for. Tests build those references from what `send_events` returns.
+#[tokio::test]
+async fn test_send_events_returns_server_event_ids() {
+    let (server, telemetry_server, telemetry_port, _) = setup_test_api().await;
+    let mut node = common::connect_test_node(telemetry_port, 5, &telemetry_server).await;
+
+    const SLOT_MICROS: u64 = 6_000_000;
+    let slot_100_at = common::now_jce_micros() - 10 * SLOT_MICROS;
+    let event_ids = common::send_events(
+        &mut node,
+        &[
+            common::best_block_event(slot_100_at, 100),
+            // Best-block changes for slots 101 and 102 did not fit the node's buffer.
+            Event::Dropped {
+                timestamp: slot_100_at + SLOT_MICROS,
+                last_timestamp: slot_100_at + 2 * SLOT_MICROS,
+                num: 2,
+            },
+            common::best_block_event(slot_100_at + 3 * SLOT_MICROS, 103),
+        ],
+    )
+    .await;
+    assert_eq!(event_ids, [0, 1, 3]);
+    common::flush_all(&telemetry_server).await;
+
+    let response = server
+        .get(&format!("/api/nodes/{}/timeline", common::node_id_hex(5)))
+        .await;
+    assert_eq!(response.status_code(), StatusCode::OK);
+    let json: Value = response.json();
+    let stored_ids: Vec<u64> = json["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| event["event_id"].as_u64().unwrap())
+        .collect();
+    assert_eq!(stored_ids, [3, 1, 0], "newest first");
+}
+
 #[tokio::test]
 async fn test_node_details_not_found() {
     let (server, _, _, _) = setup_test_api().await;
